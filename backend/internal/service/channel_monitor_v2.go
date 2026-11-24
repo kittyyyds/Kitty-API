@@ -46,8 +46,10 @@ type ChannelMonitorV2Config struct {
 	// IgnoredErrorCategories are excluded from error_rate / health scoring.
 	// They still appear in the error breakdown with ignored=true (greyed in UI).
 	// Unknown categories always roll into "other" via the taxonomy classifier.
-	IgnoredErrorCategories []string  `json:"ignored_error_categories"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	IgnoredErrorCategories []string                     `json:"ignored_error_categories"`
+	CandyProbes            []ChannelMonitorV2CandyProbe `json:"candy_probes,omitempty"`
+	CandyHistoryLimit      int                          `json:"candy_history_limit"`
+	UpdatedAt              time.Time                    `json:"updated_at"`
 	UpdatedBy              *int64    `json:"updated_by,omitempty"`
 }
 
@@ -259,8 +261,10 @@ type ChannelMonitorV2MatrixRow struct {
 	PeakRateMultiplier float64                      `json:"peak_rate_multiplier,omitempty"`
 	Model              string                       `json:"model,omitempty"`
 	Metrics            ChannelMonitorV2Metric       `json:"metrics"`
-	Health             ChannelMonitorV2Health       `json:"health"`
-	Buckets            []ChannelMonitorV2TrendPoint `json:"buckets"`
+	Health             ChannelMonitorV2Health         `json:"health"`
+	Buckets            []ChannelMonitorV2TrendPoint   `json:"buckets"`
+	Candy              *ChannelMonitorV2CandyHistory  `json:"candy,omitempty"`
+	CandyChecks        []ChannelMonitorV2CandyHistory `json:"candy_checks,omitempty"`
 }
 
 type ChannelMonitorV2Matrix struct {
@@ -388,6 +392,7 @@ func ChannelMonitorV2BootstrapProgress(now, coveredFrom time.Time, hasData bool)
 type ChannelMonitorV2Service struct {
 	repo     ChannelMonitorV2Repository
 	settings channelMonitorRuntimeReader
+	candy    *ChannelMonitorV2CandyService
 	now      func() time.Time
 }
 
@@ -1109,4 +1114,12 @@ func healthBand(value, warning, critical float64) string {
 		return "warning"
 	}
 	return "healthy"
+}
+
+func (s *ChannelMonitorV2Service) ConfigureCandy(groups *MonitorGroupProbeService) *ChannelMonitorV2CandyRunner {
+	if s == nil || s.repo == nil || groups == nil {
+		return nil
+	}
+	s.candy = newChannelMonitorV2CandyService(s.repo, groups, s.settings)
+	return newChannelMonitorV2CandyRunner(s.candy)
 }

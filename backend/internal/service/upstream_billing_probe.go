@@ -109,7 +109,11 @@ type UpstreamBillingProbeSettings struct {
 // UpstreamBillingProbeSnapshot is persisted in accounts.extra. Data is kept as
 // a sanitized map so future response fields do not require a database change.
 type UpstreamBillingProbeSnapshot struct {
-	Status        string         `json:"status"`
+	Protocol        string         `json:"protocol,omitempty"`
+	UpstreamVersion string         `json:"upstream_version,omitempty"`
+	RateSource      string         `json:"rate_source,omitempty"`
+	ProbeStage      string         `json:"probe_stage,omitempty"`
+	Status          string         `json:"status"`
 	Data          map[string]any `json:"data,omitempty"`
 	ReceivedAt    *time.Time     `json:"received_at,omitempty"`
 	FreshUntil    *time.Time     `json:"fresh_until,omitempty"`
@@ -123,7 +127,18 @@ type UpstreamBillingProbeSnapshot struct {
 	// sync and the declared value passed the write-back range check, so the
 	// stored snapshot always answers "did this probe move the account rate, and
 	// to what" without a separate history table.
-	SyncedRateMultiplier *float64 `json:"synced_rate_multiplier,omitempty"`
+	SyncedRateMultiplier *float64                 `json:"synced_rate_multiplier,omitempty"`
+	Balance              *UpstreamBalanceSnapshot `json:"balance,omitempty"`
+}
+
+type UpstreamBalanceSnapshot struct {
+	Status        string         `json:"status"`
+	Data          map[string]any `json:"data,omitempty"`
+	ReceivedAt    *time.Time     `json:"received_at,omitempty"`
+	FreshUntil    *time.Time     `json:"fresh_until,omitempty"`
+	LastAttemptAt time.Time      `json:"last_attempt_at"`
+	HTTPStatus    int            `json:"http_status,omitempty"`
+	LastError     string         `json:"last_error,omitempty"`
 }
 
 // UpstreamBillingProbeResult is returned by manual probe endpoints.
@@ -243,6 +258,10 @@ func normalizeUpstreamBillingProbeSettings(settings *UpstreamBillingProbeSetting
 
 // UpstreamBillingProbeService discovers a remote Sub2API billing snapshot.
 type UpstreamBillingProbeService struct {
+	cs1ProviderRefresh func(context.Context)
+	providerHub        *ChannelService
+	newAPIEncryptor    SecretEncryptor
+	newAPIFixedKey     bool
 	accountRepo        AccountRepository
 	accountTestService *AccountTestService
 	settingService     *SettingService
@@ -1291,4 +1310,18 @@ func safeProbeError(err error) string {
 		return ErrUpstreamBillingProbeUnavailable.Error()
 	}
 	return "probe_failed"
+}
+
+
+func (s *UpstreamBillingProbeService) SetNewAPIEncryptor(enc SecretEncryptor, fixed bool) {
+	if s != nil {
+		s.newAPIEncryptor = enc
+		s.newAPIFixedKey = fixed
+	}
+}
+
+func (s *UpstreamBillingProbeService) SetProviderHub(ch *ChannelService) {
+	if s != nil {
+		s.providerHub = ch
+	}
 }

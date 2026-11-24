@@ -27,6 +27,9 @@ type KittyModules struct {
 	BillingPreview         *BillingPreviewHandler
 	ChannelMonitorV3       *ChannelMonitorV3Handler
 	ChannelMonitorV3Prober *service.ChannelMonitorV3Prober
+	ChannelMonitorV2Candy  *service.ChannelMonitorV2CandyRunner
+	IntelligenceScheduler  *service.KittyIntelligenceScheduler
+	UserCleanup            *admin.UserCleanupHandler
 	QQBotService           *qqbot.Service
 	QQBot                  *QQBotHandler
 }
@@ -39,6 +42,7 @@ func ProvideKittyModules(
 	secretEncryptor service.SecretEncryptor,
 	settingService *service.SettingService,
 	emailService *service.EmailService,
+	adminService service.AdminService,
 	userRepo service.UserRepository,
 	groupRepo service.GroupRepository,
 	accountRepo service.AccountRepository,
@@ -53,6 +57,7 @@ func ProvideKittyModules(
 	modelPricingResolver *service.ModelPricingResolver,
 	paymentService *service.PaymentService,
 	balanceNotifyService *service.BalanceNotifyService,
+	upstreamBillingProbe *service.UpstreamBillingProbeService,
 	rechargeBonusRepo service.RechargeBonusRepository,
 	supportTicketRepo service.SupportTicketRepository,
 	channelMonitorV3Repo service.ChannelMonitorV3Repository,
@@ -60,6 +65,8 @@ func ProvideKittyModules(
 	openaiGatewayService *service.OpenAIGatewayService,
 	concurrencyService *service.ConcurrencyService,
 	accountTestService *service.AccountTestService,
+	adminChannelHandler *admin.ChannelHandler,
+	adminAccountHandler *admin.AccountHandler,
 ) *KittyModules {
 	if billingService != nil && sqlDB != nil {
 		billingService.SetGlobalContextRules(service.NewGlobalContextRuleStore(sqlDB))
@@ -67,17 +74,47 @@ func ProvideKittyModules(
 	if paymentService != nil && rechargeBonusRepo != nil {
 		paymentService.SetRechargeBonusRepo(rechargeBonusRepo)
 	}
+	if upstreamBillingProbe != nil {
+		upstreamBillingProbe.SetNewAPIEncryptor(secretEncryptor, cfg != nil && cfg.Totp.EncryptionKeyConfigured)
+		upstreamBillingProbe.SetProviderHub(channelService)
+	}
+	if channelService != nil {
+		channelService.SetProviderHubProbe(upstreamBillingProbe)
+	}
+	if adminChannelHandler != nil {
+		adminChannelHandler.SetProviderHubAdmin(adminService)
+		if adminAccountHandler != nil {
+			adminChannelHandler.ConfigureCS1Providers(adminAccountHandler, upstreamBillingProbe)
+		}
+	}
+
+	runBG := cfg == nil || cfg.RunMode == "" || cfg.RunMode == config.RunModeStandard
+
 	expiry := service.NewRechargeBonusExpiryService(rechargeBonusRepo, billingCache, 5*time.Minute)
-	expiry.Start()
+	if runBG {
+		expiry.Start()
+	}
 
 	supportTicketSvc := service.NewSupportTicketService(supportTicketRepo, settingService)
 	billingPreviewSvc := service.NewBillingPreviewService(apiKeyService, channelService, billingService, modelPricingResolver)
 	monitorV3Svc := service.NewChannelMonitorV3Service(channelMonitorV3Repo, groupRepo)
 	monitorGroupProbe := service.NewMonitorGroupProbeService(groupRepo, gatewayService, openaiGatewayService, concurrencyService, accountTestService)
 	monitorV3Prober := service.NewChannelMonitorV3Prober(channelMonitorV3Repo, monitorGroupProbe, settingService)
-	if cfg == nil || cfg.RunMode == "" || cfg.RunMode == config.RunModeStandard {
+	if runBG {
 		monitorV3Prober.Start()
 	}
+
+	candyRunner := channelMonitorV2Service.ConfigureCandy(monitorGroupProbe)
+	if runBG && candyRunner != nil {
+		candyRunner.Start()
+	}
+
+	intelScheduler := service.NewKittyIntelligenceScheduler(accountTestService)
+	if runBG {
+		intelScheduler.Start()
+	}
+
+	userCleanupSvc := service.NewUserCleanupService(sqlDB, authCacheInvalidator)
 
 	qqbotSvc := service.ProvideQQBotService(
 		sqlDB,
@@ -114,6 +151,9 @@ func ProvideKittyModules(
 		BillingPreview:         NewBillingPreviewHandler(billingPreviewSvc),
 		ChannelMonitorV3:       NewChannelMonitorV3Handler(monitorV3Svc, apiKeyService, settingService),
 		ChannelMonitorV3Prober: monitorV3Prober,
+		ChannelMonitorV2Candy:  candyRunner,
+		IntelligenceScheduler:  intelScheduler,
+		UserCleanup:            admin.NewUserCleanupHandler(userCleanupSvc),
 		QQBotService:           qqbotSvc,
 		QQBot:                  NewQQBotHandler(qqbotSvc),
 	}

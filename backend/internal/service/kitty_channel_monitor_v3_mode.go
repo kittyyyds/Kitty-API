@@ -13,6 +13,10 @@ const ChannelMonitorModeV3 = "v3"
 var ErrChannelMonitorInvalidMode = infraerrors.BadRequest("CHANNEL_MONITOR_INVALID_MODE", "channel monitor mode must be v1, v2, or v3")
 
 // V3Active reports whether the V3 component status page is active.
+func (r ChannelMonitorRuntime) V2Active() bool {
+	return r.Enabled && r.Mode == ChannelMonitorModeV2
+}
+
 func (r ChannelMonitorRuntime) V3Active() bool {
 	return r.Enabled && r.Mode == ChannelMonitorModeV3
 }

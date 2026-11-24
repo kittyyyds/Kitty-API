@@ -16,6 +16,7 @@ import (
 
 // ChannelHandler handles admin channel management
 type ChannelHandler struct {
+	providerAdmin  service.AdminService
 	channelService *service.ChannelService
 	billingService *service.BillingService
 	pricingService *service.PricingService
@@ -676,4 +677,10 @@ func (h *ChannelHandler) SyncPricingModels(c *gin.Context) {
 
 	models := h.pricingService.ListModelNamesByProvider(provider)
 	response.Success(c, gin.H{"models": models})
+}
+
+func (h *ChannelHandler) SetProviderHubAdmin(adminService service.AdminService) {
+	if h != nil {
+		h.providerAdmin = adminService
+	}
 }

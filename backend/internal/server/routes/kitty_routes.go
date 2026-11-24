@@ -216,6 +216,73 @@ func RegisterKittyRoutes(
 		bot.POST("/chat-preview", k.QQBot.PreviewChat)
 	}
 
+
+	// Operations Dashboard, Pricing Audit, Provider Hub, CS1 Providers, User Cleanup, Account Intelligence & Ops Stats
+	if h.Admin != nil {
+		if h.Admin.Ops != nil {
+			admin.POST("/ops/account-request-stats/batch", h.Admin.Ops.GetAccountRequestStatsBatch)
+		}
+		if k.UserCleanup != nil {
+			admin.GET("/users/cleanup/summary", k.UserCleanup.Summary)
+			admin.POST("/users/cleanup/preview", k.UserCleanup.Preview)
+			admin.POST("/users/cleanup/execute", k.UserCleanup.Execute)
+			admin.GET("/users/:id/cleanup-guard", k.UserCleanup.GetGuard)
+			admin.PUT("/users/:id/cleanup-guard", k.UserCleanup.UpdateGuard)
+		}
+		if h.Admin.Dashboard != nil {
+			admin.GET("/dashboard/operations", h.Admin.Dashboard.GetOperationsDashboard)
+			admin.GET("/dashboard/operations/recharge-ranking", h.Admin.Dashboard.GetOperationsRechargeRanking)
+			admin.GET("/dashboard/operations/users", h.Admin.Dashboard.GetOperationsUsers)
+			admin.GET("/dashboard/operations/users/suggest", h.Admin.Dashboard.GetOperationsUserSuggestions)
+		}
+		if h.Admin.Account != nil {
+			admin.GET("/accounts/intelligence-tests/recent", h.Admin.Account.IntelligenceRecent)
+			admin.GET("/accounts/:id/intelligence-tests", h.Admin.Account.IntelligenceHistory)
+			admin.POST("/accounts/:id/intelligence-tests", h.Admin.Account.StartIntelligenceTest)
+			admin.GET("/accounts/:id/intelligence-schedule", h.Admin.Account.GetIntelligenceSchedule)
+			admin.PUT("/accounts/:id/intelligence-schedule", h.Admin.Account.SaveIntelligenceSchedule)
+
+			p := admin.Group("/providers")
+			p.GET("", h.Admin.Account.ListProviders)
+			p.GET("/options", h.Admin.Account.ListProviderOptions)
+			p.GET("/user-balance", h.Admin.Account.ProviderUserBalance)
+			p.POST("/probe", h.Admin.Account.ProbeProvider)
+			p.POST("", h.Admin.Account.CreateProvider)
+			p.PUT("/:id", h.Admin.Account.UpdateProvider)
+			p.DELETE("/:id", h.Admin.Account.DeleteProvider)
+			p.POST("/:id/refresh", h.Admin.Account.RefreshProvider)
+			p.GET("/:id/keys", h.Admin.Account.ListProviderKeys)
+			p.GET("/:id/groups", h.Admin.Account.ListProviderKeyGroups)
+			p.POST("/:id/keys", h.Admin.Account.CreateProviderKey)
+		}
+		if h.Admin.Channel != nil {
+			admin.GET("/channels/pricing-audit", h.Admin.Channel.PricingAudit)
+			admin.GET("/operations", h.Admin.Channel.ProviderOperations)
+			providers := admin.Group("/provider-hub")
+			providers.GET("", h.Admin.Channel.ProviderHubState)
+			providers.POST("/suppliers", h.Admin.Channel.ProviderHubMutation("supplier"))
+			providers.PUT("/suppliers/:id", h.Admin.Channel.ProviderHubMutation("supplier"))
+			providers.POST("/suppliers/:id/archive", h.Admin.Channel.ProviderHubMutation("archive_supplier"))
+			providers.POST("/wallets", h.Admin.Channel.ProviderHubMutation("wallet"))
+			providers.PUT("/wallets/:id", h.Admin.Channel.ProviderHubMutation("wallet"))
+			providers.POST("/wallets/:id/archive", h.Admin.Channel.ProviderHubMutation("archive_wallet"))
+			providers.PUT("/wallets/:id/authorization", h.Admin.Channel.ProviderHubMutation("authorization"))
+			providers.PUT("/wallets/:id/bindings", h.Admin.Channel.ProviderHubMutation("bindings"))
+			providers.POST("/bindings/:id/unbind", h.Admin.Channel.ProviderHubMutation("unbind"))
+			providers.POST("/wallets/:id/purchases", h.Admin.Channel.ProviderHubMutation("purchase"))
+			providers.GET("/wallets/:id/purchases", h.Admin.Channel.ProviderHubPurchases)
+			providers.POST("/purchases/:id/void", h.Admin.Channel.ProviderHubMutation("void_purchase"))
+			providers.POST("/wallets/:id/rules", h.Admin.Channel.ProviderHubMutation("rule"))
+			providers.POST("/rules/:id/close", h.Admin.Channel.ProviderHubMutation("close_rule"))
+			providers.POST("/adjustments", h.Admin.Channel.ProviderHubMutation("adjustment"))
+			providers.POST("/wallets/:id/sync", h.Admin.Channel.ProviderHubSync)
+			providers.GET("/wallets/:id/keys", h.Admin.Channel.ProviderHubKeys)
+			providers.GET("/wallets/:id/groups", h.Admin.Channel.ProviderHubGroups)
+			providers.POST("/wallets/:id/keys", h.Admin.Channel.ProviderHubCreateKey)
+			providers.POST("/wallets/:id/import", h.Admin.Channel.ProviderHubImportKeys)
+		}
+	}
+
 	// Registration Email Blacklist & Batch Disable
 	if h.Admin != nil && h.Admin.Setting != nil {
 		admin.GET("/settings/registration-email-blacklist", h.Admin.Setting.GetRegistrationEmailBlacklist)

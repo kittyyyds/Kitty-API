@@ -46,6 +46,8 @@ func NewOAuthHandler(oauthService *service.OAuthService) *OAuthHandler {
 // AccountHandler handles admin account management
 type AccountHandler struct {
 	claudeResetCredits    claudeResetReader
+	providerSettings      cs1ProviderStore
+	providerEncryptor     service.SecretEncryptor
 	adminService          service.AdminService
 	oauthService          *service.OAuthService
 	openaiOAuthService    *service.OpenAIOAuthService
@@ -117,6 +119,8 @@ func NewAccountHandler(
 
 // CreateAccountRequest represents create account request
 type CreateAccountRequest struct {
+	ProviderID    string `json:"provider_id"`
+	ProviderKeyID string `json:"provider_key_id"`
 	Name                    string         `json:"name" binding:"required"`
 	Notes                   *string        `json:"notes"`
 	Platform                string         `json:"platform" binding:"required,oneof=anthropic openai grok kimi zhipu deepseek"`

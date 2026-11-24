@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 )
@@ -45,12 +46,15 @@ func parseTestSSEOutput(body string) (responseText, errMsg string) {
 }
 
 type ScheduledTestResult struct {
-	ID           int64  `json:"id"`
-	Status       string `json:"status"`
-	ModelID      string `json:"model_id"`
-	ResponseText string `json:"response_text,omitempty"`
-	ErrorMessage string `json:"error_message,omitempty"`
-	LatencyMs    int64  `json:"latency_ms"`
+	ID            int64     `json:"id"`
+	Status        string    `json:"status"`
+	ModelID       string    `json:"model_id"`
+	UpstreamModel string    `json:"upstream_model,omitempty"`
+	ResponseText  string    `json:"response_text,omitempty"`
+	ErrorMessage  string    `json:"error_message,omitempty"`
+	LatencyMs     int64     `json:"latency_ms"`
+	StartedAt     time.Time `json:"started_at,omitempty"`
+	FinishedAt    time.Time `json:"finished_at,omitempty"`
 }
 
 func startBackgroundService(cfg *config.Config, job interface{ Start() }) {
