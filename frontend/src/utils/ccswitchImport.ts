@@ -6,7 +6,7 @@ import { DEFAULT_CODEX_EXPORT_MODEL } from '@/utils/codexCatalogConfig'
 export const OPENAI_CC_SWITCH_CODEX_MODEL = DEFAULT_CODEX_EXPORT_MODEL
 export const GROK_CC_SWITCH_MODEL = 'grok-4.5'
 
-export type CcSwitchClientType = 'claude'
+export type CcSwitchClientType = 'claude' | 'gemini'
 
 export interface CcSwitchImportConfig {
   app: string
@@ -24,11 +24,16 @@ export interface CcSwitchImportDeeplinkInput {
   codexModel?: string
 }
 
+export function resolveCcSwitchUsageBaseUrl(baseUrl: string): string {
+  const normalized = baseUrl.trim().replace(/\/+$/, '')
+  return normalized.replace(/\/v1$/i, '')
+}
+
 /**
  * Balance query CC Switch runs against the imported provider. CC Switch fills
- * `{{baseUrl}}` with the provider's base URL as stored — Codex and Grok imports
- * carry a trailing `/v1` (see `withV1Endpoint`), Claude ones do not, and users
- * may edit it either way afterwards — then evaluates the script, so the URL
+ * `{{baseUrl}}` with the provider's stored base URL. Grok imports add `/v1`,
+ * while Codex preserves the configured endpoint. Users may edit either form
+ * afterwards. CC Switch evaluates the script, so the URL
  * strips an existing `/v1` instead of blindly appending one (`/v1/v1/usage`
  * is a 404 and CC Switch shows "query failed").
  */
@@ -50,7 +55,7 @@ export const CC_SWITCH_USAGE_SCRIPT = `({
   })`
 
 function withV1Endpoint(baseUrl: string): string {
-  const normalizedBaseUrl = baseUrl.replace(/\/+$/, '')
+  const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, '')
   return normalizedBaseUrl.endsWith('/v1') ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`
 }
 
@@ -60,9 +65,15 @@ function withoutTrailingSlashes(baseUrl: string): string {
 
 export function resolveCcSwitchImportConfig(
   platform: GroupPlatform | undefined | null,
+  clientType: CcSwitchClientType,
   baseUrl: string
 ): CcSwitchImportConfig {
   switch (platform || 'anthropic') {
+    case 'antigravity':
+      return {
+        app: clientType === 'gemini' ? 'gemini' : 'claude',
+        endpoint: `${baseUrl.replace(/\/+$/, '')}/antigravity`
+      }
     case 'openai':
     case 'composite':
       return {
@@ -71,6 +82,11 @@ export function resolveCcSwitchImportConfig(
         // Passing /v1 here can make the client request /v1/v1/....
         endpoint: withoutTrailingSlashes(baseUrl),
         model: OPENAI_CC_SWITCH_CODEX_MODEL
+      }
+    case 'gemini':
+      return {
+        app: 'gemini',
+        endpoint: baseUrl
       }
     case 'grok':
       return {
@@ -87,7 +103,8 @@ export function resolveCcSwitchImportConfig(
 }
 
 export function buildCcSwitchImportDeeplink(input: CcSwitchImportDeeplinkInput): string {
-  const config = resolveCcSwitchImportConfig(input.platform, input.baseUrl)
+  const config = resolveCcSwitchImportConfig(input.platform, input.clientType, input.baseUrl)
+  const usageBaseUrl = resolveCcSwitchUsageBaseUrl(input.baseUrl)
   const model = config.app === 'codex' ? input.codexModel || config.model : config.model
   const entries: [string, string][] = [
     ['resource', 'provider'],
@@ -99,6 +116,7 @@ export function buildCcSwitchImportDeeplink(input: CcSwitchImportDeeplinkInput):
     ['configFormat', 'json'],
     ['usageEnabled', 'true'],
     ['usageScript', btoa(input.usageScript)],
+    ['usageBaseUrl', usageBaseUrl],
     ['usageAutoInterval', '30']
   ]
 
@@ -119,6 +137,24 @@ name = "Sub2API"
 base_url = ${JSON.stringify(config.endpoint)}
 wire_api = "responses"
 ${websocketConfig}${buildCodexApiKeyAuthConfig(input.apiKey)}
+`
+    const payload = JSON.stringify({ config: codexConfig })
+    const bytes = new TextEncoder().encode(payload)
+    entries.push(['config', btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(''))])
+  }
+
+  if (config.app === 'codex') {
+    // CC Switch's embedded-config import preserves provider auth and headers.
+    // It deliberately leaves global [features] settings to the user.
+    const codexConfig = `model_provider = "sub2api"
+model = ${JSON.stringify(config.model)}
+web_search = "live"
+
+[model_providers.sub2api]
+name = "Sub2API"
+base_url = ${JSON.stringify(config.endpoint)}
+wire_api = "responses"
+${buildCodexApiKeyAuthConfig(input.apiKey)}
 `
     const payload = JSON.stringify({ config: codexConfig })
     const bytes = new TextEncoder().encode(payload)

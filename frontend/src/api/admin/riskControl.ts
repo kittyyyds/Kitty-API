@@ -1,343 +1,246 @@
 import { apiClient } from '../client'
 
-export type ModerationMode = 'off' | 'pre_block'
-export type ContentModerationLayerStage = 'enforce' | 'shadow'
-export type ContentModerationFirstLayerStage = ContentModerationLayerStage
-export type ContentModerationSecondLayerStage = ContentModerationLayerStage
+export type ModerationMode = 'off' | 'observe' | 'pre_block'
+export type ModerationEngine = 'openai' | 'typesafe'
+export type ModerationCategorySettings = Record<string, { enabled: boolean }>
+export interface ModerationEngineMeta {
+  engine: ModerationEngine
+  model: string
+  rules_version: string
+  skipped_images: number
+  category_settings?: ModerationCategorySettings
+  matched_categories?: string[]
+}
+export type KeywordBlockingMode = 'keyword_only' | 'keyword_and_api' | 'api_only'
 export type ContentModerationModelFilterType = 'all' | 'include' | 'exclude'
-export type ContentModerationRemoteProvider = 'deepseek' | 'alibaba_qwen' | 'zhipu_glm' | 'mimo'
-export type ContentModerationRemoteUnavailablePolicy = 'fail_closed' | 'risk_tiered'
-export type DeepSeekBreakerState =
-  | 'closed'
-  | 'cooldown'
-  | 'half_open'
-  | 'auth_disabled'
-  | 'open'
-  | 'disabled'
-  | 'unknown'
 
 export interface ContentModerationModelFilter {
   type: ContentModerationModelFilterType
   models: string[]
 }
 
-export interface DeepSeekModerationChannel {
-  id: string
-  name: string
-  provider?: ContentModerationRemoteProvider | string
-  base_url: string
-  model: string
-  enabled: boolean
-  order: number
-  timeout_ms: number
-  api_key_configured: boolean
-  api_key_masked: string
-  health_status?: string
-  last_health_checked_at?: string
-  breaker_status?: DeepSeekBreakerState
-  cooldown_until?: string
-  last_latency_ms?: number
-  last_error?: string
-  /** Last cheap transport-only heartbeat performed by the backend. */
-  heartbeat_status?: 'reachable' | 'unreachable' | 'untested' | 'disabled' | string
-  last_heartbeat_at?: string
-  heartbeat_latency_ms?: number
-  heartbeat_http_status?: number
-  heartbeat_error?: string
-}
-
-export interface UpdateDeepSeekModerationChannel {
-  id: string
-  name: string
-  provider?: ContentModerationRemoteProvider | string
-  base_url: string
-  model: string
-  enabled: boolean
-  order: number
-  timeout_ms: number
-  api_key?: string
-  clear_api_key?: boolean
-}
-
-export interface TestDeepSeekChannelResponse {
-  channel_id: string
-  provider?: ContentModerationRemoteProvider | string
-  model?: string
-  /** `api_usability` for the explicit real review test. */
-  test_type?: 'api_usability' | string
-  reachable: boolean
-  /** @deprecated Compatibility alias for reachable. */
-  health_valid: boolean
-  latency_ms: number
-  http_status?: number
-  verdict?: 'safe' | 'restricted' | 'violation' | string
-  category?: string
-  confidence?: number
-  error?: string
-  checked_at?: string
-}
-
-export interface ContentModerationChannelHeartbeat {
-  channel_id: string
-  provider: ContentModerationRemoteProvider | string
-  status: 'reachable' | 'unreachable' | 'untested' | 'disabled' | string
-  checked_at?: string
-  latency_ms?: number
-  http_status?: number
-  error?: string
-}
-
 export interface ContentModerationConfig {
+  upstream_account_scope?: 'all' | 'selected'
+  upstream_account_ids?: number[]
+  engine?: ModerationEngine
+  engine_configs?: Record<ModerationEngine, ContentModerationConfig>
   enabled: boolean
   mode: ModerationMode
-  deepseek_enabled?: boolean
-  remote_reviewers_enabled?: boolean
-  remote_consensus_required?: number
-  remote_unavailable_policy?: ContentModerationRemoteUnavailablePolicy
-  deepseek_total_timeout_ms?: number
-  deepseek_threshold?: number
-  policy_version?: string
-  deepseek_channels?: DeepSeekModerationChannel[]
-  remote_reviewers?: DeepSeekModerationChannel[]
-  all_groups?: boolean
-  group_ids?: number[]
-  record_non_hits?: boolean
-  block_status?: number
-  block_message?: string
-  email_on_hit?: boolean
-  auto_ban_enabled?: boolean
-  cyber_policy_exclude_from_ban_count?: boolean
-  ban_threshold?: number
-  violation_window_hours?: number
-  hit_retention_days?: number
-  non_hit_retention_days?: number
-  model_filter?: ContentModerationModelFilter
-  first_layer_stage?: ContentModerationFirstLayerStage
-  second_layer_enabled?: boolean
-  second_layer_stage?: ContentModerationSecondLayerStage
-  layer1_keywords?: string[]
-  layer2_keywords?: string[]
-  keyword_allowlist?: string[]
-  keyword_policy_version?: string
-  context_policy_version?: string
-  evidence_policy_version?: string
-  candidate_layer1_count?: number
-  candidate_layer2_count?: number
-  candidate_system_ready?: boolean
-  candidate_system_error?: string
+  base_url: string
+  model: string
+  proxy_id: number | null
+  api_key_configured: boolean
+  api_key_masked: string
+  api_key_count: number
+  api_key_masks: string[]
+  api_key_statuses: ContentModerationAPIKeyStatus[]
+  timeout_ms: number
+  sample_rate: number
+  all_groups: boolean
+  group_ids: number[]
+  record_non_hits: boolean
+  category_settings?: ModerationCategorySettings
+  thresholds: Record<string, number>
+  worker_count: number
+  queue_size: number
+  block_status: number
+  block_message: string
+  email_on_hit: boolean
+  auto_ban_enabled: boolean
+  ban_threshold: number
+  violation_window_hours: number
+  retry_count: number
+  hit_retention_days: number
+  non_hit_retention_days: number
+  pre_hash_check_enabled: boolean
+  blocked_keywords: string[]
+  keyword_blocking_mode: KeywordBlockingMode
+  model_filter: ContentModerationModelFilter
+  cyber_policy_exclude_from_ban_count: boolean
+}
+
+export type ContentModerationAPIKeyStatusValue = 'unknown' | 'ok' | 'error' | 'frozen'
+
+export interface ContentModerationAPIKeyStatus {
+  base_url?: string
+  index: number
+  key_hash: string
+  masked: string
+  status: ContentModerationAPIKeyStatusValue
+  failure_count: number
+  success_count: number
+  last_error: string
+  last_checked_at?: string
+  frozen_until?: string
+  last_latency_ms: number
+  last_http_status: number
+  last_tested: boolean
+  configured: boolean
+}
+
+export interface TestContentModerationAPIKeysPayload {
+  engine?: ModerationEngine
+  category_settings?: ModerationCategorySettings
+  thresholds?: Record<string, number>
+  api_keys?: string[]
+  base_url?: string
+  model?: string
+  timeout_ms?: number
+  // null/undefined 沿用已保存配置的代理；0 强制直连；>0 指定代理
+  proxy_id?: number
+  prompt?: string
+  images?: string[]
+}
+
+export interface TestContentModerationAPIKeysResponse {
+  items: ContentModerationAPIKeyStatus[]
+  audit_result?: ContentModerationTestAuditResult
+  image_count: number
+}
+
+export interface ContentModerationTestAuditResult {
+  matched_categories?: string[]
+  engine_meta?: ModerationEngineMeta
+  flagged: boolean
+  highest_category: string
+  highest_score: number
+  composite_score: number
+  category_scores: Record<string, number>
+  category_settings?: ModerationCategorySettings
+  thresholds: Record<string, number>
 }
 
 export interface UpdateContentModerationConfig {
+  upstream_account_scope?: 'all' | 'selected'
+  upstream_account_ids?: number[]
+  engine?: ModerationEngine
+  engine_configs?: Partial<Record<ModerationEngine, UpdateModerationEngineConfig>>
   enabled?: boolean
   mode?: ModerationMode
-  deepseek_enabled?: boolean
-  remote_reviewers_enabled?: boolean
-  remote_consensus_required?: number
-  remote_unavailable_policy?: ContentModerationRemoteUnavailablePolicy
-  deepseek_total_timeout_ms?: number
-  deepseek_threshold?: number
-  deepseek_channels?: UpdateDeepSeekModerationChannel[]
-  remote_reviewers?: UpdateDeepSeekModerationChannel[]
+  base_url?: string
+  model?: string
+  // undefined 不修改；0 清除（直连）；>0 指定代理
+  proxy_id?: number
+  api_key?: string
+  api_keys?: string[]
+  api_keys_mode?: 'append' | 'replace'
+  delete_api_key_hashes?: string[]
+  clear_api_key?: boolean
+  timeout_ms?: number
+  sample_rate?: number
   all_groups?: boolean
   group_ids?: number[]
   record_non_hits?: boolean
+  category_settings?: ModerationCategorySettings
+  thresholds?: Record<string, number>
+  worker_count?: number
+  queue_size?: number
   block_status?: number
   block_message?: string
   email_on_hit?: boolean
   auto_ban_enabled?: boolean
-  cyber_policy_exclude_from_ban_count?: boolean
   ban_threshold?: number
   violation_window_hours?: number
+  retry_count?: number
   hit_retention_days?: number
   non_hit_retention_days?: number
+  pre_hash_check_enabled?: boolean
+  blocked_keywords?: string[]
+  keyword_blocking_mode?: KeywordBlockingMode
   model_filter?: ContentModerationModelFilter
-  first_layer_stage?: ContentModerationFirstLayerStage
-  second_layer_enabled?: boolean
-  second_layer_stage?: ContentModerationSecondLayerStage
-  layer1_keywords?: string[]
-  layer2_keywords?: string[]
-  keyword_allowlist?: string[]
-}
-
-export interface ContentModerationArchiveRuntimeStatus {
-  degraded?: boolean
-  retry_queue_depth?: number
-  emergency_queue_depth?: number
-  archive_retry_attempts?: number
-  archive_retry_errors?: number
-  content_lost?: number
-  disk_free_bytes?: number
-  disposition_queue_depth?: number
-  disposition_retry_attempts?: number
-  disposition_retry_errors?: number
-  lost_summary_queue_depth?: number
+  cyber_policy_exclude_from_ban_count?: boolean
 }
 
 export interface ContentModerationRuntimeStatus {
+  engine?: ModerationEngine
   enabled: boolean
   risk_control_enabled: boolean
   mode: ModerationMode
-  pre_block_active?: number
-  pre_block_checked?: number
-  pre_block_allowed?: number
-  pre_block_blocked?: number
-  pre_block_errors?: number
-  pre_block_avg_latency_ms?: number
-  flagged_hash_count?: number
+  worker_count: number
+  max_workers: number
+  active_workers: number
+  idle_workers: number
+  queue_size: number
+  queue_length: number
+  queue_usage_percent: number
+  enqueued: number
+  dropped: number
+  processed: number
+  errors: number
+  pre_block_active: number
+  pre_block_checked: number
+  pre_block_allowed: number
+  pre_block_blocked: number
+  pre_block_errors: number
+  pre_block_avg_latency_ms: number
+  pre_block_api_key_active: number
+  pre_block_api_key_available_count: number
+  pre_block_api_key_total_calls: number
+  pre_block_api_key_loads: ContentModerationAPIKeyLoad[]
+  api_key_statuses: ContentModerationAPIKeyStatus[]
+  flagged_hash_count: number
   last_cleanup_at?: string
-  last_cleanup_deleted_hit?: number
-  last_cleanup_deleted_non_hit?: number
-  last_cleanup_deleted_archives?: number
-  deepseek_selected_count?: number
-  deepseek_failover_count?: number
-  deepseek_unavailable_count?: number
-  remote_selected_count?: number
-  remote_failover_count?: number
-  remote_unavailable_count?: number
-  deepseek_response_read_timeout_count?: number
-  deepseek_breaker_skip_count?: number
-  deepseek_cooldown_skip_count?: number
-  deepseek_half_open_busy_skip_count?: number
-  review_unavailable_count?: number
-  review_unavailable_enforced_count?: number
-  review_unavailable_degraded_count?: number
-  last_review_unavailable_at?: string
-  startup_api_usability_tested?: boolean
-  startup_api_usability_checked_at?: string
-  startup_api_usability_configured?: number
-  startup_api_usability_succeeded?: number
-  remote_heartbeats?: ContentModerationChannelHeartbeat[]
-  second_layer_cache_hits?: number
-  second_layer_cache_misses?: number
-  second_layer_cache_writes?: number
-  second_layer_cache_errors?: number
-  second_layer_enforce_ready?: boolean
-  second_layer_enforce_reason?: string
-  archive_runtime?: ContentModerationArchiveRuntimeStatus
+  last_cleanup_deleted_hit: number
+  last_cleanup_deleted_non_hit: number
 }
 
-export interface ContentModerationEvidenceMatch {
-  keyword: string
-  rule_id: string
-  tier: string
-  start: number
-  end: number
-}
-
-export interface ContentModerationEvidenceWindow {
-  path: string
-  context_class: string
-  text: string
-  matches: ContentModerationEvidenceMatch[]
-}
-
-export interface DeepSeekReviewAttempt {
-  reviewer?: string
-  provider?: string
-  channel_id?: string
-  channel_name?: string
-  model?: string
-  outcome?: string
-  verdict?: string
-  role?: string
-  confidence?: number
-  http_status?: number
-  latency_ms?: number
-  error?: string
-  chunk_index?: number
-  chunk_count?: number
+export interface ContentModerationAPIKeyLoad {
+  index: number
+  key_hash: string
+  masked: string
+  status: ContentModerationAPIKeyStatusValue
+  active: number
+  total: number
+  success: number
+  errors: number
+  avg_latency_ms: number
+  last_latency_ms: number
+  last_http_status: number
 }
 
 export interface ContentModerationLog {
+  evidence_status?: string
+  engine_meta?: ModerationEngineMeta | null
   id: number
+  request_id: string
+  user_id: number | null
+  user_email: string
+  api_key_id: number | null
+  api_key_name: string
+  group_id: number | null
+  group_name: string
+  endpoint: string
+  provider: string
+  model: string
+  mode: string
+  action: string
+  flagged: boolean
+  highest_category: string
+  highest_score: number
+  matched_keyword: string
+  category_scores: Record<string, number>
+  threshold_snapshot: Record<string, number>
+  input_excerpt: string
+  upstream_latency_ms: number | null
+  error: string
+  violation_count: number
+  auto_banned: boolean
+  email_sent: boolean
+  user_status: string
+  queue_delay_ms: number | null
   created_at: string
-  request_id?: string
-  user_id?: number | null
-  user_email?: string
-  api_key_id?: number | null
-  api_key_name?: string
-  group_id?: number | null
-  group_name?: string
-  endpoint?: string
-  provider?: string
-  model?: string
-  mode?: string
-  action?: string
-  cache_hit?: boolean
-  decision_source?: string
-  source_log_id?: number | null
-  replay_of_input_hash?: string
-  context_class?: string
-  model_profile?: string
-  policy_version?: string
-  evidence_policy_version?: string
-  keyword_tier?: string
-  keyword_rule_id?: string
-  evidence_truncated?: boolean
-  evidence_windows?: ContentModerationEvidenceWindow[]
-  parser_status?: string
-  flagged?: boolean
-  highest_category?: string
-  highest_score?: number
-  matched_keyword?: string
-  input_excerpt?: string
-  upstream_latency_ms?: number | null
-  error?: string
-  violation_count?: number
-  auto_banned?: boolean
-  email_sent?: boolean
-  user_status?: string
-  queue_delay_ms?: number | null
-  input_hash?: string
-  archive_id?: string
-  archive_bytes?: number
-  archive_status?: string
-  archive_incomplete?: boolean
-  archive_content_lost?: boolean
-  archive_deleted_at?: string
-  deepseek_confidence?: number | null
-  deepseek_category?: string
-  deepseek_reason?: string
-  review_outcome?: string
-  reviewer_disagreement?: boolean
-  consensus_status?: string
-  remote_votes?: number
-  review_attempts?: DeepSeekReviewAttempt[]
 }
 
-export type ContentModerationLogResult =
-  | 'blocked'
-  | 'hit'
-  | 'pass'
-  | 'error'
-  | 'cyber_policy'
-  | 'usage_policy'
-  | 'content_blocked'
-  | 'violation_blocked'
-  | 'restricted'
-  | 'risky_shadow'
-  | 'review_unavailable'
-  | 'evidence_capacity_exceeded'
-
-export type ContentModerationLogView =
-  | 'cyber_policy'
-  | 'usage_policy'
-  | 'violation_blocked'
-  | 'restricted'
-  | 'risky_shadow'
-  | 'review_unavailable'
-  | 'evidence_capacity_exceeded'
+export type UpdateModerationEngineConfig = Pick<UpdateContentModerationConfig,
+  'base_url' | 'model' | 'proxy_id' | 'api_keys' | 'api_keys_mode' | 'delete_api_key_hashes' |
+  'clear_api_key' | 'timeout_ms' | 'retry_count' | 'thresholds' | 'category_settings'> & { key_url_updates?: Array<{ key_hash: string; base_url: string; expected_base_url: string }> }
 
 export interface ListContentModerationLogsParams {
   page?: number
   page_size?: number
-  log_id?: number
-  result?: ContentModerationLogResult
+  result?: string
   group_id?: number
   endpoint?: string
-  context_class?: string
-  model_profile?: string
-  decision_source?: string
   search?: string
   from?: string
   to?: string
@@ -351,17 +254,6 @@ export interface ContentModerationLogsResponse {
   pages: number
 }
 
-export interface ContentModerationArchivePreview {
-  content: string
-  returned_bytes: number
-  total_bytes: number
-  truncated: boolean
-}
-
-export interface DeleteContentModerationArchiveResponse {
-  deleted: boolean
-}
-
 export interface ContentModerationUnbanUserResponse {
   user_id: number
   status: string
@@ -370,14 +262,10 @@ export interface ContentModerationUnbanUserResponse {
 export interface DeleteFlaggedHashResponse {
   input_hash: string
   deleted: boolean
-  cache_version: string
-  cache_namespace: string
 }
 
 export interface ClearFlaggedHashesResponse {
   deleted: number
-  cache_version: string
-  cache_namespace: string
 }
 
 export async function getConfig(): Promise<ContentModerationConfig> {
@@ -385,7 +273,9 @@ export async function getConfig(): Promise<ContentModerationConfig> {
   return data
 }
 
-export async function updateConfig(payload: UpdateContentModerationConfig): Promise<ContentModerationConfig> {
+export async function updateConfig(
+  payload: UpdateContentModerationConfig
+): Promise<ContentModerationConfig> {
   const { data } = await apiClient.put<ContentModerationConfig>('/admin/risk-control/config', payload)
   return data
 }
@@ -395,106 +285,66 @@ export async function getStatus(): Promise<ContentModerationRuntimeStatus> {
   return data
 }
 
-export async function testDeepSeekChannel(channelID: string): Promise<TestDeepSeekChannelResponse> {
-  const { data } = await apiClient.post<TestDeepSeekChannelResponse>(
-    `/admin/risk-control/deepseek/channels/${encodeURIComponent(channelID)}/test`
-  )
+export async function testAPIKeys(
+  payload: TestContentModerationAPIKeysPayload = {}
+): Promise<TestContentModerationAPIKeysResponse> {
+  const { data } = await apiClient.post<TestContentModerationAPIKeysResponse>('/admin/risk-control/api-keys/test', payload)
   return data
 }
 
-/** Explicit real moderation request used by the admin "test API" action. */
-export async function testAPIAvailability(channelID: string): Promise<TestDeepSeekChannelResponse> {
-  const { data } = await apiClient.post<TestDeepSeekChannelResponse>(
-    `/admin/risk-control/deepseek/channels/${encodeURIComponent(channelID)}/test-api`
-  )
-  return data
-}
-
-export async function listLogs(params: ListContentModerationLogsParams = {}): Promise<ContentModerationLogsResponse> {
+export async function listLogs(
+  params: ListContentModerationLogsParams = {}
+): Promise<ContentModerationLogsResponse> {
   const { data } = await apiClient.get<ContentModerationLogsResponse>('/admin/risk-control/logs', {
     params,
   })
   return data
 }
 
-export async function getLog(logID: number): Promise<ContentModerationLog> {
-  const { data } = await apiClient.get<ContentModerationLog>(`/admin/risk-control/logs/${logID}`)
-  return data
-}
-
-export async function previewArchive(logID: number): Promise<ContentModerationArchivePreview> {
-  const { data } = await apiClient.get<ContentModerationArchivePreview>(
-    `/admin/risk-control/logs/${logID}/archive/preview`
-  )
-  return data
-}
-
-export async function downloadArchive(logID: number): Promise<Blob> {
-  const { data } = await apiClient.get<Blob>(`/admin/risk-control/logs/${logID}/archive/download`, {
-    responseType: 'blob',
-  })
-  return data
-}
-
-export async function deleteArchive(logID: number): Promise<DeleteContentModerationArchiveResponse> {
-  const { data } = await apiClient.delete<DeleteContentModerationArchiveResponse>(
-    `/admin/risk-control/logs/${logID}/archive`
-  )
-  return data
-}
-
-export async function unbanUser(userID: number): Promise<ContentModerationUnbanUserResponse> {
-  const { data } = await apiClient.post<ContentModerationUnbanUserResponse>(`/admin/risk-control/users/${userID}/unban`)
-  return data
-}
-
-export interface UsagePolicyConfig {
-  enabled: boolean
-  auto_ban_enabled: boolean
-  ban_threshold: number
-}
-
-export interface UpdateUsagePolicyConfig {
-  enabled?: boolean
-  auto_ban_enabled?: boolean
-  ban_threshold?: number
-}
-
-export interface UsagePolicyKeyStat {
+export interface ModerationUserState {
   user_id: number
-  email: string
-  username: string
-  role: string
-  api_key_id?: number
-  api_key_name: string
-  api_key_status: string
-  count: number
-  auto_banned: boolean
-  last_at: string
+  version: number
+  generation: number
+  auto_ban_exempt: boolean
+  keyword_exempt: boolean
+  api_audit_exempt: boolean
+  email_exempt: boolean
+  owned_disable: boolean
+  status: string
+  current_count: number
+  reason: string
+  actor_id: number | null
+  updated_at: string | null
 }
 
-export interface UsagePolicyStats {
-  total: number
-  unique_users: number
-  unique_keys: number
-  disabled_keys: number
-  auto_banned_keys: number
-  keys: UsagePolicyKeyStat[]
-  config?: UsagePolicyConfig
+export interface ModerationUserAction {
+  action: 'unban' | 'reset' | 'exemption'
+  version: number
+  reason: string
+  confirm: boolean
+  auto_ban_exempt?: boolean
+  keyword_exempt?: boolean
+  api_audit_exempt?: boolean
+  email_exempt?: boolean
 }
 
-export async function getUsagePolicyConfig(): Promise<UsagePolicyConfig> {
-  const { data } = await apiClient.get<UsagePolicyConfig>('/admin/risk-control/usage-policy')
+export async function getModerationUser(userID: number): Promise<ModerationUserState> {
+  const { data } = await apiClient.get<ModerationUserState>(`/admin/risk-control/users/${userID}`)
   return data
 }
 
-export async function updateUsagePolicyConfig(payload: UpdateUsagePolicyConfig): Promise<UsagePolicyConfig> {
-  const { data } = await apiClient.put<UsagePolicyConfig>('/admin/risk-control/usage-policy', payload)
+export async function manageModerationUser(userID: number, payload: ModerationUserAction): Promise<ModerationUserState> {
+  const { data } = await apiClient.post<ModerationUserState>(`/admin/risk-control/users/${userID}/actions`, payload)
   return data
 }
 
-export async function getUsagePolicyStats(): Promise<UsagePolicyStats> {
-  const { data } = await apiClient.get<UsagePolicyStats>('/admin/risk-control/usage-policy/stats')
+export async function listModerationUsers(params: { page: number; page_size: number; state: 'all' | 'exempt' | 'enforced' | 'auto_ban_exempt' | 'keyword_exempt' | 'api_audit_exempt' | 'email_exempt'; user_id?: number }): Promise<{ items: ModerationUserState[]; total: number }> {
+  const { data } = await apiClient.get<{ items: ModerationUserState[]; total: number }>('/admin/risk-control/users', { params })
+  return data
+}
+
+export async function unbanUser(userID: number, payload: Omit<ModerationUserAction, 'action'>): Promise<ModerationUserState> {
+  const { data } = await apiClient.post<ModerationUserState>(`/admin/risk-control/users/${userID}/unban`, payload)
   return data
 }
 
@@ -514,17 +364,12 @@ export const riskControlAPI = {
   getConfig,
   updateConfig,
   getStatus,
-  testDeepSeekChannel,
-  testAPIAvailability,
+  testAPIKeys,
   listLogs,
-  getLog,
-  previewArchive,
-  downloadArchive,
-  deleteArchive,
   unbanUser,
-  getUsagePolicyConfig,
-  updateUsagePolicyConfig,
-  getUsagePolicyStats,
+  getModerationUser,
+  manageModerationUser,
+  listModerationUsers,
   deleteFlaggedHash,
   clearFlaggedHashes,
 }

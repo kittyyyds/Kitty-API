@@ -6,23 +6,24 @@ import AccountsView from '../AccountsView.vue'
 const {
   listAccounts,
   listWithEtag,
-  getBatchTodayStatsWithEtag,
+  getBatchTodayStats,
   getAllProxies,
   getAllGroups
 } = vi.hoisted(() => ({
   listAccounts: vi.fn(),
   listWithEtag: vi.fn(),
-  getBatchTodayStatsWithEtag: vi.fn(),
+  getBatchTodayStats: vi.fn(),
   getAllProxies: vi.fn(),
   getAllGroups: vi.fn()
 }))
+
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       list: listAccounts,
       listWithEtag,
-      getBatchTodayStatsWithEtag,
+      getBatchTodayStats,
       getUpstreamBillingProbeSettings: vi.fn().mockResolvedValue({ enabled: true, interval_minutes: 30 }),
       delete: vi.fn(),
       batchClearError: vi.fn(),
@@ -67,8 +68,8 @@ const DataTableStub = {
   props: ['columns', 'data'],
   template: `
     <div data-test="data-table">
-      <div v-for="row in data" :key="row.id" :data-test="'scheduler-score-' + row.id">
-        <slot name="cell-scheduler_score" :row="row" />
+      <div v-for="row in data" :key="row.id">
+        <div :data-test="'scheduler-score-' + row.id"><slot name="cell-scheduler_score" :row="row" /></div>
       </div>
     </div>
   `
@@ -94,6 +95,7 @@ function mountView() {
         ReAuthAccountModal: true,
         AccountTestModal: true,
         AccountStatsModal: true,
+        ScheduledTestsPanel: true,
         SyncFromCrsModal: true,
         TempUnschedStatusModal: true,
         ErrorPassthroughRulesModal: true,
@@ -134,7 +136,7 @@ describe('admin AccountsView scheduler score column', () => {
 
     listAccounts.mockReset()
     listWithEtag.mockReset()
-    getBatchTodayStatsWithEtag.mockReset()
+    getBatchTodayStats.mockReset()
     getAllProxies.mockReset()
     getAllGroups.mockReset()
 
@@ -187,7 +189,7 @@ describe('admin AccountsView scheduler score column', () => {
       etag: null,
       data: null
     })
-    getBatchTodayStatsWithEtag.mockResolvedValue({ notModified: false, etag: null, data: { stats: {} } })
+    getBatchTodayStats.mockResolvedValue({ stats: {} })
     getAllProxies.mockResolvedValue([])
     getAllGroups.mockResolvedValue([])
   })
@@ -199,6 +201,8 @@ describe('admin AccountsView scheduler score column', () => {
     expect(listAccounts.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
       include_scheduler_score: '0'
     }))
+
+    expect(wrapper.getComponent(DataTableStub).props('columns').some((column: { key: string }) => column.key === 'quality_score')).toBe(false)
 
     const ungroupedCell = wrapper.find('[data-test="scheduler-score-1"]')
     expect(ungroupedCell.exists()).toBe(true)
@@ -249,4 +253,5 @@ describe('admin AccountsView scheduler score column', () => {
     expect(emptyCell.exists()).toBe(true)
     expect(emptyCell.text()).toBe('-')
   })
+
 })

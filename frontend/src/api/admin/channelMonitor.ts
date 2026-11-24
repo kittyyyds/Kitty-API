@@ -8,7 +8,9 @@ import { apiClient } from '../client'
 export type Provider =
   | 'openai'
   | 'anthropic'
+  | 'gemini'
   | 'grok'
+  | 'antigravity'
   | 'kimi'
   | 'zhipu'
   | 'deepseek'
@@ -27,7 +29,7 @@ export type CheckMode = 'probe' | 'quota' | 'quota_probe'
 export interface MonitorQuotaTier {
   /** 5h | 7d | 7d-sonnet | 7d-fable | 30d | daily | weekly | total */
   window: string
-  /** 同窗口多档时的机器标识（grok requests/tokens 等） */
+  /** 同窗口多档时的机器标识（gemini shared/pro/flash、grok requests/tokens、antigravity 模型名） */
   label?: string
   used_percent: number
   used?: number
@@ -63,6 +65,8 @@ export interface ChannelMonitor {
   provider: Provider
   api_mode: APIMode
   endpoint: string
+  /** Optional probe path; empty uses the provider default. */
+  request_path?: string
   api_key_masked: string
   /**
    * True when the stored encrypted API key cannot be decrypted (e.g. the
@@ -130,9 +134,11 @@ export interface CreateParams {
   api_mode?: APIMode
   /** 探活模式必填（可含路径前缀的 HTTPS base URL）；quota 模式可留空 */
   endpoint: string
+  /** Optional probe path; empty uses the provider default. */
+  request_path?: string
   /** 探活模式必填；quota 模式可留空 */
   api_key: string
-  /** 缺省 probe */
+  /** 缺省 probe；antigravity 仅支持 quota */
   check_mode?: CheckMode
   /** 配额模式必填：数据源账号（provider 需与账号平台一致）。
    * update 语义：>0=换绑，0=解绑（切回 probe 模式时前端发 0 清空存量关联）；

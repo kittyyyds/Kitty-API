@@ -1,5 +1,5 @@
 <template>
-  <div class="flex min-w-0 flex-1 items-start justify-between gap-3">
+  <div class="flex min-w-0 flex-1 items-start justify-between gap-3" :class="{ 'flex-wrap sm:flex-nowrap': $slots.status }">
     <!-- Left: name + description -->
     <div
       class="flex min-w-0 flex-1 flex-col items-start"
@@ -12,6 +12,8 @@
         :subscription-type="subscriptionType"
         :show-rate="false"
         class="groupOptionItemBadge"
+        :class="{ 'max-w-full': $slots.status }"
+        :title="$slots.status ? name : undefined"
       />
       <!-- Row 2: description with top spacing -->
       <span
@@ -22,17 +24,21 @@
       </span>
     </div>
 
+    <div v-if="$slots.status" class="order-last basis-full sm:order-none sm:basis-auto sm:shrink-0 sm:pt-2">
+      <slot name="status" />
+    </div>
+
     <!-- Right: rate pill + checkmark (vertically centered to first row) -->
     <div class="flex shrink-0 items-center gap-2 pt-0.5">
       <div class="flex shrink-0 flex-col items-end gap-1">
         <!-- Rate pill (platform color) -->
         <span v-if="rateMultiplier !== undefined" :class="['inline-flex items-center whitespace-nowrap rounded-full px-3 py-1 text-xs font-semibold', ratePillClass]">
           <template v-if="hasCustomRate">
-            <span class="mr-1 line-through opacity-50">{{ formatRate(rateMultiplier) }}x</span>
-            <span class="font-bold">{{ formatRate(userRateMultiplier) }}x</span>
+            <span class="mr-1 line-through opacity-50">{{ rateMultiplier }}x</span>
+            <span class="font-bold">{{ userRateMultiplier }}x</span>
           </template>
           <template v-else>
-            {{ formatRate(rateMultiplier) }}x {{ t('admin.groups.rateLabel') }}
+            {{ rateMultiplier }}x {{ t('admin.groups.rateLabel') }}
           </template>
         </span>
         <span
@@ -45,8 +51,9 @@
       </div>
       <!-- Checkmark -->
       <svg
-        v-if="showCheckmark && selected"
+        v-if="showCheckmark && (selected || $slots.status)"
         class="h-4 w-4 shrink-0 text-primary-600 dark:text-primary-400"
+        :class="{ invisible: !selected }"
         fill="none"
         stroke="currentColor"
         viewBox="0 0 24 24"
@@ -107,14 +114,6 @@ const hasPeakRate = computed(() => {
   return Boolean(props.peakRateEnabled && props.peakStart && props.peakEnd)
 })
 
-// formatRate 去除浮点噪声（如 0.15000000000000002 → "0.15"）。
-function formatRate(value: number | null | undefined): string {
-  if (value === null || value === undefined) {
-    return ''
-  }
-  return Number(value.toFixed(6)).toString()
-}
-
 const peakRateText = computed(() => {
   return formatPeakRateWindow(
     {
@@ -138,7 +137,11 @@ const ratePillClass = computed(() => {
       return 'bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400'
     case 'openai':
       return 'bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400'
-    default: // 其他平台
+    case 'gemini':
+      return 'bg-sky-50 text-sky-700 dark:bg-sky-900/20 dark:text-sky-400'
+    case 'grok':
+      return 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200'
+    default: // antigravity and others
       return 'bg-violet-50 text-violet-700 dark:bg-violet-900/20 dark:text-violet-400'
   }
 })

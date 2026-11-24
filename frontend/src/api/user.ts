@@ -186,11 +186,6 @@ export async function transferAffiliateQuota(): Promise<AffiliateTransferRespons
   return data
 }
 
-export async function rotateAffiliateInviteCode(): Promise<{ aff_code: string }> {
-  const { data } = await apiClient.post<{ aff_code: string }>('/user/aff/invite-code')
-  return data
-}
-
 /**
  * 获取当前用户的平台限额 + 用量。
  */
@@ -214,7 +209,6 @@ export const userAPI = {
   startOAuthBinding,
   getAffiliateDetail,
   transferAffiliateQuota,
-  rotateAffiliateInviteCode,
   getMyPlatformQuotas,
 }
 

@@ -6,9 +6,9 @@ import {
   resetPlatformCatalog,
   setPlatformCatalog
 } from '@/constants/platformCatalog'
-const { updateAccountMock, previewUpstreamGroup, checkMixedChannelRiskMock, authIsSimpleMode } = vi.hoisted(() => ({
+
+const { updateAccountMock, checkMixedChannelRiskMock, authIsSimpleMode } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
-  previewUpstreamGroup: vi.fn(),
   checkMixedChannelRiskMock: vi.fn(),
   authIsSimpleMode: { value: true }
 }))
@@ -33,12 +33,11 @@ vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       update: updateAccountMock,
-      previewUpstreamGroup,
-      checkMixedChannelRisk: checkMixedChannelRiskMock,
+      checkMixedChannelRisk: checkMixedChannelRiskMock
     },
     settings: {
+      getSettings: vi.fn().mockResolvedValue({}),
       getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
-      getSettings: vi.fn().mockResolvedValue({})
     },
     tlsFingerprintProfiles: {
       list: vi.fn().mockResolvedValue([])
@@ -46,17 +45,22 @@ vi.mock('@/api/admin', () => ({
   }
 }))
 
+vi.mock('@/api/admin/accounts', () => ({
+  getAntigravityDefaultModelMapping: vi.fn()
+}))
+
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
   return {
     ...actual,
-    useI18n: () => ({
+    useI18n: () => ({ locale: { value: 'zh' },
       t: (key: string) => key
     })
   }
 })
 
 import EditAccountModal from '../EditAccountModal.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 
 const BaseDialogStub = defineComponent({
   name: 'BaseDialog',
@@ -134,11 +138,29 @@ const GroupSelectorStub = defineComponent({
     <div data-testid="group-selector">
       <button
         type="button"
-        data-testid="set-group"
+        data-testid="set-shadow-group"
         @click="$emit('update:modelValue', [7])"
       >
         group
       </button>
+    </div>
+  `
+})
+
+const ProxySelectorStub = defineComponent({
+  name: 'ProxySelector',
+  props: {
+    modelValue: {
+      type: Array,
+      default: () => []
+    }
+  },
+  emits: ['update:modelValue'],
+  template: `
+    <div data-testid="proxy-selector-stub">
+      <span data-testid="proxy-selector-value">{{ modelValue.join(',') }}</span>
+      <button type="button" data-testid="set-codex-harvest-proxies" @click="$emit('update:modelValue', [11, 12])">set harvest proxies</button>
+      <button type="button" data-testid="clear-codex-harvest-proxies" @click="$emit('update:modelValue', [])">clear harvest proxies</button>
     </div>
   `
 })
@@ -169,12 +191,36 @@ function buildAccount() {
   } as any
 }
 
+function buildOpenAISparkShadowAccount() {
+  const account = buildAccount()
+  return {
+    ...account,
+    id: 4,
+    name: 'OpenAI Spark Shadow',
+    type: 'oauth',
+    parent_account_id: 1,
+    credentials: {
+      access_token: 'parent-access-token',
+      refresh_token: 'parent-refresh-token',
+      api_key: 'sk-parent',
+      base_url: 'https://api.openai.com',
+      model_mapping: {
+        'gpt-5.3-codex-spark': 'gpt-5.3-codex-spark'
+      },
+      compact_model_mapping: {
+        'gpt-5.3-codex-spark': 'gpt-5.3-codex-spark-compact'
+      }
+    },
+    group_ids: []
+  } as any
+}
+
 function buildVertexAccount() {
   return {
     id: 2,
     name: 'Vertex SA',
     notes: '',
-    platform: 'anthropic',
+    platform: 'gemini',
     type: 'service_account',
     credentials: {
       service_account_json: '{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\\nMIIE\\n-----END PRIVATE KEY-----\\n"}',
@@ -182,6 +228,31 @@ function buildVertexAccount() {
       client_email: 'sa@example.iam.gserviceaccount.com',
       location: 'us-central1',
       tier_id: 'vertex'
+    },
+    extra: {},
+    proxy_id: null,
+    concurrency: 1,
+    priority: 1,
+    rate_multiplier: 1,
+    status: 'active',
+    group_ids: [],
+    expires_at: null,
+    auto_pause_on_expired: false
+  } as any
+}
+
+function buildAntigravityAccount(projectId = 'configured-project') {
+  return {
+    id: 3,
+    name: 'Antigravity OAuth',
+    notes: '',
+    platform: 'antigravity',
+    type: 'oauth',
+    credentials: {
+      antigravity_project_id: projectId,
+      model_mapping: {
+        'gemini-2.5-flash': 'gemini-2.5-flash'
+      }
     },
     extra: {},
     proxy_id: null,
@@ -244,6 +315,18 @@ function buildOpenAISetupTokenAccount() {
   } as any
 }
 
+function buildOpenAIOAuthParentAccount() {
+  return {
+    ...buildAccount(),
+    id: 7,
+    name: 'OpenAI OAuth Parent',
+    type: 'oauth',
+    parent_account_id: null,
+    credentials: { access_token: 'oauth-token' },
+    extra: {}
+  } as any
+}
+
 function mountModal(account = buildAccount(), renderGroupSelector = false) {
   return mount(EditAccountModal, {
     props: {
@@ -257,7 +340,7 @@ function mountModal(account = buildAccount(), renderGroupSelector = false) {
         BaseDialog: BaseDialogStub,
         Select: SelectStub,
         Icon: true,
-        ProxySelector: true,
+        ProxySelector: ProxySelectorStub,
         GroupSelector: renderGroupSelector ? false : GroupSelectorStub,
         ModelWhitelistSelector: ModelWhitelistSelectorStub
       }
@@ -266,126 +349,83 @@ function mountModal(account = buildAccount(), renderGroupSelector = false) {
 }
 
 describe('EditAccountModal', () => {
-  it('keeps dormant OAuth model settings unchanged when saving ordinary fields', async () => {
-    const account = buildAccount()
-    account.type = 'oauth'
-    account.credentials.compact_model_mapping = { 'gpt-6-astra': 'gpt-6-luna' }
-    account.openai_oauth_model_policy = { verdict: 'healthy', scope: 'non_luna' }
-    updateAccountMock.mockReset().mockResolvedValue({ ...account, name: 'Renamed OAuth' })
-    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
-    const wrapper = mountModal(account)
-    await flushPromises()
-    expect(wrapper.find('[data-testid="astra-oauth-model-policy"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="model-whitelist-value"]').exists()).toBe(false)
-    await wrapper.get('input[type="text"]').setValue('Renamed OAuth')
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
-    expect(credentials.model_mapping).toEqual(account.credentials.model_mapping)
-    expect(credentials.compact_model_mapping).toEqual(account.credentials.compact_model_mapping)
-    expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.name).toBe('Renamed OAuth')
-    expect(wrapper.emitted('updated')).toHaveLength(1)
-    wrapper.unmount()
-  })
   beforeEach(() => {
     authIsSimpleMode.value = true
   })
 
   afterEach(() => vi.useRealTimers())
 
-  it('allows clearing the concurrency before entering and saving 20', async () => {
-    const account = buildAccount()
-    updateAccountMock.mockReset().mockResolvedValue({ ...account, concurrency: 20 })
-    const wrapper = mountModal(account)
-    const input = wrapper.get<HTMLInputElement>('#edit-account-concurrency')
-    const form = wrapper.get<HTMLFormElement>('#edit-account-form').element
-
-    expect(input.element.value).toBe('1')
-    input.element.value = ''
-    await input.trigger('input')
-    expect(input.element.value).toBe('')
-    expect(input.element.validity.valueMissing).toBe(true)
-    form.requestSubmit()
-    await flushPromises()
-    expect(updateAccountMock).not.toHaveBeenCalled()
-
-    await input.setValue('2')
-    await input.setValue(input.element.value + '0')
-    form.requestSubmit()
-    await flushPromises()
-    expect(updateAccountMock).toHaveBeenCalledWith(account.id, expect.objectContaining({ concurrency: 20 }))
-    wrapper.unmount()
-  })
-
-  it('does not render Cookie WS recovery in the edit dialog', async () => {
-    const account = buildAccount()
-    account.type = 'oauth'
-    account.credentials = {}
-    account.codex_turn_tickets = [{
-      model: 'gpt-6-astra',
-      tibo_routes: [{ route: 'http', verdict: 'degraded', probes_hour: 0, flips_hour: 0 }]
-    }]
-    const wrapper = mountModal(account)
-    expect(wrapper.find('[data-testid="cookie-ws-summary"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="cookie-ws-route"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="tibo-routes"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('astra')
-    expect(wrapper.text()).not.toContain('admin.accounts.openai.codexTiboRouteVerdict.degraded')
-    expect(wrapper.text()).not.toContain('codexTurnTicket')
-    wrapper.unmount()
-  })
-
-  it('updates 24 full-size Tibo dots while an OAuth account stays paused', async () => {
-    const account = { ...buildAccount(), type: 'oauth', schedulable: false, credentials: {} }
-    const ticket = (verdict: 'healthy' | 'degraded', at: string) => [{
-      model: 'gpt-6-astra', tibo_routes: [{
-        route: 'http', verdict, probes_hour: 1, flips_hour: 0,
-        checked_at: at, recent_samples: [{ verdict, at }],
-      }],
-    }]
-    account.codex_turn_tickets = ticket('healthy', '2026-11-02T10:00:00Z')
-    const wrapper = mountModal(account)
-    let dots = wrapper.findAll('[data-testid="tibo-dot"]')
-    expect(dots).toHaveLength(24)
-    expect(dots[23].classes()).toContain('h-2')
-    expect(dots[23].classes()).toContain('bg-emerald-500')
-    await wrapper.setProps({ account: {
-      ...account, codex_turn_tickets: ticket('degraded', '2026-11-02T10:10:00Z'),
-    } })
-    dots = wrapper.findAll('[data-testid="tibo-dot"]')
-    expect(dots).toHaveLength(24)
-    expect(dots[23].classes()).toContain('bg-red-500')
-    expect(dots[23].attributes('title')).toContain('2026-11-02T10:10:00Z')
-    expect(wrapper.props('account')?.schedulable).toBe(false)
-    wrapper.unmount()
-  })
-
-  it('strips leftover Excel BPS extra keys on OAuth save', async () => {
-    const account = buildAccount()
-    account.type = 'oauth'
-    account.credentials = { access_token: 'test-token', chatgpt_account_id: 'test-account' }
-    account.extra = {
-      openai_excel_bps: true,
-      openai_excel_bps_models: ['gpt-5'],
-      openai_excel_bps_cache_creation_as_input: true,
-      openai_excel_bps_auto_disable_on_403: true,
-      unrelated: 'preserve',
-      openai_oauth_responses_websockets_v2_mode: 'ctx_pool',
-    }
+  it('omits an unchanged cost multiplier but saves an edited value and account group rate', async () => {
+    const account = { ...buildAccount(), extra: { cost_multiplier: 0.5 }, group_rate_multiplier: 0.65 }
     updateAccountMock.mockReset().mockResolvedValue(account)
     checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
     const wrapper = mountModal(account)
-    expect(wrapper.find('[data-testid="excel-bps-toggle"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="openai-outbound-protocol"]').exists()).toBe(false)
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await flushPromises()
+    expect(updateAccountMock.mock.calls[0][1].extra).not.toHaveProperty('cost_multiplier')
+    expect(updateAccountMock.mock.calls[0][1].group_rate_multiplier).toBe(0.65)
+    await wrapper.get('#account-cost-multiplier').setValue('0.4')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock.mock.calls[1][1].extra.cost_multiplier).toBe(0.4)
+  })
+
+  it('has no Excel BPS editor and passes stale extra through unchanged on OAuth saves', async () => {
+    const account = buildOpenAIOAuthParentAccount()
+    account.extra = { openai_excel_bps: true, unrelated_policy: 'keep' }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    expect(wrapper.find('[data-testid="excel-bps-settings"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="retired-bps-credential"]').exists()).toBe(false)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     const extra = updateAccountMock.mock.calls[0]?.[1]?.extra
-    expect(extra.openai_excel_bps).toBeUndefined()
-    expect(extra.openai_excel_bps_models).toBeUndefined()
-    expect(extra.openai_excel_bps_cache_creation_as_input).toBeUndefined()
-    expect(extra.openai_excel_bps_auto_disable_on_403).toBeUndefined()
-    expect(extra.unrelated).toBe('preserve')
+    expect(extra.unrelated_policy).toBe('keep')
+    expect(extra.openai_excel_bps).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('shows the retired Excel OAuth / BPS credential notice', () => {
+    const account = { ...buildOpenAIOAuthParentAccount(), retired_reason: 'retired' }
+    const wrapper = mountModal(account)
+    expect(wrapper.find('[data-testid="retired-bps-credential"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('preserves quality protection when saving unrelated account settings', async () => {
+    const account = { ...buildAccount(), status: 'quality_paused', schedulable: false }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+
+    expect(wrapper.get<HTMLSelectElement>('[data-testid="account-status"]').element.value).toBe('quality_paused')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('status')
+    expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('schedulable')
+    wrapper.unmount()
+  })
+
+  it.each(['active', 'inactive'])('allows manually changing quality-paused account status to %s', async (status) => {
+    const account = { ...buildAccount(), status: 'quality_paused', schedulable: false }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+
+    await wrapper.get('[data-testid="account-status"]').setValue(status)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.status).toBe(status)
+    expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('schedulable')
+    wrapper.unmount()
+  })
+
+  it('does not resend an unchanged active status when saving an older account snapshot', async () => {
+    const account = buildAccount()
+    updateAccountMock.mockReset().mockResolvedValue({ ...account, status: 'quality_paused' })
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('status')
+    wrapper.unmount()
   })
 
   it('passes existing non-identity mappings to the whitelist selector and preserves them on save', async () => {
@@ -1153,6 +1193,40 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.openai_long_context_billing_enabled).toBe(false)
   })
 
+  it('does not expose or add the removed quota extension when editing OAuth accounts', async () => {
+    const account = buildOpenAIOAuthParentAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    expect(wrapper.find('[data-testid="edit-codex-quota-overdraft-toggle"]').exists()).toBe(false)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra ?? {}).not.toHaveProperty('codex_quota_overdraft_enabled')
+  })
+
+  it('does not render or submit the long-context billing toggle for Spark shadow accounts', async () => {
+    const account = buildOpenAISparkShadowAccount()
+    account.extra = {
+      openai_long_context_billing_enabled: false
+    }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModal(account)
+
+    expect(wrapper.find('[data-testid="openai-long-context-billing-toggle"]').exists()).toBe(false)
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty(
+      'openai_long_context_billing_enabled'
+    )
+  })
+
   it('preserves an explicit OpenAI long-context billing opt-out', async () => {
     const account = buildAccount()
     account.extra = {
@@ -1240,6 +1314,32 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.base_url).toBe('https://api.x.ai/v1')
   })
 
+  it('only submits model mapping credentials when saving an OpenAI spark shadow account', async () => {
+    authIsSimpleMode.value = false
+    const account = buildOpenAISparkShadowAccount()
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    await wrapper.get('[data-testid="set-shadow-group"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const payload = updateAccountMock.mock.calls[0]?.[1]
+    expect(payload?.group_ids).toEqual([7])
+    expect(payload?.credentials).toEqual({
+      model_mapping: {
+        'gpt-5.3-codex-spark': 'gpt-5.3-codex-spark'
+      },
+      compact_model_mapping: {
+        'gpt-5.3-codex-spark': 'gpt-5.3-codex-spark-compact'
+      }
+    })
+  })
+
   it('submits OpenAI APIKey Responses support override mode', async () => {
     const account = buildAccount()
     account.extra = {
@@ -1261,78 +1361,17 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.openai_responses_supported).toBe(false)
   })
 
-  it('rehydrates a managed provider and submits a different provider preset', async () => {
+  it('allows ordinary probe changes with a legacy ceiling and does not expose its input', async () => {
     const account = buildAccount()
-    account.credentials = {
-      api_key: 'sk-test',
-      base_url: 'https://api.xiaomimimo.com/v1',
-      model_mapping: { 'mimo-v2.5': 'mimo-v2.5' },
-      openai_capabilities: ['chat_completions']
-    }
-    account.extra = {
-      openai_compatible_provider: 'mimo',
-      openai_responses_mode: 'force_responses'
-    }
+    account.extra = { upstream_billing_rate_limit: 0, upstream_billing_probe_enabled: false }
     updateAccountMock.mockReset().mockResolvedValue(account)
-    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
-
     const wrapper = mountModal(account)
-    expect(wrapper.get('[data-testid="openai-provider-preset-mimo"]').attributes('aria-checked')).toBe(
-      'true'
-    )
-    expect(wrapper.get<HTMLInputElement>('[data-testid="api-key-base-url"]').element.disabled).toBe(
-      true
-    )
-    const webSocketMode = wrapper.get<HTMLSelectElement>(
-      '[data-testid="edit-openai-ws-mode-select"]'
-    )
-    expect(webSocketMode.element.disabled).toBe(true)
-    expect(webSocketMode.element.value).toBe('off')
-
-    await wrapper.get('[data-testid="openai-provider-preset-alibaba_qwen"]').trigger('click')
-    expect(wrapper.get<HTMLInputElement>('[data-testid="api-key-base-url"]').element.value).toBe(
-      'https://dashscope.aliyuncs.com/compatible-mode/v1'
-    )
+    expect(wrapper.find('[data-testid="upstream-billing-rate-limit"]').exists()).toBe(false)
+    const probe = wrapper.get<HTMLButtonElement>('[data-testid="upstream-billing-auto-probe"]')
+    expect(probe.element.disabled).toBe(false)
+    expect(probe.attributes('aria-checked')).toBe('false')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-
-    const payload = updateAccountMock.mock.calls[0]?.[1]
-    expect(payload?.credentials?.base_url).toBe(
-      'https://dashscope.aliyuncs.com/compatible-mode/v1'
-    )
-    expect(payload?.credentials?.model_mapping).toEqual({
-      'qwen3.7-flash': 'qwen3.7-flash'
-    })
-    expect(payload?.credentials?.openai_capabilities).toEqual(['chat_completions'])
-    expect(payload?.extra?.openai_compatible_provider).toBe('alibaba_qwen')
-    expect(payload?.extra?.openai_responses_mode).toBe('force_responses')
-  })
-
-  it('removes the managed marker without discarding values when switched to custom', async () => {
-    const account = buildAccount()
-    account.credentials = {
-      api_key: 'sk-test',
-      base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-      model_mapping: { 'qwen3.7-flash': 'qwen3.7-flash' },
-      openai_capabilities: ['chat_completions']
-    }
-    account.extra = {
-      openai_compatible_provider: 'alibaba_qwen',
-      openai_responses_mode: 'force_responses'
-    }
-    updateAccountMock.mockReset().mockResolvedValue(account)
-    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
-
-    const wrapper = mountModal(account)
-    await wrapper.get('[data-testid="openai-provider-preset-custom"]').trigger('click')
-    const baseUrlInput = wrapper.get<HTMLInputElement>('[data-testid="api-key-base-url"]')
-    expect(baseUrlInput.element.disabled).toBe(false)
-    expect(baseUrlInput.element.value).toBe('https://dashscope.aliyuncs.com/compatible-mode/v1')
-    await baseUrlInput.setValue('https://relay.example/v1')
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-
-    const payload = updateAccountMock.mock.calls[0]?.[1]
-    expect(payload?.credentials?.base_url).toBe('https://relay.example/v1')
-    expect(payload?.extra).not.toHaveProperty('openai_compatible_provider')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_probe_enabled).toBe(false)
   })
 
   it('submits the account upstream billing auto-probe setting', async () => {
@@ -1356,6 +1395,9 @@ describe('EditAccountModal', () => {
     )
   })
 
+
+
+
   it('exposes the upstream billing auto-probe toggle for non-OpenAI API-key accounts', async () => {
     // 探测已放宽到全部 API-key 平台：grok 账号同样能开启并保存。
     const account = buildAccount()
@@ -1376,61 +1418,6 @@ describe('EditAccountModal', () => {
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_probe_enabled).toBe(true)
-  })
-
-  it('opts into group sync independently and clears it when probing stops', async () => {
-    const account = buildAccount()
-    updateAccountMock.mockResolvedValue(account)
-    const wrapper = mountModal(account)
-    const group = wrapper.get('[data-testid="upstream-billing-group-sync"]')
-    const probe = wrapper.get('[data-testid="upstream-billing-auto-probe"]')
-    const rate = wrapper.get('[data-testid="upstream-billing-rate-sync"]')
-    expect(group.attributes('aria-checked')).toBe('false')
-    await group.trigger('click')
-    expect(probe.attributes('aria-checked')).toBe('true')
-    expect(rate.attributes('aria-checked')).toBe('false')
-    await wrapper.get('form').trigger('submit.prevent')
-    expect(updateAccountMock.mock.lastCall?.[1]).toMatchObject({
-      upstream_billing_group_sync_enabled: true, upstream_billing_rate_sync_enabled: false
-    })
-    await probe.trigger('click')
-    expect(group.attributes('aria-checked')).toBe('false')
-    wrapper.unmount()
-  })
-
-  it('only fills untouched fields and ignores a preview for an edited connection', async () => {
-    const account = buildAccount()
-    const wrapper = mountModal(account)
-    const button = wrapper.findAll('button').find(candidate =>
-      candidate.text() === 'admin.accounts.upstreamBilling.syncGroup'
-    )
-    expect(button).toBeDefined()
-    const name = wrapper.get<HTMLInputElement>('[data-tour="edit-account-form-name"]')
-    const notes = wrapper.get<HTMLTextAreaElement>('textarea[placeholder="admin.accounts.notesPlaceholder"]')
-    const baseURL = wrapper.get<HTMLInputElement>('[data-testid="api-key-base-url"]')
-    let resolvePreview!: (value: {name: string; notes: string}) => void
-    const deferredPreview = () => new Promise(resolve => { resolvePreview = resolve })
-    previewUpstreamGroup.mockReset().mockImplementation(deferredPreview)
-
-    await button!.trigger('click')
-    expect(previewUpstreamGroup.mock.lastCall?.[0]).toEqual({ account_id: account.id })
-    await name.setValue('manually edited')
-    await name.setValue(account.name)
-    resolvePreview({ name: 'upstream name', notes: 'upstream notes' })
-    await flushPromises()
-    expect(name.element.value).toBe(account.name)
-    expect(notes.element.value).toBe('upstream notes')
-
-    await button!.trigger('click')
-    const signal = previewUpstreamGroup.mock.lastCall?.[1]
-    await baseURL.setValue('https://new-upstream.example/v1')
-    expect(signal.aborted).toBe(true)
-    resolvePreview({ name: 'old connection', notes: 'old connection notes' })
-    await flushPromises()
-    expect(name.element.value).toBe(account.name)
-    expect(notes.element.value).toBe('upstream notes')
-    expect(button!.attributes('disabled')).toBeDefined()
-    wrapper.unmount()
   })
 
   it('enabling rate sync also enables probing and stops submitting a manual rate', async () => {
@@ -1769,50 +1756,6 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('codex_image_generation_bridge')
   })
 
-  it.each([
-    { scenario: 'OAuth without extra', type: 'oauth', extra: undefined, mode: 'ctx_pool' },
-    { scenario: 'SetupToken without a mode', type: 'setup-token', extra: {}, mode: 'ctx_pool' },
-    {
-      scenario: 'OAuth with explicit off',
-      type: 'oauth',
-      extra: { openai_oauth_responses_websockets_v2_mode: 'off' },
-      mode: 'off'
-    },
-    {
-      scenario: 'OAuth with a legacy opt-out',
-      type: 'oauth',
-      extra: { openai_ws_enabled: false },
-      mode: 'off'
-    },
-    {
-      scenario: 'OAuth with force HTTP',
-      type: 'oauth',
-      extra: { openai_ws_force_http: true },
-      mode: 'ctx_pool'
-    },
-    { scenario: 'API Key without a mode', type: 'apikey', extra: {}, mode: 'off' }
-  ])('keeps the WebSocket mode when saving ordinary edits for $scenario', async ({ type, extra, mode }) => {
-    const account = { ...buildAccount(), type, extra }
-    updateAccountMock.mockReset().mockResolvedValue(account)
-    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
-    const wrapper = mountModal(account)
-
-    expect(wrapper.get<HTMLSelectElement>('[data-testid="edit-openai-ws-mode-select"]').element.value).toBe(mode)
-
-    await wrapper.get('input[type="text"]').setValue('Renamed OpenAI')
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-
-    expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    const wsExtraPrefix = type === 'apikey' ? 'openai_apikey' : 'openai_oauth'
-    const savedExtra = updateAccountMock.mock.calls[0]?.[1]?.extra
-    expect(savedExtra).toMatchObject({
-      [`${wsExtraPrefix}_responses_websockets_v2_mode`]: mode,
-      [`${wsExtraPrefix}_responses_websockets_v2_enabled`]: mode !== 'off'
-    })
-    expect(savedExtra.openai_ws_force_http).toBe(extra?.openai_ws_force_http)
-  })
-
   it('setup-token account can select and submit OAuth WS mode', async () => {
     const account = buildOpenAISetupTokenAccount()
     updateAccountMock.mockReset()
@@ -1968,6 +1911,240 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock).not.toHaveBeenCalled()
   })
 
+  it('keeps the redacted Vertex API key when saving without entering a new one', async () => {
+    const account = buildVertexAccount()
+    account.credentials = {
+      auth_mode: 'apikey',
+      project_id: 'demo-project',
+      location: 'us-central1',
+      tier_id: 'vertex'
+    }
+    account.credentials_status = { has_api_key: true }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    expect(wrapper.find('[data-testid="edit-vertex-api-key-input"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="edit-vertex-api-key-project-id-input"]').setValue('')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials).toMatchObject({ auth_mode: 'apikey', location: 'us-central1', tier_id: 'vertex' })
+    expect(credentials).not.toHaveProperty('api_key')
+    expect(credentials).not.toHaveProperty('project_id')
+  })
+
+  it('submits a rotated Vertex API key', async () => {
+    const account = buildVertexAccount()
+    account.credentials = { auth_mode: 'apikey', location: 'global', tier_id: 'vertex' }
+    account.credentials_status = { has_api_key: true }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="edit-vertex-api-key-input"]').setValue(' rotated-key ')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.api_key).toBe('rotated-key')
+  })
+
+  it('blocks Vertex API key save when no key exists and none is entered', async () => {
+    const account = buildVertexAccount()
+    account.credentials = { auth_mode: 'apikey', location: 'global', tier_id: 'vertex' }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).not.toHaveBeenCalled()
+  })
+
+  it('loads and submits Antigravity configured project fallback', async () => {
+    const account = buildAntigravityAccount('configured-project')
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    const input = wrapper.get<HTMLInputElement>('[data-testid="antigravity-project-id-input"]')
+    expect(input.element.value).toBe('configured-project')
+
+    await input.setValue('  updated-project  ')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.antigravity_project_id).toBe(
+      'updated-project'
+    )
+  })
+
+  it('clears Antigravity configured project fallback when input is empty', async () => {
+    const account = buildAntigravityAccount('configured-project')
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    const input = wrapper.get<HTMLInputElement>('[data-testid="antigravity-project-id-input"]')
+
+    await input.setValue('')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty(
+      'antigravity_project_id'
+    )
+  })
+})
+
+describe('EditAccountModal OpenAI 自动使用重置卡', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+  })
+
+  it('仅对 OpenAI OAuth 母账号显示，默认关闭且阈值为 100/100', () => {
+    const parent = mountModal(buildOpenAIOAuthParentAccount())
+    expect(parent.find('[data-testid="auto-reset-credit-settings"]').exists()).toBe(true)
+    expect((parent.get('[data-testid="auto-reset-credit-5h-threshold"]').element as HTMLInputElement).value).toBe('100')
+    expect((parent.get('[data-testid="auto-reset-credit-7d-threshold"]').element as HTMLInputElement).value).toBe('100')
+    expect(parent.get('[data-testid="auto-reset-credit-5h-threshold"]').attributes('disabled')).toBeDefined()
+    parent.unmount()
+
+    for (const account of [buildAccount(), buildOpenAISetupTokenAccount(), buildOpenAISparkShadowAccount()]) {
+      const wrapper = mountModal(account)
+      expect(wrapper.find('[data-testid="auto-reset-credit-settings"]').exists()).toBe(false)
+      wrapper.unmount()
+    }
+  })
+
+  it('独立保存两个阈值，并禁止把运行态回写到管理请求', async () => {
+    const account = buildOpenAIOAuthParentAccount()
+    account.extra = {
+      codex_auto_reset_credit_state: {
+        status: 'success',
+        trigger_window: '5h',
+        available_count: 1
+      }
+    }
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModal(account)
+
+    await wrapper.get('[data-testid="auto-reset-credit-enabled"]').trigger('click')
+    const confirmation = wrapper.findAllComponents(ConfirmDialog).find(dialog => dialog.props('title') === 'admin.accounts.autoResetSafety.confirmTitle')!
+    expect(confirmation.props('show')).toBe(true)
+    confirmation.vm.$emit('confirm')
+    await flushPromises()
+    await wrapper.get('[data-testid="auto-reset-credit-5h-threshold"]').setValue('75.5')
+    await wrapper.get('[data-testid="auto-reset-credit-7d-threshold"]').setValue('92')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const extra = updateAccountMock.mock.calls[0]?.[1]?.extra
+    expect(extra).toMatchObject({
+      auto_reset_credit_enabled: true,
+      auto_reset_credit_5h_threshold: 0.755,
+      auto_reset_credit_7d_threshold: 0.92
+    })
+    expect(extra).not.toHaveProperty('codex_auto_reset_credit_state')
+    wrapper.unmount()
+  })
+
+  it('开启后拒绝超出 0.1–100 范围的任一阈值', async () => {
+    const wrapper = mountModal(buildOpenAIOAuthParentAccount())
+    await wrapper.get('[data-testid="auto-reset-credit-enabled"]').trigger('click')
+    const confirmation = wrapper.findAllComponents(ConfirmDialog).find(dialog => dialog.props('title') === 'admin.accounts.autoResetSafety.confirmTitle')!
+    expect(confirmation.props('show')).toBe(true)
+    confirmation.vm.$emit('confirm')
+    await flushPromises()
+    await wrapper.get('[data-testid="auto-reset-credit-5h-threshold"]').setValue('0')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
+
+describe('EditAccountModal gemini explicit cache upstream switch', () => {
+  function buildGeminiApiKeyAccount(credentials: Record<string, unknown>) {
+    return {
+      id: 21,
+      name: 'Gemini upstream gateway',
+      notes: '',
+      platform: 'gemini',
+      type: 'apikey',
+      credentials: { api_key: 'sk-upstream', ...credentials },
+      credentials_status: { has_api_key: true },
+      extra: {},
+      proxy_id: null,
+      concurrency: 1,
+      priority: 1,
+      rate_multiplier: 1,
+      status: 'active',
+      group_ids: [],
+      expires_at: null,
+      auto_pause_on_expired: false
+    } as any
+  }
+
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+  })
+
+  it('hides the switch for the official AI Studio address', () => {
+    const wrapper = mountModal(buildGeminiApiKeyAccount({ base_url: 'https://generativelanguage.googleapis.com' }))
+    expect(wrapper.find('[data-testid="explicit-cache-upstream-section"]').exists()).toBe(false)
+  })
+
+  it('loads and saves the switch and ttl limit for a custom upstream', async () => {
+    const account = buildGeminiApiKeyAccount({
+      base_url: 'https://upstream.example.com',
+      explicit_cache_upstream: true,
+      explicit_cache_upstream_max_ttl_seconds: 1800
+    })
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModal(account)
+
+    expect(wrapper.find('[data-testid="explicit-cache-upstream-section"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="explicit-cache-upstream-toggle"]').attributes('aria-checked')).toBe('true')
+    const ttlInput = wrapper.get('[data-testid="explicit-cache-upstream-max-ttl"]')
+    expect((ttlInput.element as HTMLInputElement).value).toBe('1800')
+
+    await ttlInput.setValue('3600')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
+      explicit_cache_upstream: true,
+      explicit_cache_upstream_max_ttl_seconds: 3600
+    })
+  })
+
+  it('removes both fields when the switch is turned off', async () => {
+    const account = buildGeminiApiKeyAccount({
+      base_url: 'https://upstream.example.com',
+      explicit_cache_upstream: true,
+      explicit_cache_upstream_max_ttl_seconds: 1800
+    })
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModal(account)
+
+    await wrapper.get('[data-testid="explicit-cache-upstream-toggle"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials).not.toHaveProperty('explicit_cache_upstream')
+    expect(credentials).not.toHaveProperty('explicit_cache_upstream_max_ttl_seconds')
+  })
 })
 
 describe('EditAccountModal temp-unschedulable rule scope', () => {
@@ -2044,104 +2221,22 @@ describe('EditAccountModal temp-unschedulable rule scope', () => {
     expect(checkedScopes(wrapper)).toEqual(['temp-unsched-scope-model'])
     wrapper.unmount()
   })
-})
-describe('EditAccountModal OpenAI 自动使用重置卡', () => {
-  beforeEach(() => {
-    authIsSimpleMode.value = true
-    updateAccountMock.mockReset()
-    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
-  })
 
-  it('仅对 OpenAI OAuth 账号显示，默认关闭且阈值为 100/100', () => {
-    const parent = mountModal({ ...buildAccount(), type: 'oauth' })
-    expect(parent.find('[data-testid="auto-reset-credit-settings"]').exists()).toBe(true)
-    expect((parent.get('[data-testid="auto-reset-credit-5h-threshold"]').element as HTMLInputElement).value).toBe('100')
-    expect((parent.get('[data-testid="auto-reset-credit-7d-threshold"]').element as HTMLInputElement).value).toBe('100')
-    expect(parent.get('[data-testid="auto-reset-credit-5h-threshold"]').attributes('disabled')).toBeDefined()
-    parent.unmount()
-
-    for (const account of [buildAccount(), buildOpenAISetupTokenAccount()]) {
-      const wrapper = mountModal(account)
-      expect(wrapper.find('[data-testid="auto-reset-credit-settings"]').exists()).toBe(false)
-      wrapper.unmount()
-    }
-  })
-
-  it('独立保存两个阈值，并禁止把运行态回写到管理请求', async () => {
-    const account = { ...buildAccount(), type: 'oauth' }
-    account.extra = {
-      codex_auto_reset_credit_state: {
-        status: 'success',
-        trigger_window: '5h',
-        available_count: 1
-      }
-    }
-    updateAccountMock.mockResolvedValue(account)
+  it('loads the opt-in passthrough filter and removes it when disabled', async () => {
+    const account = buildAccount()
+    account.extra = { openai_passthrough: true, openai_passthrough_model_filter: true }
+    updateAccountMock.mockReset().mockResolvedValue(account)
     const wrapper = mountModal(account)
-
-    await wrapper.get('[data-testid="auto-reset-credit-enabled"]').trigger('click')
-    await wrapper.get('[data-testid="auto-reset-credit-5h-threshold"]').setValue('75.5')
-    await wrapper.get('[data-testid="auto-reset-credit-7d-threshold"]').setValue('92')
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-
-    expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    const extra = updateAccountMock.mock.calls[0]?.[1]?.extra
-    expect(extra).toMatchObject({
-      auto_reset_credit_enabled: true,
-      auto_reset_credit_5h_threshold: 0.755,
-      auto_reset_credit_7d_threshold: 0.92
-    })
-    expect(extra).not.toHaveProperty('codex_auto_reset_credit_state')
+    await flushPromises()
+    const filter = wrapper.get('[data-testid="openai-passthrough-model-filter"]')
+    expect((filter.element as HTMLInputElement).checked).toBe(true)
+    await filter.setValue(false)
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+    const payload = updateAccountMock.mock.calls.at(-1)?.[1]
+    expect(payload.extra.openai_passthrough).toBe(true)
+    expect(payload.extra).not.toHaveProperty('openai_passthrough_model_filter')
     wrapper.unmount()
   })
 
-  it('开启后拒绝超出 0.1–100 范围的任一阈值', async () => {
-    const wrapper = mountModal({ ...buildAccount(), type: 'oauth' })
-    await wrapper.get('[data-testid="auto-reset-credit-enabled"]').trigger('click')
-    await wrapper.get('[data-testid="auto-reset-credit-5h-threshold"]').setValue('0')
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    expect(updateAccountMock).not.toHaveBeenCalled()
-    wrapper.unmount()
-  })
-
-  it('载入已有配置，并允许在输入无效阈值后关闭开关', async () => {
-    const account = { ...buildAccount(), type: 'oauth', extra: {
-      auto_reset_credit_enabled: true,
-      auto_reset_credit_opt_in_version: 1,
-      auto_reset_credit_5h_threshold: 0.75,
-      auto_reset_credit_7d_threshold: 0.9
-    } }
-    updateAccountMock.mockResolvedValue(account)
-    const wrapper = mountModal(account)
-    expect(wrapper.get<HTMLInputElement>('[data-testid="auto-reset-credit-5h-threshold"]').element.value).toBe('75')
-    expect(wrapper.get('[data-testid="auto-reset-credit-enabled"]').attributes('aria-checked')).toBe('true')
-    await wrapper.get('[data-testid="auto-reset-credit-5h-threshold"]').setValue('0')
-    await wrapper.get('[data-testid="auto-reset-credit-enabled"]').trigger('click')
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toMatchObject({
-      auto_reset_credit_enabled: false,
-      auto_reset_credit_7d_threshold: 0.9
-    })
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('auto_reset_credit_5h_threshold')
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('auto_reset_credit_opt_in_version')
-    wrapper.unmount()
-  })
-
-  it('历史 enabled=true 没有显式启用版本时显示关闭，普通保存不重新开启', async () => {
-    const account = { ...buildAccount(), type: 'oauth', extra: {
-      auto_reset_credit_enabled: true,
-      auto_reset_credit_5h_threshold: 0.75,
-      auto_reset_credit_7d_threshold: 0.9
-    } }
-    updateAccountMock.mockResolvedValue(account)
-    const wrapper = mountModal(account)
-    expect(wrapper.get('[data-testid="auto-reset-credit-enabled"]').attributes('aria-checked')).toBe('false')
-    expect(wrapper.get('[data-testid="auto-reset-credit-5h-threshold"]').attributes('disabled')).toBeDefined()
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.auto_reset_credit_enabled).toBe(false)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('auto_reset_credit_opt_in_version')
-    wrapper.unmount()
-  })
 })

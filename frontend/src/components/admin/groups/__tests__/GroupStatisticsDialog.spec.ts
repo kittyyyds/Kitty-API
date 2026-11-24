@@ -1,79 +1,32 @@
-import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mount, flushPromises } from '@vue/test-utils'
+import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { defineComponent } from 'vue'
 import GroupStatisticsDialog from '../GroupStatisticsDialog.vue'
-import { getStats } from '@/api/admin/groups'
+import { getStats, type GroupDetailStats } from '@/api/admin/groups'
 
-vi.mock('@/api/admin/groups', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/api/admin/groups')>()
-  return {
-    ...actual,
-    getStats: vi.fn()
-  }
-})
+vi.mock('@/api/admin/groups', () => ({ getStats: vi.fn() }))
+const data: GroupDetailStats = { group_id: 1, group_name: 'First group', total_api_keys: 3, active_api_keys: 1, total_accounts: 2, total_requests: 3, total_tokens: 49, total_cost: 32, total_actual_cost: 16, total_account_cost: 13, balance_cost: 12, subscription_cost: 4, zero_charge_requests: 1, average_duration_ms: 2000, from: null, to: null, generated_at: '2026-09-14T12:00:00Z' }
+const global = { stubs: { BaseDialog: defineComponent({ props: ['show', 'title'], template: '<div v-if="show"><h1>{{ title }}</h1><slot /><slot name="footer" /></div>' }) } }
+beforeEach(() => { vi.clearAllMocks(); vi.mocked(getStats).mockResolvedValue(data) })
 
-const payload = {
-  group_id: 7,
-  group_name: 'ops-group',
-  total_api_keys: 4,
-  active_api_keys: 3,
-  total_accounts: 2,
-  total_requests: 11,
-  total_tokens: 900,
-  total_cost: 32,
-  total_actual_cost: 16,
-  total_account_cost: 13,
-  balance_cost: 9,
-  subscription_cost: 7,
-  zero_charge_requests: 1,
-  average_duration_ms: 1500,
-  from: null,
-  to: null,
-  generated_at: '2026-09-16T12:00:00.000Z'
-}
-
-describe('GroupStatisticsDialog', () => {
-  beforeEach(() => {
-    vi.mocked(getStats).mockReset()
-    vi.mocked(getStats).mockResolvedValue(payload)
+describe('optional group detail statistics', () => {
+  it('does not request statistics while closed and keeps the three cost bases separate', async () => {
+    const wrapper = mount(GroupStatisticsDialog, { props: { groupId: null }, global })
+    expect(getStats).not.toHaveBeenCalled()
+    await wrapper.setProps({ groupId: 1 }); await flushPromises()
+    expect(wrapper.text()).toContain('实际计费用量'); expect(wrapper.text()).toContain('$16.00')
+    expect(wrapper.text()).toContain('账面费用'); expect(wrapper.text()).toContain('$32.00')
+    expect(wrapper.text()).toContain('上游账号成本'); expect(wrapper.text()).toContain('$13.00')
+    expect(wrapper.text()).toContain('不是现金支付')
+    wrapper.unmount()
   })
-
-  it('renders a read-only popup with distinct user billing, subscription, and upstream costs', async () => {
-    const wrapper = mount(GroupStatisticsDialog, {
-      props: { groupId: 7 },
-      attachTo: document.body,
-      global: {
-        stubs: {
-          BaseDialog: {
-            props: ['show', 'title'],
-            template: '<div v-if="show"><h3>{{ title }}</h3><slot /><footer><slot name="footer" /></footer></div>'
-          }
-        }
-      }
-    })
-    await flushPromises()
-
-    expect(getStats).toHaveBeenCalledTimes(1)
-    expect(getStats).toHaveBeenCalledWith(7, {}, expect.any(AbortSignal))
-
-    const text = wrapper.text()
-    expect(text).toContain('ops-group')
-    expect(text).toContain('完整统计')
-    expect(text).toContain('实际计费用量')
-    expect(text).toContain('账面费用')
-    expect(text).toContain('上游账号成本')
-    expect(text).toContain('余额计费用量')
-    expect(text).toContain('订阅计费用量')
-    expect(text).toContain('16.00')
-    expect(text).toContain('32.00')
-    expect(text).toContain('13.00')
-    expect(text).toContain('9.00')
-    expect(text).toContain('7.00')
-    expect(text).not.toContain('修改定价')
-    expect(wrapper.findAll('input[type=datetime-local]')).toHaveLength(2)
-    expect(wrapper.findAll('button').map((button) => button.text())).toEqual(['应用 / 刷新', '全部历史', '关闭'])
-
-    await wrapper.findAll('button').find((button) => button.text() === '关闭')!.trigger('click')
-    expect(wrapper.emitted('close')).toBeTruthy()
+  it('does not let the previous group overwrite a newly selected group', async () => {
+    let first!: (value: GroupDetailStats) => void
+    vi.mocked(getStats).mockImplementationOnce(() => new Promise(resolve => { first = resolve })).mockResolvedValueOnce({ ...data, group_id: 2, group_name: 'Second group' })
+    const wrapper = mount(GroupStatisticsDialog, { props: { groupId: 1 }, global })
+    await wrapper.setProps({ groupId: 2 }); await flushPromises()
+    first(data); await flushPromises()
+    expect(wrapper.text()).toContain('Second group'); expect(wrapper.text()).not.toContain('First group')
     wrapper.unmount()
   })
 })

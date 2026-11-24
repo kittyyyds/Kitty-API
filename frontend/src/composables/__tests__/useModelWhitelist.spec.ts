@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+
+vi.mock('@/api/admin/accounts', () => ({
+  getAntigravityDefaultModelMapping: vi.fn()
+}))
 
 import { buildModelMappingObject, getModelsByPlatform, getPresetMappingsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
-import { BUILTIN_PLATFORM_CATALOG, isKnownPlatform, resetPlatformCatalog, setPlatformCatalog } from '@/constants/platformCatalog'
+import { BUILTIN_PLATFORM_CATALOG, resetPlatformCatalog, setPlatformCatalog } from '@/constants/platformCatalog'
 
 describe('useModelWhitelist', () => {
   it('平台清单中没有内置模型列表的多协议供应商不预填白名单', () => {
@@ -32,41 +36,24 @@ describe('useModelWhitelist', () => {
     }
   })
 
-  it('openai 模型列表只含当前 GPT 系列，不含兼容服务商或过期快照', () => {
+  it('openai 模型列表包含 GPT-5.4 官方快照', () => {
     const models = getModelsByPlatform('openai')
 
+    expect(models).toContain('gpt-5.4')
+    expect(models).toContain('gpt-5.4-mini')
+    expect(models).toContain('gpt-5.4-2026-03-05')
     expect(models).toContain('codex-auto-review')
     expect(models).toContain('gpt-5.6')
     expect(models).toContain('gpt-6')
     expect(models).toContain('gpt-6-astra')
-    expect(models).toContain('gpt-6.2-astra')
-    expect(models).toContain('gpt-6.2-sol')
-    expect(models).toContain('gpt-image-2')
-    expect(models).toContain('gpt-image-2.5')
-    expect(models).toContain('gpt-image-2.6')
-    expect(models).toContain('gpt-image-2.6-flare')
-    expect(models).toContain('gpt-image-2.6-sunburst')
-    expect(models).not.toContain('gpt-image-1')
-    expect(models).not.toContain('gpt-image-1.5')
     expect(models).toContain('gpt-6.1-sol')
     expect(models).toContain('gpt-6.1-terra')
     expect(models).toContain('gpt-6-sol')
     expect(models).toContain('gpt-6-luna')
-    expect(models).not.toContain('mimo-v2.5')
-    expect(models).not.toContain('glm-4.7-flash')
-    expect(models).not.toContain('glm-4.7-flashx')
-    expect(models).not.toContain('qwen3.7-flash')
-    expect(models).not.toContain('gpt-4o')
-    expect(models).not.toContain('gpt-4o-audio-preview')
-    expect(models).not.toContain('gpt-5.2')
-    expect(models).not.toContain('gpt-5.4')
-    expect(models).not.toContain('gpt-5.4-mini')
   })
 
   it('openai 预设映射包含 GPT-6 别名和 Astra', () => {
     expect(getPresetMappingsByPlatform('openai')).toEqual(expect.arrayContaining([
-      expect.objectContaining({ label: 'GPT-6.2 Astra', from: 'gpt-6.2-astra', to: 'gpt-6.2-astra' }),
-      expect.objectContaining({ label: 'GPT-6.2 Sol', from: 'gpt-6.2-sol', to: 'gpt-6.2-sol' }),
       expect.objectContaining({ label: 'GPT-6.1 Sol', from: 'gpt-6.1-sol', to: 'gpt-6.1-sol' }),
       expect.objectContaining({ label: 'GPT-6.1 Terra', from: 'gpt-6.1-terra', to: 'gpt-6.1-terra' }),
       expect.objectContaining({ label: 'GPT-6', from: 'gpt-6', to: 'gpt-6' }),
@@ -83,33 +70,41 @@ describe('useModelWhitelist', () => {
     expect(models).not.toContain('gpt-5.1-codex-max')
     expect(models).not.toContain('gpt-5.1-codex-mini')
     expect(models).not.toContain('gpt-5.2-codex')
-    expect(models).not.toContain('gpt-5.5')
   })
 
-  it('openai 预设映射不再指向过期 GPT 快照', () => {
-    const presets = getPresetMappingsByPlatform('openai')
-    expect(presets).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ from: 'gpt-4o' }),
-      expect.objectContaining({ from: 'gpt-5.2' }),
-      expect.objectContaining({ from: 'gpt-5.4' }),
-      expect.objectContaining({ to: 'gpt-5.4' }),
-      expect.objectContaining({ from: 'gpt-5.5' }),
-      expect.objectContaining({ to: 'gpt-5.5' })
+  it.each(['gpt-6.2-astra', 'gpt-6.2-sol'])('suggests %s without preselecting it', (model) => {
+    expect(getModelsByPlatform('openai')).not.toContain(model)
+    expect(getModelsByPlatform('openai', true)).toContain(model)
+    expect(getPresetMappingsByPlatform('openai')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: model, to: model })
     ]))
+  })
+
+  it('antigravity 模型列表包含图片模型兼容项', () => {
+    const models = getModelsByPlatform('antigravity')
+
+    expect(models).toContain('gemini-2.5-flash-image')
+    expect(models).toContain('gemini-3.1-flash-image')
+    expect(models).toContain('gemini-3-pro-image')
   })
 
   it('Claude 模型列表包含新发布的 Claude 模型', () => {
     expect(getModelsByPlatform('claude')).toContain('claude-fable-5-1')
+    expect(getModelsByPlatform('antigravity')).toContain('claude-fable-5-1')
     expect(getModelsByPlatform('claude')).toContain('claude-fable-5')
+    expect(getModelsByPlatform('antigravity')).toContain('claude-fable-5')
     expect(getModelsByPlatform('claude')).toContain('claude-opus-5-5')
+    expect(getModelsByPlatform('antigravity')).not.toContain('claude-opus-5-5')
     expect(getModelsByPlatform('claude')).toContain('claude-sonnet-5-5')
+    expect(getModelsByPlatform('antigravity')).not.toContain('claude-sonnet-5-5')
     expect(getModelsByPlatform('claude')).toContain('claude-opus-4-8')
+    expect(getModelsByPlatform('antigravity')).toContain('claude-opus-4-8')
   })
 
   it.each([
     ['claude-fable-5-2', 'Fable 5.2'],
     ['claude-mythos-5-2', 'Mythos 5.2']
-  ])('preserves %s in Anthropic and Bedrock model presets', (model, label) => {
+  ])('preserves %s in Anthropic whitelists and presets without inventing provider mappings', (model, label) => {
     for (const platform of ['claude', 'anthropic']) {
       const models = getModelsByPlatform(platform)
       expect(models).toContain(model)
@@ -121,10 +116,8 @@ describe('useModelWhitelist', () => {
     expect(getPresetMappingsByPlatform('bedrock')).toEqual(expect.arrayContaining([
       expect.objectContaining({ label, from: model, to: `anthropic.${model}` })
     ]))
-  })
-
-  it.each(['gemini', 'antigravity', 'typesafe'])('keeps the retired %s platform out of the catalog', (platform) => {
-    expect(isKnownPlatform(platform)).toBe(false)
+    expect(getModelsByPlatform('antigravity')).not.toContain(model)
+    expect(getPresetMappingsByPlatform('antigravity').some(mapping => mapping.from === model)).toBe(false)
   })
 
   it('Claude Sonnet 5.5 预设使用各平台的官方模型 ID', () => {
@@ -185,51 +178,91 @@ describe('useModelWhitelist', () => {
     expect(models).toContain('composer-2.5')
   })
 
+  it('gemini 模型列表包含原生生图模型', () => {
+    const models = getModelsByPlatform('gemini')
+
+    expect(models).toContain('gemini-3.1-flash-image')
+    expect(models).toContain('gemini-3-pro-image')
+    expect(models.indexOf('gemini-3.1-flash-image')).toBeLessThan(models.indexOf('gemini-3-flash'))
+    expect(models.indexOf('gemini-3-pro-image')).toBeLessThan(models.indexOf('gemini-3.5-flash'))
+  })
+
+  it('gemini 模型列表不含已停用的 2.x 模型与 Antigravity 档位别名', () => {
+    const models = getModelsByPlatform('gemini')
+
+    for (const model of ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-image', 'gemini-3-pro-preview']) {
+      expect(models).not.toContain(model)
+    }
+    for (const model of ['gemini-3.1-pro', 'gemini-3.1-pro-high', 'gemini-3.1-pro-low']) {
+      expect(models).not.toContain(model)
+    }
+    expect(models).toContain('gemini-3.8-flash')
+  })
+
+  it('antigravity 模型列表会把新的 Gemini 图片模型排在前面', () => {
+    const models = getModelsByPlatform('antigravity')
+
+    expect(models.indexOf('gemini-3.1-flash-image')).toBeLessThan(models.indexOf('gemini-2.5-flash'))
+    expect(models.indexOf('gemini-2.5-flash-image')).toBeLessThan(models.indexOf('gemini-2.5-flash-lite'))
+  })
+
+  it('antigravity 模型列表包含 Gemini 3.1 Pro 通用别名', () => {
+    const models = getModelsByPlatform('antigravity')
+
+    expect(models).toContain('gemini-3.1-pro')
+  })
+
+  it('Gemini 4 Argon 在 gemini 与 antigravity 平台使用对应真实模型 ID 与预设映射', () => {
+    expect(getModelsByPlatform('gemini')).toContain('gemini-4-argon')
+    const agModels = getModelsByPlatform('antigravity')
+    expect(agModels).not.toContain('gemini-4-argon')
+    expect(agModels).toContain('gemini-4-argon-high')
+    expect(agModels).toContain('gemini-4-argon-medium')
+    expect(agModels).toContain('gemini-4-argon-low')
+    expect(getPresetMappingsByPlatform('antigravity')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'gemini-4-argon', to: 'gemini-4-argon-high' }),
+      expect.objectContaining({ from: 'gemini-4-argon-high', to: 'gemini-4-argon-high' }),
+      expect.objectContaining({ from: 'gemini-4-argon-medium', to: 'gemini-4-argon-medium' }),
+      expect.objectContaining({ from: 'gemini-4-argon-low', to: 'gemini-4-argon-low' })
+    ]))
+  })
+
   it('whitelist 模式会忽略通配符条目', () => {
-    const mapping = buildModelMappingObject('whitelist', ['claude-*', 'claude-sonnet-4-6'], [])
+    const mapping = buildModelMappingObject('whitelist', ['claude-*', 'gemini-3.1-flash-image'], [])
     expect(mapping).toEqual({
-      'claude-sonnet-4-6': 'claude-sonnet-4-6'
+      'gemini-3.1-flash-image': 'gemini-3.1-flash-image'
     })
   })
 
-  it('whitelist 模式会保留 GPT-5.5 的精确映射', () => {
-    const mapping = buildModelMappingObject('whitelist', ['gpt-5.5'], [])
+  it('whitelist 模式会保留 GPT-5.4 官方快照的精确映射', () => {
+    const mapping = buildModelMappingObject('whitelist', ['gpt-5.4-2026-03-05'], [])
 
     expect(mapping).toEqual({
-      'gpt-5.5': 'gpt-5.5'
+      'gpt-5.4-2026-03-05': 'gpt-5.4-2026-03-05'
     })
   })
 
-  it('whitelist keeps GPT-6 Astra exact mappings', () => {
-    const mapping = buildModelMappingObject('whitelist', ['gpt-6-astra'], [])
+  it('whitelist keeps GPT-5.4 mini exact mappings', () => {
+    const mapping = buildModelMappingObject('whitelist', ['gpt-5.4-mini'], [])
 
     expect(mapping).toEqual({
-      'gpt-6-astra': 'gpt-6-astra'
+      'gpt-5.4-mini': 'gpt-5.4-mini'
     })
-  })
-
-  it('OpenAI default whitelist preserves GPT-6.2 models without routing to older models', () => {
-    const mapping = buildModelMappingObject('whitelist', getModelsByPlatform('openai'), [])
-
-    expect(mapping?.['gpt-6.2-astra']).toBe('gpt-6.2-astra')
-    expect(mapping?.['gpt-6.2-sol']).toBe('gpt-6.2-sol')
-    expect(mapping?.['gpt-6-astra']).toBe('gpt-6-astra')
-    expect(mapping?.['gpt-6.1-sol']).toBe('gpt-6.1-sol')
   })
 
   it('combined 模式会同时保留白名单身份映射和模型映射', () => {
     const mapping = buildModelMappingObject(
       'combined',
-      ['gpt-5.5', 'claude-*'],
+      ['gpt-5.4', 'claude-*'],
       [
-        { from: 'gpt-latest', to: 'gpt-5.5' },
-        { from: 'gpt-5.5', to: 'gpt-5.6' }
+        { from: 'gpt-latest', to: 'gpt-5.4' },
+        { from: 'gpt-5.4', to: 'gpt-5.4-mini' }
       ]
     )
 
     expect(mapping).toEqual({
-      'gpt-5.5': 'gpt-5.6',
-      'gpt-latest': 'gpt-5.5'
+      'gpt-5.4': 'gpt-5.4-mini',
+      'gpt-latest': 'gpt-5.4'
     })
   })
 
@@ -240,23 +273,23 @@ describe('useModelWhitelist', () => {
   })
 
   it('split mapping keeps only identity entries in the whitelist after reopening', () => {
-    expect(splitModelMappingObject({ 'gpt-latest': 'deepseek-chat', 'gpt-5.5': 'gpt-5.5' })).toEqual({
-      allowedModels: ['gpt-5.5'],
+    expect(splitModelMappingObject({ 'gpt-latest': 'deepseek-chat', 'gpt-5.4': 'gpt-5.4' })).toEqual({
+      allowedModels: ['gpt-5.4'],
       modelMappings: [{ from: 'gpt-latest', to: 'deepseek-chat' }]
     })
   })
 
   it('splitModelMappingObject 会把身份映射还原成白名单，其余保留为映射', () => {
     const parsed = splitModelMappingObject({
-      'gpt-5.5': 'gpt-5.5',
-      'gpt-latest': 'gpt-5.5',
+      'gpt-5.4': 'gpt-5.4',
+      'gpt-latest': 'gpt-5.4',
       ' ': 'gpt-empty',
       broken: 123
     })
 
     expect(parsed).toEqual({
-      allowedModels: ['gpt-5.5'],
-      modelMappings: [{ from: 'gpt-latest', to: 'gpt-5.5' }]
+      allowedModels: ['gpt-5.4'],
+      modelMappings: [{ from: 'gpt-latest', to: 'gpt-5.4' }]
     })
   })
 })

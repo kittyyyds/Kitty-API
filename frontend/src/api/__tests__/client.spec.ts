@@ -91,6 +91,13 @@ describe('API Client', () => {
       expect(config.params).toHaveProperty('timezone')
     })
 
+    it('keeps an explicit site timezone instead of replacing it with the browser zone', async () => {
+      const adapter = vi.fn().mockResolvedValue({ status: 200, data: { code: 0, data: {} }, headers: {}, config: {}, statusText: 'OK' })
+      apiClient.defaults.adapter = adapter
+      await apiClient.get('/test', { params: { timezone: 'Pacific/Honolulu' } })
+      expect(adapter.mock.calls[0][0].params.timezone).toBe('Pacific/Honolulu')
+    })
+
     it('POST 请求不附加 timezone 参数', async () => {
       const adapter = vi.fn().mockResolvedValue({
         status: 200,
@@ -260,25 +267,6 @@ describe('API Client', () => {
       )
     })
 
-    it.each([
-      ['17', 17],
-      ['Wed, 21 Oct 2026 07:28:00 GMT', undefined],
-      [undefined, undefined],
-    ])('429 结构化错误携带 Retry-After 秒数（%s）', async (retryAfter, expected) => {
-      apiClient.defaults.adapter = vi.fn().mockRejectedValueOnce({
-        response: {
-          status: 429,
-          data: { code: 'RATE_LIMITED', message: 'Too many requests' },
-          headers: retryAfter === undefined ? {} : { 'retry-after': retryAfter },
-        },
-        config: { url: '/usage', headers: {} },
-      })
-
-      const error = await apiClient.get('/usage').catch((err) => err)
-      expect(error).toMatchObject({ status: 429, code: 'RATE_LIMITED', message: 'Too many requests' })
-      expect(error.retry_after_seconds).toBe(expected)
-    })
-
     it('部署与运营合规未确认时广播事件且保留登录态', async () => {
       localStorage.setItem('auth_token', 'admin-token')
       const listener = vi.fn()
@@ -362,6 +350,57 @@ describe('API Client', () => {
       Object.defineProperty(window, 'location', {
         value: originalLocation,
         writable: true,
+      })
+    })
+
+    describe('未登录访客的 401 不跳登录页', () => {
+      const originalLocation = window.location
+      const setPath = (pathname: string) => Object.defineProperty(window, 'location', {
+        value: { ...originalLocation, pathname, href: pathname },
+        writable: true,
+      })
+      const reject401 = (url: string, reason: string, headers: Record<string, string> = {}) => vi.fn().mockRejectedValue({
+        response: { status: 401, data: { code: 401, reason, message: 'invalid email or password' } },
+        config: { url, headers },
+        code: 'ERR_BAD_REQUEST',
+      })
+
+      afterEach(() => {
+        Object.defineProperty(window, 'location', { value: originalLocation, writable: true })
+      })
+
+      it.each([
+        ['/auth/oauth/pending/bind-login', '/auth/linuxdo/callback', 'INVALID_CREDENTIALS'],
+        ['/auth/oauth/pending/exchange', '/auth/oidc/callback', 'PENDING_AUTH_SESSION_EXPIRED'],
+        ['/model-plaza', '/home', 'UNAUTHORIZED'],
+      ])('%s 返回 401 时留在 %s 并把原因交给页面', async (url, pathname, reason) => {
+        setPath(pathname)
+        apiClient.defaults.adapter = reject401(url, reason)
+
+        await expect(apiClient.post(url)).rejects.toMatchObject({ status: 401, reason })
+
+        expect(window.location.href).toBe(pathname)
+        expect(sessionStorage.getItem('auth_expired')).toBeNull()
+      })
+
+      it('登录用户的同类请求 401 仍按会话失效处理', async () => {
+        setPath('/home')
+        localStorage.setItem('auth_token', 'expired-token')
+        apiClient.defaults.adapter = reject401('/model-plaza', 'TOKEN_EXPIRED', { Authorization: 'Bearer expired-token' })
+
+        await expect(apiClient.get('/model-plaza')).rejects.toBeDefined()
+
+        expect(localStorage.getItem('auth_token')).toBeNull()
+        expect(window.location.href).toBe('/login')
+      })
+
+      it('其他接口的匿名 401 仍跳登录页', async () => {
+        setPath('/dashboard')
+        apiClient.defaults.adapter = reject401('/usage', 'UNAUTHORIZED')
+
+        await expect(apiClient.get('/usage')).rejects.toBeDefined()
+
+        expect(window.location.href).toBe('/login')
       })
     })
 

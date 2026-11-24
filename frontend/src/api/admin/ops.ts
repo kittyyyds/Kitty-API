@@ -138,6 +138,21 @@ export interface OpsRequestDetail {
   account_id?: number | null
   group_id?: number | null
 
+  user_email?: string
+  group_name?: string
+  account_name?: string
+  api_key_name?: string
+  request_type?: string
+  upstream_model?: string
+  input_tokens?: number | null
+  output_tokens?: number | null
+  cache_read_tokens?: number | null
+  cache_creation_tokens?: number | null
+  image_input_tokens?: number | null
+  image_output_tokens?: number | null
+  actual_cost?: number | null
+  account_cost?: number | null
+
   stream?: boolean
 }
 
@@ -715,6 +730,7 @@ export interface AlertRule {
   filters?: Record<string, any>
   created_at?: string
   updated_at?: string
+  last_triggered_at?: string | null
 }
 
 export interface AlertEvent {
@@ -795,6 +811,7 @@ export interface OpsOpenAIAccountQuotaAutoPauseSettings {
 
 export interface OpsAdvancedSettings {
   data_retention: OpsDataRetentionSettings
+  aggregation: OpsAggregationSettings
   openai_account_quota_auto_pause: OpsOpenAIAccountQuotaAutoPauseSettings
   ignore_count_tokens_errors: boolean
   ignore_context_canceled: boolean
@@ -813,6 +830,10 @@ export interface OpsDataRetentionSettings {
   error_log_retention_days: number
   minute_metrics_retention_days: number
   hourly_metrics_retention_days: number
+}
+
+export interface OpsAggregationSettings {
+  aggregation_enabled: boolean
 }
 
 export interface OpsRuntimeLogConfig {
@@ -895,7 +916,6 @@ export interface OpsSystemLogSinkHealth {
 }
 
 export interface OpsErrorLog {
-  final_request_status?: number
   id: number
   created_at: string
 
@@ -1088,7 +1108,6 @@ export async function getOpenAITokenStats(
 export type OpsErrorListView = 'errors' | 'excluded' | 'all'
 
 export type OpsErrorListQueryParams = {
-  status_scope?: 'request'
   page?: number
   page_size?: number
   time_range?: string
@@ -1171,6 +1190,29 @@ export async function listRequestErrorUpstreamErrors(
   const query: Record<string, any> = { ...params }
   if (options.include_detail) query.include_detail = '1'
   const { data } = await apiClient.get<PaginatedResponse<OpsErrorDetail>>(`/admin/ops/request-errors/${id}/upstream-errors`, { params: query })
+  return data
+}
+
+export interface OpsAccountRequestStats {
+  success_rate: number | null
+  success_requests: number
+  error_requests: number
+  request_samples: number
+  window_start: string
+  window_end: string
+  cache_rate: number | null
+  avg_first_token_ms: number | null
+  avg_duration_ms: number | null
+  cache_samples: number
+  first_token_samples: number
+  duration_samples: number
+}
+
+export async function getAccountRequestStatsBatch(accountIDs: number[]): Promise<{ stats: Record<string, OpsAccountRequestStats> }> {
+  const { data } = await apiClient.post<{ stats: Record<string, OpsAccountRequestStats> }>(
+    '/admin/ops/account-request-stats/batch',
+    { account_ids: accountIDs }
+  )
   return data
 }
 
@@ -1290,45 +1332,6 @@ export async function getSystemLogSinkHealth(): Promise<OpsSystemLogSinkHealth> 
   return data
 }
 
-export interface OpsBillingOutboxHealth {
-  running: boolean
-  processed: number
-  failures: number
-  pending: number
-  processing: number
-  terminal: number
-  oldest_lag: number
-  last_error?: string
-  stats_error?: string
-  max_attempts: number
-  circuit_open: boolean
-  circuit_error?: string
-  circuit_opened_at?: string | null
-  permanent_failures: number
-  backlogged_rounds: number
-  round_timeouts: number
-  terminal_alert?: string
-}
-
-export async function getBillingOutboxHealth(): Promise<OpsBillingOutboxHealth> {
-  const { data } = await apiClient.get<OpsBillingOutboxHealth>('/admin/ops/billing-outbox/health')
-  return data
-}
-
-export interface OpsWorkerRuntimeStatus {
-  scope: string
-  workers: Array<{
-    Descriptor: { Name: string; Kind: string; Group?: string; CoordinationMode?: string; Description?: string; Tags?: string[] }
-    Lifecycle: { State: string; UpdatedAt: string }
-    Status?: Record<string, unknown>
-  }>
-}
-
-export async function getWorkerRuntimeStatus(): Promise<OpsWorkerRuntimeStatus> {
-  const { data } = await apiClient.get<OpsWorkerRuntimeStatus>('/admin/ops/workers/status')
-  return data
-}
-
 // Advanced settings (DB-backed)
 export async function getAdvancedSettings(): Promise<OpsAdvancedSettings> {
   const { data } = await apiClient.get<OpsAdvancedSettings>('/admin/ops/advanced-settings')
@@ -1380,6 +1383,7 @@ export const opsAPI = {
   listRequestErrorUpstreamErrors,
 
   listRequestDetails,
+  getAccountRequestStatsBatch,
   listAlertRules,
   createAlertRule,
   updateAlertRule,
@@ -1401,9 +1405,7 @@ export const opsAPI = {
   updateMetricThresholds,
   listSystemLogs,
   cleanupSystemLogs,
-  getSystemLogSinkHealth,
-  getBillingOutboxHealth,
-  getWorkerRuntimeStatus
+  getSystemLogSinkHealth
 }
 
 export default opsAPI

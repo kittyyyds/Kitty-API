@@ -6,6 +6,11 @@
     @close="handleClose"
   >
     <div class="space-y-4">
+      <div v-if="modelLoadError" role="alert" class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-200">
+        <p>{{ modelLoadError }}</p>
+        <button type="button" :disabled="loadingModels" class="mt-2 underline" @click="loadAvailableModels">{{ t('admin.accounts.retryModels') }}</button>
+      </div>
+      <AccountTestEvidence v-if="upstreamEvidence" :evidence="upstreamEvidence" />
       <!-- Account Info Card -->
       <div
         v-if="account"
@@ -62,7 +67,7 @@
         </label>
         <Select
           v-model="selectedModelId"
-          :options="modelSelectOptions"
+          :options="modelOptionsForMode"
           :disabled="loadingModels || status === 'connecting'"
           value-key="id"
           label-key="display_name"
@@ -365,7 +370,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from 'vue'
+import { consumeAccountTestStream } from '@/utils/accountTestStream'
+import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import AccountTestEvidence from '@/components/account/AccountTestEvidence.vue'
+import type { AccountTestUpstreamEvidence } from '@/types/accountTestEvidence'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
@@ -397,6 +405,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'close'): void
+  (e: 'tested'): void
 }>()
 
 const terminalRef = ref<HTMLElement | null>(null)
@@ -404,6 +413,12 @@ const status = ref<'idle' | 'connecting' | 'success' | 'error'>('idle')
 const outputLines = ref<OutputLine[]>([])
 const streamingContent = ref('')
 const errorMessage = ref('')
+const upstreamEvidence = ref<AccountTestUpstreamEvidence | null>(null)
+const modelLoadError = ref('')
+let modelLoadGeneration = 0
+let testGeneration = 0
+let testNotified = false
+const notifyTested = () => { if (!testNotified) { testNotified = true; emit('tested') } }
 const availableModels = ref<ClaudeModel[]>([])
 const selectedModelId = ref('')
 const testPrompt = ref('')
@@ -437,6 +452,14 @@ const grokTestModeOptions = computed(() => [
   { value: 'stt', label: t('admin.accounts.grok.testModeSTT') },
   { value: 'realtime', label: t('admin.accounts.grok.testModeRealtime') }
 ])
+const prioritizedGeminiModels = ['gemini-3.1-flash-image', 'gemini-2.5-flash-image', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash-preview', 'gemini-3-pro-preview', 'gemini-2.0-flash']
+const supportsGeminiImageTest = computed(() => {
+  const modelID = selectedModelId.value.toLowerCase()
+  if (!modelID.startsWith('gemini-') || !modelID.includes('-image')) return false
+
+  return props.account?.platform === 'gemini' || props.account?.platform === 'antigravity'
+})
+
 const supportsOpenAIImageTest = computed(() => {
   const modelID = selectedModelId.value.toLowerCase()
   if (!modelID.startsWith('gpt-image-')) return false
@@ -465,7 +488,7 @@ const supportsGrokVideoTest = computed(
 )
 
 const supportsImageTest = computed(
-  () => supportsOpenAIImageTest.value || supportsGrokImageTest.value
+  () => supportsGeminiImageTest.value || supportsOpenAIImageTest.value || supportsGrokImageTest.value
 )
 
 // Model select only when the mode needs a model.
@@ -474,31 +497,19 @@ const showModelSelect = computed(() => {
   return grokTestMode.value === 'text' || grokTestMode.value === 'image' || grokTestMode.value === 'video'
 })
 
-const labeledModels = (models: ClaudeModel[]): ClaudeModel[] =>
-  models.map((model) => ({
-    ...model,
-    display_name: model.display_name?.trim() || model.id
-  }))
-
 const modelOptionsForMode = computed(() => {
-  const models = labeledModels(availableModels.value)
-  if (!isGrokAccount.value) return models
+  if (!isGrokAccount.value) return availableModels.value
   if (grokTestMode.value === 'image') {
-    return models.filter((m) => isGrokImageModel(m.id))
+    return availableModels.value.filter((m) => isGrokImageModel(m.id))
   }
   if (grokTestMode.value === 'video') {
-    return models.filter((m) => isGrokVideoModel(m.id))
+    return availableModels.value.filter((m) => isGrokVideoModel(m.id))
   }
   if (grokTestMode.value === 'text') {
-    return models.filter((m) => isGrokTextModel(m.id))
+    return availableModels.value.filter((m) => isGrokTextModel(m.id))
   }
   return []
 })
-
-const modelSelectOptions = computed(
-  (): Array<Record<string, unknown>> =>
-    modelOptionsForMode.value as unknown as Array<Record<string, unknown>>
-)
 
 const supportsPromptInput = computed(() => {
   if (!isGrokAccount.value) {
@@ -693,6 +704,17 @@ const canStartTest = computed(() => {
   return Boolean(selectedModelId.value)
 })
 
+const sortTestModels = (models: ClaudeModel[]) => {
+  const priorityMap = new Map(prioritizedGeminiModels.map((id, index) => [id, index]))
+
+  return [...models].sort((a, b) => {
+    const aPriority = priorityMap.get(a.id) ?? Number.MAX_SAFE_INTEGER
+    const bPriority = priorityMap.get(b.id) ?? Number.MAX_SAFE_INTEGER
+    if (aPriority !== bPriority) return aPriority - bPriority
+    return 0
+  })
+}
+
 // Load available models when modal opens
 const applyDefaultPromptForMode = () => {
   if (!supportsPromptInput.value) return
@@ -726,6 +748,28 @@ const pickDefaultModelForMode = () => {
   selectedModelId.value = opts[0].id
 }
 
+watch(
+  () => [props.show, props.account?.id] as const,
+  async ([newVal]) => {
+    abortStream()
+    if (newVal && props.account) {
+      testPrompt.value = ''
+      testMode.value = 'default'
+      grokTestMode.value = 'text'
+      resetState()
+      await loadAvailableModels()
+      if (isGrokAccount.value) {
+        pickDefaultModelForMode()
+        applyDefaultPromptForMode()
+      }
+    } else {
+      modelLoadGeneration++
+      modelLoadError.value = ''
+      abortStream()
+    }
+  }
+)
+
 watch(grokTestMode, () => {
   if (!isGrokAccount.value) return
   testPrompt.value = ''
@@ -734,30 +778,38 @@ watch(grokTestMode, () => {
   applyDefaultPromptForMode()
 })
 
-let modelRequestVersion = 0
 const loadAvailableModels = async () => {
   if (!props.account) return
 
-  const version = ++modelRequestVersion
+  const generation = ++modelLoadGeneration
+  const accountID = props.account.id
   loadingModels.value = true
+  modelLoadError.value = ''
   selectedModelId.value = '' // Reset selection before loading
   try {
-    const models = await adminAPI.accounts.getAvailableModels(props.account.id)
-    if (version !== modelRequestVersion) return
-    availableModels.value = models
+    const models = await adminAPI.accounts.getAvailableModels(accountID)
+    if (generation !== modelLoadGeneration || props.account?.id !== accountID) return
+    availableModels.value = props.account.platform === 'gemini' || props.account.platform === 'antigravity'
+      ? sortTestModels(models)
+      : models
+    // Default selection by platform
     if (availableModels.value.length > 0) {
-      // Try to select Sonnet as default, otherwise use first model
-      const sonnetModel = availableModels.value.find((m) => m.id.includes('sonnet'))
-      selectedModelId.value = sonnetModel?.id || availableModels.value[0].id
+      if (props.account.platform === 'gemini') {
+        selectedModelId.value = availableModels.value[0].id
+      } else {
+        // Try to select Sonnet as default, otherwise use first model
+        const sonnetModel = availableModels.value.find((m) => m.id.includes('sonnet'))
+        selectedModelId.value = sonnetModel?.id || availableModels.value[0].id
+      }
     }
-  } catch (error) {
-    if (version !== modelRequestVersion) return
-    console.error('Failed to load available models:', error)
+  } catch {
+    if (generation !== modelLoadGeneration) return
+    modelLoadError.value = t('admin.accounts.modelsLoadFailed')
     // Fallback to empty list
     availableModels.value = []
     selectedModelId.value = ''
   } finally {
-    if (version === modelRequestVersion) loadingModels.value = false
+    if (generation === modelLoadGeneration) loadingModels.value = false
   }
 }
 
@@ -766,6 +818,8 @@ const resetState = () => {
   outputLines.value = []
   streamingContent.value = ''
   errorMessage.value = ''
+  upstreamEvidence.value = null
+  testNotified = false
   generatedImages.value = []
   generatedAudios.value = []
   generatedVideos.value = []
@@ -778,11 +832,14 @@ const handleClose = () => {
 }
 
 const abortStream = () => {
+  testGeneration++
   if (abortController) {
     abortController.abort()
     abortController = null
   }
 }
+
+onBeforeUnmount(() => { modelLoadGeneration++; abortStream() })
 
 const addLine = (text: string, className: string = 'text-gray-300') => {
   outputLines.value.push({ text, class: className })
@@ -812,7 +869,9 @@ const startTest = async () => {
 
   abortStream()
 
-  abortController = new AbortController()
+  const controller = new AbortController()
+  abortController = controller
+  const generation = testGeneration
 
   try {
     const requestBody: {
@@ -852,65 +911,54 @@ const startTest = async () => {
     const url = buildApiUrl(`/admin/accounts/${props.account.id}/test`)
 
     // Use fetch with streaming for SSE since EventSource doesn't support POST
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
+      'Content-Type': 'application/json'
+    }
+    headers[ADMIN_UI_REQUEST_HEADER] = '1'
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${localStorage.getItem('auth_token')}`,
-        'Content-Type': 'application/json',
-        [ADMIN_UI_REQUEST_HEADER]: '1'
-      },
+      headers,
       body: JSON.stringify(requestBody),
-      signal: abortController.signal
+      signal: controller.signal
     })
 
+    if (generation !== testGeneration) return
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`)
     }
 
-    const reader = response.body?.getReader()
-    if (!reader) {
-      throw new Error(t('admin.accounts.grok.noResponseBody'))
-    }
-
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const jsonStr = line.slice(6).trim()
-          if (jsonStr) {
-            try {
-              const event = JSON.parse(jsonStr)
-              handleEvent(event)
-            } catch (e) {
-              console.error('Failed to parse SSE event:', e)
-            }
-          }
-        }
-      }
+    let completed = false
+    await consumeAccountTestStream(response, controller.signal, event => {
+      if (generation !== testGeneration) return
+      if (event.type === 'test_complete') completed = true
+      handleEvent(event)
+    })
+    if (generation !== testGeneration || controller.signal.aborted) return
+    if (!completed && status.value === 'connecting') {
+      throw new Error(t('accountTestTiming.delivery.incomplete'))
     }
   } catch (error: unknown) {
+    if (generation !== testGeneration) return
     if (error instanceof DOMException && error.name === 'AbortError') {
       status.value = 'idle'
       return
     }
+    notifyTested()
     status.value = 'error'
     const msg = error instanceof Error ? error.message : t('common.unknownError')
     errorMessage.value = msg
     addLine(t('admin.accounts.errorPrefix', { message: msg }), 'text-red-400')
   }
+  finally { if (generation === testGeneration) abortController = null }
 }
 
 const handleEvent = (event: {
   type: string
+  upstream_status?: number
+  upstream_model?: string
+  request_id?: string
+  upstream_error_code?: string
   text?: string
   model?: string
   success?: boolean
@@ -922,7 +970,7 @@ const handleEvent = (event: {
 }) => {
   switch (event.type) {
     case 'test_start':
-      addLine(t('admin.accounts.connectedToApi'), 'text-green-400')
+      addLine(t('admin.accounts.testRequestStarted'), 'text-blue-400')
       if (event.model) {
         addLine(t('admin.accounts.usingModel', { model: event.model }), 'text-cyan-400')
       }
@@ -948,6 +996,12 @@ const handleEvent = (event: {
       )
       addLine('', 'text-gray-300')
       addLine(t('admin.accounts.response'), 'text-yellow-400')
+      break
+
+    case 'upstream_response':
+      if (event.upstream_status && event.upstream_status >= 100 && event.upstream_status <= 599) {
+        upstreamEvidence.value = { status: event.upstream_status, model: event.upstream_model, requestId: event.request_id, errorCode: event.upstream_error_code }
+      }
       break
 
     case 'content':
@@ -994,6 +1048,7 @@ const handleEvent = (event: {
       break
 
     case 'test_complete':
+      notifyTested()
       // Move streaming content to output lines
       if (streamingContent.value) {
         addLine(streamingContent.value, 'text-green-300')
@@ -1008,6 +1063,7 @@ const handleEvent = (event: {
       break
 
     case 'error':
+      notifyTested()
       status.value = 'error'
       errorMessage.value = event.error || t('common.unknownError')
       if (streamingContent.value) {
@@ -1022,34 +1078,6 @@ const copyOutput = () => {
   const text = outputLines.value.map((l) => l.text).join('\n')
   copyToClipboard(text, t('admin.accounts.outputCopied'))
 }
-
-// Register after the helpers above: the first lazy mount already has show=true.
-watch(
-  () => props.show,
-  async (newVal, _, onCleanup) => {
-    onCleanup(() => {
-      modelRequestVersion++
-      abortStream()
-    })
-    if (newVal && props.account) {
-      testPrompt.value = ''
-      testMode.value = 'default'
-      grokTestMode.value = 'text'
-      resetState()
-      const version = modelRequestVersion + 1
-      await loadAvailableModels()
-      if (version !== modelRequestVersion) return
-      if (isGrokAccount.value) {
-        pickDefaultModelForMode()
-        applyDefaultPromptForMode()
-      }
-    } else {
-      abortStream()
-      loadingModels.value = false
-    }
-  },
-  { immediate: true }
-)
 </script>
 
 <style>

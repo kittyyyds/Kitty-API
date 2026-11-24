@@ -18,6 +18,8 @@ declare module 'vue-router' {
      * @default false
      */
     requiresAdmin?: boolean
+    requiresSuperAdmin?: boolean
+    requiresRequestCapture?: boolean
 
     /**
      * Page title for this route
@@ -50,10 +52,20 @@ declare module 'vue-router' {
     requiresPayment?: boolean
 
     /**
-     * 是否要求风控中心功能开关已启用
+     * Whether this route requires the channel monitor feature to be enabled
      * @default false
      */
+    requiresChannelMonitor?: boolean
+    /**
+     * 是否要求风控中心功能开关已启用
+     */
     requiresRiskControl?: boolean
+
+    /**
+     * Whether the support ticket (网站工单) switch must be on
+     * @default false
+     */
+    requiresSupportTickets?: boolean
 
     /**
      * 是否要求订阅功能开关（subscription_enabled，opt-out）未被显式关闭

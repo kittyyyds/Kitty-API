@@ -2,6 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { parseWechatResumeRoute, stripWechatResumeQuery } from '../paymentWechatResume'
 
 describe('parseWechatResumeRoute', () => {
+  it('keeps a valid coupon through signed recharge resume and ignores it for subscriptions', () => {
+    const query = { wechat_resume_token: 'opaque', order_type: 'balance', coupon_id: '42' }
+    expect(parseWechatResumeRoute(query, [], 0)?.couponId).toBe(42)
+    expect(parseWechatResumeRoute({ ...query, order_type: 'subscription' }, [], 0)?.couponId).toBeUndefined()
+    expect(parseWechatResumeRoute({ ...query, coupon_id: '-1' }, [], 0)?.couponId).toBeUndefined()
+    expect(stripWechatResumeQuery({ ...query, keep: 'yes' })).toEqual({ keep: 'yes' })
+  })
   it('prefers the opaque resume token over legacy openid query params', () => {
     expect(parseWechatResumeRoute({
       wechat_resume: '1',
@@ -11,12 +18,14 @@ describe('parseWechatResumeRoute', () => {
       amount: '12.5',
       order_type: 'subscription',
       plan_id: '7',
+      renewal_mode: 'extend',
     }, [], 88)).toEqual({
       wechatResumeToken: 'resume-token-123',
       paymentType: 'wxpay',
       orderType: 'subscription',
       orderAmount: 0,
       planId: 7,
+      renewalMode: 'extend',
     })
   })
 
@@ -33,6 +42,7 @@ describe('parseWechatResumeRoute', () => {
       orderType: 'balance',
       orderAmount: 12.5,
       planId: undefined,
+      renewalMode: undefined,
     })
   })
 })
@@ -48,6 +58,7 @@ describe('stripWechatResumeQuery', () => {
       amount: '12.5',
       order_type: 'subscription',
       plan_id: '7',
+      renewal_mode: 'restart',
       state: 'state-123',
       scope: 'snsapi_base',
     })).toEqual({

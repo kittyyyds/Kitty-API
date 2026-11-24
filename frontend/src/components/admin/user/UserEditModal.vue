@@ -27,34 +27,20 @@
       </div>
       <div>
         <label class="input-label">{{ t('admin.users.username') }}</label>
-        <div data-test="username-display" class="input bg-gray-50 text-gray-500 dark:bg-dark-700 dark:text-gray-400">
-          {{ form.username || '-' }}
-        </div>
-        <p class="input-hint">{{ t('admin.users.usernameManagedByUser') }}</p>
+        <input v-model="form.username" type="text" class="input" />
       </div>
       <div>
         <label class="input-label">{{ t('admin.users.form.roleLabel') }}</label>
         <Select
           v-model="form.role"
           :options="roleOptions"
+          :disabled="!authStore.isSuperAdmin || user.id === authStore.user?.id"
           :searchable="false"
         />
       </div>
       <div>
-        <label class="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-200">
-          <input
-            v-model="form.is_vip"
-            type="checkbox"
-            class="h-4 w-4 rounded border-gray-300 text-amber-600 focus:ring-amber-500"
-            data-test="svip-checkbox"
-          />
-          {{ t('admin.users.form.svipLabel') }}
-        </label>
-        <p class="input-hint">{{ t('admin.users.form.svipHint') }}</p>
-      </div>
-      <div>
         <label class="input-label">{{ t('admin.users.notes') }}</label>
-        <textarea data-test="admin-notes" v-model="form.notes" rows="3" class="input"></textarea>
+        <textarea v-model="form.notes" rows="3" class="input"></textarea>
       </div>
       <div>
         <label class="input-label">{{ t('admin.users.columns.concurrency') }}</label>
@@ -82,6 +68,8 @@
         <p class="input-hint">{{ t('admin.users.form.rpmLimitHint') }}</p>
       </div>
       <UserAttributeForm v-model="form.customAttributes" :user-id="user?.id" />
+      <ModerationUserPanel v-if="show && user && authStore.isAdmin" :key="user.id" :user-id="user.id" />
+      <UserCleanupGuard :user-id="user.id" :role="user.role" :can-mark-system="authStore.isSuperAdmin" />
     </form>
     <template #footer>
       <div class="flex justify-end gap-3">
@@ -101,6 +89,9 @@
 import { computed, ref, reactive, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
+import UserCleanupGuard from './UserCleanupGuard.vue'
+import ModerationUserPanel from '@/components/admin/moderation/ModerationUserPanel.vue'
 import { useClipboard } from '@/composables/useClipboard'
 import { adminAPI } from '@/api/admin'
 import type { AdminUser, UserAttributeValuesMap } from '@/types'
@@ -115,10 +106,12 @@ const props = defineProps<{ show: boolean, user: AdminUser | null }>()
 const emit = defineEmits(['close', 'success'])
 const { t } = useI18n(); const appStore = useAppStore(); const { copyToClipboard } = useClipboard()
 
+const authStore = useAuthStore()
 const submitting = ref(false); const passwordCopied = ref(false)
 const roleOptions = computed(() => [
   { value: 'user', label: t('admin.users.roles.user') },
-  { value: 'admin', label: t('admin.users.roles.admin') }
+  { value: 'admin', label: t('admin.users.roles.admin') },
+  { value: 'super_admin', label: '超级管理员' }
 ])
 const form = reactive({
   email: '',
@@ -128,13 +121,12 @@ const form = reactive({
   role: 'user' as AdminUser['role'],
   concurrency: 1,
   rpm_limit: 0,
-  is_vip: false,
   customAttributes: {} as UserAttributeValuesMap
 })
 
 watch(() => props.user, (u) => {
   if (u) {
-    Object.assign(form, { email: u.email, password: '', username: u.username || '', notes: u.notes || '', role: u.role || 'user', concurrency: u.concurrency, rpm_limit: u.rpm_limit ?? 0, is_vip: Boolean(u.is_vip), customAttributes: {} })
+    Object.assign(form, { email: u.email, password: '', username: u.username || '', notes: u.notes || '', role: u.role || 'user', concurrency: u.concurrency, rpm_limit: u.rpm_limit ?? 0, customAttributes: {} })
     passwordCopied.value = false
   }
 }, { immediate: true })
@@ -165,13 +157,11 @@ const handleUpdateUser = async () => {
   const userId = props.user.id
   submitting.value = true
   try {
-    const data: any = { email: form.email, notes: form.notes, role: form.role, concurrency: form.concurrency, rpm_limit: form.rpm_limit }
+    const data: any = { email: form.email, username: form.username, notes: form.notes, role: form.role, concurrency: form.concurrency, rpm_limit: form.rpm_limit }
+    if (!authStore.isSuperAdmin) delete data.role
     if (form.password.trim()) data.password = form.password.trim()
     // 提升为管理员属敏感操作：后端返回 STEP_UP_REQUIRED 时弹 TOTP 验证并重试
     await stepUp.run(() => adminAPI.users.update(userId, data))
-    if (Boolean(props.user.is_vip) !== Boolean(form.is_vip)) {
-      await adminAPI.users.setVIP(userId, form.is_vip)
-    }
     if (Object.keys(form.customAttributes).length > 0) await adminAPI.userAttributes.updateUserAttributeValues(userId, form.customAttributes)
     appStore.showSuccess(t('admin.users.userUpdated'))
     emit('success'); emit('close')

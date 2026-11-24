@@ -3,7 +3,8 @@ import {
   CC_SWITCH_USAGE_SCRIPT,
   GROK_CC_SWITCH_MODEL,
   OPENAI_CC_SWITCH_CODEX_MODEL,
-  buildCcSwitchImportDeeplink
+  buildCcSwitchImportDeeplink,
+  resolveCcSwitchUsageBaseUrl
 } from '@/utils/ccswitchImport'
 import type { GroupPlatform } from '@/types'
 
@@ -14,7 +15,7 @@ function paramsFromDeeplink(deeplink: string): URLSearchParams {
 
 describe('ccswitchImport utils', () => {
   it('defaults OpenAI CC Switch imports to the current Codex model', () => {
-    expect(OPENAI_CC_SWITCH_CODEX_MODEL).toBe('gpt-6.2-sol')
+    expect(OPENAI_CC_SWITCH_CODEX_MODEL).toBe('gpt-6.1-sol')
   })
 
   it('defaults Grok Build imports to the current Grok model', () => {
@@ -27,6 +28,47 @@ describe('ccswitchImport utils', () => {
     apiKey: 'sk-test',
     usageScript: 'return true'
   }
+
+  it('adds the Codex model parameter for OpenAI imports', () => {
+    const params = paramsFromDeeplink(
+      buildCcSwitchImportDeeplink({
+        ...baseInput,
+        platform: 'openai',
+        clientType: 'claude'
+      })
+    )
+
+    expect(params.get('resource')).toBe('provider')
+    expect(params.get('app')).toBe('codex')
+    expect(params.get('endpoint')).toBe(baseInput.baseUrl)
+    expect(params.get('model')).toBe(OPENAI_CC_SWITCH_CODEX_MODEL)
+    expect(params.get('usageBaseUrl')).toBe(baseInput.baseUrl)
+    expect(atob(params.get('usageScript') || '')).toBe(baseInput.usageScript)
+  })
+
+  it('keeps the provider endpoint on /v1 while querying usage from the API origin', () => {
+    const apiBaseUrl = 'https://api.example.com/v1/'
+    const params = paramsFromDeeplink(
+      buildCcSwitchImportDeeplink({
+        ...baseInput,
+        baseUrl: apiBaseUrl,
+        platform: 'openai',
+        clientType: 'claude'
+      })
+    )
+
+    expect(params.get('endpoint')).toBe('https://api.example.com/v1')
+    expect(params.get('usageBaseUrl')).toBe('https://api.example.com')
+  })
+
+  it.each([
+    ['https://api.example.com/v1', 'https://api.example.com'],
+    ['https://api.example.com/api/v1/', 'https://api.example.com/api'],
+    ['https://api.example.com', 'https://api.example.com']
+  ])('resolves the CC Switch usage base for %s', (baseUrl, expected) => {
+    expect(resolveCcSwitchUsageBaseUrl(baseUrl)).toBe(expected)
+  })
+
 
   it.each([
     ['https://api.example.com', 'https://api.example.com'],
@@ -52,26 +94,11 @@ describe('ccswitchImport utils', () => {
     expect(params.get('configFormat')).toBe('json')
     expect(payload.config).toContain(`base_url = "${endpoint}"`)
     expect(payload.config).toContain(`model = "${OPENAI_CC_SWITCH_CODEX_MODEL}"`)
-    expect(payload.config).toContain('wire_api = "responses"\nsupports_websockets = true\n')
     expect(payload.config.split('[model_providers.')[0]).toContain('web_search = "live"')
     expect(payload.config).toContain('requires_openai_auth = false')
     expect(payload.config).toContain('experimental_bearer_token = "sk-test"')
     expect(payload.config).toContain('"x-openai-actor-authorization" = "local-image-extension"')
     // Global feature choices are preserved by CC Switch, not imported per provider.
-    expect(payload.config).not.toContain('[features]')
-  })
-
-  it('keeps Composite CC Switch Codex imports on HTTP Responses', () => {
-    const params = paramsFromDeeplink(buildCcSwitchImportDeeplink({
-      ...baseInput,
-      platform: 'composite',
-      clientType: 'claude'
-    }))
-
-    expect(params.get('app')).toBe('codex')
-    const payload = JSON.parse(atob(params.get('config') || '')) as { config: string }
-    expect(payload.config).toContain('wire_api = "responses"')
-    expect(payload.config).not.toContain('supports_websockets')
     expect(payload.config).not.toContain('[features]')
   })
 
@@ -114,7 +141,7 @@ describe('ccswitchImport utils', () => {
 
   it.each([
     { platform: 'anthropic' as GroupPlatform, clientType: 'claude' as const, app: 'claude' },
-    { platform: 'kimi' as GroupPlatform, clientType: 'claude' as const, app: 'claude' }
+    { platform: 'gemini' as GroupPlatform, clientType: 'gemini' as const, app: 'gemini' }
   ])('does not add a model parameter for $platform imports', ({ platform, clientType, app }) => {
     const params = paramsFromDeeplink(
       buildCcSwitchImportDeeplink({
@@ -126,6 +153,21 @@ describe('ccswitchImport utils', () => {
 
     expect(params.get('app')).toBe(app)
     expect(params.get('endpoint')).toBe(baseInput.baseUrl)
+    expect(params.has('model')).toBe(false)
+    expect(params.has('config')).toBe(false)
+  })
+
+  it('keeps Antigravity imports on the selected client endpoint without a model parameter', () => {
+    const params = paramsFromDeeplink(
+      buildCcSwitchImportDeeplink({
+        ...baseInput,
+        platform: 'antigravity',
+        clientType: 'gemini'
+      })
+    )
+
+    expect(params.get('app')).toBe('gemini')
+    expect(params.get('endpoint')).toBe(`${baseInput.baseUrl}/antigravity`)
     expect(params.has('model')).toBe(false)
     expect(params.has('config')).toBe(false)
   })
@@ -150,12 +192,12 @@ describe('CC Switch usage script', () => {
   })
 
   it('works against the endpoint every platform import stores', () => {
-    for (const platform of ['anthropic', 'openai', 'grok', 'composite'] as GroupPlatform[]) {
+    for (const platform of ['anthropic', 'openai', 'grok', 'gemini'] as GroupPlatform[]) {
       const endpoint = paramsFromDeeplink(
         buildCcSwitchImportDeeplink({
           baseUrl: 'https://api.example.com',
           platform,
-          clientType: 'claude',
+          clientType: platform === 'gemini' ? 'gemini' : 'claude',
           providerName: 'Sub2API',
           apiKey: 'sk-test',
           usageScript: CC_SWITCH_USAGE_SCRIPT

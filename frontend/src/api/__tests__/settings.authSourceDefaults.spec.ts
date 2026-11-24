@@ -12,8 +12,8 @@ import { listPlatformIds } from "@/constants/platformCatalog";
 
 /** 与后端 AllowedQuotaPlatforms 一致的全部具体平台（平台清单）。 */
 const quotaPlatforms = [
-  "anthropic", "openai", "grok",
-  "kimi", "zhipu", "deepseek", "minimax", "opencode_go", "command_code", "cline",
+  "anthropic", "openai", "gemini", "antigravity", "grok", "video",
+  "kimi", "zhipu", "deepseek", "minimax", "opencode_go", "typesafe", "command_code", "cline",
 ];
 
 /** 全部平台全 null 的 map，用于断言归一化默认值 */
@@ -95,8 +95,9 @@ describe("admin settings auth source defaults helpers", () => {
     expect(state.email.platform_quotas.anthropic).toEqual({ daily: 10, weekly: 50, monthly: 200 });
     // openai 全 null 应被保留
     expect(state.email.platform_quotas.openai).toEqual({ daily: null, weekly: null, monthly: null });
-    // 未出现的平台（grok）归一化为 null
-    expect(state.email.platform_quotas.grok).toEqual({ daily: null, weekly: null, monthly: null });
+    // 未出现的平台（gemini/antigravity）归一化为 null
+    expect(state.email.platform_quotas.gemini).toEqual({ daily: null, weekly: null, monthly: null });
+    expect(state.email.platform_quotas.antigravity).toEqual({ daily: null, weekly: null, monthly: null });
   });
 
   it("appends auth source defaults back onto update payload", () => {
@@ -227,7 +228,8 @@ describe("admin settings auth source defaults helpers", () => {
     // 0 是合法值（不限额=0 与"不设"不同，保留）
     expect(emailQuotas.openai?.daily).toBe(0);
     // 缺失平台归一化为全 null
-    expect(emailQuotas.grok).toEqual({ daily: null, weekly: null, monthly: null });
+    expect(emailQuotas.gemini).toEqual({ daily: null, weekly: null, monthly: null });
+    expect(emailQuotas.antigravity).toEqual({ daily: null, weekly: null, monthly: null });
   });
 });
 
@@ -236,6 +238,8 @@ describe("normalizePlatformQuotasMap", () => {
     const result = normalizePlatformQuotasMap({ anthropic: { daily: 5, weekly: null, monthly: null } });
     expect(result.anthropic).toEqual({ daily: 5, weekly: null, monthly: null });
     expect(result.openai).toEqual({ daily: null, weekly: null, monthly: null });
+    expect(result.gemini).toEqual({ daily: null, weekly: null, monthly: null });
+    expect(result.antigravity).toEqual({ daily: null, weekly: null, monthly: null });
     expect(result.grok).toEqual({ daily: null, weekly: null, monthly: null });
     expect(result.kimi).toEqual({ daily: null, weekly: null, monthly: null });
     expect(result.opencode_go).toEqual({ daily: null, weekly: null, monthly: null });
@@ -284,10 +288,10 @@ describe("sanitizePlatformQuotasMap", () => {
 
   it("NaN/Infinity 清洗为 null", () => {
     const result = sanitizePlatformQuotasMap({
-      grok: { daily: NaN, weekly: Infinity, monthly: null },
+      gemini: { daily: NaN, weekly: Infinity, monthly: null },
     });
-    expect(result.grok?.daily).toBe(null);
-    expect(result.grok?.weekly).toBe(null);
+    expect(result.gemini?.daily).toBe(null);
+    expect(result.gemini?.weekly).toBe(null);
   });
 
   it("缺失平台填充为全 null", () => {

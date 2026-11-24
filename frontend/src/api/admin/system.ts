@@ -15,8 +15,9 @@ export interface VersionInfo {
   current_version: string
   latest_version: string
   has_update: boolean
+  source_update_enabled?: boolean
+  host_update_managed?: boolean
   release_info?: ReleaseInfo
-  current_release_url?: string
   cached: boolean
   warning?: string
   build_type: string // "source" for manual builds, "release" for CI builds
@@ -44,19 +45,31 @@ export async function checkUpdates(force = false): Promise<VersionInfo> {
 export interface UpdateResult {
   message: string
   need_restart: boolean
+  source_update?: boolean
+  job?: SourceUpdateJob
+}
+
+export interface SourceUpdateJob {
+  job_id: string
+  request_id?: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | string
+  stage?: string
+  message?: string
+  error?: string
+  current_version?: string
+  target_version?: string
+  started_at?: string
+  finished_at?: string
 }
 
 export interface RollbackVersionInfo {
-  id: string
   version: string
-  commit: string
-  installed_at: string
-  archived_at: string
-  sha256: string
+  published_at: string
+  html_url: string
 }
 
 /**
- * Get the two most recent checksum-verified binaries installed locally.
+ * Get versions available for rollback (up to 3 versions older than current)
  */
 export async function getRollbackVersions(): Promise<{ versions: RollbackVersionInfo[] }> {
   const { data } = await apiClient.get<{ versions: RollbackVersionInfo[] }>(
@@ -66,8 +79,10 @@ export async function getRollbackVersions(): Promise<{ versions: RollbackVersion
 }
 
 /**
- * In-place updates can download a full release binary, while rollback copies
- * and verifies a local binary. Both operations survive the normal API timeout.
+ * In-place update/rollback downloads a full release binary from GitHub, which
+ * can take several minutes on slow links. The global 30s axios timeout would
+ * abort the request mid-download (#4504), so these calls wait as long as the
+ * backend allows (15 minutes server-side).
  */
 const UPDATE_REQUEST_TIMEOUT_MS = 15 * 60 * 1000
 
@@ -82,14 +97,22 @@ export async function performUpdate(): Promise<UpdateResult> {
   return data
 }
 
+/** Get the persisted state of an asynchronous host image update. */
+export async function getSourceUpdateStatus(jobID: string): Promise<SourceUpdateJob> {
+  const { data } = await apiClient.get<SourceUpdateJob>(
+    `/admin/system/update-status/${encodeURIComponent(jobID)}`
+  )
+  return data
+}
+
 /**
- * Rollback to a previously installed local binary.
- * @param id - Opaque local history ID; omit to restore the newest verified entry.
+ * Rollback to a previous version
+ * @param version - Target version (e.g. "0.1.146"); omit to restore the local backup binary
  */
-export async function rollback(id?: string): Promise<UpdateResult> {
+export async function rollback(version?: string): Promise<UpdateResult> {
   const { data } = await apiClient.post<UpdateResult>(
     '/admin/system/rollback',
-    id ? { id } : undefined,
+    version ? { version } : undefined,
     { timeout: UPDATE_REQUEST_TIMEOUT_MS }
   )
   return data
@@ -107,6 +130,7 @@ export const systemAPI = {
   getVersion,
   checkUpdates,
   performUpdate,
+  getSourceUpdateStatus,
   getRollbackVersions,
   rollback,
   restartService

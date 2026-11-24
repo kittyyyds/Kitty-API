@@ -76,24 +76,23 @@ describe('OpsErrorDetailModal', () => {
     expect(wrapper.findAll('pre')).toHaveLength(2)
     expect(wrapper.text()).not.toContain('admin.ops.errorDetail.payloads.upstream_detail')
   })
-
-  it('shows local request termination alongside the provider failure', async () => {
-    mocks.getRequestErrorDetail.mockResolvedValue({
-      id: 2, created_at: '2026-11-09T10:00:00Z', phase: 'upstream', type: 'api_error',
-      status_code: 503, final_request_status: 499, upstream_status_code: 503,
-      error_owner: 'provider', error_source: 'upstream_http',
-      message: 'Downstream request was canceled before a response was sent',
-      upstream_error_message: 'provider overloaded', error_body: '',
-    })
-    const wrapper = shallowMount(OpsErrorDetailModal, {
-      props: { show: true, errorId: 2, errorType: 'request' },
-      global: { stubs: { BaseDialog: { template: '<div><slot /></div>' }, Icon: true } },
-    })
-    await flushPromises()
-    expect(wrapper.text()).toContain('499')
-    expect(wrapper.text()).toContain('503')
-    expect(wrapper.text()).toContain('provider overloaded')
-    expect(wrapper.text()).toContain('Downstream request was canceled before a response was sent')
-    wrapper.unmount()
+})
+it.each(['user', 'upstream'])('explains %s balance failures and preserves diagnostics', async source => {
+  vi.clearAllMocks()
+  mocks.listRequestErrorUpstreamErrors.mockResolvedValue({ items: [] })
+  mocks.getRequestErrorDetail.mockResolvedValue({
+    id: 1, status_code: 403, phase: 'request',
+    error_owner: source === 'user' ? 'client' : 'provider',
+    error_source: source === 'user' ? 'client_request' : 'upstream_http',
+    user_id: 7, account_id: source === 'upstream' ? 9 : null,
+    message: 'insufficient balance', error_body: '{"error":{"message":"insufficient balance"}}',
   })
+  const wrapper = shallowMount(OpsErrorDetailModal, {
+    props: { show: true, errorId: 1, errorType: 'request' },
+    global: { stubs: { BaseDialog: { template: '<div><slot /></div>' }, Icon: true } },
+  })
+  await flushPromises()
+  expect(wrapper.get('[data-testid="balance-source"]').text()).toContain(`admin.ops.balanceError.${source}Hint`)
+  expect(wrapper.find('pre').text()).toContain('insufficient balance')
+  wrapper.unmount()
 })

@@ -39,6 +39,7 @@
             >
               <Icon name="refresh" size="md" :class="loading ? 'animate-spin' : ''" />
             </button>
+            <button class="btn btn-secondary" @click="showPricingAudit = true">{{ t('optimizations.auditTitle') }}</button>
             <button @click="openCreateDialog" class="btn btn-primary">
               <Icon name="plus" size="md" class="mr-2" />
               {{ t('admin.channels.createChannel', 'Create Channel') }}
@@ -443,16 +444,17 @@
                 {{ t('admin.channels.form.noPricingRules', 'No pricing rules yet. Click "Add" to create one.') }}
               </div>
               <div v-else class="space-y-2">
-                <PricingEntryCard
-                  v-for="(entry, idx) in section.model_pricing"
-                  :key="idx"
-                  :entry="entry"
-                  :platform="section.platform"
-                  enable-time-pricing
-                  enable-tier-multipliers
-                  @update="updatePricingEntry(sIdx, idx, $event)"
-                  @remove="removePricingEntry(sIdx, idx)"
-                />
+                  <PricingEntryCard
+                    v-for="(entry, idx) in section.model_pricing"
+                    :key="idx"
+                    :entry="entry"
+                    :platform="section.platform"
+                    allow-video-billing
+                    enable-time-pricing
+                    enable-tier-multipliers
+                    @update="updatePricingEntry(sIdx, idx, $event)"
+                    @remove="removePricingEntry(sIdx, idx)"
+                  />
               </div>
             </div>
 
@@ -624,11 +626,14 @@
       @confirm="confirmDelete"
       @cancel="showDeleteDialog = false"
     />
+  <ReadonlyPricingAudit :show="showPricingAudit" @close="showPricingAudit = false" />
   </AppLayout>
 </template>
 
 <script setup lang="ts">
+import ReadonlyPricingAudit from '@/components/admin/ReadonlyPricingAudit.vue'
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
@@ -655,11 +660,15 @@ import PricingEntryCard from '@/components/admin/channel/PricingEntryCard.vue'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { useKeyedDebouncedSearch } from '@/composables/useKeyedDebouncedSearch'
 
+const operationsRoute = useRoute()
+const showPricingAudit = ref(false)
 const { t } = useI18n()
 const appStore = useAppStore()
 
-// Channel sections that expose the Web Search emulation control and submit
-// its value. The backend also honors configured overrides on other providers.
+// Web Search global enabled state (loaded once on mount)
+// Channel dimensions supported by the Anthropic-compatible gateway paths.
+// Keep render/submit in sync; backend merge preserves dimensions unknown to this
+// editor. Account-level overrides retain their separate platform/type guards.
 const WEB_SEARCH_EMULATION_PLATFORMS: ReadonlySet<string> = new Set([
   'anthropic',
   'openai',
@@ -779,6 +788,7 @@ let abortController: AbortController | null = null
 const platformOrder = computed<GroupPlatform[]>(() => listPlatformIds())
 // Composite pricing/mapping may target every concrete schedulable provider.
 const compositePlatforms = platformOrder
+
 // ── Helpers ──
 function formatDate(value: string): string {
   if (!value) return '-'
@@ -876,9 +886,9 @@ function addPricingEntry(sectionIdx: number) {
     cache_write_1h_price: null,
     cache_write_12h_price: null,
     cache_read_price: null,
+    ultrafast_multiplier: null,
     fast_multiplier: null,
     flex_multiplier: null,
-    ultrafast_multiplier: null,
     reasoning_effort_multipliers: null,
     image_input_price: null,
     image_output_price: null,
@@ -917,9 +927,9 @@ async function syncLatestModels(sectionIdx: number) {
       cache_write_1h_price: null,
       cache_write_12h_price: null,
       cache_read_price: null,
+      ultrafast_multiplier: null,
       fast_multiplier: null,
       flex_multiplier: null,
-      ultrafast_multiplier: null,
       reasoning_effort_multipliers: null,
       image_input_price: null,
       image_output_price: null,
@@ -1153,9 +1163,9 @@ function formToAPI(): { group_ids: number[], model_pricing: ChannelModelPricing[
         cache_write_1h_price: mTokToPerToken(entry.cache_write_1h_price),
         cache_write_12h_price: mTokToPerToken(entry.cache_write_12h_price),
         cache_read_price: mTokToPerToken(entry.cache_read_price),
+        ultrafast_multiplier: entry.ultrafast_multiplier != null && entry.ultrafast_multiplier !== '' ? Number(entry.ultrafast_multiplier) : null,
         fast_multiplier: entry.fast_multiplier != null && entry.fast_multiplier !== '' ? Number(entry.fast_multiplier) : null,
         flex_multiplier: entry.flex_multiplier != null && entry.flex_multiplier !== '' ? Number(entry.flex_multiplier) : null,
-        ultrafast_multiplier: entry.ultrafast_multiplier != null && entry.ultrafast_multiplier !== '' ? Number(entry.ultrafast_multiplier) : null,
         reasoning_effort_multipliers: formReasoningEffortMultipliersToAPI(entry.reasoning_effort_multipliers),
         image_input_price: mTokToPerToken(entry.image_input_price),
         image_output_price: mTokToPerToken(entry.image_output_price),
@@ -1248,9 +1258,9 @@ function apiToForm(channel: Channel): PlatformSection[] {
         cache_write_1h_price: perTokenToMTok(p.cache_write_1h_price),
         cache_write_12h_price: perTokenToMTok(p.cache_write_12h_price),
         cache_read_price: perTokenToMTok(p.cache_read_price),
+        ultrafast_multiplier: p.ultrafast_multiplier,
         fast_multiplier: p.fast_multiplier,
         flex_multiplier: p.flex_multiplier,
-        ultrafast_multiplier: p.ultrafast_multiplier,
         reasoning_effort_multipliers: p.reasoning_effort_multipliers ? { ...p.reasoning_effort_multipliers } : null,
         image_input_price: perTokenToMTok(p.image_input_price),
         image_output_price: perTokenToMTok(p.image_output_price),
@@ -1544,11 +1554,11 @@ async function handleSubmit() {
     }
   }
 
-  // 校验 per_request/image 模式必须有价格 (只校验启用的平台)
+  // 校验 per_request/image/video 模式必须有价格 (只校验启用的平台)
   for (const section of form.platforms.filter(s => s.enabled)) {
     for (const entry of section.model_pricing) {
       if (entry.models.length === 0) continue
-      if ((entry.billing_mode === 'per_request' || entry.billing_mode === 'image') &&
+      if ((entry.billing_mode === 'per_request' || entry.billing_mode === 'image' || entry.billing_mode === 'video') &&
           (entry.per_request_price == null || entry.per_request_price === '') &&
           (!entry.intervals || entry.intervals.length === 0)) {
         appStore.showError(t('admin.channels.form.perRequestPriceRequired'))
@@ -1577,9 +1587,9 @@ async function handleSubmit() {
   // 校验区间合法性（范围、重叠等）
   for (const section of form.platforms.filter(s => s.enabled)) {
     for (const entry of section.model_pricing) {
-      if (!isValidPositiveMultiplier(entry.fast_multiplier) ||
-          !isValidPositiveMultiplier(entry.flex_multiplier) ||
-          !isValidPositiveMultiplier(entry.ultrafast_multiplier)) {
+      if (!isValidPositiveMultiplier(entry.ultrafast_multiplier) ||
+          !isValidPositiveMultiplier(entry.fast_multiplier) ||
+          !isValidPositiveMultiplier(entry.flex_multiplier)) {
         const platformLabel = t('admin.groups.platforms.' + section.platform, catalogPlatformLabel(section.platform))
         const modelLabel = entry.models.join(', ') || t('admin.channels.form.unnamed')
         appStore.showError(`${platformLabel} - ${modelLabel}: ${t('admin.channels.form.multiplierPositive')}`)
@@ -1698,6 +1708,10 @@ async function confirmDelete() {
 
 // ── Lifecycle ──
 onMounted(() => {
+  const editId = Number(operationsRoute?.query.edit_channel)
+  if (Number.isSafeInteger(editId) && editId > 0) {
+    void adminAPI.channels.getById(editId).then(openEditDialog).catch(() => appStore.showError(t('common.error')))
+  }
   loadChannels()
   loadGroups()
   loadWebSearchGlobalState()

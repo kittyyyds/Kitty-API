@@ -230,6 +230,49 @@
             />
           </button>
         </div>
+        <p
+          class="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-300"
+          data-testid="bulk-edit-openai-long-context-shadow-hint"
+        >
+          {{ t('admin.accounts.bulkEdit.longContextShadowHint') }}
+        </p>
+      </div>
+
+      <!-- OpenAI images: size tier routing -->
+      <div
+        v-if="allOpenAIPassthroughCapable"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div class="mb-3 flex items-center justify-between gap-4">
+          <label
+            id="bulk-edit-openai-image-size-tiers-label"
+            class="input-label mb-0"
+            for="bulk-edit-openai-image-size-tiers-enabled"
+          >
+            {{ t('admin.accounts.openai.imageSizeTiers') }}
+          </label>
+          <input
+            v-model="enableOpenAIImageSizeTiers"
+            id="bulk-edit-openai-image-size-tiers-enabled"
+            data-testid="bulk-edit-openai-image-size-tiers-enabled"
+            type="checkbox"
+            aria-controls="bulk-edit-openai-image-size-tiers-body"
+            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+          />
+        </div>
+        <div
+          id="bulk-edit-openai-image-size-tiers-body"
+          :class="!enableOpenAIImageSizeTiers && 'pointer-events-none opacity-50'"
+          role="group"
+          aria-labelledby="bulk-edit-openai-image-size-tiers-label"
+        >
+          <OpenAIImageSizeTiersField
+            v-model="openAIImageSizeTiers"
+            :disabled="!enableOpenAIImageSizeTiers"
+            hide-label
+            test-id-prefix="bulk-edit-openai-image-size-tier"
+          />
+        </div>
       </div>
 
       <!-- OpenAI images: size tier routing -->
@@ -308,8 +351,7 @@
       </div>
 
       <!-- Model restriction -->
-      <p v-if="hasManagedOAuthTargets" data-testid="astra-policy-bulk" class="text-sm text-gray-500 dark:text-gray-400">{{ t('admin.accounts.openai.astraPolicyBulk') }}</p>
-      <div v-if="!allOpenAIOAuthOnly" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <label
             id="bulk-edit-model-restriction-label"
@@ -763,7 +805,8 @@
         </div>
         <div id="bulk-edit-proxy-body" :class="!enableProxy && 'pointer-events-none opacity-50'">
           <ProxySelector
-            v-model="proxyId"
+            v-model="proxyIds"
+            multiple
             :proxies="proxies"
             aria-labelledby="bulk-edit-proxy-label"
           />
@@ -800,6 +843,16 @@
             aria-labelledby="bulk-edit-concurrency-label"
             @input="concurrency = Math.max(1, concurrency || 1)"
           />
+        </div>
+        <div>
+          <div class="mb-3 flex items-center justify-between">
+            <label class="input-label mb-0" for="bulk-edit-group-rate-multiplier-enabled">
+              {{ t('admin.accounts.groupBillingRateMultiplier') }}
+            </label>
+            <input v-model="enableGroupRateMultiplier" id="bulk-edit-group-rate-multiplier-enabled" type="checkbox" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+          </div>
+          <input v-model.number="groupRateMultiplier" id="bulk-edit-group-rate-multiplier" type="number" min="0" step="0.01" :disabled="!enableGroupRateMultiplier" class="input" :class="!enableGroupRateMultiplier && 'cursor-not-allowed opacity-50'" />
+          <p class="input-hint">{{ t('admin.accounts.groupBillingRateMultiplierHint') }}</p>
         </div>
         <div>
           <div class="mb-3 flex items-center justify-between">
@@ -896,6 +949,14 @@
             <Icon name="exclamationTriangle" size="xs" class="mt-0.5 flex-shrink-0" />
             <span>{{ t('admin.accounts.bulkEdit.rateSyncWarning') }}</span>
           </p>
+        </div>
+        <div>
+          <div class="mb-3 flex items-center justify-between">
+            <label class="input-label mb-0" for="bulk-edit-cost-multiplier-enabled">{{ t('admin.accounts.costMultiplier') }}</label>
+            <input id="bulk-edit-cost-multiplier-enabled" v-model="enableCostMultiplier" type="checkbox" aria-controls="bulk-edit-cost-multiplier" class="rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+          </div>
+          <input id="bulk-edit-cost-multiplier" v-model.number="costMultiplier" type="number" min="0" max="1000000" step="0.001" required :disabled="!enableCostMultiplier" :aria-label="t('admin.accounts.costMultiplier')" class="input" :class="!enableCostMultiplier && 'cursor-not-allowed opacity-50'" />
+          <p class="input-hint">{{ t('admin.accounts.costMultiplierHint') }}</p>
         </div>
       </div>
 
@@ -1051,7 +1112,7 @@
         </div>
       </div>
 
-      <!-- Codex 指纹收敛模式（仅 OpenAI OAuth） -->
+      <!-- Codex 指纹收敛（仅 OpenAI OAuth） -->
       <div v-if="allOpenAIOAuth" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <label class="input-label mb-0">{{ t('admin.accounts.openai.codexFingerprintMode') }}</label>
@@ -1068,38 +1129,6 @@
           </p>
           <Select v-model="codexFingerprintMode" data-testid="bulk-codex-fingerprint-mode-select" :options="codexFingerprintModeOptions" />
         </div>
-        <div class="mt-4 mb-3 flex items-center justify-between">
-          <label class="input-label mb-0">{{ t('admin.accounts.openai.codexFingerprintConvergence') }}</label>
-          <input
-            id="bulk-edit-openai-codex-fingerprint-convergence-enabled"
-            v-model="enableCodexFingerprintConvergence"
-            type="checkbox"
-            class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-          />
-        </div>
-        <div :class="!enableCodexFingerprintConvergence && 'pointer-events-none opacity-50'">
-          <p class="mb-2 text-xs text-gray-500 dark:text-gray-400">
-            {{ t('admin.accounts.openai.codexFingerprintConvergenceDesc') }}
-          </p>
-          <button
-            type="button"
-            data-testid="bulk-codex-fingerprint-convergence-toggle"
-            role="switch"
-            :aria-checked="codexFingerprintConvergence"
-            @click="codexFingerprintConvergence = !codexFingerprintConvergence"
-            :class="[
-              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
-              codexFingerprintConvergence ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
-            ]"
-          >
-            <span
-              :class="[
-                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
-                codexFingerprintConvergence ? 'translate-x-5' : 'translate-x-0'
-              ]"
-            />
-          </button>
-        </div>
       </div>
 
       <!-- Upstream billing auto probe (any API-key platform) -->
@@ -1111,10 +1140,10 @@
               class="input-label mb-0"
               for="bulk-edit-upstream-billing-auto-probe-enabled"
             >
-              {{ t('admin.accounts.upstreamBilling.autoProbe') }}
+              {{ t(billingProbeLabelKey) }}
             </label>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              {{ t('admin.accounts.upstreamBilling.autoProbeHint') }}
+              {{ t(billingProbeHintKey) }}
             </p>
           </div>
           <input
@@ -1310,7 +1339,7 @@
       </div>
 
       <!-- OpenAI Compact model mapping -->
-      <div v-if="allOpenAIPassthroughCapable && !allOpenAIOAuthOnly" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div v-if="allOpenAIPassthroughCapable" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div class="mb-3 flex items-center justify-between">
           <div class="flex-1 pr-4">
             <label
@@ -1583,6 +1612,7 @@
 </template>
 
 <script setup lang="ts">
+import { DEFAULT_ACCOUNT_COST_MULTIPLIER, isValidAccountCostMultiplier } from '@/utils/accountCost'
 import { ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -1657,19 +1687,11 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const appStore = useAppStore()
-
 // Platform awareness
 const targetMode = computed(() => props.target?.mode ?? 'selected')
 const targetPreviewCount = computed(() => props.target?.previewCount ?? props.accountIds.length)
 const targetSelectedPlatforms = computed(() => props.target?.selectedPlatforms ?? props.selectedPlatforms)
 const targetSelectedTypes = computed(() => props.target?.selectedTypes ?? props.selectedTypes)
-const hasManagedOAuthTargets = computed(() => {
-  if (targetMode.value === 'filtered') {
-    const filters = props.target?.filters ?? {}
-    return (!filters.platform || filters.platform === 'openai') && (!filters.type || filters.type === 'oauth')
-  }
-  return targetSelectedPlatforms.value.includes('openai') && targetSelectedTypes.value.includes('oauth')
-})
 // Grok 快捷端点仅在所选账号全部为 grok 平台时展示（其他平台不显示）
 const allTargetsGrok = computed(
   () =>
@@ -1698,10 +1720,6 @@ const allOpenAIOAuth = computed(() => {
 
 // 严格 OAuth（不含 setup-token）：namespace 摊平兼容开关只对 OAuth 账号生效
 const allOpenAIOAuthOnly = computed(() => {
-  // Filtered previews are capped; only explicit filters prove every target is OAuth.
-  if (targetMode.value === 'filtered') {
-    return props.target?.filters?.platform === 'openai' && props.target?.filters?.type === 'oauth'
-  }
   return (
     targetSelectedPlatforms.value.length === 1 &&
     targetSelectedPlatforms.value[0] === 'openai' &&
@@ -1727,6 +1745,17 @@ const allBillingProbeCapable = computed(() => {
     targetSelectedTypes.value.every(t => t === 'apikey')
   )
 })
+
+const billingProbeLabelKey = computed(() => targetSelectedPlatforms.value.includes('video')
+  ? targetSelectedPlatforms.value.length === 1
+    ? 'admin.accounts.upstreamBilling.video.autoProbe'
+    : 'admin.accounts.upstreamBilling.video.mixedAutoProbe'
+  : 'admin.accounts.upstreamBilling.autoProbe')
+const billingProbeHintKey = computed(() => targetSelectedPlatforms.value.includes('video')
+  ? targetSelectedPlatforms.value.length === 1
+    ? 'admin.accounts.upstreamBilling.video.autoProbeHint'
+    : 'admin.accounts.upstreamBilling.video.mixedAutoProbeHint'
+  : 'admin.accounts.upstreamBilling.autoProbeHint')
 
 // 是否全部为支持请求头覆写的平台/账号类型
 // 所选平台 × 所选类型的全组合均需具备覆写资格（实际选中账号是该组合的子集，
@@ -1782,7 +1811,11 @@ const enableProxy = ref(false)
 const enableConcurrency = ref(false)
 const enableLoadFactor = ref(false)
 const enablePriority = ref(false)
+const enableCostMultiplier = ref(false)
+const costMultiplier = ref(DEFAULT_ACCOUNT_COST_MULTIPLIER)
 const enableRateMultiplier = ref(false)
+const enableGroupRateMultiplier = ref(false)
+const groupRateMultiplier = ref(1)
 const enableStatus = ref(false)
 const enableGroups = ref(false)
 const enableOpenAIPassthrough = ref(false)
@@ -1815,7 +1848,7 @@ const customErrorCodeInput = ref<number | null>(null)
 const interceptWarmupRequests = ref(false)
 const headerOverrideEnabled = ref(false)
 const headerOverrideRows = ref<HeaderOverrideRow[]>([])
-const proxyId = ref<number | null>(null)
+const proxyIds = ref<number[]>([])
 const concurrency = ref(1)
 const loadFactor = ref<number | null>(null)
 const priority = ref(1)
@@ -1840,9 +1873,7 @@ const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAppServerEnabled = ref(false)
 type CodexFingerprintMode = 'off' | 'device' | 'session' | 'full'
 const enableCodexFingerprintMode = ref(false)
-const codexFingerprintMode = ref<CodexFingerprintMode>('full')
-const enableCodexFingerprintConvergence = ref(false)
-const codexFingerprintConvergence = ref(true)
+const codexFingerprintMode = ref<CodexFingerprintMode>('off')
 const codexFingerprintModeOptions = computed(() => [
   { value: 'off' as CodexFingerprintMode, label: t('admin.accounts.openai.codexFingerprintOff') },
   { value: 'device' as CodexFingerprintMode, label: t('admin.accounts.openai.codexFingerprintDevice') },
@@ -2075,12 +2106,14 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
 
   if (enableProxy.value) {
     // 后端期望 proxy_id: 0 表示清除代理，而不是 null
-    updates.proxy_id = proxyId.value === null ? 0 : proxyId.value
+    updates.proxy_id = proxyIds.value[0] ?? 0
+    updates.proxy_ids = [...proxyIds.value]
   }
 
   if (enableConcurrency.value) {
     updates.concurrency = concurrency.value
   }
+
 
   if (enableLoadFactor.value) {
     // 空值/NaN/0 时发送 0（后端约定 <= 0 表示清除）
@@ -2092,8 +2125,15 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     updates.priority = priority.value
   }
 
+  if (enableCostMultiplier.value) {
+    ensureExtra().cost_multiplier = costMultiplier.value
+  }
+
   if (enableRateMultiplier.value) {
     updates.rate_multiplier = rateMultiplier.value
+  }
+  if (enableGroupRateMultiplier.value) {
+    updates.group_rate_multiplier = groupRateMultiplier.value
   }
 
   if (enableStatus.value) {
@@ -2115,6 +2155,7 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
   if (enableOpenAIPassthrough.value) {
     const extra = ensureExtra()
     extra.openai_passthrough = openaiPassthroughEnabled.value
+    extra.openai_passthrough_model_filter = openaiPassthroughEnabled.value && openaiPassthroughModelFilterEnabled.value
     if (!openaiPassthroughEnabled.value) {
       extra.openai_oauth_passthrough = false
     }
@@ -2160,7 +2201,7 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
         : openAIResponsesMode.value
   }
 
-  if (enableModelRestriction.value && !isOpenAIModelRestrictionDisabled.value && !allOpenAIOAuthOnly.value) {
+  if (enableModelRestriction.value && !isOpenAIModelRestrictionDisabled.value) {
     // 统一使用 model_mapping 字段
     if (modelRestrictionMode.value === 'whitelist') {
       // 白名单模式：将模型转换为 model_mapping 格式（key=value）
@@ -2243,13 +2284,17 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     // 整个 payload 退化成 {extra:{}}，被后端 len(req.Extra) > 0 判为空更新直接 400
     // "No updates provided"（#6327）。
     //
-    // 读取侧缺省已是 full：显式 off 与不设置不再等价，关闭必须写 "off"。
+    // Create/Edit 那两个表单可以删键，是因为它们提交完整 extra 对象、后端整体
+    // SetExtra 覆盖；批量接口只合并增量键，两种持久化语义不能共用同一套写法。
+    //
+    // 显式 off 与不设置在读取侧完全等价：codexFingerprintModeFromExtra 对空值/
+    // 非法值走 default 回落 off，对 "off" 命中同一分支，所以 #5610 定下的
+    // "不显式 opt-in 就保持旧客户端身份" 不受影响；ShouldEnsureCodexFingerprintSeed-
+    // ForExtraUpdates 同样只在 device/session/full 时要种子，off 不会触发。
+    //
+    // 与本函数里其它"关闭/清除"字段的写法一致：codex_cli_only 直接落 false，
+    // load_factor 落 0，proxy_id 落 0 —— 批量路径一律用显式哨兵值，不用省略。
     extra.codex_fingerprint_mode = codexFingerprintMode.value
-  }
-
-  if (enableCodexFingerprintConvergence.value) {
-    const extra = ensureExtra()
-    extra.codex_experimental_fingerprint_convergence = codexFingerprintConvergence.value
   }
 
   if (enableOpenAICompactMode.value) {
@@ -2257,7 +2302,7 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     extra.openai_compact_mode = openAICompactMode.value
   }
 
-  if (enableOpenAICompactModelMapping.value && !allOpenAIOAuthOnly.value) {
+  if (enableOpenAICompactModelMapping.value) {
     credentials.compact_model_mapping = buildOpenAICompactModelMapping() ?? {}
     credentialsChanged = true
   }
@@ -2298,13 +2343,13 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
 
 const mixedChannelConfirmed = ref(false)
 
-// 是否需要预检查：改了分组 + 全是单一的 anthropic 平台
+// 是否需要预检查：改了分组 + 全是单一的 antigravity 或 anthropic 平台
 // 多平台混合的情况由 submitBulkUpdate 的 409 catch 兜底
 const canPreCheck = () =>
   enableGroups.value &&
   groupIds.value.length > 0 &&
   targetSelectedPlatforms.value.length === 1 &&
-  targetSelectedPlatforms.value[0] === 'anthropic'
+  (targetSelectedPlatforms.value[0] === 'antigravity' || targetSelectedPlatforms.value[0] === 'anthropic')
 
 const handleClose = () => {
   showMixedChannelWarning.value = false
@@ -2359,7 +2404,9 @@ const handleSubmit = async () => {
     enableConcurrency.value ||
     enableLoadFactor.value ||
     enablePriority.value ||
+    enableCostMultiplier.value ||
     enableRateMultiplier.value ||
+    enableGroupRateMultiplier.value ||
     enableStatus.value ||
     enableGroups.value ||
     enableOpenAIWSMode.value ||
@@ -2402,6 +2449,11 @@ const handleSubmit = async () => {
     }
   }
 
+  if (enableCostMultiplier.value && !isValidAccountCostMultiplier(costMultiplier.value)) {
+    appStore.showError(t('admin.accounts.costMultiplierInvalid'))
+    return
+  }
+
   const built = buildUpdatePayload()
   if (!built) {
     appStore.showError(t('admin.accounts.bulkEdit.noFieldsSelected'))
@@ -2431,11 +2483,22 @@ const submitBulkUpdate = async (baseUpdates: Record<string, unknown>) => {
       : await adminAPI.accounts.bulkUpdate(props.accountIds, updates)
     const success = res.success || 0
     const failed = res.failed || 0
+    const inherited = res.long_context_inherited_count || 0
 
     if (success > 0 && failed === 0) {
-      appStore.showSuccess(t('admin.accounts.bulkEdit.success', { count: success }))
+      if (inherited > 0) {
+        appStore.showSuccess(t('admin.accounts.bulkEdit.successWithInherited', {
+          count: success,
+          inherited
+        }))
+      } else {
+        appStore.showSuccess(t('admin.accounts.bulkEdit.success', { count: success }))
+      }
     } else if (success > 0) {
-      appStore.showError(t('admin.accounts.bulkEdit.partialSuccess', { success, failed }))
+      const key = inherited > 0
+        ? 'admin.accounts.bulkEdit.partialSuccessWithInherited'
+        : 'admin.accounts.bulkEdit.partialSuccess'
+      appStore.showError(t(key, { success, failed, inherited }))
     } else {
       appStore.showError(t('admin.accounts.bulkEdit.failed'))
     }
@@ -2455,6 +2518,8 @@ const submitBulkUpdate = async (baseUpdates: Record<string, unknown>) => {
       appStore.showError(t('admin.accounts.bulkEdit.rateSyncConflict', {
         count: error.metadata?.count ?? 1
       }))
+    } else if (error.reason === 'OPENAI_LONG_CONTEXT_PARENT_REQUIRED') {
+      appStore.showError(t('admin.accounts.bulkEdit.longContextParentRequired'))
     } else {
       appStore.showError(error.message || t('admin.accounts.bulkEdit.failed'))
       console.error('Error bulk updating accounts:', error)
@@ -2492,7 +2557,11 @@ watch(
       enableConcurrency.value = false
       enableLoadFactor.value = false
       enablePriority.value = false
+      enableCostMultiplier.value = false
+      costMultiplier.value = DEFAULT_ACCOUNT_COST_MULTIPLIER
       enableRateMultiplier.value = false
+      enableGroupRateMultiplier.value = false
+      groupRateMultiplier.value = 1
       enableStatus.value = false
       enableGroups.value = false
       enableOpenAIPassthrough.value = false
@@ -2508,9 +2577,7 @@ watch(
       enableCodexCLIOnly.value = false
       enableCodexCLIOnlyAppServer.value = false
       enableCodexFingerprintMode.value = false
-      codexFingerprintMode.value = 'full'
-      enableCodexFingerprintConvergence.value = false
-      codexFingerprintConvergence.value = true
+      codexFingerprintMode.value = 'off'
       enableOpenAICompactMode.value = false
       enableOpenAICompactModelMapping.value = false
       enableRpmLimit.value = false
@@ -2532,7 +2599,7 @@ watch(
       interceptWarmupRequests.value = false
       headerOverrideEnabled.value = false
       headerOverrideRows.value = []
-      proxyId.value = null
+      proxyIds.value = []
       concurrency.value = 1
       loadFactor.value = null
       priority.value = 1

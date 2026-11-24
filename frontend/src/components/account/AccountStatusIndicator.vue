@@ -1,7 +1,10 @@
 <template>
   <div class="flex items-center gap-2">
+
+    <QualityProtectionStatus v-if="isQualityPaused" :account="account" />
+
     <!-- Rate Limit Display (429) - Two-line layout -->
-    <div v-if="isRateLimited" class="flex flex-col items-center gap-1">
+    <div v-else-if="isRateLimited" class="flex flex-col items-center gap-1">
       <span class="badge text-xs badge-warning">{{ t('admin.accounts.status.rateLimited') }}</span>
       <span class="text-[11px] text-gray-400 dark:text-gray-500">{{ rateLimitResumeText }}</span>
     </div>
@@ -31,6 +34,8 @@
         {{ statusText }}
       </span>
     </template>
+
+    <QualityProtectionStatus v-if="!isQualityPaused && hasQualityModels" :account="account" />
 
     <!-- Error Info Indicator -->
     <div v-if="hasError && account.error_message" class="group/error relative">
@@ -162,6 +167,8 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
+import QualityProtectionStatus from './QualityProtectionStatus.vue'
+import { accountQualityModels } from '@/utils/accountQualityModels'
 import type { Account } from '@/types'
 import { formatCountdown, formatDateTime, formatDateTimeToMinute, formatCountdownWithSuffix, formatTime } from '@/utils/format'
 
@@ -169,17 +176,19 @@ const { t } = useI18n()
 
 const props = defineProps<{
   account: Account
-  now?: number
 }>()
 
 const emit = defineEmits<{
   (e: 'show-temp-unsched', account: Account): void
 }>()
 
+const isQualityPaused = computed(() => props.account.status === 'quality_paused')
+const hasQualityModels = computed(() => accountQualityModels(props.account.extra).length > 0)
+
 // Computed: is rate limited (429)
 const isRateLimited = computed(() => {
   if (!props.account.rate_limit_reset_at) return false
-  return Date.parse(props.account.rate_limit_reset_at) > (props.now ?? Date.now())
+  return new Date(props.account.rate_limit_reset_at) > new Date()
 })
 
 type AccountModelStatusItem = {
@@ -240,6 +249,20 @@ const formatScopeName = (scope: string): string => {
     'claude-sonnet-4-5-thinking': 'CSon45T',
     'claude-sonnet-5-5': 'CSon55',
     'claude-sonnet-5': 'CSon5',
+    // Gemini 2.5 系列
+    'gemini-2.5-flash': 'G25F',
+    'gemini-2.5-flash-lite': 'G25FL',
+    'gemini-2.5-flash-thinking': 'G25FT',
+    'gemini-2.5-pro': 'G25P',
+    'gemini-2.5-flash-image': 'G25I',
+    // Gemini 3.5 系列
+    'gemini-3.5-flash': 'G35F',
+    // Gemini 3 系列
+    'gemini-3-flash': 'G3F',
+    'gemini-3.1-pro-high': 'G3PH',
+    'gemini-3.1-pro-low': 'G3PL',
+    'gemini-3-pro-image': 'G3PI',
+    'gemini-3.1-flash-image': 'G31FI',
     // 其他
     'gpt-oss-120b-medium': 'GPT120',
     'tab_flash_lite_preview': 'TabFL',
@@ -248,6 +271,10 @@ const formatScopeName = (scope: string): string => {
     claude_sonnet: 'CSon',
     claude_opus: 'COpus',
     claude_haiku: 'CHaiku',
+    gemini_text: 'Gemini',
+    gemini_image: 'GImg',
+    gemini_flash: 'GFlash',
+    gemini_pro: 'GPro',
   }
   return aliases[scope] || scope
 }
@@ -281,7 +308,7 @@ const isQuotaExceeded = computed(() => {
 
 // Computed: countdown text for rate limit (429)
 const rateLimitCountdown = computed(() => {
-  return formatCountdown(props.account.rate_limit_reset_at, props.now)
+  return formatCountdown(props.account.rate_limit_reset_at)
 })
 
 const rateLimitResumeText = computed(() => {

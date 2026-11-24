@@ -14,7 +14,7 @@ vi.mock('@/api/admin/accounts', () => api)
 vi.mock('vue-i18n', async () => ({
   ...await vi.importActual<typeof import('vue-i18n')>('vue-i18n'),
   useI18n: () => ({ t: (key: string, params?: Record<string, unknown>) =>
-    key === 'admin.accounts.autoResetCredit.enableConfirmMessage'
+    key === 'admin.accounts.autoResetSafety.confirmMessage'
       ? `${key}: ${params?.threshold5h}% / ${params?.threshold7d}%` : key
   })
 }))
@@ -88,7 +88,7 @@ const dialog = (wrapper: VueWrapper, title: string) => {
   expect(result, `confirmation dialog ${title}`).toBeDefined()
   return result!
 }
-const enableDialog = (wrapper: VueWrapper) => dialog(wrapper, 'admin.accounts.autoResetCredit.enableConfirmTitle')
+const enableDialog = (wrapper: VueWrapper) => dialog(wrapper, 'admin.accounts.autoResetSafety.confirmTitle')
 const resetDialog = (wrapper: VueWrapper) => dialog(wrapper, 'admin.accounts.openaiQuotaReset.confirmTitle')
 
 async function confirmEnable(wrapper: VueWrapper) {
@@ -128,7 +128,7 @@ describe('OpenAIQuotaResetCell automatic reset-credit switch', () => {
     const wrapper = mountCell(accountWithSettings(true))
     expect(toggle(wrapper).attributes('aria-checked')).toBe('true')
     expect(resetButton(wrapper).attributes('disabled')).toBeDefined()
-    expect(resetButton(wrapper).attributes('title')).toBe('admin.accounts.openaiQuotaReset.resetTooltipAutoEnabled')
+    expect(resetButton(wrapper).attributes('title')).toBe('admin.accounts.autoResetSafety.manualBlocked')
   })
 
   it.each([
@@ -185,7 +185,7 @@ describe('OpenAIQuotaResetCell automatic reset-credit switch', () => {
   ])('confirms the current threshold settings: $expected', async ({ account, expected }) => {
     const wrapper = mountCell(account)
     await toggle(wrapper).trigger('click')
-    expect(enableDialog(wrapper).props('message')).toBe(`admin.accounts.autoResetCredit.enableConfirmMessage: ${expected}`)
+    expect(enableDialog(wrapper).props('message')).toBe(`admin.accounts.autoResetSafety.confirmMessage: ${expected}`)
     expect(api.setOpenAIAutoResetCreditEnabled).not.toHaveBeenCalled()
   })
 

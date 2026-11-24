@@ -4,10 +4,23 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
+import enCommon from '@/i18n/locales/en/common'
+import zhCommon from '@/i18n/locales/zh/common'
+
 const componentPath = resolve(dirname(fileURLToPath(import.meta.url)), '../AppSidebar.vue')
 const componentSource = readFileSync(componentPath, 'utf8')
 const stylePath = resolve(dirname(fileURLToPath(import.meta.url)), '../../../style.css')
 const styleSource = readFileSync(stylePath, 'utf8')
+
+describe('AppSidebar theme integration', () => {
+  it('uses the shared theme composable instead of maintaining a second DOM theme state', () => {
+    expect(componentSource).toContain("import { useTheme } from '@/composables/useTheme'")
+    expect(componentSource).toContain('const { isDark, toggleTheme } = useTheme()')
+    expect(componentSource).not.toContain("const isDark = ref(document.documentElement.classList.contains('dark'))")
+    expect(componentSource).not.toContain("localStorage.setItem('theme'")
+    expect(componentSource).not.toContain("const savedTheme = localStorage.getItem('theme')")
+  })
+})
 
 describe('AppSidebar custom SVG styles', () => {
   it('does not override uploaded SVG fill or stroke colors', () => {
@@ -63,13 +76,51 @@ describe('AppSidebar header styles', () => {
   })
 })
 
-describe('AppSidebar redeem code store entry', () => {
-  it('places the redeem code store next to the redeem action', () => {
-    const storeIndex = componentSource.indexOf("{ path: '/redeem-store', label: t('nav.buyRedeemCode')")
-    const redeemIndex = componentSource.indexOf("{ path: '/redeem', label: t('nav.redeem')")
+describe('AppSidebar regular-user grouped navigation contract', () => {
+  it('preserves the Kitty Studio brand and existing route translations', () => {
+    expect(zhCommon.nav.appCenter).toBe('Kitty生图')
+    expect(enCommon.nav.appCenter).toBe('Kitty Studio')
+    expect(zhCommon.appCenter.title).toBe('Kitty生图')
+    expect(enCommon.appCenter.title).toBe('Kitty Studio')
+    expect(zhCommon.nav.onlineChat).toBe('在线聊天')
+    expect(enCommon.nav.onlineChat).toBe('Online Chat')
+    expect(zhCommon.nav).not.toHaveProperty('kittyImage')
+    expect(enCommon.nav).not.toHaveProperty('kittyImage')
+  })
 
-    expect(storeIndex).toBeGreaterThan(-1)
-    expect(redeemIndex).toBeGreaterThan(storeIndex)
+  it('renders direct links and keeps the API-key onboarding selector on its link', () => {
+    expect(componentSource).toContain('v-for="section in customerNavSections"')
+    expect(componentSource).toContain('v-for="item in section.items"')
+    expect(componentSource).toContain(':to="item.path"')
+    expect(componentSource).toContain(":data-tour=\"item.path === '/keys' ? 'sidebar-my-keys' : undefined\"")
+    expect(componentSource).toContain('@click="handleMenuItemClick(item.path)"')
+    expect(componentSource).not.toContain('data-user-nav-group')
+  })
+
+  it('shows the two text-only promo badges and retires the standalone studio entry', () => {
+    expect(componentSource).toContain(':data-sidebar-promo="item.badge.tone"')
+    expect(componentSource).toContain("label: t('nav.canvasMediaBadge')")
+    expect(componentSource).toContain("label: t('nav.limitedOffer')")
+    expect(componentSource).toContain("tone: 'deal'")
+    // The affiliate badge and the badge emoji were retired at the owner's request.
+    expect(componentSource).not.toContain("label: t('nav.affiliateBadge')")
+    expect(componentSource).not.toContain("tone: 'rebate'")
+    expect(componentSource).not.toContain('item.badge.emoji')
+    expect(componentSource).not.toContain("path: '/apps'")
+    expect(componentSource).not.toContain("path: '/chat'")
+    expect(componentSource).not.toContain("buildNativeFeatureNavItem('image-generator')")
+  })
+
+  it('keeps mobile close behavior and separate admin group state', () => {
+    expect(componentSource).toContain('appStore.setMobileOpen(false)')
+    expect(componentSource).toContain('const groupExpandOverrides = ref<Map<string, boolean>>(new Map())')
+    expect(componentSource).not.toContain('groupUserNavItems')
+    expect(componentSource).not.toContain('collapsedPath')
+  })
+
+  it('filters customer routes without changing the admin personal menu source', () => {
+    expect(componentSource).toContain('const userNavItems = computed((): NavItem[] => finalizeNav(buildSelfNavItems(true)))')
+    expect(componentSource).toContain('const personalNavItems = computed((): NavItem[] => finalizeNav(buildSelfNavItems(false)))')
   })
 })
 
@@ -87,6 +138,39 @@ describe('AppSidebar subscription feature flag', () => {
     expect(componentSource).toContain("import { resolveSiteBillingMode } from '@/utils/siteBillingMode'")
     expect(componentSource).toMatch(/case 'recharge_only':\s*return t\('nav\.recharge'\)/)
     expect(componentSource).toMatch(/case 'subscription_only':\s*return t\('nav\.subscribe'\)/)
-    expect(componentSource).toMatch(/path: '\/purchase'[^\n]*label: purchaseNavLabel\.value/)
+    expect(componentSource).toMatch(/path: '\/purchase',\s*label: purchaseNavLabel\.value/)
+  })
+})
+
+describe('AppSidebar retired operations pages', () => {
+  it('removes retired supplier balance and audit entries', () => {
+    expect(componentSource).not.toContain("path: '/admin/supplier-balances'")
+    for (const path of ['/admin/channel-operations', '/admin/profit-operations', '/admin/finance-overview', '/admin/request-captures', '/admin/harvest-flow']) {
+      expect(componentSource).not.toContain(`path: '${path}'`)
+    }
+  })
+})
+
+describe('AppSidebar support tickets', () => {
+  it('gates both entries behind the opt-in switch and keeps admins on their own page', () => {
+    expect(componentSource).toContain('const flagSupportTickets = makeSidebarFlag(FeatureFlags.supportTickets)')
+    expect(componentSource).toContain('const flagUserSupportTickets = () => flagSupportTickets() && !authStore.isAdmin')
+    expect(componentSource).toMatch(/path: '\/support-tickets'[^\n]*featureFlag: flagUserSupportTickets[^\n]*countBadge: \(\) => supportTicketStore\.userUnread/)
+    expect(componentSource).toMatch(/path: '\/admin\/support-tickets'[^\n]*featureFlag: flagSupportTickets[^\n]*countBadge: \(\) => supportTicketStore\.adminPending/)
+  })
+
+  it('renders badges for every item list and caps the number', () => {
+    expect(componentSource.match(/data-testid="sidebar-nav-badge"/g)).toHaveLength(3)
+    expect(componentSource).toContain("return count > 99 ? '99+' : String(count)")
+    expect(componentSource).toContain('.sidebar-nav-badge-collapsed {')
+  })
+})
+
+describe('AppSidebar MCP entry', () => {
+  it('uses the MCP logo and shows the entry only when the deployment enables MCP', () => {
+    expect(componentSource).toContain("render: () => h(Icon, { name: 'mcp' })")
+    expect(componentSource).toContain('const flagMCP = makeSidebarFlag(FeatureFlags.mcp)')
+    expect(componentSource).toMatch(/path: '\/settings\/mcp'[^\n]*icon: MCPIcon, featureFlag: flagMCP/)
+    expect(componentSource).not.toMatch(/path: '\/settings\/mcp'[^\n]*PluginIcon/)
   })
 })

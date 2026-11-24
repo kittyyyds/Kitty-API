@@ -12,4 +12,3 @@ dist/
 # 忽略缓存
 .cache/
 .vite/
-*.timestamp-*.mjs

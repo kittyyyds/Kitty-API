@@ -114,7 +114,7 @@ describe('ModelWhitelistSelector', () => {
     resetPlatformCatalog()
   })
 
-  it.each(['anthropic', 'openai', 'grok', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go', 'command_code', 'cline'])(
+  it.each(['anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go', 'command_code', 'cline'])(
     'supports upstream sync for %s saved accounts and creation previews',
     (platform) => {
       const wrappers = [
@@ -128,8 +128,7 @@ describe('ModelWhitelistSelector', () => {
     }
   )
 
-  // gemini / antigravity / typesafe are not registered in this fork's platform catalog (c37d4b680).
-  it.each(['gemini', 'antigravity', 'typesafe', 'unregistered'])(
+  it.each(['typesafe', 'unregistered'])(
     'hides upstream sync for unsupported %s saved accounts and creation previews',
     (platform) => {
       const wrappers = [
@@ -263,9 +262,9 @@ describe('ModelWhitelistSelector', () => {
     syncUpstreamModels.mockRejectedValue({
       status: 400,
       code: 'BAD_REQUEST',
-      message: 'This account type does not support upstream model listing'
+      message: 'Vertex API key accounts do not support upstream model listing'
     })
-    const wrapper = mountSelector({ platform: 'openai', accountId: 174 })
+    const wrapper = mountSelector({ platform: 'gemini', accountId: 174 })
 
     const syncButton = wrapper
       .findAll('button')
@@ -275,7 +274,7 @@ describe('ModelWhitelistSelector', () => {
     await flushPromises()
 
     expect(showError).toHaveBeenCalledWith(
-      'admin.accounts.syncUpstreamModelsError: This account type does not support upstream model listing'
+      'admin.accounts.syncUpstreamModelsError: Vertex API key accounts do not support upstream model listing'
     )
   })
 

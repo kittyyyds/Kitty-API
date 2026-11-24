@@ -6,8 +6,34 @@
  * request/error/token counts in user-facing surfaces.
  */
 
-import type { HealthScoreBand, HealthState, MonitorHealth } from '@/api/channelMonitorV2'
+import type { HealthScoreBand, HealthState, MonitorHealth, MonitorMetric } from '@/api/channelMonitorV2'
 import { formatCompactNumber } from '@/utils/format'
+import { platformLabel } from '@/utils/platformColors'
+
+/** Catalog display name, plus factory aliases that are not registered group platforms. */
+export function monitorPlatformLabel(value: string): string {
+  if (value === 'kiro') return 'Kiro'
+  const label = platformLabel(value)
+  if (!value || label === 'API') return value || label
+  return label
+}
+
+/**
+ * Enabled platforms in saved config order.
+ * The card view does not load dimensions, so this must come from the snapshot
+ * config that is fetched together with the matrix.
+ */
+export function monitorCardPlatformOrder(
+  platforms: Array<{ platform?: string; enabled?: boolean }> | null | undefined,
+): string[] {
+  const out: string[] = []
+  for (const item of platforms || []) {
+    const id = item?.platform?.trim().toLowerCase()
+    if (!id || item.enabled === false) continue
+    out.push(id)
+  }
+  return out
+}
 
 export function monitorIntlLocale(): string {
   if (typeof document !== 'undefined') {
@@ -55,12 +81,54 @@ export function formatMonitorTokensPerSecond(tpm: number | null | undefined): st
   return formatMonitorThroughput(tokensPerSecondFromTpm(tpm))
 }
 
+/** Measured generation speed; do not substitute aggregate throughput for unknown samples. */
+export function formatMonitorOutputTPS(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value < 0) return '—'
+  return formatMonitorThroughput(value)
+}
+
 
 export function formatMonitorPercent(value: number, locale = monitorIntlLocale()): string {
   return `${new Intl.NumberFormat(locale, {
     minimumFractionDigits: value < 0.01 ? 2 : 1,
     maximumFractionDigits: value < 0.01 ? 2 : 1,
   }).format((value || 0) * 100)}%`
+}
+
+/**
+ * Color availability consistently across the V3 cards and timeline.
+ * Thresholds are ordered from worst to best and match the monitor legend.
+ */
+export function availabilityBadgeClass(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) {
+    return 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
+  }
+  if (value < 30) return 'bg-gray-950 text-white dark:bg-black dark:text-white'
+  if (value < 50) return 'bg-red-600 text-white dark:bg-red-500 dark:text-white'
+  if (value < 60) return 'bg-amber-200 text-amber-950 dark:bg-amber-500/80 dark:text-white'
+  if (value < 80) return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-500/20 dark:text-yellow-200'
+  if (value < 90) return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-200'
+  return 'bg-emerald-700 text-white dark:bg-emerald-600 dark:text-white'
+}
+
+export function availabilityBarClass(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return 'bg-gray-300 dark:bg-dark-600'
+  if (value < 30) return 'bg-gray-950 dark:bg-black'
+  if (value < 50) return 'bg-red-500 dark:bg-red-400'
+  if (value < 60) return 'bg-amber-400 dark:bg-amber-300'
+  if (value < 80) return 'bg-yellow-300 dark:bg-yellow-200'
+  if (value < 90) return 'bg-emerald-400 dark:bg-emerald-300'
+  return 'bg-emerald-600 dark:bg-emerald-400'
+}
+
+export function availabilityTextClass(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return 'text-gray-900 dark:text-gray-100'
+  if (value < 30) return 'text-gray-950 dark:text-white'
+  if (value < 50) return 'text-red-600 dark:text-red-400'
+  if (value < 60) return 'text-amber-700 dark:text-amber-300'
+  if (value < 80) return 'text-yellow-700 dark:text-yellow-300'
+  if (value < 90) return 'text-emerald-700 dark:text-emerald-300'
+  return 'text-emerald-800 dark:text-emerald-300'
 }
 
 export function formatMonitorMs(value: number | null | undefined): string {
@@ -73,8 +141,15 @@ export function formatMonitorSuccessRate(successRequests: number, requestCount: 
   return formatMonitorPercent(successRequests / requestCount)
 }
 
-export function formatMonitorSuccessRateFromError(errorRate: number): string {
+export function formatMonitorSuccessRateFromError(errorRate: number, state?: HealthState): string {
+  if (state === 'unknown') return '-'
   return formatMonitorPercent(1 - (errorRate || 0))
+}
+
+/** Unknown request health means no traffic or fewer than the configured minimum samples. */
+export function formatMonitorErrorRate(errorRate: number, state?: HealthState): string {
+  if (state === 'unknown') return '-'
+  return formatMonitorPercent(errorRate)
 }
 
 /**
@@ -186,22 +261,18 @@ export function monitorErrorCategoryLabel(category: string): string {
   return category
 }
 
-export function availabilityBarClass(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value)) return 'bg-gray-300 dark:bg-dark-600'
-  if (value < 30) return 'bg-gray-950 dark:bg-black'
-  if (value < 50) return 'bg-red-500 dark:bg-red-400'
-  if (value < 60) return 'bg-amber-400 dark:bg-amber-300'
-  if (value < 80) return 'bg-yellow-300 dark:bg-yellow-200'
-  if (value < 90) return 'bg-emerald-400 dark:bg-emerald-300'
-  return 'bg-emerald-600 dark:bg-emerald-400'
+/** Availability survives public counter redaction; zero remains a measured miss. */
+export function monitorCacheRate(metric: Pick<MonitorMetric, 'has_cache_samples' | 'cache_rate' | 'cache_rate_denominator'>): number | null {
+  const available = metric.has_cache_samples ?? (metric.cache_rate_denominator > 0)
+  return available && Number.isFinite(metric.cache_rate) ? metric.cache_rate : null
 }
 
-export function availabilityTextClass(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value)) return 'text-gray-900 dark:text-gray-100'
-  if (value < 30) return 'text-gray-950 dark:text-white'
-  if (value < 50) return 'text-red-600 dark:text-red-400'
-  if (value < 60) return 'text-amber-700 dark:text-amber-300'
-  if (value < 80) return 'text-yellow-700 dark:text-yellow-300'
-  if (value < 90) return 'text-emerald-700 dark:text-emerald-300'
-  return 'text-emerald-800 dark:text-emerald-300'
+export function formatMonitorCacheRate(metric: Pick<MonitorMetric, 'has_cache_samples' | 'cache_rate' | 'cache_rate_denominator'>): string {
+  const rate = monitorCacheRate(metric)
+  return rate == null ? '-' : formatMonitorPercent(rate)
+}
+
+/** Per-request output generation speed; unavailable evidence stays unknown. */
+export function formatMonitorOutputTps(value: number | null | undefined): string {
+  return value == null || !Number.isFinite(value) || value < 0 ? '—' : `${Number(value.toFixed(1))} token/s`
 }

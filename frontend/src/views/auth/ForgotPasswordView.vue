@@ -207,8 +207,9 @@ watch(validationToastMessage, (value, previousValue) => {
 onMounted(async () => {
   try {
     const settings = await getPublicSettings()
-    turnstileEnabled.value = settings.turnstile_enabled
-    turnstileSiteKey.value = settings.turnstile_site_key || ''
+    // Kitty keeps Cloudflare Turnstile registration-only. Action captchas still protect recovery.
+    turnstileEnabled.value = false
+    turnstileSiteKey.value = ''
     tencentCaptchaEnabled.value = settings.tencent_captcha_enabled === true
     tencentCaptchaAppId.value = settings.tencent_captcha_app_id || ''
     tencentCaptchaRegion.value = settings.tencent_captcha_region || 'cn'
@@ -331,16 +332,3 @@ async function handleSubmit(): Promise<void> {
   }
 }
 </script>
-
-<style scoped>
-.fade-enter-active,
-.fade-leave-active {
-  transition: all 0.3s ease;
-}
-
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-  transform: translateY(-8px);
-}
-</style>

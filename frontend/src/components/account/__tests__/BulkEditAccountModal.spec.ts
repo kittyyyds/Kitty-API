@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import BulkEditAccountModal from '../BulkEditAccountModal.vue'
+import ModelWhitelistSelector from '../ModelWhitelistSelector.vue'
 import { adminAPI } from '@/api/admin'
 
 const { showError, showSuccess, translate } = vi.hoisted(() => ({
@@ -18,6 +19,10 @@ vi.mock('@/stores/app', () => ({
   })
 }))
 
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: () => ({ isSimpleMode: true })
+}))
+
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
@@ -25,6 +30,10 @@ vi.mock('@/api/admin', () => ({
       checkMixedChannelRisk: vi.fn()
     }
   }
+}))
+
+vi.mock('@/api/admin/accounts', () => ({
+  getAntigravityDefaultModelMapping: vi.fn()
 }))
 
 vi.mock('vue-i18n', async () => {
@@ -42,7 +51,7 @@ function mountModal(extraProps: Record<string, unknown> = {}) {
     props: {
       show: true,
       accountIds: [1, 2],
-      selectedPlatforms: ['anthropic'],
+      selectedPlatforms: ['antigravity'],
       selectedTypes: ['apikey'],
       proxies: [],
       groups: [],
@@ -69,12 +78,6 @@ function mountModal(extraProps: Record<string, unknown> = {}) {
         },
         ProxySelector: true,
         GroupSelector: true,
-        ModelWhitelistSelector: {
-          props: ['modelValue'],
-          emits: ['update:modelValue'],
-          template: `<button type="button" data-testid="model-whitelist-stub"
-            @click="$emit('update:modelValue', ['qwen3.8-max'])">Select model</button>`
-        },
         Icon: true
       }
     }
@@ -97,6 +100,17 @@ describe('BulkEditAccountModal', () => {
     vi.mocked(adminAPI.accounts.checkMixedChannelRisk).mockResolvedValue({
       has_risk: false
     } as any)
+  })
+
+  it('no longer offers the removed Excel BPS batch field', async () => {
+    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['oauth'] })
+    expect(wrapper.find('[data-testid="bulk-enable-excel-bps"]').exists()).toBe(false)
+    await wrapper.get('#bulk-edit-concurrency-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    const updates = vi.mocked(adminAPI.accounts.bulkUpdate).mock.calls[0]?.[1] as any
+    expect(Object.keys(updates.extra || {}).filter(key => key.startsWith('openai_excel_bps'))).toEqual([])
+    wrapper.unmount()
   })
 
   it('批量修改倍率时提示自动同步账号需要先关闭同步', async () => {
@@ -124,6 +138,30 @@ describe('BulkEditAccountModal', () => {
     await flushPromises()
 
     expect(showError).toHaveBeenCalledWith('admin.accounts.bulkEdit.rateSyncConflict')
+  })
+
+  it('antigravity 白名单包含 Gemini 图片模型且过滤掉普通 GPT 模型', async () => {
+    const wrapper = mountModal()
+    const selector = wrapper.findComponent(ModelWhitelistSelector)
+    expect(selector.exists()).toBe(true)
+
+    await selector.find('div.cursor-pointer').trigger('click')
+
+    expect(wrapper.text()).toContain('gemini-3.1-flash-image')
+    expect(wrapper.text()).toContain('gemini-2.5-flash-image')
+    expect(wrapper.text()).not.toContain('gpt-5.3-codex')
+  })
+
+  it('antigravity 映射预设包含图片映射并过滤 OpenAI 预设', async () => {
+    const wrapper = mountModal()
+
+    const mappingTab = wrapper.findAll('button').find((btn) => btn.text().includes('admin.accounts.modelMapping'))
+    expect(mappingTab).toBeTruthy()
+    await mappingTab!.trigger('click')
+
+    expect(wrapper.text()).toContain('3.1-Flash-Image透传')
+    expect(wrapper.text()).toContain('3-Pro-Image→3.1')
+    expect(wrapper.text()).not.toContain('GPT-5.3 Codex Spark')
   })
 
   it('仅勾选模型限制且白名单留空时，应提交空 model_mapping 以支持所有模型', async () => {
@@ -250,10 +288,10 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
-  it.each(['oauth', 'apikey'])('OpenAI %s 仅开启自动透传时保留原有模型筛选设置', async (type) => {
+  it('OpenAI 账号批量编辑可开启自动透传', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],
-      selectedTypes: [type]
+      selectedTypes: ['oauth']
     })
 
     await wrapper.get('#bulk-edit-openai-passthrough-enabled').setValue(true)
@@ -264,7 +302,8 @@ describe('BulkEditAccountModal', () => {
     expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
     expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
       extra: {
-        openai_passthrough: true
+        openai_passthrough: true,
+        openai_passthrough_model_filter: false
       }
     })
   })
@@ -657,7 +696,7 @@ describe('BulkEditAccountModal', () => {
     expect((wrapper.get('[data-testid="bulk-edit-openai-responses-mode-select"]').element as HTMLSelectElement).value).toBe('auto')
   })
 
-  it('筛选全量模式按 filters 提交长上下文计费设置', async () => {
+  it('筛选全量模式固定展示影子继承说明并按 filters 提交', async () => {
     const wrapper = mountModal({
       accountIds: [],
       selectedPlatforms: [],
@@ -671,6 +710,8 @@ describe('BulkEditAccountModal', () => {
       }
     })
 
+    expect(wrapper.get('[data-testid="bulk-edit-openai-long-context-shadow-hint"]').text())
+      .toContain('admin.accounts.bulkEdit.longContextShadowHint')
     await wrapper.get('#bulk-edit-openai-long-context-billing-enabled').setValue(true)
     await wrapper.get('[data-testid="bulk-edit-openai-long-context-billing-toggle"]').trigger('click')
     await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
@@ -682,10 +723,11 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
-  it('长上下文计费更新成功时展示成功数量并关闭弹窗', async () => {
+  it('成功响应包含影子继承数量时展示专用提示', async () => {
     vi.mocked(adminAPI.accounts.bulkUpdate).mockResolvedValueOnce({
       success: 2,
       failed: 0,
+      long_context_inherited_count: 1,
       results: []
     } as any)
     const wrapper = mountModal({
@@ -696,18 +738,18 @@ describe('BulkEditAccountModal', () => {
     await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
-    expect(showSuccess).toHaveBeenCalledWith('admin.accounts.bulkEdit.success')
-    expect(translate).toHaveBeenCalledWith('admin.accounts.bulkEdit.success', {
-      count: 2
+    expect(showSuccess).toHaveBeenCalledWith('admin.accounts.bulkEdit.successWithInherited')
+    expect(translate).toHaveBeenCalledWith('admin.accounts.bulkEdit.successWithInherited', {
+      count: 2,
+      inherited: 1
     })
-    expect(wrapper.emitted('updated')).toHaveLength(1)
-    expect(wrapper.emitted('close')).toHaveLength(1)
   })
 
-  it('长上下文计费部分更新成功时展示成功和失败数量', async () => {
+  it('部分成功且包含影子继承数量时展示组合提示', async () => {
     vi.mocked(adminAPI.accounts.bulkUpdate).mockResolvedValueOnce({
       success: 1,
       failed: 1,
+      long_context_inherited_count: 1,
       results: []
     } as any)
     const wrapper = mountModal({
@@ -718,19 +760,19 @@ describe('BulkEditAccountModal', () => {
     await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
-    expect(showError).toHaveBeenCalledWith('admin.accounts.bulkEdit.partialSuccess')
-    expect(translate).toHaveBeenCalledWith('admin.accounts.bulkEdit.partialSuccess', {
+    expect(showError).toHaveBeenCalledWith('admin.accounts.bulkEdit.partialSuccessWithInherited')
+    expect(translate).toHaveBeenCalledWith('admin.accounts.bulkEdit.partialSuccessWithInherited', {
       success: 1,
-      failed: 1
+      failed: 1,
+      inherited: 1
     })
-    expect(wrapper.emitted('updated')).toHaveLength(1)
-    expect(wrapper.emitted('close')).toHaveLength(1)
   })
 
-  it('长上下文计费更新失败时显示后端错误并保持弹窗打开', async () => {
+  it('全影子长上下文错误使用专用提示并保持弹窗打开', async () => {
     vi.mocked(adminAPI.accounts.bulkUpdate).mockRejectedValueOnce({
       status: 400,
-      message: 'update failed'
+      reason: 'OPENAI_LONG_CONTEXT_PARENT_REQUIRED',
+      message: 'select parent'
     })
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],
@@ -740,8 +782,7 @@ describe('BulkEditAccountModal', () => {
     await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
-    expect(showError).toHaveBeenCalledWith('update failed')
-    expect(wrapper.emitted('updated')).toBeUndefined()
+    expect(showError).toHaveBeenCalledWith('admin.accounts.bulkEdit.longContextParentRequired')
     expect(wrapper.emitted('close')).toBeUndefined()
   })
 
@@ -867,10 +908,10 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
-  it.each(['oauth', 'apikey'])('OpenAI %s 仅关闭自动透传时保留原有模型筛选设置', async (type) => {
+  it('OpenAI 账号批量编辑可关闭自动透传', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],
-      selectedTypes: [type]
+      selectedTypes: ['apikey']
     })
 
     await wrapper.get('#bulk-edit-openai-passthrough-enabled').setValue(true)
@@ -881,12 +922,13 @@ describe('BulkEditAccountModal', () => {
     expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
       extra: {
         openai_passthrough: false,
+        openai_passthrough_model_filter: false,
         openai_oauth_passthrough: false
       }
     })
   })
 
-  it('OpenAI OAuth 自动透传仍由红绿点管理，不提交手工模型限制', async () => {
+  it('开启 OpenAI 自动透传时不再同时提交模型限制', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],
       selectedTypes: ['oauth']
@@ -894,164 +936,18 @@ describe('BulkEditAccountModal', () => {
 
     await wrapper.get('#bulk-edit-openai-passthrough-enabled').setValue(true)
     await wrapper.get('#bulk-edit-openai-passthrough-toggle').trigger('click')
-    expect(wrapper.find('#bulk-edit-model-restriction-enabled').exists()).toBe(false)
-    expect(wrapper.find('#bulk-edit-openai-compact-model-mapping-enabled').exists()).toBe(false)
+    await wrapper.get('#bulk-edit-model-restriction-enabled').setValue(true)
     await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
     expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
     expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
       extra: {
-        openai_passthrough: true
+        openai_passthrough: true,
+        openai_passthrough_model_filter: false
       }
     })
-    expect(wrapper.get('[data-testid="astra-policy-bulk"]').text()).toContain('admin.accounts.openai.astraPolicyBulk')
-  })
-
-  it.each([
-    { name: 'selected mixed types', target: undefined, types: ['oauth', 'apikey'], manual: true },
-    { name: 'filtered OAuth', target: { mode: 'filtered', filters: { platform: 'openai', type: 'oauth' } }, types: ['oauth'], manual: false },
-    { name: 'filtered OAuth-only preview', target: { mode: 'filtered', filters: { platform: 'openai' } }, types: ['oauth'], manual: true },
-    { name: 'filtered API-key-only preview', target: { mode: 'filtered', filters: { platform: 'openai' } }, types: ['apikey'], manual: true },
-  ])('$name preserves editing for other account types and explains the OAuth exception', ({ target, types, manual }) => {
-    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: types, target })
-    expect(wrapper.find('[data-testid="astra-policy-bulk"]').exists()).toBe(true)
-    expect(wrapper.find('#bulk-edit-model-restriction-enabled').exists()).toBe(manual)
-    expect(wrapper.find('#bulk-edit-openai-compact-model-mapping-enabled').exists()).toBe(manual)
-  })
-
-  it('can bulk-enable passthrough model filtering and submit an explicit whitelist', async () => {
-    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['apikey'] })
-    await wrapper.get('#bulk-edit-openai-passthrough-enabled').setValue(true)
-    await wrapper.get('#bulk-edit-openai-passthrough-toggle').trigger('click')
-    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(true)
-    await wrapper.get('[data-testid="bulk-openai-passthrough-model-filter"]').setValue(true)
-    await wrapper.get('#bulk-edit-model-restriction-enabled').setValue(true)
-    await wrapper.get('[data-testid="model-whitelist-stub"]').trigger('click')
-    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-
-    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
-      extra: { openai_passthrough: true, openai_passthrough_model_filter: true },
-      credentials: { model_mapping: { 'qwen3.8-max': 'qwen3.8-max' } }
-    })
-  })
-
-  it.each([
-    ['oauth', true],
-    ['oauth', false],
-    ['apikey', true],
-    ['apikey', false]
-  ])('can set model filtering to %s/%s without changing passthrough', async (type, enabled) => {
-    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: [type] })
-    const filter = wrapper.get('[data-testid="bulk-openai-passthrough-model-filter"]')
-    expect(filter.attributes('disabled')).toBeDefined()
-    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(true)
-    await filter.setValue(enabled)
-    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-
-    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
-    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
-      extra: { openai_passthrough_model_filter: enabled }
-    })
-  })
-
-  it('can update a whitelist while preserving existing passthrough model filtering', async () => {
-    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['apikey'] })
-    await wrapper.get('#bulk-edit-openai-passthrough-enabled').setValue(true)
-    await wrapper.get('#bulk-edit-openai-passthrough-toggle').trigger('click')
-    await wrapper.get('#bulk-edit-model-restriction-enabled').setValue(true)
-    await wrapper.get('[data-testid="model-whitelist-stub"]').trigger('click')
-    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-
-    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
-      extra: { openai_passthrough: true },
-      credentials: { model_mapping: { 'qwen3.8-max': 'qwen3.8-max' } }
-    })
-    expect(wrapper.text()).not.toContain('admin.accounts.openai.modelRestrictionDisabledByPassthrough')
-  })
-
-  it('can independently disable model filtering for filtered results', async () => {
-    const wrapper = mountModal({
-      accountIds: [],
-      target: {
-        mode: 'filtered',
-        filters: { platform: 'openai', status: 'active' },
-        previewCount: 12,
-        selectedPlatforms: ['openai'],
-        selectedTypes: ['oauth', 'apikey']
-      }
-    })
-    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(true)
-    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-
-    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith({
-      filters: { platform: 'openai', status: 'active' },
-      extra: { openai_passthrough_model_filter: false }
-    })
-  })
-
-  it('omits model filtering after its modification checkbox is cleared', async () => {
-    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['apikey'] })
-    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(true)
-    await wrapper.get('[data-testid="bulk-openai-passthrough-model-filter"]').setValue(true)
-    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(false)
-    await wrapper.get('#bulk-edit-status-enabled').setValue(true)
-    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-
-    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], { status: 'active' })
-  })
-
-  it('resets model filtering and its modification checkbox when reopened', async () => {
-    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['apikey'] })
-    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(true)
-    await wrapper.get('[data-testid="bulk-openai-passthrough-model-filter"]').setValue(true)
-    await wrapper.setProps({ show: false })
-    await wrapper.setProps({ show: true })
-    expect((wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').element as HTMLInputElement).checked).toBe(false)
-    expect((wrapper.get('[data-testid="bulk-openai-passthrough-model-filter"]').element as HTMLInputElement).checked).toBe(false)
-    await wrapper.get('#bulk-edit-status-enabled').setValue(true)
-    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-
-    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], { status: 'active' })
-  })
-
-  it('omits model filtering when the target changes to mixed platforms', async () => {
-    const wrapper = mountModal({
-      accountIds: [],
-      target: {
-        mode: 'filtered',
-        filters: { platform: 'openai' },
-        previewCount: 12,
-        selectedPlatforms: ['openai'],
-        selectedTypes: ['apikey']
-      }
-    })
-    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(true)
-    await wrapper.get('[data-testid="bulk-openai-passthrough-model-filter"]').setValue(true)
-    await wrapper.setProps({
-      target: {
-        mode: 'filtered',
-        filters: { status: 'active' },
-        previewCount: 20,
-        selectedPlatforms: ['openai', 'anthropic'],
-        selectedTypes: ['apikey']
-      }
-    })
-    expect(wrapper.find('#bulk-edit-openai-passthrough-model-filter-enabled').exists()).toBe(false)
-    await wrapper.get('#bulk-edit-status-enabled').setValue(true)
-    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-
-    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith({
-      filters: { status: 'active' },
-      status: 'active'
-    })
+    expect(wrapper.text()).toContain('admin.accounts.openai.modelRestrictionDisabledByPassthrough')
   })
 
   it('filtered-results 模式下应提交 filters 而不是 account_ids', async () => {
@@ -1103,10 +999,8 @@ describe('BulkEditAccountModal', () => {
       selectedTypes: ['oauth']
     })
 
+    // 下拉框默认就是 off，用户只勾选「编辑该项」即提交——正是 issue 描述的操作路径。
     await wrapper.get('#bulk-edit-openai-codex-fingerprint-mode-enabled').setValue(true)
-    await wrapper
-      .get('[data-testid="bulk-codex-fingerprint-mode-select"]')
-      .setValue('off')
     await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
@@ -1122,23 +1016,6 @@ describe('BulkEditAccountModal', () => {
       extra: Record<string, unknown>
     }
     expect(Object.keys(payload.extra).length).toBeGreaterThan(0)
-  })
-
-  it('OpenAI OAuth 批量编辑只勾选该项时提交默认完全收敛', async () => {
-    const wrapper = mountModal({
-      selectedPlatforms: ['openai'],
-      selectedTypes: ['oauth']
-    })
-
-    await wrapper.get('#bulk-edit-openai-codex-fingerprint-mode-enabled').setValue(true)
-    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-
-    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
-      extra: {
-        codex_fingerprint_mode: 'full'
-      }
-    })
   })
 
   // 与兄弟字段 codex_cli_only 的写法对齐：关闭态同样落显式值，不靠省略表达。
@@ -1180,4 +1057,27 @@ describe('BulkEditAccountModal', () => {
       }
     })
   })
+
+  it('only writes passthrough filtering when its batch field is selected', async () => {
+    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['oauth'] })
+    await wrapper.get('#bulk-edit-openai-passthrough-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-openai-passthrough-toggle').trigger('click')
+    await wrapper.get('[data-testid="openai-passthrough-model-filter"]').setValue(true)
+    await wrapper.get('#bulk-edit-model-restriction-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(vi.mocked(adminAPI.accounts.bulkUpdate).mock.calls.at(-1)?.[1]).toMatchObject({
+      extra: { openai_passthrough: true, openai_passthrough_model_filter: true },
+      credentials: { model_mapping: {} }
+    })
+    vi.mocked(adminAPI.accounts.bulkUpdate).mockClear()
+    await wrapper.get('#bulk-edit-openai-passthrough-enabled').setValue(false)
+    await wrapper.get('#bulk-edit-concurrency-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(vi.mocked(adminAPI.accounts.bulkUpdate)).toHaveBeenCalledTimes(1)
+    expect((vi.mocked(adminAPI.accounts.bulkUpdate).mock.calls.at(-1)?.[1] as any)?.extra ?? {}).not.toHaveProperty('openai_passthrough_model_filter')
+    wrapper.unmount()
+  })
+
 })

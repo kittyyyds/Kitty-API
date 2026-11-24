@@ -7,7 +7,7 @@ const {
   listAccounts,
   listWithEtag,
   getUpstreamBillingRatesWithEtag,
-  getBatchTodayStatsWithEtag,
+  getBatchTodayStats,
   getUpstreamBillingProbeSettings,
   getAllProxies,
   getAllGroups,
@@ -19,7 +19,7 @@ const {
   listAccounts: vi.fn(),
   listWithEtag: vi.fn(),
   getUpstreamBillingRatesWithEtag: vi.fn(),
-  getBatchTodayStatsWithEtag: vi.fn(),
+  getBatchTodayStats: vi.fn(),
   getUpstreamBillingProbeSettings: vi.fn(),
   getAllProxies: vi.fn(),
   getAllGroups: vi.fn(),
@@ -29,13 +29,15 @@ const {
   showSuccess: vi.fn()
 }))
 
+vi.mock('@/api/admin/channelQuality', () => ({ channelQualityAPI: { scores: async () => ({}) } }))
+
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       list: listAccounts,
       listWithEtag,
       getUpstreamBillingRatesWithEtag,
-      getBatchTodayStatsWithEtag,
+      getBatchTodayStats,
       getUpstreamBillingProbeSettings,
       delete: vi.fn(),
       batchClearError: vi.fn(),
@@ -131,7 +133,7 @@ describe('admin AccountsView bulk edit scope', () => {
     listAccounts.mockReset()
     listWithEtag.mockReset()
     getUpstreamBillingRatesWithEtag.mockReset()
-    getBatchTodayStatsWithEtag.mockReset()
+    getBatchTodayStats.mockReset()
     getUpstreamBillingProbeSettings.mockReset()
     getAllProxies.mockReset()
     getAllGroups.mockReset()
@@ -157,7 +159,7 @@ describe('admin AccountsView bulk edit scope', () => {
       etag: null,
       data: null
     })
-    getBatchTodayStatsWithEtag.mockResolvedValue({ notModified: false, etag: null, data: { stats: {} } })
+    getBatchTodayStats.mockResolvedValue({ stats: {} })
     getUpstreamBillingProbeSettings.mockResolvedValue({ enabled: true, interval_minutes: 30 })
     getAllProxies.mockResolvedValue([])
     getAllGroups.mockResolvedValue([])
@@ -184,6 +186,7 @@ describe('admin AccountsView bulk edit scope', () => {
           ReAuthAccountModal: true,
           AccountTestModal: true,
           AccountStatsModal: true,
+          ScheduledTestsPanel: true,
           SyncFromCrsModal: true,
           TempUnschedStatusModal: true,
           ErrorPassthroughRulesModal: true,
@@ -248,6 +251,7 @@ describe('admin AccountsView bulk edit scope', () => {
           ReAuthAccountModal: true,
           AccountTestModal: true,
           AccountStatsModal: true,
+          ScheduledTestsPanel: true,
           SyncFromCrsModal: true,
           TempUnschedStatusModal: true,
           ErrorPassthroughRulesModal: true,
@@ -321,6 +325,7 @@ describe('admin AccountsView bulk edit scope', () => {
           ReAuthAccountModal: true,
           AccountTestModal: true,
           AccountStatsModal: true,
+          ScheduledTestsPanel: true,
           SyncFromCrsModal: true,
           TempUnschedStatusModal: true,
           ErrorPassthroughRulesModal: true,
@@ -376,6 +381,7 @@ describe('admin AccountsView bulk edit scope', () => {
           ReAuthAccountModal: true,
           AccountTestModal: true,
           AccountStatsModal: true,
+          ScheduledTestsPanel: true,
           SyncFromCrsModal: true,
           TempUnschedStatusModal: true,
           ErrorPassthroughRulesModal: true,
@@ -450,6 +456,7 @@ describe('admin AccountsView bulk edit scope', () => {
           ReAuthAccountModal: true,
           AccountTestModal: true,
           AccountStatsModal: true,
+          ScheduledTestsPanel: true,
           SyncFromCrsModal: true,
           TempUnschedStatusModal: true,
           ErrorPassthroughRulesModal: true,
@@ -479,6 +486,7 @@ describe('admin AccountsView bulk edit scope', () => {
     expect(listAccounts).toHaveBeenCalledTimes(2)
     expect(wrapper.get('[data-test="account-rate"]').text()).toBe('0.065x')
   })
+
 
   it('does not report a successful batch probe as failed when reconciliation is skipped', async () => {
     const account = {
@@ -523,6 +531,7 @@ describe('admin AccountsView bulk edit scope', () => {
           ReAuthAccountModal: true,
           AccountTestModal: true,
           AccountStatsModal: true,
+          ScheduledTestsPanel: true,
           SyncFromCrsModal: true,
           TempUnschedStatusModal: true,
           ErrorPassthroughRulesModal: true,
@@ -594,6 +603,7 @@ describe('admin AccountsView bulk edit scope', () => {
           ReAuthAccountModal: true,
           AccountTestModal: true,
           AccountStatsModal: true,
+          ScheduledTestsPanel: true,
           SyncFromCrsModal: true,
           TempUnschedStatusModal: true,
           ErrorPassthroughRulesModal: true,

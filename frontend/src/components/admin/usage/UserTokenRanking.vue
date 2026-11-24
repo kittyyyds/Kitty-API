@@ -20,20 +20,11 @@
         <thead class="bg-gray-50 dark:bg-dark-800">
           <tr>
             <th class="w-16 px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-dark-400 sm:px-6">#</th>
-            <th
-              v-if="isColumnVisible('user')"
-              class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-dark-400"
-            >
+            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-dark-400">
               {{ t('admin.usage.tokenRanking.columns.user') }}
             </th>
             <th
-              v-if="isColumnVisible('notes')"
-              class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-dark-400"
-            >
-              {{ t('admin.usage.tokenRanking.columns.notes') }}
-            </th>
-            <th
-              v-for="col in visibleSortableColumns"
+              v-for="col in sortableColumns"
               :key="col.key"
               class="cursor-pointer select-none whitespace-nowrap px-4 py-3 text-right text-xs font-medium uppercase tracking-wider transition-colors hover:bg-gray-100 dark:hover:bg-dark-700"
               :class="sortBy === col.key ? 'text-primary-600 dark:text-primary-400' : 'text-gray-500 dark:text-dark-400'"
@@ -46,12 +37,12 @@
         </thead>
         <tbody class="divide-y divide-gray-200 bg-white dark:divide-dark-700 dark:bg-dark-900">
           <tr v-if="loading">
-            <td :colspan="tableColspan" class="py-12 text-center">
+            <td :colspan="sortableColumns.length + 2" class="py-12 text-center">
               <LoadingSpinner />
             </td>
           </tr>
           <tr v-else-if="items.length === 0">
-            <td :colspan="tableColspan" class="py-12 text-center text-sm text-gray-400">
+            <td :colspan="sortableColumns.length + 2" class="py-12 text-center text-sm text-gray-400">
               {{ t('admin.dashboard.noDataAvailable') }}
             </td>
           </tr>
@@ -71,28 +62,16 @@
               >{{ index + 1 }}</span>
               <span v-else class="inline-block w-6 text-center text-sm tabular-nums text-gray-400">{{ index + 1 }}</span>
             </td>
-            <td
-              v-if="isColumnVisible('user')"
-              class="max-w-[260px] truncate px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-200"
-              :title="item.email"
-            >
+            <td class="max-w-[260px] truncate px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-200" :title="item.email">
               {{ item.email || `User #${item.user_id}` }}
               <span class="ml-1 font-normal text-gray-400 dark:text-gray-500">#{{ item.user_id }}</span>
             </td>
-            <td
-              v-if="isColumnVisible('notes')"
-              class="max-w-[240px] truncate px-4 py-3 text-sm text-gray-500 dark:text-gray-400"
-              data-testid="ranking-notes"
-              :title="item.notes || ''"
-            >
-              {{ item.notes || '—' }}
-            </td>
-            <td v-if="isColumnVisible('requests')" class="whitespace-nowrap px-4 py-3 text-right text-sm tabular-nums text-gray-500 dark:text-gray-400">{{ item.requests.toLocaleString() }}</td>
-            <td v-if="isColumnVisible('input_tokens')" class="whitespace-nowrap px-4 py-3 text-right text-sm tabular-nums text-gray-500 dark:text-gray-400">{{ fmtTokens(item.input_tokens) }}</td>
-            <td v-if="isColumnVisible('output_tokens')" class="whitespace-nowrap px-4 py-3 text-right text-sm tabular-nums text-gray-500 dark:text-gray-400">{{ fmtTokens(item.output_tokens) }}</td>
-            <td v-if="isColumnVisible('cache_tokens')" class="whitespace-nowrap px-4 py-3 text-right text-sm tabular-nums text-gray-500 dark:text-gray-400">{{ fmtTokens(item.cache_tokens) }}</td>
-            <td v-if="isColumnVisible('total_tokens')" class="whitespace-nowrap px-4 py-3 text-right text-sm font-medium tabular-nums text-gray-900 dark:text-gray-100">{{ fmtTokens(item.total_tokens) }}</td>
-            <td v-if="isColumnVisible('actual_cost')" class="whitespace-nowrap px-4 py-3 text-right text-sm font-medium tabular-nums text-green-600 dark:text-green-400">${{ fmtCost(item.actual_cost) }}</td>
+            <td class="whitespace-nowrap px-4 py-3 text-right text-sm tabular-nums text-gray-500 dark:text-gray-400">{{ item.requests.toLocaleString() }}</td>
+            <td class="whitespace-nowrap px-4 py-3 text-right text-sm tabular-nums text-gray-500 dark:text-gray-400">{{ fmtTokens(item.input_tokens) }}</td>
+            <td class="whitespace-nowrap px-4 py-3 text-right text-sm tabular-nums text-gray-500 dark:text-gray-400">{{ fmtTokens(item.output_tokens) }}</td>
+            <td class="whitespace-nowrap px-4 py-3 text-right text-sm tabular-nums text-gray-500 dark:text-gray-400">{{ fmtTokens(item.cache_tokens) }}</td>
+            <td class="whitespace-nowrap px-4 py-3 text-right text-sm font-medium tabular-nums text-gray-900 dark:text-gray-100">{{ fmtTokens(item.total_tokens) }}</td>
+            <td class="whitespace-nowrap px-4 py-3 text-right text-sm font-medium tabular-nums text-green-600 dark:text-green-400">${{ fmtCost(item.actual_cost) }}</td>
           </tr>
         </tbody>
       </table>
@@ -101,7 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getUserBreakdown, type UserBreakdownParams } from '@/api/admin/dashboard'
 import { formatCompactNumber, formatCostFixed } from '@/utils/format'
@@ -114,7 +93,6 @@ const props = defineProps<{
   endDate: string
   filters: Record<string, unknown>
   model?: string
-  visibleColumnKeys?: string[]
 }>()
 
 defineEmits<{ (e: 'select-user', userId: number, email: string): void }>()
@@ -130,21 +108,6 @@ const sortableColumns: { key: SortKey; label: string }[] = [
   { key: 'total_tokens', label: 'admin.usage.tokenRanking.columns.totalTokens' },
   { key: 'actual_cost', label: 'admin.usage.tokenRanking.columns.cost' },
 ]
-
-const isColumnVisible = (key: string) =>
-  !props.visibleColumnKeys || props.visibleColumnKeys.includes(key)
-
-const visibleSortableColumns = computed(() =>
-  sortableColumns.filter((col) => isColumnVisible(col.key))
-)
-
-const tableColspan = computed(() => {
-  let count = 1
-  if (isColumnVisible('user')) count += 1
-  if (isColumnVisible('notes')) count += 1
-  count += visibleSortableColumns.value.length
-  return count
-})
 
 const limitOptions = [
   { value: 20, label: 'Top 20' },

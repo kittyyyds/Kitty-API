@@ -12,6 +12,10 @@
     </div>
 
     <div v-else class="space-y-6 p-6">
+      <div v-if="balanceSource" class="rounded-xl bg-amber-50 p-4 dark:bg-amber-900/10" data-testid="balance-source">
+        <div class="font-semibold text-amber-900 dark:text-amber-200">{{ t(`admin.ops.balanceError.${balanceSource}`) }}</div>
+        <p class="mt-1 text-sm text-amber-800 dark:text-amber-100">{{ t(`admin.ops.balanceError.${balanceSource}Hint`) }}</p>
+      </div>
       <!-- Summary -->
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div class="rounded-xl bg-gray-50 p-4 dark:bg-dark-900">
@@ -85,10 +89,10 @@
         </div>
 
         <div class="rounded-xl bg-gray-50 p-4 dark:bg-dark-900">
-          <div class="text-xs font-bold uppercase tracking-wider text-gray-400">{{ t('admin.ops.errorDetail.finalRequestStatus') }}</div>
+          <div class="text-xs font-bold uppercase tracking-wider text-gray-400">{{ t('admin.ops.errorDetail.status') }}</div>
           <div class="mt-1">
             <span :class="['inline-flex items-center rounded-lg px-2 py-1 text-xs font-black ring-1 ring-inset shadow-sm', statusClass]">
-              {{ finalRequestStatusCode(detail) }}
+              {{ detail.status_code }}
             </span>
           </div>
         </div>
@@ -123,11 +127,6 @@
           </div>
         </div>
 
-      </div>
-
-      <div v-if="detail.message && detail.message !== rootCauseMessage" class="text-sm text-gray-900 dark:text-dark-100">
-        <div class="font-medium text-gray-500 dark:text-dark-400">{{ t('admin.ops.errorDetail.requestOutcome') }}</div>
-        <p class="mt-1 break-words">{{ detail.message }}</p>
       </div>
 
       <div v-if="rootCauseMessage" class="rounded-xl bg-amber-50 p-6 dark:bg-amber-900/10">
@@ -231,12 +230,12 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { balanceErrorSource } from '../utils/balanceError'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { useAppStore } from '@/stores'
 import { opsAPI, type OpsErrorDetail } from '@/api/admin/ops'
-import { finalRequestStatusCode } from '@/utils/errorBadges'
 import { formatDateTime } from '@/utils/format'
 import { resolveUpstreamPayload } from '../utils/errorDetailResponse'
 
@@ -262,6 +261,8 @@ const loading = ref(false)
 const detail = ref<OpsErrorDetail | null>(null)
 
 const showUpstreamList = computed(() => props.errorType === 'request')
+
+const balanceSource = computed(() => balanceErrorSource(detail.value))
 
 const requestId = computed(() => detail.value?.request_id || detail.value?.client_request_id || '')
 
@@ -312,7 +313,7 @@ function isUpstreamError(d: OpsErrorDetail | null): boolean {
   if (!d) return false
   const phase = String(d.phase || '').toLowerCase()
   const owner = String(d.error_owner || '').toLowerCase()
-  return phase === 'upstream' && owner === 'provider'
+  return balanceErrorSource(d) === 'upstream' || (phase === 'upstream' && owner === 'provider')
 }
 
 function formatRequestTypeLabel(type: number | null | undefined): string {
@@ -436,7 +437,7 @@ function statusBadgeClass(code: number): string {
   return 'bg-gray-50 text-gray-700 ring-gray-600/20 dark:bg-gray-900/30 dark:text-gray-400 dark:ring-gray-500/30'
 }
 
-const statusClass = computed(() => statusBadgeClass(detail.value ? finalRequestStatusCode(detail.value) : 0))
+const statusClass = computed(() => statusBadgeClass(detail.value?.status_code ?? 0))
 
 const upstreamStatusClass = computed(() => statusBadgeClass(detail.value?.upstream_status_code ?? 0))
 

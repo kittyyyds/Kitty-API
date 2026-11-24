@@ -26,14 +26,8 @@ export async function updateApiKeyGroup(id: number, groupId: number | null): Pro
   return data
 }
 
-export async function updateApiKey(id: number, payload: { concurrency?: number; group_id?: number | null }): Promise<UpdateApiKeyGroupResult> {
-  const { data } = await apiClient.put<UpdateApiKeyGroupResult>(`/admin/api-keys/${id}`, payload)
-  return data
-}
-
 export const apiKeysAPI = {
-  updateApiKeyGroup,
-  updateApiKey
+  updateApiKeyGroup
 }
 
 export default apiKeysAPI

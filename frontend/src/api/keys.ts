@@ -4,7 +4,11 @@
  */
 
 import { apiClient } from './client'
-import type { ApiKey, CreateApiKeyRequest, UpdateApiKeyRequest, PaginatedResponse } from '@/types'
+import type { ApiKey, ApiKeyConcurrencySnapshot, CreateApiKeyRequest, UpdateApiKeyRequest, PaginatedResponse } from '@/types'
+
+export interface APIKeySecret extends ApiKey {
+  secret_available?: boolean
+}
 
 /**
  * List all API keys for current user
@@ -40,8 +44,8 @@ export async function list(
  * @param id - API key ID
  * @returns API key details
  */
-export async function getById(id: number): Promise<ApiKey> {
-  const { data } = await apiClient.get<ApiKey>(`/keys/${id}`)
+export async function getById(id: number, options?: { signal?: AbortSignal }): Promise<ApiKey> {
+  const { data } = await apiClient.get<ApiKey>(`/keys/${id}`, { signal: options?.signal })
   return data
 }
 
@@ -49,28 +53,36 @@ export async function getById(id: number): Promise<ApiKey> {
  * Create new API key
  * @param name - Key name
  * @param groupId - Optional group ID
+ * @param fallbackGroupId - Optional fallback group ID
  * @param customKey - Optional custom key value
  * @param ipWhitelist - Optional IP whitelist
  * @param ipBlacklist - Optional IP blacklist
  * @param quota - Optional quota limit in USD (0 = unlimited)
  * @param expiresInDays - Optional days until expiry (undefined = never expires)
  * @param rateLimitData - Optional rate limit fields
+ * @param concurrencyLimit - Concurrent request limit (0 = no additional key limit)
  * @returns Created API key
  */
 export async function create(
   name: string,
   groupId?: number | null,
+  fallbackGroupId?: number | null,
   customKey?: string,
   ipWhitelist?: string[],
   ipBlacklist?: string[],
   quota?: number,
   expiresInDays?: number,
   rateLimitData?: { rate_limit_5h?: number; rate_limit_1d?: number; rate_limit_7d?: number },
-  concurrency?: number
-): Promise<ApiKey> {
-  const payload: CreateApiKeyRequest = { name }
+  concurrencyLimit: number = 0,
+  groupIds?: number[]
+): Promise<APIKeySecret> {
+  const payload: CreateApiKeyRequest = { name, concurrency_limit: concurrencyLimit }
+  if (groupIds !== undefined) payload.group_ids = groupIds
   if (groupId !== undefined) {
     payload.group_id = groupId
+  }
+  if (fallbackGroupId !== undefined) {
+    payload.fallback_group_id = fallbackGroupId
   }
   if (customKey) {
     payload.custom_key = customKey
@@ -96,20 +108,18 @@ export async function create(
   if (rateLimitData?.rate_limit_7d && rateLimitData.rate_limit_7d > 0) {
     payload.rate_limit_7d = rateLimitData.rate_limit_7d
   }
-  if (concurrency !== undefined) {
-    payload.concurrency = concurrency
-  }
 
-  const { data } = await apiClient.post<ApiKey>('/keys', payload)
+  const { data } = await apiClient.post<APIKeySecret>('/keys', payload, { headers: { 'Idempotency-Key': crypto.randomUUID() } })
   return data
 }
 
-/**
- * Update API key
- * @param id - API key ID
- * @param updates - Fields to update
- * @returns Updated API key
- */
+/** Generate a replacement secret; the old credential stops authenticating. */
+export async function regenerate(id: number): Promise<APIKeySecret> {
+  const { data } = await apiClient.post<APIKeySecret>(`/keys/${id}/regenerate`, {}, { headers: { 'Idempotency-Key': crypto.randomUUID() } })
+  return data
+}
+
+/** Update configuration without changing the credential. */
 export async function update(id: number, updates: UpdateApiKeyRequest): Promise<ApiKey> {
   const { data } = await apiClient.put<ApiKey>(`/keys/${id}`, updates)
   return data
@@ -161,10 +171,21 @@ export async function toggleStatus(id: number, status: 'active' | 'inactive'): P
   return update(id, { status })
 }
 
+/** Read actual queue policy and counts; omitting IDs requests policy only. */
+export async function getConcurrency(ids: number[] = [], options?: { signal?: AbortSignal }): Promise<ApiKeyConcurrencySnapshot> {
+  const { data } = await apiClient.get<ApiKeyConcurrencySnapshot>('/keys/concurrency', {
+    params: ids.length ? { ids: ids.join(',') } : {},
+    signal: options?.signal,
+  })
+  return data
+}
+
 export const keysAPI = {
+  getConcurrency,
   list,
   getById,
   create,
+  regenerate,
   update,
   bulkUpdate,
   delete: deleteKey,

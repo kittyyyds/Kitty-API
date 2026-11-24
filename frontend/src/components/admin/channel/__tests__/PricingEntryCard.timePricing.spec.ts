@@ -23,7 +23,6 @@ function createEntry(billingMode: PricingFormEntry['billing_mode'] = 'token'): P
     cache_read_price: null,
     fast_multiplier: null,
     flex_multiplier: null,
-    ultrafast_multiplier: null,
     reasoning_effort_multipliers: null,
     image_input_price: null,
     image_output_price: null,
@@ -81,6 +80,20 @@ describe('PricingEntryCard time pricing visibility', () => {
 })
 
 describe('PricingEntryCard request multipliers', () => {
+
+  it('edits the independent UltraFast multiplier for OpenAI only', async () => {
+    const entry = { ...createEntry(), ultrafast_multiplier: 4.25 }
+    const wrapper = shallowMount(PricingEntryCard, {
+      props: { entry, platform: 'openai', enableTierMultipliers: true },
+    })
+    expect(wrapper.text()).toContain('admin.channels.form.ultrafastMultiplier')
+    const input = wrapper.findAll('input').find(i => (i.element as HTMLInputElement).value === '4.25')!
+    await input.setValue('3.5')
+    expect(wrapper.emitted('update')?.at(-1)?.[0]).toMatchObject({ ultrafast_multiplier: '3.5' })
+    await wrapper.setProps({ platform: 'anthropic' })
+    expect(wrapper.text()).not.toContain('admin.channels.form.ultrafastMultiplier')
+  })
+
   it('shows Fast and Flex controls only when explicitly enabled', () => {
     const hidden = shallowMount(PricingEntryCard, { props: { entry: createEntry() } })
     expect(hidden.text()).not.toContain('admin.channels.form.fastMultiplier')

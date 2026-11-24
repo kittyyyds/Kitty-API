@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
 import UsageView from '../UsageView.vue'
-import UserErrorRequestsTable from '@/components/user/UserErrorRequestsTable.vue'
+import TrafficPanel from '@/components/usage/TrafficPanel.vue'
 import Select, { type SelectOption } from '@/components/common/Select.vue'
 import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import UsageTable from '@/components/admin/usage/UsageTable.vue'
@@ -19,6 +19,7 @@ const {
   showWarning,
   showSuccess,
   showInfo,
+  routeQuery,
 } = vi.hoisted(() => ({
   query: vi.fn(),
   getStats: vi.fn(),
@@ -31,7 +32,10 @@ const {
   showWarning: vi.fn(),
   showSuccess: vi.fn(),
   showInfo: vi.fn(),
+  routeQuery: {} as Record<string, string>,
 }))
+
+vi.mock('vue-router', () => ({ useRoute: () => ({ query: routeQuery }) }))
 
 const messages: Record<string, string> = {
   'admin.dashboard.timeRange': 'Time range',
@@ -162,7 +166,8 @@ function mountUsageView() {
         Icon: true,
         UsageStatsCards: chartStub,
         UsageTable: { ...chartStub, props: ['columns'] },
-        UserErrorRequestsTable: { ...chartStub, props: ['rows', 'loading', 'total', 'page', 'pageSize'] },
+        UserErrorRequestsTable: chartStub,
+        TrafficPanel: true,
         ModelDistributionChart: chartStub,
         GroupDistributionChart: chartStub,
         EndpointDistributionChart: chartStub,
@@ -172,15 +177,10 @@ function mountUsageView() {
   })
 }
 
-function deferredRequest() {
-  let resolve!: (value: unknown) => void
-  let reject!: (reason: Error) => void
-  const promise = new Promise((yes, no) => { resolve = yes; reject = no })
-  return { promise, resolve, reject }
-}
-
 describe('user UsageView', () => {
   beforeEach(() => {
+    Object.keys(routeQuery).forEach((key) => delete routeQuery[key])
+    appStoreState.cachedPublicSettings = { allow_user_view_error_requests: true }
     query.mockReset()
     getStats.mockReset()
     getDashboardModels.mockReset()
@@ -225,81 +225,13 @@ describe('user UsageView', () => {
     getAvailable.mockResolvedValue([{ id: 1, name: 'default' }])
   })
 
-  it('opts error status filtering and sorting into the final request outcome', async () => {
-    const wrapper = mountUsageView()
-    await flushPromises()
-    await wrapper.findAll('button').find((button) => button.text() === 'Error records')!.trigger('click')
-    await flushPromises()
-    expect(listMyErrorRequests).toHaveBeenLastCalledWith(expect.objectContaining({ status_scope: 'request' }))
-    wrapper.findComponent(UserErrorRequestsTable).vm.$emit('sort', 'status_code', 'asc')
-    await flushPromises()
-    expect(listMyErrorRequests).toHaveBeenLastCalledWith(expect.objectContaining({ status_scope: 'request', sort_by: 'status_code', sort_order: 'asc' }))
-    const statusSelect = wrapper.findAllComponents(Select).find((select) =>
-      select.props('options').some((option: SelectOption) => option.value === 499))!
-    statusSelect.vm.$emit('update:modelValue', 499)
-    statusSelect.vm.$emit('change', 499)
-    await flushPromises()
-    expect(listMyErrorRequests).toHaveBeenLastCalledWith(expect.objectContaining({ status_scope: 'request', status_code: 499 }))
-    wrapper.unmount()
-  })
-
-  it('user errors keep the newest page when requests finish out of order', async () => {
-    const old = deferredRequest()
-    const current = deferredRequest()
-    listMyErrorRequests.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise)
-    const wrapper = mountUsageView()
-    await flushPromises()
-    await wrapper.findAll('button').find((button) => button.text() === 'Error records')!.trigger('click')
-    const table = wrapper.findComponent(UserErrorRequestsTable)
-    table.vm.$emit('update:page', 2)
-    await flushPromises()
-    expect(listMyErrorRequests).toHaveBeenCalledTimes(2)
-    expect(listMyErrorRequests.mock.calls[1][0].page).toBe(2)
-    current.resolve({ items: [{ id: 2, model: 'current' }], total: 40 })
-    await flushPromises()
-    old.resolve({ items: [{ id: 1, model: 'stale' }], total: 20 })
-    await flushPromises()
-    expect(table.props('page')).toBe(2)
-    expect(table.props('rows')).toEqual([{ id: 2, model: 'current' }])
-    expect(table.props('total')).toBe(40)
-    wrapper.unmount()
-  })
-
-  it('user errors stay loading while the current request is pending', async () => {
-    const old = deferredRequest()
-    const current = deferredRequest()
-    listMyErrorRequests.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise)
-    const wrapper = mountUsageView()
-    await flushPromises()
-    await wrapper.findAll('button').find((button) => button.text() === 'Error records')!.trigger('click')
-    const table = wrapper.findComponent(UserErrorRequestsTable)
-    table.vm.$emit('update:page', 2)
-    await flushPromises()
-    old.resolve({ items: [{ id: 1 }], total: 20 })
-    await flushPromises()
-    expect(table.props('loading')).toBe(true)
-    current.resolve({ items: [{ id: 2 }], total: 40 })
-    await flushPromises()
-    expect(table.props('loading')).toBe(false)
-    wrapper.unmount()
-  })
-
-  it('user date filters invalidate pending errors while the tab is hidden', async () => {
-    const old = deferredRequest()
-    listMyErrorRequests.mockReturnValueOnce(old.promise).mockResolvedValueOnce({ items: [{ id: 2 }], total: 1 })
-    const wrapper = mountUsageView()
-    await flushPromises()
-    await wrapper.findAll('button').find((button) => button.text() === 'Error records')!.trigger('click')
-    await wrapper.findAll('button').find((button) => button.text() === 'Usage records')!.trigger('click')
-    wrapper.findComponent(DateRangePicker).vm.$emit('change', { startDate: '2026-10-30', endDate: '2026-10-30', preset: null })
-    await flushPromises()
-    old.resolve({ items: [{ id: 1 }], total: 20 })
-    await flushPromises()
-    await wrapper.findAll('button').find((button) => button.text() === 'Error records')!.trigger('click')
-    await flushPromises()
-    expect(listMyErrorRequests).toHaveBeenCalledTimes(2)
-    expect(listMyErrorRequests.mock.calls[1][0].start_date).toBe('2026-10-30')
-    expect(wrapper.findComponent(UserErrorRequestsTable).props('rows')).toEqual([{ id: 2 }])
+  it('passes the same own API key choices to traffic and usage details', async () => {
+    const wrapper = mountUsageView(); await flushPromises()
+    const usageOptions = wrapper.findAllComponents(Select).find(select =>
+      (select.props('options') as SelectOption[]).some(option => option.label === 'demo-key')
+    )!.props('options')
+    await wrapper.findAll('button').find(button => button.text() === 'traffic.title')!.trigger('click')
+    expect(wrapper.getComponent(TrafficPanel).props('apiKeyOptions')).toEqual(usageOptions)
     wrapper.unmount()
   })
 
@@ -319,18 +251,25 @@ describe('user UsageView', () => {
     expect(list).toHaveBeenCalledTimes(1)
     expect(list).toHaveBeenCalledWith(1, 100)
     expect(getAvailable).toHaveBeenCalled()
+  })
 
-    const requests = [
-      query.mock.calls[0][0],
-      getStats.mock.calls[0][0],
-      getDashboardModels.mock.calls[0][0],
-      getDashboardSnapshotV2.mock.calls[0][0],
-    ]
-    for (const params of requests) {
-      expect(params.start_date).toBeUndefined()
-      expect(params.end_date).toBeUndefined()
-      expect(Date.parse(params.end_time) - Date.parse(params.start_time)).toBe(24 * 60 * 60 * 1000)
-    }
+  it('opens an old video task receipt with its original key and lifecycle dates', async () => {
+    Object.assign(routeQuery, { api_key_id: '166', start_date: '2026-01-03', end_date: '2026-01-06' })
+    const wrapper = mountUsageView()
+    await flushPromises()
+    expect(query).toHaveBeenCalledWith(expect.objectContaining({
+      api_key_id: 166, start_date: '2026-01-03', end_date: '2026-01-06', page: 1,
+    }), expect.anything())
+    expect(getStats).toHaveBeenCalledWith(expect.objectContaining({ api_key_id: 166, start_date: '2026-01-03', end_date: '2026-01-06' }))
+    wrapper.unmount()
+  })
+
+  it('ignores a malformed key ID in a usage link', async () => {
+    routeQuery.api_key_id = '-1.5'
+    const wrapper = mountUsageView()
+    await flushPromises()
+    expect(query.mock.calls[0][0].api_key_id).toBeUndefined()
+    wrapper.unmount()
   })
 
   it('includes API keys after the first page in both record filters and queries by the selected key', async () => {
@@ -501,6 +440,7 @@ describe('user UsageView', () => {
       'Time,API Key Name,Model,Reasoning Effort,Inbound Endpoint,IP Address,Type,Billing Mode,Input Tokens,Output Tokens,Cache Read Tokens,Cache Creation Tokens,Rate Multiplier,Billed Cost,Original Cost,First Token (ms),Duration (ms)',
       '2026-03-08T00:00:00Z,demo-key,gpt-5.4,-,,203.0.113.10,Sync,Token,4057,101,278272,4,1,0.09288300,0.09288300,12,345',
     ].join('\n'))
+    expect(csvContent).not.toContain('Cache Rate')
     expect(csvContent).toContain('IP Address')
     expect(csvContent).toContain('203.0.113.10')
     expect(csvContent).toContain('Billed Cost')
@@ -513,6 +453,71 @@ describe('user UsageView', () => {
     window.URL.revokeObjectURL = originalRevokeObjectURL
     vi.unstubAllGlobals()
     clickSpy.mockRestore()
+  })
+
+  it('includes cache rate in csv only when users are allowed to see it', async () => {
+    appStoreState.cachedPublicSettings = { allow_user_view_error_requests: true, usage_show_cache_rate_to_users: true }
+    const wrapper = mountUsageView()
+    await flushPromises()
+
+    let csvContent = ''
+    const OriginalBlob = globalThis.Blob
+    vi.stubGlobal('Blob', vi.fn((parts: BlobPart[], options?: BlobPropertyBag) => {
+      csvContent = parts.map((part) => String(part)).join('')
+      return new OriginalBlob(parts, options)
+    }))
+    const originalCreateObjectURL = window.URL.createObjectURL
+    const originalRevokeObjectURL = window.URL.revokeObjectURL
+    window.URL.createObjectURL = vi.fn(() => 'blob:usage-export') as typeof window.URL.createObjectURL
+    window.URL.revokeObjectURL = vi.fn(() => {}) as typeof window.URL.revokeObjectURL
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+    await (wrapper.vm as any).exportToCSV()
+
+    expect(csvContent).toContain('Cache Rate')
+    expect(csvContent).toContain('98.6%')
+    expect(csvContent).not.toContain('Upstream Response Model')
+    appStoreState.cachedPublicSettings = { allow_user_view_error_requests: true }
+    window.URL.createObjectURL = originalCreateObjectURL
+    window.URL.revokeObjectURL = originalRevokeObjectURL
+    vi.unstubAllGlobals()
+    clickSpy.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('includes the upstream response model in csv only when users are allowed to see it', async () => {
+    query.mockResolvedValue({
+      items: [{ ...usageLog, upstream_response_model: 'gpt-5.4-actual' }],
+      total: 1,
+      pages: 1,
+    })
+    appStoreState.cachedPublicSettings = { usage_show_upstream_response_model_to_users: true }
+    const wrapper = mountUsageView()
+    await flushPromises()
+
+    let csvContent = ''
+    const OriginalBlob = globalThis.Blob
+    vi.stubGlobal('Blob', vi.fn((parts: BlobPart[], options?: BlobPropertyBag) => {
+      csvContent = parts.map((part) => String(part)).join('')
+      return new OriginalBlob(parts, options)
+    }))
+    const originalCreateObjectURL = window.URL.createObjectURL
+    const originalRevokeObjectURL = window.URL.revokeObjectURL
+    window.URL.createObjectURL = vi.fn(() => 'blob:usage-export') as typeof window.URL.createObjectURL
+    window.URL.revokeObjectURL = vi.fn(() => {}) as typeof window.URL.revokeObjectURL
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+    await (wrapper.vm as any).exportToCSV()
+
+    expect(csvContent).toContain('Upstream Response Model')
+    expect(csvContent).toContain('gpt-5.4,gpt-5.4-actual,')
+    expect(csvContent).not.toContain('upstream_model')
+    appStoreState.cachedPublicSettings = { allow_user_view_error_requests: true }
+    window.URL.createObjectURL = originalCreateObjectURL
+    window.URL.revokeObjectURL = originalRevokeObjectURL
+    vi.unstubAllGlobals()
+    clickSpy.mockRestore()
+    wrapper.unmount()
   })
 
   it('keeps formula-injection protection for dangerous exported values', async () => {

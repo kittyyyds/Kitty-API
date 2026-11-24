@@ -151,10 +151,12 @@ export function formatDateTime(
 
 /**
  * 格式化日期时间（精确到分钟）
+ * @param timeZone 可选 IANA 时区，例如 Asia/Shanghai
  */
 export function formatDateTimeToMinute(
   date: string | Date | null | undefined,
-  localeOverride?: string
+  localeOverride?: string,
+  timeZone?: string
 ): string {
   return formatDate(
     date,
@@ -164,7 +166,8 @@ export function formatDateTimeToMinute(
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
-      hour12: false
+      hour12: false,
+      ...(timeZone ? { timeZone } : {})
     },
     localeOverride
   )
@@ -389,11 +392,12 @@ export function formatCompactNumber(
  * @param targetDate 目标日期字符串或 Date 对象
  * @returns 倒计时字符串，如 "2h 41m", "3d 5h", "15m"
  */
-export function formatCountdown(targetDate: string | Date | null | undefined, now = Date.now()): string | null {
+export function formatCountdown(targetDate: string | Date | null | undefined): string | null {
   if (!targetDate) return null
 
+  const now = new Date()
   const target = new Date(targetDate)
-  const diffMs = target.getTime() - now
+  const diffMs = target.getTime() - now.getTime()
 
   // 如果目标时间已过或无效
   if (diffMs <= 0 || isNaN(diffMs)) return null

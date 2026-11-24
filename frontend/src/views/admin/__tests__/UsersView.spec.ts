@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, shallowMount } from '@vue/test-utils'
 
 import type { AdminUser } from '@/types'
 import UsersView from '../UsersView.vue'
@@ -13,7 +13,8 @@ const {
   getAllGroups,
   getBatchUsersUsage,
   listEnabledDefinitions,
-  getBatchUserAttributes
+  getBatchUserAttributes,
+  auth
 } = vi.hoisted(() => ({
   listUsers: vi.fn(),
   toggleStatus: vi.fn(),
@@ -23,7 +24,8 @@ const {
   getAllGroups: vi.fn(),
   getBatchUsersUsage: vi.fn(),
   listEnabledDefinitions: vi.fn(),
-  getBatchUserAttributes: vi.fn()
+  getBatchUserAttributes: vi.fn(),
+  auth: { isSuperAdmin: true }
 }))
 
 vi.mock('@/api/admin', () => ({
@@ -31,7 +33,6 @@ vi.mock('@/api/admin', () => ({
     users: {
       list: listUsers,
       toggleStatus,
-      setVIP: vi.fn(),
       delete: deleteUser
     },
     groups: {
@@ -53,6 +54,11 @@ vi.mock('@/stores/app', () => ({
     showSuccess
   })
 }))
+
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => auth }))
+vi.mock('@/components/admin/user/UserCleanupControl.vue', () => ({ default: {
+  name: 'UserCleanupControl', template: '<div />', methods: { refreshSummary: () => undefined }
+} }))
 
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
@@ -108,9 +114,6 @@ const DataTableStub = {
         <slot :name="'header-' + col.key" :column="col" />
       </template>
       <div v-for="row in data" :key="row.id">
-        <slot name="cell-email" :value="row.email" :row="row" />
-        <slot name="cell-username" :row="row" />
-        <slot name="cell-actions" :row="row" />
         <slot name="cell-last_used_at" :value="row.last_used_at" :row="row" />
         <div :data-test="'actions-' + row.id"><slot name="cell-actions" :row="row" /></div>
       </div>
@@ -183,6 +186,7 @@ const getToggleStatusButton = (wrapper: ReturnType<typeof mountBulkDeleteView>, 
 
 describe('admin UsersView', () => {
   beforeEach(() => {
+    auth.isSuperAdmin = true
     vi.useRealTimers()
     localStorage.clear()
 
@@ -313,35 +317,6 @@ describe('admin UsersView', () => {
     wrapper.unmount()
   })
 
-  it('re-enables a disabled admin while keeping manual disable unavailable', async () => {
-    listUsers.mockResolvedValue({
-      items: [createAdminUser({ role: 'admin', status: 'disabled' })],
-      total: 1, page: 1, page_size: 20, pages: 1
-    })
-    toggleStatus.mockResolvedValue(createAdminUser({ role: 'admin', status: 'active' }))
-    const wrapper = mountBulkDeleteView()
-    await flushPromises()
-
-    const enableButton = getToggleStatusButton(wrapper, 42)
-    expect(enableButton.text()).toBe('admin.users.enable')
-    expect(enableButton.attributes('disabled')).toBeUndefined()
-    await enableButton.trigger('click')
-    await flushPromises()
-
-    expect(toggleStatus.mock.calls).toEqual([[42, 'active']])
-    expect(wrapper.get('[data-test="row-state"]').text()).toBe('42:active:0')
-    expect(showSuccess).toHaveBeenCalledWith('admin.users.userEnabled')
-
-    const disableButton = getToggleStatusButton(wrapper, 42)
-    expect(disableButton.text()).toBe('admin.users.disable')
-    expect(disableButton.attributes('disabled')).toBeDefined()
-    expect(disableButton.attributes('title')).toBe('admin.users.adminDisableForbidden')
-    await disableButton.trigger('click')
-    expect(toggleStatus).toHaveBeenCalledTimes(1)
-    expect(listUsers).toHaveBeenCalledTimes(1)
-    wrapper.unmount()
-  })
-
   it('keeps the row untouched when toggling status fails', async () => {
     toggleStatus.mockRejectedValue(new Error('boom'))
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -447,6 +422,8 @@ describe('admin UsersView', () => {
         'concurrency',
         'usage_anthropic',
         'usage_openai',
+        'usage_gemini',
+        'usage_antigravity',
         'balance_platform_quota'
       ])
     )
@@ -604,156 +581,23 @@ describe('admin UsersView', () => {
     expect(wrapper.get('[data-test="selected-keys"]').text()).toBe('')
   })
 
-  it('shows a static SVIP badge on the user column and keeps the actions toggle', async () => {
-    listUsers.mockResolvedValue({
-      items: [createAdminUser({ is_vip: true, username: 'vip-name' })],
-      total: 1,
-      page: 1,
-      page_size: 20,
-      pages: 1
-    })
-
-    const wrapper = mount(UsersView, {
-      global: {
-        stubs: {
-          AppLayout: { template: '<div><slot /></div>' },
-          TablePageLayout: {
-            template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>'
-          },
-          DataTable: DataTableStub,
-          Pagination: true,
-          ConfirmDialog: true,
-          EmptyState: true,
-          GroupBadge: true,
-          Select: true,
-          UserAttributesConfigModal: true,
-          UserConcurrencyCell: true,
-          UserCreateModal: true,
-          UserEditModal: true,
-          BulkEditUserModal: BulkEditUserModalStub,
-          UserPlatformQuotaModal: true,
-          UserApiKeysModal: true,
-          UserAllowedGroupsModal: true,
-          UserBalanceModal: true,
-          UserBalanceHistoryModal: true,
-          GroupReplaceModal: true,
-          Icon: true,
-          Teleport: true
-        }
-      }
-    })
+  it('hides elevated-user actions and rejects those selections for an ordinary administrator', async () => {
+    auth.isSuperAdmin = false
+    listUsers.mockResolvedValue({ items: [createAdminUser({ id: 1, role: 'user' }), createAdminUser({ id: 2, role: 'admin' }), createAdminUser({ id: 3, role: 'super_admin' })], total: 3, page: 1, page_size: 20, pages: 1 })
+    const wrapper = shallowMount(UsersView, { global: { stubs: {
+      AppLayout: { template: '<div><slot /></div>' },
+      TablePageLayout: { template: '<div><slot name="filters" /><slot name="table" /></div>' },
+      DataTable: DataTableStub,
+      UserCleanupControl: { template: '<div />', methods: { refreshSummary: () => undefined } }
+    } } })
     await flushPromises()
-
-    expect(wrapper.find('[data-testid="vip-badge"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="svip-toggle"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="svip-action"]').exists()).toBe(true)
-    expect(wrapper.get('[data-test="username-cell"]').text()).toBe('vip-name')
-    expect(wrapper.get('[data-test="username-cell"]').find('[data-testid="vip-badge"]').exists()).toBe(false)
-  })
-
-  const SelectStub = {
-    props: ['modelValue', 'options'],
-    emits: ['update:modelValue', 'change'],
-    template: `
-      <div>
-        <button
-          v-for="opt in options"
-          :key="String(opt.value)"
-          :data-test="'select-option-' + String(opt.value)"
-          @click="$emit('update:modelValue', opt.value); $emit('change', opt.value)"
-        >{{ opt.label }}</button>
-      </div>
-    `
-  }
-
-  const usersViewStubs = {
-    AppLayout: { template: '<div><slot /></div>' },
-    TablePageLayout: {
-      template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>'
-    },
-    DataTable: DataTableStub,
-    Pagination: true,
-    ConfirmDialog: true,
-    EmptyState: true,
-    GroupBadge: true,
-    Select: SelectStub,
-    UserAttributesConfigModal: true,
-    UserConcurrencyCell: true,
-    UserCreateModal: true,
-    UserEditModal: true,
-    BulkEditUserModal: BulkEditUserModalStub,
-    UserPlatformQuotaModal: true,
-    UserApiKeysModal: true,
-    UserAllowedGroupsModal: true,
-    UserBalanceModal: true,
-    UserBalanceHistoryModal: true,
-    GroupReplaceModal: true,
-    Icon: true,
-    Teleport: true
-  }
-
-  it('adds SVIP to filter settings and lists users with vip=true', async () => {
-    const wrapper = mount(UsersView, {
-      global: { stubs: usersViewStubs }
-    })
-    await flushPromises()
-
-    expect(wrapper.find('[data-test="svip-filter"]').exists()).toBe(false)
-
-    await wrapper.get('[data-test="filter-settings"]').trigger('click')
-    expect(wrapper.get('[data-test="filter-toggle-vip"]').text()).toContain('admin.users.svipFilter')
-
-    await wrapper.get('[data-test="filter-toggle-vip"]').trigger('click')
-    await flushPromises()
-
-    expect(wrapper.find('[data-test="svip-filter"]').exists()).toBe(true)
-    expect(JSON.parse(localStorage.getItem('user-visible-filters') || '[]')).toContain('vip')
-    expect(JSON.parse(localStorage.getItem('user-filter-values') || '{}').vip).toBe('true')
-    expect(listUsers).toHaveBeenLastCalledWith(
-      1,
-      20,
-      expect.objectContaining({ vip: true }),
-      expect.any(Object)
-    )
-  })
-
-  it('can switch the SVIP filter to non-SVIP users', async () => {
-    const wrapper = mount(UsersView, {
-      global: { stubs: usersViewStubs }
-    })
-    await flushPromises()
-
-    await wrapper.get('[data-test="filter-settings"]').trigger('click')
-    await wrapper.get('[data-test="filter-toggle-vip"]').trigger('click')
-    await flushPromises()
-
-    await wrapper.get('[data-test="svip-filter"]').get('[data-test="select-option-false"]').trigger('click')
-    await flushPromises()
-
-    expect(listUsers).toHaveBeenLastCalledWith(
-      1,
-      20,
-      expect.objectContaining({ vip: false }),
-      expect.any(Object)
-    )
-    expect(JSON.parse(localStorage.getItem('user-filter-values') || '{}').vip).toBe('false')
-  })
-
-  it('restores a saved SVIP filter on load', async () => {
-    localStorage.setItem('user-visible-filters', JSON.stringify(['vip']))
-    localStorage.setItem('user-filter-values', JSON.stringify({ vip: 'false' }))
-
-    const wrapper = mount(UsersView, {
-      global: { stubs: usersViewStubs }
-    })
-    await flushPromises()
-
-    expect(wrapper.find('[data-test="svip-filter"]').exists()).toBe(true)
-    expect(listUsers).toHaveBeenCalledWith(
-      1,
-      20,
-      expect.objectContaining({ vip: false }),
-      expect.any(Object)
-    )
+    expect(wrapper.get('[data-test="actions-1"]').findAll('button').length).toBeGreaterThan(0)
+    expect(wrapper.get('[data-test="actions-2"]').findAll('button')).toHaveLength(0)
+    expect(wrapper.get('[data-test="actions-3"]').findAll('button')).toHaveLength(0)
+    await wrapper.get('[data-test="select-2"]').trigger('click')
+    await wrapper.get('[data-test="select-3"]').trigger('click')
+    expect(wrapper.get('[data-test="selected-keys"]').text()).toBe('')
+    await wrapper.get('[data-test="select-1"]').trigger('click')
+    expect(wrapper.get('[data-test="selected-keys"]').text()).toBe('1')
   })
 })

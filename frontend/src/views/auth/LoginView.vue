@@ -1,15 +1,6 @@
 <template>
-  <AuthLayout>
+  <AuthLayout mode="login">
     <div class="space-y-6">
-      <!-- Title -->
-      <div class="text-center">
-        <h2 class="text-2xl font-bold text-gray-900 dark:text-white">
-          {{ t('auth.welcomeBack') }}
-        </h2>
-        <p class="mt-2 text-sm text-gray-500 dark:text-dark-400">
-          {{ t('auth.signInToAccount') }}
-        </p>
-      </div>
       <!-- Login Form -->
       <form @submit.prevent="handleLogin" class="space-y-5">
         <!-- Email Input -->
@@ -26,7 +17,6 @@
               v-model="formData.email"
               type="email"
               required
-              autofocus
               autocomplete="email"
               :disabled="authActionDisabled"
               class="input pl-11"
@@ -78,12 +68,12 @@
           </div>
         </div>
 
-        <!-- Turnstile Widget -->
+        <!-- Action captcha (Tencent / Aliyun). Turnstile protects registration only. -->
         <div v-if="captchaEnabled">
           <TurnstileWidget
             ref="turnstileRef"
-            :turnstile-enabled="turnstileEnabled"
-            :turnstile-site-key="turnstileSiteKey"
+            :turnstile-enabled="false"
+            turnstile-site-key=""
             :tencent-enabled="tencentCaptchaEnabled"
             :tencent-app-id="tencentCaptchaAppId"
             :tencent-region="tencentCaptchaRegion"
@@ -100,7 +90,7 @@
         <!-- Submit Button -->
         <button
           type="submit"
-          :disabled="authActionDisabled || (turnstileEnabled && !turnstileToken)"
+          :disabled="authActionDisabled"
           class="btn btn-primary w-full"
         >
           <svg
@@ -201,7 +191,7 @@
       <p class="text-gray-500 dark:text-dark-400">
         {{ t('auth.dontHaveAccount') }}
         <router-link
-          to="/register"
+          :to="{ path: '/register', query: redirectQuery(router.currentRoute.value.query.redirect) }"
           class="font-medium text-primary-600 transition-colors hover:text-primary-500 dark:text-primary-400 dark:hover:text-primary-300"
         >
           {{ t('auth.signUp') }}
@@ -225,7 +215,7 @@
 import { computed, ref, reactive, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { AuthLayout } from '@/components/layout'
+import AuthLayout from '@/components/auth/HeyRouteAuthLayout.vue'
 import LinuxDoOAuthSection from '@/components/auth/LinuxDoOAuthSection.vue'
 import DingTalkOAuthSection from '@/components/auth/DingTalkOAuthSection.vue'
 import OidcOAuthSection from '@/components/auth/OidcOAuthSection.vue'
@@ -238,7 +228,6 @@ import TurnstileWidget from '@/components/CaptchaChallenge.vue'
 import { useAuthStore, useAppStore } from '@/stores'
 import {
   buildOAuthLoginStartURL,
-  getPublicSettings,
   isTotp2FARequired,
   isWeChatWebOAuthEnabled,
   startOAuthLogin,
@@ -250,6 +239,7 @@ import type {
   TotpLoginResponse
 } from '@/types'
 import { extractI18nErrorMessage } from '@/utils/apiError'
+import { redirectQuery, sanitizeRedirectPath } from '@/utils/authRedirect'
 import { clearAllAffiliateReferralCodes } from '@/utils/oauthAffiliate'
 
 const { t } = useI18n()
@@ -271,8 +261,6 @@ const publicSettingsLoaded = ref<boolean>(false)
 
 // Public settings
 const registrationEnabled = ref<boolean>(false)
-const turnstileEnabled = ref<boolean>(false)
-const turnstileSiteKey = ref<string>('')
 const tencentCaptchaEnabled = ref<boolean>(false)
 const tencentCaptchaAppId = ref<string>('')
 const tencentCaptchaRegion = ref<string>('cn')
@@ -314,10 +302,8 @@ const actionCaptchaEnabled = computed(
     (tencentCaptchaEnabled.value && Boolean(tencentCaptchaAppId.value)) ||
     aliyunCaptchaReady.value
 )
-const captchaEnabled = computed(
-  () =>
-    (turnstileEnabled.value && Boolean(turnstileSiteKey.value)) || actionCaptchaEnabled.value
-)
+// Kitty keeps Cloudflare Turnstile registration-only; login is protected by the action captchas.
+const captchaEnabled = actionCaptchaEnabled
 
 // 2FA state
 const show2FAModal = ref<boolean>(false)
@@ -345,7 +331,7 @@ const agreementGateActive = computed(
 )
 
 const authActionDisabled = computed(
-  () => isLoading.value || passkeyLoading.value || !publicSettingsLoaded.value || agreementGateActive.value
+  () => isLoading.value || passkeyLoading.value || !publicSettingsLoaded.value
 )
 
 const showPasskeyLogin = computed(
@@ -381,10 +367,11 @@ onMounted(async () => {
   }
 
   try {
-    const settings = await getPublicSettings()
+    // Reuse the settings the app already loaded (or the server-injected config); the form
+    // stays disabled until they arrive, so a fresh request here only delayed the first input.
+    const settings = await appStore.fetchPublicSettings()
+    if (!settings) throw new Error('public settings unavailable')
     registrationEnabled.value = settings.registration_enabled === true
-    turnstileEnabled.value = settings.turnstile_enabled
-    turnstileSiteKey.value = settings.turnstile_site_key || ''
     tencentCaptchaEnabled.value = settings.tencent_captcha_enabled === true
     tencentCaptchaAppId.value = settings.tencent_captcha_app_id || ''
     tencentCaptchaRegion.value = settings.tencent_captcha_region || 'cn'
@@ -395,7 +382,6 @@ onMounted(async () => {
     linuxdoOAuthEnabled.value = settings.linuxdo_oauth_enabled
     dingtalkOAuthEnabled.value = settings.dingtalk_oauth_enabled ?? false
     wechatOAuthEnabled.value = isWeChatWebOAuthEnabled(settings)
-    backendModeEnabled.value = settings.backend_mode_enabled
     oidcOAuthEnabled.value = settings.oidc_oauth_enabled
     oidcOAuthProviderName.value = settings.oidc_oauth_provider_name || 'OIDC'
     githubOAuthEnabled.value = settings.github_oauth_enabled
@@ -434,8 +420,7 @@ function applyLoginAgreementSettings(settings: {
     `${loginAgreementUpdatedAt.value}:${documents.map((doc) => `${doc.id}:${doc.title}`).join('|')}`
 
   agreementAccepted.value = !loginAgreementEnabled.value || hasAcceptedLoginAgreement(loginAgreementRevision.value)
-  showAgreementModal.value =
-    loginAgreementEnabled.value && !agreementAccepted.value && loginAgreementMode.value !== 'checkbox'
+  showAgreementModal.value = false
 }
 
 function hasAcceptedLoginAgreement(revision: string): boolean {
@@ -473,6 +458,16 @@ function rejectLoginAgreement(): void {
   agreementAccepted.value = false
   showAgreementModal.value = false
   appStore.showWarning(t('legal.loginAgreementPrompt.loginRejectedWarning'))
+}
+
+function requireLoginAgreement(): boolean {
+  if (!agreementGateActive.value) return true
+
+  appStore.showWarning(t('legal.loginAgreementPrompt.loginRequiredWarning'))
+  if (loginAgreementMode.value !== 'checkbox') {
+    showAgreementModal.value = true
+  }
+  return false
 }
 
 // ==================== Turnstile Handlers ====================
@@ -523,13 +518,7 @@ function validateForm(): boolean {
 
   let isValid = true
 
-  if (agreementGateActive.value) {
-    appStore.showWarning(t('legal.loginAgreementPrompt.loginRequiredWarning'))
-    if (loginAgreementMode.value !== 'checkbox') {
-      showAgreementModal.value = true
-    }
-    return false
-  }
+  if (!requireLoginAgreement()) return false
 
   // Email validation
   if (!formData.email.trim()) {
@@ -549,39 +538,45 @@ function validateForm(): boolean {
     isValid = false
   }
 
-  // Turnstile validation
-  if (turnstileEnabled.value && !turnstileToken.value) {
-    errors.turnstile = t('auth.completeVerification')
-    isValid = false
-  }
-
   return isValid
+}
+
+function redirectAfterLogin(): string {
+  return sanitizeRedirectPath(router.currentRoute.value.query.redirect)
 }
 
 // ==================== Form Handlers ====================
 
 async function handleLogin(): Promise<void> {
+  // A second click while the captcha popup is open used to start a second login with the same
+  // one-time ticket; the failing one could then sign the user out again.
+  if (isLoading.value) return
+
   // Clear previous error
   errorMessage.value = ''
 
   // Validate form
+  const previousValidationMessage = validationToastMessage.value
   if (!validateForm()) {
-    return
-  }
-
-  if (!(await acquireActionProof())) {
+    // The validation watcher only toasts when the message changes; repeat it for a repeated submit.
+    if (validationToastMessage.value && validationToastMessage.value === previousValidationMessage) {
+      appStore.showError(validationToastMessage.value)
+    }
     return
   }
 
   isLoading.value = true
 
   try {
+    if (!(await acquireActionProof())) {
+      return
+    }
+
     // Call auth store login（阿里云 captchaVerifyParam 复用 turnstile_token 字段）
     const response = await authStore.login({
       email: formData.email,
       password: formData.password,
-      turnstile_token:
-        turnstileEnabled.value || aliyunCaptchaEnabled.value ? turnstileToken.value : undefined,
+      turnstile_token: aliyunCaptchaEnabled.value ? turnstileToken.value : undefined,
       tencent_captcha_ticket: tencentCaptchaEnabled.value ? turnstileToken.value : undefined,
       tencent_captcha_randstr: tencentCaptchaEnabled.value
         ? tencentCaptchaRandstr.value
@@ -603,8 +598,7 @@ async function handleLogin(): Promise<void> {
     appStore.showSuccess(t('auth.loginSuccess'))
 
     // Redirect to dashboard or intended route
-    const redirectTo = (router.currentRoute.value.query.redirect as string) || '/dashboard'
-    await router.push(redirectTo)
+    await router.push(redirectAfterLogin())
   } catch (error: unknown) {
     errorMessage.value = extractI18nErrorMessage(error, t, 'auth.errors', t('auth.loginFailed'))
 
@@ -619,13 +613,7 @@ async function handleLogin(): Promise<void> {
 }
 
 async function handlePasskeyLogin(): Promise<void> {
-  if (agreementGateActive.value) {
-    appStore.showWarning(t('legal.loginAgreementPrompt.loginRequiredWarning'))
-    if (loginAgreementMode.value !== 'checkbox') {
-      showAgreementModal.value = true
-    }
-    return
-  }
+  if (!requireLoginAgreement()) return
 
   passkeyLoading.value = true
   try {
@@ -644,8 +632,7 @@ async function handlePasskeyLogin(): Promise<void> {
     await authStore.loginWithPasskey(proof)
     clearAllAffiliateReferralCodes()
     appStore.showSuccess(t('auth.loginSuccess'))
-    const redirectTo = (router.currentRoute.value.query.redirect as string) || '/dashboard'
-    await router.push(redirectTo)
+    await router.push(redirectAfterLogin())
   } catch (error: unknown) {
     const fallback = error instanceof DOMException && error.name === 'NotAllowedError'
       ? t('auth.passkeyCancelled')
@@ -662,6 +649,7 @@ async function handlePasskeyLogin(): Promise<void> {
 
 async function handleOAuthStart(request: OAuthLoginStart): Promise<void> {
   if (authActionDisabled.value) return
+  if (!requireLoginAgreement()) return
 
   if (!actionCaptchaEnabled.value) {
     window.location.href = buildOAuthLoginStartURL(request)
@@ -713,11 +701,10 @@ async function handle2FAVerify(code: string): Promise<void> {
     appStore.showSuccess(t('auth.loginSuccess'))
 
     // Redirect to dashboard or intended route
-    const redirectTo = (router.currentRoute.value.query.redirect as string) || '/dashboard'
-    await router.push(redirectTo)
+    await router.push(redirectAfterLogin())
   } catch (error: unknown) {
-    const err = error as { message?: string; response?: { data?: { message?: string } } }
-    const message = err.response?.data?.message || err.message || t('profile.totp.loginFailed')
+    // TOTP_LOGIN_SESSION_EXPIRED, TOTP_INVALID_CODE, ... are translated from auth.errors.
+    const message = extractI18nErrorMessage(error, t, 'auth.errors', t('profile.totp.loginFailed'))
 
     if (totpModalRef.value) {
       totpModalRef.value.setError(message)
@@ -732,16 +719,3 @@ function handle2FACancel(): void {
   totpUserEmailMasked.value = ''
 }
 </script>
-
-<style scoped>
-.fade-enter-active,
-.fade-leave-active {
-  transition: all 0.3s ease;
-}
-
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-  transform: translateY(-8px);
-}
-</style>

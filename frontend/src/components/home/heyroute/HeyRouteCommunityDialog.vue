@@ -40,7 +40,7 @@ const platforms = computed<HeyRouteContactPlatform[]>(() => [
   {
     id: 'telegram',
     label: 'Telegram',
-    icon: 'globe',
+    icon: 'paperAirplane',
     title: props.copy.communityDialogTelegramTitle,
     description: props.copy.communityDialogTelegramDescription,
     valueLabel: props.copy.communityDialogGroupLink,

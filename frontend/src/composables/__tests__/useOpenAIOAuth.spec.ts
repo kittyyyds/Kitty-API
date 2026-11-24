@@ -6,22 +6,18 @@ vi.mock('@/stores/app', () => ({
   })
 }))
 
-vi.mock('vue-i18n', async () => {
-  const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
-  return {
-    ...actual,
-    useI18n: () => ({
-      t: (key: string) => {
-        const messages: Record<string, string> = {
-          'admin.accounts.oauth.openai.failedToExchangeCode': 'OpenAI 授权码兑换失败',
-          'admin.accounts.oauth.openai.errors.OPENAI_OAUTH_PROXY_REQUIRED':
-            '未设置代理，当前服务器无法直连 OpenAI，导致 OpenAI OAuth 请求失败。请先选择可访问 OpenAI 的代理后重试；如果授权码已失效，请重新生成授权链接。'
-        }
-        return messages[key] ?? key
+vi.mock('vue-i18n', () => ({
+  useI18n: () => ({
+    t: (key: string) => {
+      const messages: Record<string, string> = {
+        'admin.accounts.oauth.openai.failedToExchangeCode': 'OpenAI 授权码兑换失败',
+        'admin.accounts.oauth.openai.errors.OPENAI_OAUTH_PROXY_REQUIRED':
+          '未设置代理，当前服务器无法直连 OpenAI，导致 OpenAI OAuth 请求失败。请先选择可访问 OpenAI 的代理后重试；如果授权码已失效，请重新生成授权链接。'
       }
-    }),
-  }
-})
+      return messages[key] ?? key
+    }
+  })
+}))
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
@@ -35,6 +31,22 @@ vi.mock('@/api/admin', () => ({
 
 import { useOpenAIOAuth } from '@/composables/useOpenAIOAuth'
 import { adminAPI } from '@/api/admin'
+
+describe('useOpenAIOAuth.generateAuthUrl', () => {
+  it('generates a standard OAuth URL with the selected proxy', async () => {
+    const generate = vi.mocked(adminAPI.accounts.generateAuthUrl)
+    generate.mockResolvedValue({ auth_url: 'https://auth.openai.com/api/accounts/authorize?state=oauth.test.PC', session_id: 'test-session' })
+    const oauth = useOpenAIOAuth()
+    await oauth.generateAuthUrl(5)
+    expect(generate).toHaveBeenLastCalledWith('/admin/openai/generate-auth-url', { proxy_id: 5 })
+    expect(oauth.oauthState.value).toBe('oauth.test.PC')
+  })
+  it('preserves a standard client ID for manual refresh-token validation', async () => {
+    vi.mocked(adminAPI.accounts.refreshOpenAIToken).mockResolvedValue({ access_token: 'at', expires_in: 3600, expires_at: 1700000000 })
+    await useOpenAIOAuth().validateRefreshToken('standard-rt', 5, 'app_EMoamEEZ73f0CkXaXp7hrann')
+    expect(adminAPI.accounts.refreshOpenAIToken).toHaveBeenLastCalledWith('standard-rt', 5, '/admin/openai/refresh-token', 'app_EMoamEEZ73f0CkXaXp7hrann')
+  })
+})
 
 describe('useOpenAIOAuth.buildCredentials', () => {
   it('should keep client_id when token response contains it', () => {
@@ -76,30 +88,6 @@ describe('useOpenAIOAuth.buildCredentials', () => {
 
     expect(creds.plan_type).toBe('team')
     expect(creds.subscription_expires_at).toBe('2026-07-20T19:22:48+00:00')
-    expect(creds.subscription_is_delinquent).toBeNull()
-  })
-
-  it.each([true, false, null, undefined])('pairs a new subscription date with delinquency %s when merging credentials', (subscription_is_delinquent) => {
-    const oauth = useOpenAIOAuth()
-    const creds = oauth.buildCredentials({
-      subscription_expires_at: '2026-11-28T12:34:56Z',
-      subscription_is_delinquent
-    })
-    const merged = {
-      subscription_expires_at: '2026-10-28T12:34:56Z',
-      subscription_is_delinquent: true,
-      ...creds
-    }
-
-    expect(creds).toHaveProperty('subscription_is_delinquent', subscription_is_delinquent ?? null)
-    expect(merged.subscription_expires_at).toBe('2026-11-28T12:34:56Z')
-    expect(merged.subscription_is_delinquent).toBe(subscription_is_delinquent ?? null)
-  })
-
-  it('does not clear a stored subscription pair when no new subscription date is returned', () => {
-    const creds = useOpenAIOAuth().buildCredentials({ access_token: 'at' })
-    expect(creds).not.toHaveProperty('subscription_expires_at')
-    expect(creds).not.toHaveProperty('subscription_is_delinquent')
   })
 })
 
@@ -118,5 +106,14 @@ describe('useOpenAIOAuth.exchangeAuthCode', () => {
     expect(oauth.error.value).toBe(
       '未设置代理，当前服务器无法直连 OpenAI，导致 OpenAI OAuth 请求失败。请先选择可访问 OpenAI 的代理后重试；如果授权码已失效，请重新生成授权链接。'
     )
+  })
+})
+
+describe('OpenAI OAuth client selection', () => {
+  it('always requests the Codex client', async () => {
+    vi.mocked(adminAPI.accounts.generateAuthUrl).mockResolvedValue({ auth_url: 'https://auth.example/authorize', session_id: 'session', state: 'state' } as any)
+    const oauth = useOpenAIOAuth()
+    await oauth.generateAuthUrl(7)
+    expect(adminAPI.accounts.generateAuthUrl).toHaveBeenLastCalledWith('/admin/openai/generate-auth-url', { proxy_id: 7 })
   })
 })

@@ -21,6 +21,21 @@ import {
 } from "../groupsReasoningEffort";
 
 describe("groupsReasoningEffort", () => {
+  it("persists ultra deny and downgrade mappings only for OpenAI-compatible groups", () => {
+    for (const platform of ["openai", "composite"] as const) {
+      for (const to of ["deny", "high"]) {
+        const rows = reasoningEffortMappingsToRows([{ from: "ultra", to }], platform);
+        expect(validateReasoningEffortMappings(rows, platform)).toEqual({});
+        expect(reasoningEffortMappingsToAPI(rows)).toEqual([{ from: "ultra", to }]);
+      }
+    }
+    expect(normalizeReasoningEffortForPlatform("anthropic", "ultra")).toBe("");
+    expect(reasoningEffortSourceOptionsForPlatform("anthropic").some((option) => option.value === "ultra")).toBe(false);
+    const invalid = createReasoningEffortMappingRow({ from: "ultra", to: "high" });
+    expect(validateReasoningEffortMappings([invalid], "anthropic")).toEqual({
+      [invalid.pairs[0].id]: { from: "unsupportedFrom" },
+    });
+  });
   it("provides fixed OpenAI choices to OpenAI and Composite groups", () => {
     const expected = [
       "minimal",
@@ -29,6 +44,7 @@ describe("groupsReasoningEffort", () => {
       "high",
       "xhigh",
       "max",
+      "ultra",
     ];
     for (const platform of ["openai", "composite"] as const) {
       expect(
@@ -60,17 +76,19 @@ describe("groupsReasoningEffort", () => {
     ).toEqual(["low", "medium", "high", "xhigh", "max", reasoningEffortMappingDeny]);
     expect(supportsReasoningEffortPolicyPlatform("anthropic")).toBe(true);
 
-    expect(reasoningEffortOptionsForPlatform("grok")).toEqual([]);
-    expect(reasoningEffortSourceOptionsForPlatform("grok")).toEqual([]);
-    expect(reasoningEffortTargetOptionsForPlatform("grok")).toEqual([]);
-    expect(supportsReasoningEffortPolicyPlatform("grok")).toBe(false);
+    for (const platform of ["gemini", "antigravity", "grok"] as const) {
+      expect(reasoningEffortOptionsForPlatform(platform)).toEqual([]);
+      expect(reasoningEffortSourceOptionsForPlatform(platform)).toEqual([]);
+      expect(reasoningEffortTargetOptionsForPlatform(platform)).toEqual([]);
+      expect(supportsReasoningEffortPolicyPlatform(platform)).toBe(false);
+    }
   });
 
   it("hydrates supported rows and drops stale custom values", () => {
     const rows = reasoningEffortMappingsToRows(
       [
         { from: " max ", to: " xhigh " },
-        { from: "ultra", to: "high" },
+        { from: "custom", to: "high" },
       ],
       "openai",
     );
@@ -319,7 +337,7 @@ describe("groupsReasoningEffort", () => {
   });
 
   it("rejects custom mappings", () => {
-    const row = createReasoningEffortMappingRow({ from: "ultra", to: "high" });
+    const row = createReasoningEffortMappingRow({ from: "custom", to: "high" });
     expect(validateReasoningEffortMappings([row], "openai")).toEqual({
       [row.pairs[0].id]: { from: "unsupportedFrom" },
     });

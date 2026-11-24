@@ -22,6 +22,7 @@ function createPublicSettings(overrides: Partial<PublicSettings> = {}): PublicSe
     email_verify_enabled: false,
     force_email_on_third_party_signup: false,
     registration_email_suffix_whitelist: [],
+    promo_code_enabled: true,
     password_reset_enabled: false,
     invitation_code_enabled: false,
     turnstile_enabled: false,
@@ -92,6 +93,74 @@ describe('useAppStore', () => {
   })
 
   // --- Toast 消息管理 ---
+
+  it('retains host update ownership when returning cached release version data', async () => {
+    vi.mocked(checkUpdates).mockResolvedValue({
+      current_version: '0.2.17-custom.12', latest_version: '0.2.17-custom.13',
+      has_update: true, host_update_managed: true, source_update_enabled: false,
+      cached: false, build_type: 'release'
+    })
+    const store = useAppStore()
+    await store.fetchVersion()
+    const cached = await store.fetchVersion()
+    expect(checkUpdates).toHaveBeenCalledOnce()
+    expect(cached?.host_update_managed).toBe(true)
+    expect(cached?.source_update_enabled).toBe(false)
+    expect(store.hostUpdateManaged).toBe(true)
+    store.clearVersionCache()
+    expect(store.hostUpdateManaged).toBe(false)
+  })
+
+  it('preserves backend update warnings and retries after the short cache expires', async () => {
+    const result = { current_version: '0.2.20-custom.1', latest_version: '0.2.20-custom.1', has_update: false, cached: false, build_type: 'release' }
+    vi.mocked(checkUpdates)
+      .mockResolvedValueOnce({ ...result, warning: 'read release readiness manifest: HTTP 504' })
+      .mockResolvedValueOnce({ ...result, latest_version: '0.2.20-custom.3', has_update: true })
+    const store = useAppStore()
+    await store.fetchVersion()
+    expect(store.versionWarning).toContain('HTTP 504')
+    await store.fetchVersion()
+    expect(checkUpdates).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(60_000)
+    await store.fetchVersion()
+    expect(checkUpdates).toHaveBeenCalledTimes(2)
+    expect(store.versionWarning).toBe('')
+    expect(store.hasUpdate).toBe(true)
+  })
+
+  it('expires the browser version cache and discovers later releases', async () => {
+    const result = { current_version: '0.2.20-custom.1', latest_version: '0.2.20-custom.1', has_update: false, cached: false, build_type: 'release' }
+    vi.mocked(checkUpdates)
+      .mockResolvedValueOnce(result)
+      .mockResolvedValueOnce({ ...result, latest_version: '0.2.20-custom.3', has_update: true })
+    const store = useAppStore()
+    await store.fetchVersion()
+    await store.fetchVersion()
+    expect(checkUpdates).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(60_000)
+    await store.fetchVersion()
+    expect(checkUpdates).toHaveBeenCalledTimes(2)
+    expect(store.latestVersion).toBe('0.2.20-custom.3')
+  })
+
+  it('retains known version data while exposing request errors and clears them after recovery', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const result = { current_version: '0.2.20-custom.1', latest_version: '0.2.20-custom.1', has_update: false, cached: false, build_type: 'release' }
+      vi.mocked(checkUpdates).mockResolvedValueOnce(result).mockRejectedValueOnce(new Error('Network unavailable')).mockResolvedValueOnce(result)
+      const store = useAppStore()
+      await store.fetchVersion()
+      await store.fetchVersion(true)
+      expect(store.currentVersion).toBe('0.2.20-custom.1')
+      expect(store.versionWarning).toBe('Network unavailable')
+      await store.fetchVersion(true)
+      expect(store.versionWarning).toBe('')
+      expect(checkUpdates).toHaveBeenCalledTimes(3)
+      store.clearVersionCache()
+      expect(store.versionLoaded).toBe(false)
+      expect(store.versionWarning).toBe('')
+    } finally { log.mockRestore() }
+  })
 
   describe('Toast 消息管理', () => {
     it('showSuccess 创建 success 类型 toast', () => {
@@ -325,38 +394,6 @@ describe('useAppStore', () => {
     })
   })
 
-  // --- Version information ---
-
-  describe('Version information', () => {
-    it('keeps the current build release URL separate from the upstream update release', async () => {
-      const currentReleaseURL =
-        'https://github.com/zuchengchen/sub2api/releases/tag/czc-v2026.08.15.2'
-      vi.mocked(checkUpdates).mockResolvedValue({
-        current_version: '0.1.176.2',
-        latest_version: '0.1.176',
-        has_update: false,
-        build_type: 'release',
-        cached: false,
-        current_release_url: currentReleaseURL,
-        release_info: {
-          name: 'v0.1.176',
-          body: '',
-          published_at: '2026-08-14T00:00:00Z',
-          html_url: 'https://github.com/Wei-Shaw/sub2api/releases/tag/v0.1.176',
-        },
-      })
-      const store = useAppStore()
-
-      const result = await store.fetchVersion()
-
-      expect(result?.current_release_url).toBe(currentReleaseURL)
-      expect(store.currentReleaseURL).toBe(currentReleaseURL)
-      expect(store.releaseInfo?.html_url).toBe(
-        'https://github.com/Wei-Shaw/sub2api/releases/tag/v0.1.176'
-      )
-    })
-  })
-
   // --- 公开设置 ---
 
   describe('公开设置加载', () => {
@@ -446,6 +483,7 @@ describe('useAppStore', () => {
       expect(result).toBe(true)
       expect(store.siteName).toBe('TestSite')
       expect(store.siteLogo).toBe('/logo.png')
+      expect(store.brandLogoUrl).toBe('/logo.png')
       expect(store.siteVersion).toBe('1.0.0')
       expect(store.publicSettingsLoaded).toBe(true)
     })
@@ -456,6 +494,17 @@ describe('useAppStore', () => {
 
       expect(result).toBe(false)
       expect(store.publicSettingsLoaded).toBe(false)
+    })
+
+    it('uses the bundled logo when the configured logo is empty or unsafe', () => {
+      const windowAny = window as any
+      windowAny.__APP_CONFIG__ = { site_name: 'Test', site_logo: 'javascript:alert(1)' }
+      const store = useAppStore()
+
+      store.initFromInjectedConfig()
+
+      expect(store.siteLogo).toBe('javascript:alert(1)')
+      expect(store.brandLogoUrl).toBe('/logo.svg')
     })
 
     it('clearPublicSettingsCache 清除缓存', () => {
@@ -477,6 +526,7 @@ describe('useAppStore', () => {
         registration_enabled: false,
         email_verify_enabled: false,
         registration_email_suffix_whitelist: [],
+        promo_code_enabled: true,
         password_reset_enabled: false,
         invitation_code_enabled: false,
         turnstile_enabled: false,

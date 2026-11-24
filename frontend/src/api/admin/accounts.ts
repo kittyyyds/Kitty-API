@@ -1,3 +1,4 @@
+import type { AccountPerformance, PerformanceConfig, PerformanceEvent } from '@/types/accountPerformance'
 /**
  * Admin Accounts API endpoints
  * Handles AI platform account management for administrators
@@ -23,6 +24,9 @@ import type {
   OpenAICodexPATCreateRequest,
   CheckMixedChannelRequest,
   CheckMixedChannelResponse,
+  NewAPIUpstreamConfig,
+  NewAPIUpstreamConfigRequest,
+  NewAPIUpstreamPreview,
   UpstreamBillingProbeResult,
   UpstreamBillingProbeSettings,
   UpstreamBillingRatesResponse,
@@ -52,7 +56,7 @@ export async function list(
     group?: string
     search?: string
     privacy_mode?: string
-    plan_type?: string
+        plan_type?: string
     lite?: string
     include_scheduler_score?: string
     sort_by?: string
@@ -79,6 +83,17 @@ export interface AccountListWithEtagResult {
   data: PaginatedResponse<AccountListItem> | null
 }
 
+export interface AccountPlatformCount {
+  platform: string
+  count: number
+}
+
+/** Global platform counts, independent of account-list pagination and filters. */
+export async function getPlatformCounts(options?: { signal?: AbortSignal }): Promise<AccountPlatformCount[]> {
+  const { data } = await apiClient.get<AccountPlatformCount[]>('/admin/accounts/platforms', options)
+  return data
+}
+
 export interface AccountUpstreamBillingRatesWithEtagResult {
   notModified: boolean
   etag: string | null
@@ -95,7 +110,7 @@ export async function getUpstreamBillingRatesWithEtag(
     group?: string
     search?: string
     privacy_mode?: string
-    plan_type?: string
+        plan_type?: string
     sort_by?: string
     sort_order?: 'asc' | 'desc'
   },
@@ -129,7 +144,7 @@ export async function listWithEtag(
     group?: string
     search?: string
     privacy_mode?: string
-    plan_type?: string
+        plan_type?: string
     lite?: string
     include_scheduler_score?: string
     sort_by?: string
@@ -394,11 +409,10 @@ export interface BatchAccountUsageResponse {
   errors: Record<string, string>
 }
 
-export async function getBatchUsage(accountIds: number[], force?: boolean, source?: 'passive'): Promise<BatchAccountUsageResponse> {
+export async function getBatchUsage(accountIds: number[], force?: boolean): Promise<BatchAccountUsageResponse> {
   const { data } = await apiClient.post<BatchAccountUsageResponse>('/admin/accounts/usage/batch', {
     account_ids: accountIds,
-    force: force === true,
-    source
+    force: force === true
   })
   return data
 }
@@ -543,6 +557,7 @@ export async function bulkUpdate(
   failed: number
   success_ids?: number[]
   failed_ids?: number[]
+  long_context_inherited_count?: number
   results: Array<{ account_id: number; success: boolean; error?: string }>
   }> {
   const payload = Array.isArray(accountIdsOrPayload)
@@ -556,6 +571,7 @@ export async function bulkUpdate(
     failed: number
     success_ids?: number[]
     failed_ids?: number[]
+    long_context_inherited_count?: number
     results: Array<{ account_id: number; success: boolean; error?: string }>
   }>('/admin/accounts/bulk-update', payload)
   return data
@@ -587,36 +603,6 @@ export async function getBatchTodayStats(accountIds: number[]): Promise<BatchTod
   return data
 }
 
-export interface BatchTodayStatsWithEtagResult {
-  notModified: boolean
-  etag: string | null
-  data: BatchTodayStatsResponse | null
-}
-
-/** Revalidate a batch snapshot without downloading or replacing unchanged stats. */
-export async function getBatchTodayStatsWithEtag(
-  accountIds: number[],
-  options?: { etag?: string | null; signal?: AbortSignal }
-): Promise<BatchTodayStatsWithEtagResult> {
-  const headers: Record<string, string> = {}
-  if (options?.etag) headers['If-None-Match'] = options.etag
-  const response = await apiClient.post<BatchTodayStatsResponse>(
-    '/admin/accounts/today-stats/batch',
-    { account_ids: accountIds },
-    {
-      headers,
-      signal: options?.signal,
-      validateStatus: status => (status >= 200 && status < 300) || status === 304
-    }
-  )
-  const etag = typeof response.headers?.etag === 'string' ? response.headers.etag : null
-  return {
-    notModified: response.status === 304,
-    etag,
-    data: response.status === 304 ? null : response.data
-  }
-}
-
 /**
  * Set account schedulable status
  * @param id - Account ID
@@ -636,16 +622,13 @@ export async function setSchedulable(id: number, schedulable: boolean): Promise<
  * @param enabled - Whether the account may spend credits after its plan allowance is exhausted
  * @returns Updated account
  */
-export async function setOpenAICreditsEnabled(id: number, enabled: boolean): Promise<Account> {
-  const { data } = await apiClient.post<Account>(`/admin/accounts/${id}/openai-credits`, {
-    enabled
-  })
+export async function setOpenAIAutoResetCreditEnabled(id: number, enabled: boolean): Promise<Account> {
+  const { data } = await apiClient.post<Account>(`/admin/accounts/${id}/auto-reset-credit-enabled`, { enabled })
   return data
 }
 
-/** Toggle automatic reset credits without replacing account settings or thresholds. */
-export async function setOpenAIAutoResetCreditEnabled(id: number, enabled: boolean): Promise<Account> {
-  const { data } = await apiClient.post<Account>(`/admin/accounts/${id}/auto-reset-credit-enabled`, {
+export async function setOpenAICreditsEnabled(id: number, enabled: boolean): Promise<Account> {
+  const { data } = await apiClient.post<Account>(`/admin/accounts/${id}/openai-credits`, {
     enabled
   })
   return data
@@ -660,6 +643,7 @@ export async function getAvailableModels(id: number): Promise<ClaudeModel[]> {
   const { data } = await apiClient.get<ClaudeModel[]>(`/admin/accounts/${id}/models`)
   return data
 }
+
 
 export interface SyncUpstreamModelsResult {
   models: string[]
@@ -692,16 +676,40 @@ export interface UpstreamModelMetadata {
  * @param id - Account ID
  * @returns List of model IDs returned by the upstream
  */
-export async function syncUpstreamModels(id: number): Promise<SyncUpstreamModelsResult> {
-  const { data } = await apiClient.post<SyncUpstreamModelsResult>(`/admin/accounts/${id}/models/sync-upstream`)
+export async function syncUpstreamModels(id: number, options?: { replace: boolean }): Promise<SyncUpstreamModelsResult> {
+  const { data } = await apiClient.post<SyncUpstreamModelsResult>(`/admin/accounts/${id}/models/sync-upstream`, undefined, {
+    params: options,
+    timeout: 180000
+  })
+  return data
+}
+
+export interface BatchSyncUpstreamModelsResult {
+  total: number
+  success: number
+  failed: number
+  success_ids: number[]
+  failed_ids: number[]
+  errors: Array<{ account_id: number; error: string }>
+  warnings?: Array<{ account_id: number; code: string; message: string }>
+}
+
+/** Replace each selected account's model mapping with its live upstream list. */
+export async function batchSyncUpstreamModels(accountIds: number[]): Promise<BatchSyncUpstreamModelsResult> {
+  const { data } = await apiClient.post<BatchSyncUpstreamModelsResult>('/admin/accounts/models/sync-upstream-batch', {
+    account_ids: accountIds
+  }, { timeout: 180000 })
   return data
 }
 
 export interface SyncUpstreamPreviewParams {
+  provider_id?: string
+  provider_key_id?: string
   platform: string
   type: string
   base_url?: string
   api_key: string
+  proxy_id?: number
   model_mapping?: Record<string, string>
 }
 
@@ -782,7 +790,7 @@ export async function exportData(options?: {
     status?: string
     group?: string
     privacy_mode?: string
-    plan_type?: string
+        plan_type?: string
     search?: string
     sort_by?: string
     sort_order?: 'asc' | 'desc'
@@ -793,13 +801,12 @@ export async function exportData(options?: {
   if (options?.ids && options.ids.length > 0) {
     params.ids = options.ids.join(',')
   } else if (options?.filters) {
-    const { platform, type, status, group, privacy_mode, plan_type, search, sort_by, sort_order } = options.filters
+    const { platform, type, status, group, privacy_mode, search, sort_by, sort_order } = options.filters
     if (platform) params.platform = platform
     if (type) params.type = type
     if (status) params.status = status
     if (group) params.group = group
     if (privacy_mode) params.privacy_mode = privacy_mode
-    if (plan_type) params.plan_type = plan_type
     if (search) params.search = search
     if (sort_by) params.sort_by = sort_by
     if (sort_order) params.sort_order = sort_order
@@ -831,6 +838,17 @@ export async function importCodexSession(payload: CodexSessionImportRequest): Pr
 
 export async function createOpenAICodexPAT(payload: OpenAICodexPATCreateRequest): Promise<Account> {
   const { data } = await apiClient.post<Account>('/admin/openai/create-from-codex-pat', payload)
+  return data
+}
+
+/**
+ * Get Antigravity default model mapping from backend
+ * @returns Default model mapping (from -> to)
+ */
+export async function getAntigravityDefaultModelMapping(): Promise<Record<string, string>> {
+  const { data } = await apiClient.get<Record<string, string>>(
+    '/admin/accounts/antigravity/default-model-mapping'
+  )
   return data
 }
 
@@ -919,7 +937,7 @@ export async function batchRefresh(accountIds: number[]): Promise<BatchOperation
 }
 
 /**
- * Set privacy for an OAuth account
+ * Set privacy for an Antigravity OAuth account
  * @param id - Account ID
  * @returns Updated account
  */
@@ -970,7 +988,6 @@ export interface OpenAIQuotaUsage {
   rate_limit_reset_credits?: OpenAIRateLimitResetCredits | null
   credits?: OpenAICredits | null
   fetched_at: number
-  query_started_at_us?: number
 }
 
 export interface OpenAICredits {
@@ -1056,6 +1073,38 @@ export async function resetOpenAIQuota(id: number): Promise<OpenAIQuotaResetResu
     undefined,
     { timeout: 90_000 }
   )
+  return data
+}
+
+export interface SparkShadowCreatePayload {
+  name?: string
+  priority?: number
+  concurrency?: number
+  group_ids?: number[]
+}
+
+export async function createSparkShadow(parentId: number, payload: SparkShadowCreatePayload): Promise<Account> {
+  const { data } = await apiClient.post<Account>(`/admin/accounts/${parentId}/shadow`, payload)
+  return data
+}
+
+export async function getNewAPIUpstreamConfig(id: number): Promise<NewAPIUpstreamConfig> {
+  const { data } = await apiClient.get<NewAPIUpstreamConfig>(`/admin/accounts/${id}/upstream-billing-probe/config`)
+  return data
+}
+
+export async function previewNewAPIUpstreamConfig(id: number, request: NewAPIUpstreamConfigRequest): Promise<NewAPIUpstreamPreview> {
+  const { data } = await apiClient.post<NewAPIUpstreamPreview>(`/admin/accounts/${id}/upstream-billing-probe/config/preview`, request)
+  return data
+}
+
+export async function saveNewAPIUpstreamConfig(id: number, request: NewAPIUpstreamConfigRequest): Promise<NewAPIUpstreamPreview> {
+  const { data } = await apiClient.put<NewAPIUpstreamPreview>(`/admin/accounts/${id}/upstream-billing-probe/config`, request)
+  return data
+}
+
+export async function deleteNewAPIUpstreamConfig(id: number): Promise<{ account_id: number; configured: false }> {
+  const { data } = await apiClient.delete<{ account_id: number; configured: false }>(`/admin/accounts/${id}/upstream-billing-probe/config`)
   return data
 }
 
@@ -1195,9 +1244,13 @@ export async function refreshOpenCodeGoUsage(id: number): Promise<OpenCodeGoUsag
   return data
 }
 
+
 export const accountsAPI = {
+ getPerformance, savePerformance, releasePerformance, getPerformanceEvents,
+  getManagementCapabilities,
   list,
   listWithEtag,
+  getPlatformCounts,
   getUpstreamBillingRatesWithEtag,
   getById,
   create,
@@ -1217,7 +1270,6 @@ export const accountsAPI = {
   getBatchUsage,
   getTodayStats,
   getBatchTodayStats,
-  getBatchTodayStatsWithEtag,
   clearRateLimit,
   recoverState,
   resetAccountQuota,
@@ -1228,6 +1280,7 @@ export const accountsAPI = {
   setOpenAIAutoResetCreditEnabled,
   getAvailableModels,
   syncUpstreamModels,
+  batchSyncUpstreamModels,
   syncUpstreamModelsPreview,
   generateAuthUrl,
   exchangeCode,
@@ -1241,6 +1294,7 @@ export const accountsAPI = {
   importData,
   importCodexSession,
   createOpenAICodexPAT,
+  getAntigravityDefaultModelMapping,
   batchDelete,
   batchClearError,
   batchRefresh,
@@ -1248,6 +1302,11 @@ export const accountsAPI = {
   revertProxyFallback,
   refreshOpenAIQuota,
   resetOpenAIQuota,
+  createSparkShadow,
+  getNewAPIUpstreamConfig,
+  previewNewAPIUpstreamConfig,
+  saveNewAPIUpstreamConfig,
+  deleteNewAPIUpstreamConfig,
   getUpstreamBillingProbeSettings,
   updateUpstreamBillingProbeSettings,
   setUpstreamBillingProbeEnabled,
@@ -1270,3 +1329,23 @@ export const accountsAPI = {
 }
 
 export default accountsAPI
+
+export async function getPerformance(accountIds: number[], signal?: AbortSignal): Promise<Record<number, AccountPerformance>> {
+ const {data}=await apiClient.post<Record<number, AccountPerformance>>('/admin/accounts/performance',{account_ids:accountIds},{signal})
+ return data
+}
+export async function savePerformance(id:number,config:PerformanceConfig,revision:number): Promise<void> {
+ await apiClient.put('/admin/accounts/'+id+'/performance',{config,revision})
+}
+export async function releasePerformance(id:number,revision:number,pauseGeneration:number): Promise<void> {
+ await apiClient.post('/admin/accounts/'+id+'/performance/release',{revision,pause_generation:pauseGeneration})
+}
+export async function getPerformanceEvents(id:number): Promise<PerformanceEvent[]> {
+ const {data}=await apiClient.get<PerformanceEvent[]>('/admin/accounts/'+id+'/performance/events')
+ return data
+}
+
+export async function getManagementCapabilities(): Promise<{ web_search_enabled: boolean; account_quota_notify_enabled: boolean; concurrency_upgrade_enabled?: boolean }> {
+  const { data } = await apiClient.get('/admin/accounts/management-capabilities')
+  return data
+}

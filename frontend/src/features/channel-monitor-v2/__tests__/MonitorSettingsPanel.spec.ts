@@ -1,6 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import Select from '@/components/common/Select.vue'
 import MonitorSettingsPanel from '../MonitorSettingsPanel.vue'
 import { CONCRETE_PLATFORM_OPTIONS } from '@/constants/platforms'
 import type { MonitorConfig } from '@/api/channelMonitorV2'
@@ -28,7 +27,7 @@ vi.mock('@/utils/featureFlags', () => ({
   isChannelMonitorV2Mode: () => true,
 }))
 vi.mock('vue-i18n', async () => ({
-  ...await vi.importActual<typeof import('vue-i18n')>('vue-i18n'),
+  ...await vi.importActual('vue-i18n'),
   useI18n: () => ({ t: (key: string) => key, te: () => false }),
 }))
 
@@ -63,9 +62,10 @@ function button(wrapper: Awaited<ReturnType<typeof panel>>, key: string) {
   return wrapper.findAll('button').find((item) => item.text() === 'channelMonitorV2.settings.' + key)!
 }
 
+const select = (wrapper: Awaited<ReturnType<typeof panel>>) => wrapper.get('[data-testid="monitor-v2-platform-select"]')
+const options = (wrapper: Awaited<ReturnType<typeof panel>>) => select(wrapper).findAll('option').map(o => o.attributes('value'))
 async function add(wrapper: Awaited<ReturnType<typeof panel>>, platform: string) {
-  wrapper.findComponent(Select).vm.$emit('update:modelValue', platform)
-  await flushPromises()
+  await wrapper.get('[data-testid="monitor-v2-platform-custom"]').setValue(platform)
   await button(wrapper, 'addPlatform').trigger('click')
 }
 
@@ -76,47 +76,38 @@ beforeEach(() => {
 })
 
 describe('MonitorSettingsPanel platform configuration', () => {
-  it('adds a missing provider and saves its models without changing existing settings', async () => {
+  it('adds a missing provider for automatic called-model discovery without changing existing settings', async () => {
     const original = config()
     const wrapper = await panel(original)
     expect(button(wrapper, 'save').attributes('disabled')).toBeDefined()
-    expect(wrapper.findComponent(Select).props('options')).not.toContainEqual(expect.objectContaining({ value: 'openai' }))
-
-    await wrapper.findComponent(Select).find('button').trigger('click')
-    const option = wrapper.findAll('[role="option"]').find((item) => item.text() === 'DeepSeek')!
-    await option.trigger('click')
+    expect(options(wrapper)).not.toContain('openai')
+    await select(wrapper).setValue('deepseek')
     await button(wrapper, 'addPlatform').trigger('click')
-    expect(button(wrapper, 'addPlatform').attributes('disabled')).toBeDefined()
-    expect(wrapper.findComponent(Select).props('options')).not.toContainEqual(
-      expect.objectContaining({ value: 'deepseek' })
-    )
-    const models = wrapper.findAll('input[type="text"]').at(-1)!
-    await models.setValue(' deepseek-chat, deepseek-reasoner, deepseek-chat ')
+    expect(options(wrapper)).not.toContain('deepseek')
     await button(wrapper, 'save').trigger('click')
     await flushPromises()
 
-    expect(mocks.updateConfig).toHaveBeenCalledWith({
+    expect(mocks.updateConfig).toHaveBeenCalledWith(expect.objectContaining({
       ...original,
       platforms: [...original.platforms, {
-        platform: 'deepseek', enabled: true, models: ['deepseek-chat', 'deepseek-reasoner'],
+        platform: 'deepseek', enabled: true, models: [],
       }],
-    })
+    }))
     expect(button(wrapper, 'save').attributes('disabled')).toBeDefined()
     expect(original.platforms).toHaveLength(2)
 
     const persisted = mocks.updateConfig.mock.results[0].value
     wrapper.unmount()
     const reloaded = await panel(await persisted)
-    expect((reloaded.findAll('input[type="text"]').at(-1)!.element as HTMLInputElement).value).toBe('deepseek-chat, deepseek-reasoner')
-    expect(reloaded.findComponent(Select).props('options')).not.toContainEqual(
-      expect.objectContaining({ value: 'deepseek' })
-    )
+    expect(reloaded.find('[data-testid="monitor-v2-platform-custom"]').exists()).toBe(true)
+    expect(options(reloaded)).not.toContain('deepseek')
     reloaded.unmount()
   })
 
   it('can start with no configured platforms and rejects duplicate additions', async () => {
     const wrapper = await panel({ ...config(), platforms: [] })
-    expect(button(wrapper, 'addPlatform').attributes('disabled')).toBeDefined()
+    await button(wrapper, 'addPlatform').trigger('click')
+    expect(mocks.showError).toHaveBeenCalledWith('channelMonitorV2.settings.platformRequired')
     await add(wrapper, 'kimi')
     await add(wrapper, 'kimi')
     await button(wrapper, 'save').trigger('click')
@@ -134,21 +125,22 @@ describe('MonitorSettingsPanel platform configuration', () => {
     await button(wrapper, 'save').trigger('click')
     await flushPromises()
     expect(mocks.showError).toHaveBeenCalledOnce()
-    expect(wrapper.findComponent(Select).props('options')).toContainEqual(
-      expect.objectContaining({ value: 'minimax' })
-    )
-    expect(wrapper.findAll('input[type="text"]')).toHaveLength(2)
+    expect(options(wrapper)).toContain('minimax')
+    expect(wrapper.find('[data-testid="monitor-v2-platform-custom"]').exists()).toBe(true)
     expect(button(wrapper, 'save').attributes('disabled')).toBeDefined()
     wrapper.unmount()
   })
 
-  it('hides the add control after every supported platform is configured', async () => {
+  it('retains custom provider input after known platforms are configured', async () => {
     const wrapper = await panel({
       ...config(),
       platforms: CONCRETE_PLATFORM_OPTIONS.map(({ value }) => ({ platform: value, enabled: true, models: [] })),
     })
-    expect(wrapper.findComponent(Select).exists()).toBe(false)
-    expect(button(wrapper, 'addPlatform')).toBeUndefined()
+    expect(options(wrapper)).not.toContain('openai')
+    await add(wrapper, 'another-provider')
+    await button(wrapper, 'save').trigger('click')
+    await flushPromises()
+    expect(mocks.updateConfig.mock.calls[0][0].platforms).toContainEqual({ platform: 'another-provider', enabled: true, models: [] })
     wrapper.unmount()
   })
 })

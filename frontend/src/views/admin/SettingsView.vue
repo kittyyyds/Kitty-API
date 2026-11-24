@@ -1,6 +1,6 @@
 <template>
   <AppLayout>
-    <div class="mx-auto max-w-6xl space-y-6">
+    <div class="w-full min-w-0  space-y-6">
       <!-- Loading State -->
       <div v-if="loading" class="flex items-center justify-center py-12">
         <div
@@ -8,8 +8,7 @@
         ></div>
       </div>
 
-      <!-- Settings Form -->
-      <form v-else @submit.prevent="saveSettings" class="space-y-6" novalidate>
+      <div v-else class="space-y-6">
         <!-- Tab Navigation -->
         <div class="settings-tabs-shell">
           <nav
@@ -44,16 +43,20 @@
           </nav>
         </div>
 
+        <section v-if="activeTab === 'guide'" id="settings-section-guide"><GuideEditor /></section>
+
+      <!-- Independently saved settings stay outside this form. -->
+      <form v-show="activeTab !== 'openai-vm' && activeTab !== 'guide'" @submit.prevent="saveSettings" class="space-y-6" novalidate>
         <!-- Tab: Security — Admin API Key -->
         <div v-show="activeTab === 'security'" class="space-y-6">
-          <AdminAccessKeysSettings />
+          <AdminAccessKeysSettings v-if="authStore.isSuperAdmin" />
           <!-- 已有全权密钥只提供轮换和删除入口。 -->
-          <details v-if="adminApiKeyExists" class="card">
+          <details v-if="authStore.isSuperAdmin && adminApiKeyExists" class="card">
             <summary class="cursor-pointer px-6 py-4 font-medium">{{ t("adminAccessKeys.legacy") }}</summary>
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-admin-api-key" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.adminApiKey.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -163,12 +166,33 @@
 
         <!-- Tab: Gateway -->
         <div v-show="activeTab === 'gateway'" class="space-y-6">
+          <div class="card" data-testid="upstream-error-message-settings">
+            <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t('admin.settings.upstreamErrorMessage.title') }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t('admin.settings.upstreamErrorMessage.description') }}
+              </p>
+            </div>
+            <div class="space-y-3 p-6">
+              <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                {{ t('admin.settings.upstreamErrorMessage.label') }}
+                <textarea v-model="form.upstream_error_message" rows="3" maxlength="500"
+                  class="input mt-2" data-testid="upstream-error-message"
+                  :placeholder="t('admin.settings.upstreamErrorMessage.placeholder')" />
+              </label>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.settings.upstreamErrorMessage.hint') }}
+              </p>
+            </div>
+          </div>
           <!-- Overload Cooldown (529) Settings -->
           <div class="card">
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-overload-cooldown" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.overloadCooldown.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -269,7 +293,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-rate-limit429cooldown" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.rateLimit429Cooldown.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -376,7 +400,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-stream-timeout" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.streamTimeout.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -551,12 +575,59 @@
             </div>
           </div>
 
+          <!-- OpenAI Response Header Timeout -->
+          <div class="card">
+            <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+              <h2 id="settings-section-openai-response-header-timeout" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.settings.openaiResponseHeaderTimeout.title") }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.openaiResponseHeaderTimeout.description") }}
+              </p>
+            </div>
+            <div class="space-y-5 p-6">
+              <div v-if="openAIResponseHeaderTimeoutLoading" class="flex items-center gap-2 text-gray-500">
+                <div class="h-4 w-4 animate-spin rounded-full border-b-2 border-primary-600"></div>
+                {{ t("common.loading") }}
+              </div>
+              <div v-else-if="openAIResponseHeaderTimeoutLoadFailed" role="alert">
+                {{ t("admin.settings.openaiResponseHeaderTimeout.loadFailed") }}
+                <button type="button" @click="loadOpenAIResponseHeaderTimeoutSettings" class="btn btn-secondary btn-sm">{{ t("common.refresh") }}</button>
+              </div>
+              <template v-else>
+                <div class="flex items-center justify-between">
+                  <div>
+                    <label class="font-medium text-gray-900 dark:text-white">{{ t("admin.settings.openaiResponseHeaderTimeout.enabled") }}</label>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">{{ t("admin.settings.openaiResponseHeaderTimeout.enabledHint") }}</p>
+                  </div>
+                  <Toggle v-model="openAIResponseHeaderTimeoutForm.enabled" data-testid="openai-header-timeout-enabled" />
+                </div>
+                <div v-if="openAIResponseHeaderTimeoutForm.enabled">
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.openaiResponseHeaderTimeout.seconds") }}
+                  </label>
+                  <input data-testid="openai-header-timeout-seconds" v-model.number="openAIResponseHeaderTimeoutForm.seconds" type="number" min="1" max="600" class="input w-32" />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.openaiResponseHeaderTimeout.secondsHint") }}</p>
+                </div>
+                <div class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700">
+                  <button data-testid="openai-header-timeout-save" type="button" @click="saveOpenAIResponseHeaderTimeoutSettings" :disabled="openAIResponseHeaderTimeoutSaving" class="btn btn-primary btn-sm">
+                    <svg v-if="openAIResponseHeaderTimeoutSaving" class="mr-1 h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    {{ openAIResponseHeaderTimeoutSaving ? t("common.saving") : t("common.save") }}
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
+
           <!-- Request Rectifier Settings -->
           <div class="card">
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-rectifier" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.rectifier.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -755,7 +826,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-beta-policy" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.betaPolicy.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -1034,7 +1105,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-openai-fast-policy" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.openaiFastPolicy.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -1388,7 +1459,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-registration" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.registration.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -1495,6 +1566,25 @@
                 </p>
               </div>
 
+              <!-- Email Alias Registration -->
+              <div class="flex items-center justify-between border-t border-gray-100 pt-4 dark:border-dark-700">
+                <div>
+                  <label for="registration-email-alias-block" class="font-medium text-gray-900 dark:text-white">{{
+                    t("admin.settings.registration.emailAliasBlock")
+                  }}</label>
+                  <p id="registration-email-alias-block-hint" class="text-sm text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.registration.emailAliasBlockHint") }}
+                  </p>
+                </div>
+                <Toggle
+                  id="registration-email-alias-block"
+                  v-model="form.registration_email_alias_block_enabled"
+                  :aria-label="t('admin.settings.registration.emailAliasBlock')"
+                  aria-describedby="registration-email-alias-block-hint"
+                  data-testid="registration-email-alias-block-toggle"
+                />
+              </div>
+
               <!-- Email Domain Quota -->
               <div
                 class="flex items-center justify-between border-t border-gray-100 pt-4 dark:border-dark-700"
@@ -1510,6 +1600,24 @@
                 <Toggle
                   v-model="form.registration_email_domain_quota_enabled"
                 />
+              </div>
+
+              <!-- Exact Email Blacklist -->
+              <RegistrationEmailBlacklistEditor />
+
+              <!-- Promo Code -->
+              <div
+                class="flex items-center justify-between border-t border-gray-100 pt-4 dark:border-dark-700"
+              >
+                <div>
+                  <label class="font-medium text-gray-900 dark:text-white">{{
+                    t("admin.settings.registration.promoCode")
+                  }}</label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.registration.promoCodeHint") }}
+                  </p>
+                </div>
+                <Toggle v-model="form.promo_code_enabled" />
               </div>
 
               <!-- Invitation Code -->
@@ -1562,6 +1670,44 @@
                 <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                   {{ t("admin.settings.registration.frontendUrlHint") }}
                 </p>
+              </div>
+
+              <!-- Registration IP quota is independent of login protection. -->
+              <div
+                class="flex items-start justify-between gap-4 border-t border-gray-100 pt-4 dark:border-dark-700"
+              >
+                <div>
+                  <label id="registration-ip-limit-label" class="font-medium text-gray-900 dark:text-white">
+                    {{ t("admin.settings.security.registrationIPLimit") }}
+                  </label>
+                  <p id="registration-ip-limit-hint" class="text-sm text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.security.registrationIPLimitHint") }}
+                  </p>
+                </div>
+                <Toggle
+                  v-model="form.registration_ip_limit_enabled"
+                  aria-labelledby="registration-ip-limit-label"
+                  aria-describedby="registration-ip-limit-hint"
+                  data-testid="registration-ip-limit-toggle"
+                />
+              </div>
+
+              <!-- Login rate limits -->
+              <div
+                class="flex items-start justify-between gap-4 border-t border-gray-100 pt-4 dark:border-dark-700"
+              >
+                <div>
+                  <label class="font-medium text-gray-900 dark:text-white">
+                    {{ t("admin.settings.security.loginRateLimit") }}
+                  </label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.security.loginRateLimitHint") }}
+                  </p>
+                </div>
+                <Toggle
+                  v-model="form.login_rate_limit_enabled"
+                  data-testid="login-rate-limit-toggle"
+                />
               </div>
 
               <!-- TOTP 2FA -->
@@ -1678,6 +1824,29 @@
                 <Toggle v-model="form.session_binding_enabled" />
               </div>
 
+              <!-- 中国大陆网页访问限制 -->
+              <div
+                class="flex items-start justify-between gap-4 border-t border-gray-100 pt-4 dark:border-dark-700"
+                data-testid="mainland-web-block-settings"
+              >
+                <div>
+                  <label class="font-medium text-gray-900 dark:text-white">{{
+                    t("admin.settings.security.mainlandWebBlock")
+                  }}</label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.security.mainlandWebBlockHint") }}
+                  </p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.security.mainlandWebBlockProxyHint") }}
+                  </p>
+                </div>
+                <Toggle
+                  v-model="form.mainland_web_block_enabled"
+                  data-testid="mainland-web-block-toggle"
+                  :aria-label="t('admin.settings.security.mainlandWebBlock')"
+                />
+              </div>
+
               <!-- 审计日志保留天数 -->
               <div
                 class="flex items-center justify-between border-t border-gray-100 pt-4 dark:border-dark-700"
@@ -1705,7 +1874,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-api-key-acl" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.apiKeyAcl.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -1798,7 +1967,7 @@
                   size="md"
                   class="text-primary-500"
                 />
-                <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                <h2 id="settings-section-panel-rate-limit" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                   {{ t("admin.settings.panelRateLimit.title") }}
                 </h2>
               </div>
@@ -1983,7 +2152,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-captcha" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.captcha.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -2387,7 +2556,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-linuxdo" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.linuxdo.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -2505,7 +2674,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-email-oauth" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ localText("邮箱快捷登录", "Email OAuth Sign-in") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -2731,7 +2900,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-wechat-connect" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.wechatConnect.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -3073,7 +3242,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-dingtalk" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.dingtalk.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -3361,7 +3530,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-oidc" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.oidc.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -3774,7 +3943,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-defaults" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.defaults.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -4000,7 +4169,8 @@
                       </tr>
                     </thead>
                     <tbody class="space-y-2">
-                      <tr v-for="p in platformQuotaRows(form.default_platform_quotas)" :key="p" class="align-top">                        <td class="pr-4 py-1">
+                      <tr v-for="p in platformQuotaRows(form.default_platform_quotas)" :key="p" class="align-top">
+                        <td class="pr-4 py-1">
                           <span class="font-mono text-xs text-gray-700 dark:text-gray-300">{{ p }}</span>
                         </td>
                         <td class="pr-4 py-1">
@@ -4046,7 +4216,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-auth-source-defaults" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.authSourceDefaults.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -4334,7 +4504,8 @@
                             </tr>
                           </thead>
                           <tbody>
-                            <tr v-for="p in platformQuotaRows(authSourceDefaults[authSource.source].platform_quotas)" :key="`${authSource.source}-pq-${p}`" class="align-top">                              <td class="pr-4 py-1">
+                            <tr v-for="p in platformQuotaRows(authSourceDefaults[authSource.source].platform_quotas)" :key="`${authSource.source}-pq-${p}`" class="align-top">
+                              <td class="pr-4 py-1">
                                 <span class="font-mono text-xs text-gray-700 dark:text-gray-300">{{ p }}</span>
                               </td>
                               <td class="pr-4 py-1">
@@ -4383,12 +4554,47 @@
 
         <!-- Tab: Gateway — Claude Code, Scheduling -->
         <div v-show="activeTab === 'gateway'" class="space-y-6">
+          <div class="card" data-testid="upstream-error-retry-settings">
+            <div class="flex items-center justify-between gap-6 border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+              <div>
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                  {{ t('admin.settings.upstreamErrorRetry.title') }}
+                </h2>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.upstreamErrorRetry.description') }}
+                </p>
+              </div>
+              <Toggle v-model="form.upstream_error_retry.enabled" data-testid="upstream-error-retry-toggle" />
+            </div>
+            <div class="space-y-4 p-6">
+              <div class="grid gap-4 sm:grid-cols-2">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.upstreamErrorRetry.maxRetries') }}
+                  <input v-model.number="form.upstream_error_retry.max_retries" type="number" min="1" max="10" step="1"
+                    class="input mt-2" data-testid="upstream-error-retry-max" />
+                </label>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.upstreamErrorRetry.delay') }}
+                  <input v-model.number="form.upstream_error_retry.delay_ms" type="number" min="100" max="10000" step="100"
+                    class="input mt-2" data-testid="upstream-error-retry-delay" />
+                </label>
+              </div>
+              <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                {{ t('admin.settings.upstreamErrorRetry.errors') }}
+                <textarea v-model="form.upstream_error_retry.errors" rows="5" maxlength="32768"
+                  class="input mt-2 font-mono text-sm" data-testid="upstream-error-retry-errors"
+                  :placeholder="'503\nserver_is_overloaded\nservers are currently overloaded'" />
+              </label>
+              <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.upstreamErrorRetry.matchHint') }}</p>
+              <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.upstreamErrorRetry.scopeHint') }}</p>
+            </div>
+          </div>
           <!-- Claude Code Settings -->
           <div class="card">
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-claude-code" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.claudeCode.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -4440,7 +4646,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-gateway-forwarding-codex-hardening-title" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.gatewayForwarding.codexHardeningTitle") }}
               </h2>
             </div>
@@ -4688,7 +4894,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-upstream-billing-probe" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.upstreamBillingProbe.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -4748,6 +4954,21 @@
                   </p>
                 </div>
 
+                <div class="border-t border-gray-100 pt-4 dark:border-dark-700">
+                  <div class="flex items-center justify-between gap-4">
+                    <div>
+                      <label class="font-medium text-gray-900 dark:text-white">{{ t("admin.settings.upstreamBillingProbe.rateNotifyEnabled") }}</label>
+                      <p class="text-sm text-gray-500 dark:text-gray-400">{{ t("admin.settings.upstreamBillingProbe.rateNotifyHint") }}</p>
+                    </div>
+                    <Toggle v-model="upstreamBillingProbeForm.rate_change_notify_enabled" :aria-label="t('admin.settings.upstreamBillingProbe.rateNotifyEnabled')" data-testid="upstream-rate-notify-enabled" />
+                  </div>
+                  <div v-if="upstreamBillingProbeForm.rate_change_notify_enabled" class="mt-3">
+                    <label for="upstream-rate-notify-email" class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.upstreamBillingProbe.rateNotifyEmail") }}</label>
+                    <input id="upstream-rate-notify-email" v-model.trim="upstreamBillingProbeForm.rate_change_notify_email" type="email" maxlength="254" class="input w-full max-w-md" data-testid="upstream-rate-notify-email" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.upstreamBillingProbe.rateNotifyEmailHint") }}</p>
+                  </div>
+                </div>
+
                 <div
                   class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700"
                 >
@@ -4772,7 +4993,7 @@
           <!-- Ollama Cloud Usage Settings -->
           <div class="card" data-testid="ollama-cloud-usage-global-settings">
             <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-ollama-cloud-usage" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.ollamaCloudUsage.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -4856,7 +5077,7 @@
           <!-- OpenCode Go Usage Settings -->
           <div class="card" data-testid="opencode-go-usage-global-settings">
             <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-opencode-go-usage" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.opencodeGoUsage.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -4942,7 +5163,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-scheduling" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.scheduling.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -4962,6 +5183,21 @@
                   </p>
                 </div>
                 <Toggle v-model="form.allow_ungrouped_key_scheduling" />
+              </div>
+
+              <div class="flex items-center justify-between border-t border-gray-100 pt-5 dark:border-dark-700">
+                <div>
+                  <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.scheduling.accountGroupPriorityTitle") }}
+                  </label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.scheduling.accountGroupPriorityHint") }}
+                  </p>
+                </div>
+                <Toggle
+                  v-model="form.account_group_priority_enabled"
+                  data-testid="account-group-priority-toggle"
+                />
               </div>
 
               <div class="border-t border-gray-100 pt-4 dark:border-dark-700">
@@ -5221,7 +5457,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-gateway-forwarding" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.gatewayForwarding.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -5293,6 +5529,20 @@
                     {{ t("admin.settings.gatewayForwarding.grokDefaultBaseURLModeHint") }}
                   </p>
                 </div>
+                <div class="flex items-center justify-between gap-5 md:col-span-2">
+                  <div>
+                    <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.gatewayForwarding.grokVideoSourceURL") }}
+                    </label>
+                    <p class="mt-0.5 max-w-xl text-xs text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.gatewayForwarding.grokVideoSourceURLHint") }}
+                    </p>
+                  </div>
+                  <Toggle
+                    v-model="form.grok_video_source_url_enabled"
+                    data-testid="grok-video-source-url-toggle"
+                  />
+                </div>
 
               <!-- OpenAI Responses 首 token 统计 -->
               <div class="border-b border-gray-100 pb-5 dark:border-dark-700 md:col-span-2">
@@ -5362,21 +5612,6 @@
                   </p>
                 </div>
                 <Toggle v-model="form.enable_metadata_passthrough" />
-              </div>
-
-              <!-- CCH Signing -->
-              <div class="flex items-center justify-between">
-                <div>
-                  <label
-                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
-                  >
-                    {{ t("admin.settings.gatewayForwarding.cchSigning") }}
-                  </label>
-                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                    {{ t("admin.settings.gatewayForwarding.cchSigningHint") }}
-                  </p>
-                </div>
-                <Toggle v-model="form.enable_cch_signing" />
               </div>
 
               <!-- Claude OAuth System Prompt Injection -->
@@ -5683,6 +5918,36 @@
                 />
               </div>
 
+              <!-- Antigravity UA 版本 -->
+              <div>
+                <label
+                  class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                >
+                  {{
+                    t(
+                      "admin.settings.gatewayForwarding.antigravityUserAgentVersion",
+                    )
+                  }}
+                </label>
+                <input
+                  v-model="form.antigravity_user_agent_version"
+                  type="text"
+                  class="input max-w-xs font-mono text-sm"
+                  :placeholder="
+                    t(
+                      'admin.settings.gatewayForwarding.antigravityUserAgentVersionPlaceholder',
+                    )
+                  "
+                />
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{
+                    t(
+                      "admin.settings.gatewayForwarding.antigravityUserAgentVersionHint",
+                    )
+                  }}
+                </p>
+              </div>
+
               <!-- OpenAI Codex UA -->
               <div>
                 <label
@@ -5835,7 +6100,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-web-search-emulation" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.webSearchEmulation.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -6270,7 +6535,7 @@
         <!-- Usage Records Settings -->
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+            <h2 id="settings-section-usage-records" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
               {{ t('admin.settings.usageRecords.title') }}
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -6293,6 +6558,81 @@
                 <span class="toggle-slider"></span>
               </label>
             </div>
+
+            <!-- Long context billing badge visibility -->
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.long_context_badge.label') }}
+                </label>
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.long_context_badge.description') }}
+                </p>
+              </div>
+              <label class="toggle">
+                <input v-model="form.usage_show_long_context_badge" type="checkbox" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.cache_rate.label') }}
+                </label>
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.cache_rate.description') }}
+                </p>
+              </div>
+              <label class="toggle">
+                <input
+                  v-model="form.usage_show_cache_rate"
+                  data-testid="usage-show-cache-rate"
+                  type="checkbox"
+                  @change="form.usage_show_cache_rate_to_users = form.usage_show_cache_rate && form.usage_show_cache_rate_to_users"
+                />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+
+            <div class="flex items-center justify-between" :class="form.usage_show_cache_rate ? '' : 'opacity-60'">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.cache_rate_to_users.label') }}
+                </label>
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.cache_rate_to_users.description') }}
+                </p>
+              </div>
+              <label class="toggle">
+                <input
+                  v-model="form.usage_show_cache_rate_to_users"
+                  data-testid="usage-show-cache-rate-to-users"
+                  type="checkbox"
+                  :disabled="!form.usage_show_cache_rate"
+                />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.upstream_response_model_to_users.label') }}
+                </label>
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.upstream_response_model_to_users.description') }}
+                </p>
+              </div>
+              <label class="toggle">
+                <input
+                  v-model="form.usage_show_upstream_response_model_to_users"
+                  data-testid="usage-show-upstream-response-model-to-users"
+                  type="checkbox"
+                />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
           </div>
         </div>
         </div>
@@ -6305,7 +6645,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-site" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.site.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -6381,19 +6721,24 @@
                 <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                   {{ t("admin.settings.site.apiBaseUrlHint") }}
                 </p>
-                <div class="mt-3 flex items-start justify-between gap-4">
-                  <div>
-                    <p
-                      class="text-sm font-medium text-gray-700 dark:text-gray-300"
-                    >
-                      {{ t("admin.settings.site.apiBaseUrlFollowHost") }}
-                    </p>
-                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                      {{ t("admin.settings.site.apiBaseUrlFollowHostHint") }}
-                    </p>
-                  </div>
-                  <Toggle v-model="form.api_base_url_follow_host" />
-                </div>
+              </div>
+
+              <!-- Default endpoint label -->
+              <div>
+                <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t("admin.settings.site.apiBaseUrlDescription") }}
+                </label>
+                <input
+                  v-model="form.api_base_url_description"
+                  data-testid="api-base-url-description"
+                  type="text"
+                  maxlength="200"
+                  class="input text-sm"
+                  :placeholder="t('admin.settings.site.apiBaseUrlDescriptionPlaceholder')"
+                />
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.site.apiBaseUrlDescriptionHint") }}
+                </p>
               </div>
 
               <!-- Global Table Preferences -->
@@ -6548,6 +6893,15 @@
                             )
                           "
                         />
+                        <label class="mt-3 flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                          <input
+                            v-model="ep.recommended"
+                            data-testid="custom-endpoint-recommended"
+                            type="checkbox"
+                            class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                          />
+                          {{ t("admin.settings.site.customEndpoints.recommended") }}
+                        </label>
                       </div>
                     </div>
                   </div>
@@ -6648,6 +7002,10 @@
                 <p class="mt-2 text-xs text-amber-600 dark:text-amber-400">
                   {{ t("admin.settings.site.homeContentIframeWarning") }}
                 </p>
+                <!-- The current homepage (HomeLandingView) renders its own template and reads neither setting. -->
+                <p class="mt-2 text-xs text-amber-600 dark:text-amber-400" data-testid="home-template-ignored">
+                  {{ t("admin.settings.site.homeTemplateIgnored") }}
+                </p>
               </div>
 
               <!-- Compact Home Page -->
@@ -6658,6 +7016,9 @@
                   }}</label>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
                     {{ t("admin.settings.site.compactHomeHint") }}
+                  </p>
+                  <p class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                    {{ t("admin.settings.site.homeTemplateIgnored") }}
                   </p>
                 </div>
                 <Toggle v-model="form.compact_home_enabled" data-testid="compact-home-toggle" />
@@ -6685,7 +7046,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-custom-menu" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.customMenu.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -6777,20 +7138,52 @@
                 </div>
 
                 <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <!-- Label -->
+                  <!-- Localized labels -->
                   <div>
                     <label
                       class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400"
                     >
-                      {{ t("admin.settings.customMenu.name") }}
+                      {{ t("admin.settings.customMenu.nameZh") }}
+                    </label>
+                    <input
+                      v-model="item.label_zh"
+                      type="text"
+                      class="input text-sm"
+                      maxlength="50"
+                      :placeholder="t('admin.settings.customMenu.nameZhPlaceholder')"
+                      data-testid="custom-menu-label-zh"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400"
+                    >
+                      {{ t("admin.settings.customMenu.nameEn") }}
+                    </label>
+                    <input
+                      v-model="item.label_en"
+                      type="text"
+                      class="input text-sm"
+                      maxlength="50"
+                      :placeholder="t('admin.settings.customMenu.nameEnPlaceholder')"
+                      data-testid="custom-menu-label-en"
+                    />
+                  </div>
+
+                  <!-- Legacy label fallback -->
+                  <div>
+                    <label
+                      class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400"
+                    >
+                      {{ t("admin.settings.customMenu.fallbackName") }}
                     </label>
                     <input
                       v-model="item.label"
                       type="text"
                       class="input text-sm"
-                      :placeholder="
-                        t('admin.settings.customMenu.namePlaceholder')
-                      "
+                      maxlength="50"
+                      :placeholder="t('admin.settings.customMenu.fallbackNamePlaceholder')"
+                      data-testid="custom-menu-label-fallback"
                     />
                   </div>
 
@@ -6862,6 +7255,7 @@
               <button
                 type="button"
                 class="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-gray-300 py-3 text-sm text-gray-500 transition-colors hover:border-primary-400 hover:text-primary-600 dark:border-dark-600 dark:text-gray-400 dark:hover:border-primary-500 dark:hover:text-primary-400"
+                data-testid="custom-menu-add"
                 @click="addMenuItem"
               >
                 <svg
@@ -6890,7 +7284,7 @@
 	            <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
 	              <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
 	                <div>
-	                  <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+	                  <h2 id="settings-section-login-agreement" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
 	                    {{ localText("登录条款确认", "Login agreement") }}
 	                  </h2>
 	                  <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -7086,12 +7480,26 @@
         </div>
         <!-- /Tab: Login Agreement -->
 
-	        <!-- Tab: Features (功能开关) -->
+        <!-- Tab: Features (功能开关) -->
         <div v-show="activeTab === 'features'" class="space-y-6">
-
+        <div class="card" data-testid="channel-quality-public-settings">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 id="settings-section-features-channel-quality-public" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.settings.features.channelQualityPublic.title') }}</h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.channelQualityPublic.description') }}</p>
+          </div>
+          <div class="flex items-center justify-between gap-4 p-6">
+            <div>
+              <label class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.features.channelQualityPublic.enabled') }}</label>
+              <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.channelQualityPublic.hint') }}</p>
+            </div>
+            <Toggle v-model="form.channel_quality_public_enabled" data-testid="channel-quality-public-toggle" />
+          </div>
+        </div>
+        
+        
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+            <h2 id="settings-section-features-channel-monitor" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
               {{ t('admin.settings.features.channelMonitor.title') }}
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -7125,38 +7533,25 @@
                 <label class="input-label">
                   {{ t('admin.settings.features.channelMonitor.mode') }}
                 </label>
-                <div class="mt-1.5 inline-flex w-full max-w-md rounded-lg border border-gray-200 bg-gray-50 p-1 dark:border-dark-600 dark:bg-dark-900/40">
+                <div class="mt-1.5 inline-flex w-full max-w-xl rounded-lg border border-gray-200 bg-gray-50 p-1 dark:border-dark-600 dark:bg-dark-900/40">
                   <button
+                    v-for="mode in channelMonitorModes"
+                    :key="mode"
                     type="button"
                     class="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition"
                     :class="
-                      form.channel_monitor_mode === 'v2'
+                      form.channel_monitor_mode === mode
                         ? 'bg-white text-primary-700 shadow-sm dark:bg-dark-800 dark:text-primary-300'
                         : 'text-gray-600 hover:text-gray-900 dark:text-dark-300 dark:hover:text-white'
                     "
-                    @click="form.channel_monitor_mode = 'v2'"
+                    :data-testid="`settings-monitor-mode-${mode}`"
+                    @click="form.channel_monitor_mode = mode"
                   >
-                    {{ t('admin.settings.features.channelMonitor.modeV2') }}
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition"
-                    :class="
-                      form.channel_monitor_mode === 'v1'
-                        ? 'bg-white text-primary-700 shadow-sm dark:bg-dark-800 dark:text-primary-300'
-                        : 'text-gray-600 hover:text-gray-900 dark:text-dark-300 dark:hover:text-white'
-                    "
-                    @click="form.channel_monitor_mode = 'v1'"
-                  >
-                    {{ t('admin.settings.features.channelMonitor.modeV1') }}
+                    {{ t(`admin.settings.features.channelMonitor.mode${mode.toUpperCase()}`) }}
                   </button>
                 </div>
                 <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                  {{
-                    form.channel_monitor_mode === 'v1'
-                      ? t('admin.settings.features.channelMonitor.modeV1Hint')
-                      : t('admin.settings.features.channelMonitor.modeV2Hint')
-                  }}
+                  {{ t(`admin.settings.features.channelMonitor.mode${(form.channel_monitor_mode || 'v1').toUpperCase()}Hint`) }}
                 </p>
                 <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
                   {{ t('admin.settings.features.channelMonitor.modeHint') }}
@@ -7222,7 +7617,7 @@
 
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+            <h2 id="settings-section-features-available-channels" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
               {{ t('admin.settings.features.availableChannels.title') }}
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -7253,9 +7648,10 @@
           </div>
         </div>
 
+
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+            <h2 id="settings-section-features-model-plaza" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
               {{ t('admin.settings.features.modelPlaza.title') }}
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -7305,7 +7701,7 @@
 
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+            <h2 id="settings-section-features-site-billing-mode" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
               {{ t('admin.settings.features.siteBillingMode.title') }}
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -7335,7 +7731,7 @@
 
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+            <h2 id="settings-section-features-plugin-management" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
               {{ t('admin.settings.features.pluginManagement.title') }}
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -7357,9 +7753,114 @@
           </div>
         </div>
 
+        <div class="card" data-testid="support-ticket-settings">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 id="settings-section-features-support-tickets" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.settings.features.supportTickets.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.features.supportTickets.description') }}
+            </p>
+            <p v-if="form.support_ticket_enabled" class="mt-1.5 text-xs">
+              <router-link
+                to="/admin/support-tickets"
+                class="inline-flex items-center gap-1 text-primary-600 hover:underline dark:text-primary-400"
+              >
+                {{ t('admin.settings.features.supportTickets.openPage') }}
+                <span aria-hidden="true">→</span>
+              </router-link>
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <label for="support-ticket-enabled" class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.features.supportTickets.enabled') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.features.supportTickets.enabledHint') }}
+                </p>
+              </div>
+              <Toggle id="support-ticket-enabled" v-model="form.support_ticket_enabled" />
+            </div>
+            <template v-if="form.support_ticket_enabled">
+              <div>
+                <span class="input-label">{{ t('admin.settings.features.supportTickets.categories') }}</span>
+                <div class="space-y-2" data-testid="support-ticket-categories">
+                  <div class="grid gap-2 sm:grid-cols-2">
+                    <div
+                      v-for="(category, index) in form.support_ticket_config.categories"
+                      :key="index"
+                      class="flex items-center gap-2"
+                    >
+                      <input
+                        v-model="form.support_ticket_config.categories[index]"
+                        class="input flex-1"
+                        :maxlength="SUPPORT_TICKET_CATEGORY_MAX"
+                        :placeholder="t('admin.settings.features.supportTickets.categoryPlaceholder')"
+                        :aria-label="category || t('admin.settings.features.supportTickets.categoryPlaceholder')"
+                      />
+                      <button
+                        type="button"
+                        class="btn btn-secondary px-2"
+                        :aria-label="t('admin.settings.features.supportTickets.removeCategory')"
+                        @click="form.support_ticket_config.categories.splice(index, 1)"
+                      >
+                        <Icon name="x" size="xs" class="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    v-if="form.support_ticket_config.categories.length < SUPPORT_TICKET_MAX_CATEGORIES"
+                    type="button"
+                    class="btn btn-secondary btn-sm"
+                    data-testid="support-ticket-add-category"
+                    @click="form.support_ticket_config.categories.push('')"
+                  >
+                    + {{ t('admin.settings.features.supportTickets.addCategory') }}
+                  </button>
+                </div>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.features.supportTickets.categoriesHint', { max: SUPPORT_TICKET_MAX_CATEGORIES, length: SUPPORT_TICKET_CATEGORY_MAX }) }}
+                </p>
+              </div>
+              <div class="space-y-1">
+                <label for="support-ticket-max-open" class="input-label">{{ t('admin.settings.features.supportTickets.maxOpen') }}</label>
+                <input
+                  id="support-ticket-max-open"
+                  v-model.number="form.support_ticket_config.max_open_per_user"
+                  class="input w-40"
+                  type="number"
+                  min="1"
+                  :max="SUPPORT_TICKET_MAX_OPEN_LIMIT"
+                  step="1"
+                  required
+                />
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.features.supportTickets.maxOpenHint', { max: SUPPORT_TICKET_MAX_OPEN_LIMIT }) }}
+                </p>
+              </div>
+              <div class="space-y-1">
+                <label for="support-ticket-notice" class="input-label">{{ t('admin.settings.features.supportTickets.notice') }}</label>
+                <textarea
+                  id="support-ticket-notice"
+                  v-model="form.support_ticket_config.notice"
+                  rows="3"
+                  class="input"
+                  :maxlength="SUPPORT_TICKET_NOTICE_MAX"
+                  :placeholder="t('admin.settings.features.supportTickets.noticePlaceholder')"
+                ></textarea>
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.features.supportTickets.noticeHint', { max: SUPPORT_TICKET_NOTICE_MAX }) }}
+                </p>
+              </div>
+            </template>
+          </div>
+        </div>
+
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+            <h2 id="settings-section-features-risk-control" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
               {{ t('admin.settings.features.riskControl.title') }}
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -7424,13 +7925,30 @@
                 class="input"
               />
             </div>
+
+            <div
+              v-if="form.cyber_session_block_enabled"
+              class="rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/60 dark:bg-amber-950/30"
+            >
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <label class="text-sm font-medium text-amber-900 dark:text-amber-200">
+                    {{ t('admin.settings.features.riskControl.cyberSessionIdentityStrict') }}
+                  </label>
+                  <p class="mt-1 text-xs text-amber-800 dark:text-amber-300">
+                    {{ t('admin.settings.features.riskControl.cyberSessionIdentityStrictHint') }}
+                  </p>
+                </div>
+                <Toggle v-model="form.cyber_session_identity_strict_enabled" />
+              </div>
+            </div>
           </div>
         </div>
 
         <!-- Affiliate (邀请返利) feature card -->
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+            <h2 id="settings-section-features-affiliate" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
               {{ t('admin.settings.features.affiliate.title') }}
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -7849,7 +8367,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-payment" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.payment.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -7946,7 +8464,7 @@
                       "
                       type="number"
                       step="0.01"
-                      min="10"
+                      min="0"
                       class="input"
                       :placeholder="t('admin.settings.payment.noLimit')"
                     />
@@ -8430,7 +8948,7 @@
               class="flex items-center justify-between border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
               <div>
-                <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                <h2 id="settings-section-smtp" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                   {{ t("admin.settings.smtp.title") }}
                 </h2>
                 <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -8592,7 +9110,7 @@
             <div
               class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
             >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              <h2 id="settings-section-test-email" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
                 {{ t("admin.settings.testEmail.title") }}
               </h2>
               <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
@@ -8823,18 +9341,17 @@
         </div>
         <!-- /Tab: Email -->
 
+        <div v-if="activeTab === 'gptDirect'">
+          <GPTDirectSettings />
+        </div>
+
         <!-- Tab: Backup -->
         <div v-show="activeTab === 'backup'">
           <BackupSettings />
         </div>
 
-        <!-- Tab: Guide -->
-        <div v-if="activeTab === 'guide'">
-          <GuideEditor />
-        </div>
-
-        <!-- Save Button -->
-        <div v-show="activeTab !== 'backup' && activeTab !== 'guide'" class="settings-save-dock">
+        <!-- Save dock — sticky so long tabs never require scrolling to the end -->
+        <div v-show="activeTab !== 'backup' && activeTab !== 'gptDirect' && activeTab !== 'guide' && activeTab !== 'openai-vm'" class="settings-save-dock">
           <button
             type="submit"
             :disabled="saving || loadFailed"
@@ -8868,6 +9385,9 @@
           </button>
         </div>
       </form>
+
+      <OpenAIVMSettings v-if="activeTab === 'openai-vm'" />
+      </div>
 
       <!-- Provider dialogs placed outside the settings form to prevent form submission bubbling -->
       <PaymentProviderDialog
@@ -8907,9 +9427,13 @@
 </template>
 
 <script setup lang="ts">
+import GPTDirectSettings from "@/components/admin/settings/GPTDirectSettings.vue";
+import OpenAIVMSettings from "@/components/admin/settings/OpenAIVMSettings.vue";
 import { ref, reactive, computed, onMounted, watch } from "vue";
 import { listPlatformIds } from "@/constants/platformCatalog";
 import { useI18n } from "vue-i18n";
+import { useSettingsNavigation } from "@/composables/useSettingsNavigation";
+import type { SettingsTab } from "@/utils/settingsSearch";
 import { adminAPI } from "@/api";
 import {
   appendAuthSourceDefaultsToUpdateRequest,
@@ -8946,6 +9470,12 @@ import type {
 import type { ProviderInstance } from "@/types/payment";
 import AppLayout from "@/components/layout/AppLayout.vue";
 import Icon from "@/components/icons/Icon.vue";
+import {
+  SUPPORT_TICKET_CATEGORY_MAX,
+  SUPPORT_TICKET_MAX_CATEGORIES,
+  SUPPORT_TICKET_MAX_OPEN_LIMIT,
+  SUPPORT_TICKET_NOTICE_MAX,
+} from "@/api/supportTickets";
 import Select, { type SelectOption } from "@/components/common/Select.vue";
 import {
   SITE_BILLING_MODES,
@@ -8962,9 +9492,9 @@ import GroupOptionItem from "@/components/common/GroupOptionItem.vue";
 import Toggle from "@/components/common/Toggle.vue";
 import ProxySelector from "@/components/common/ProxySelector.vue";
 import ImageUpload from "@/components/common/ImageUpload.vue";
+import GuideEditor from "@/views/admin/settings/GuideEditor.vue";
 import BackupSettings from "@/views/admin/BackupView.vue";
 import EmailTemplateEditor from "@/views/admin/settings/EmailTemplateEditor.vue";
-import GuideEditor from "@/views/admin/settings/GuideEditor.vue";
 import RechargeBonusTierEditor from "@/components/admin/settings/RechargeBonusTierEditor.vue";
 import {
   normalizeRechargeBonusMode,
@@ -8973,6 +9503,7 @@ import {
   type RechargeBonusMode,
   type RechargeBonusTierDraft,
 } from "@/utils/rechargeBonus";
+import RegistrationEmailBlacklistEditor from "@/components/admin/settings/RegistrationEmailBlacklistEditor.vue";
 import OpenAIFastPolicyUserSelector from "@/views/admin/settings/OpenAIFastPolicyUserSelector.vue";
 import { useClipboard } from "@/composables/useClipboard";
 import {
@@ -8987,6 +9518,7 @@ import { affiliatesAPI, type AffiliateAdminEntry, type SimpleUser as AffiliateSi
 import { extractApiErrorMessage, extractI18nErrorMessage } from "@/utils/apiError";
 import { formatBalanceRechargeMultiplier } from "@/utils/rechargeBonus";
 import { useAppStore } from "@/stores";
+import { useAuthStore } from "@/stores/auth";
 import { useAdminSettingsStore } from "@/stores/adminSettings";
 import { normalizeVisibleMethod } from "@/components/payment/paymentFlow";
 import {
@@ -9004,6 +9536,7 @@ import {
 
 const { t, locale } = useI18n();
 const appStore = useAppStore();
+const authStore = useAuthStore();
 // 关闭 step-up 开关是敏感操作：后端返回 STEP_UP_REQUIRED 时弹 TOTP 码重试
 const settingsStepUp = useStepUp();
 const adminSettingsStore = useAdminSettingsStore();
@@ -9025,25 +9558,18 @@ const paymentMethodsHref = computed(() =>
     : "https://github.com/Wei-Shaw/sub2api/blob/main/docs/PAYMENT.md#supported-payment-methods",
 );
 
-type SettingsTab =
-  | "general"
-  | "agreement"
-  | "features"
-  | "security"
-  | "users"
-  | "gateway"
-  | "payment"
-  | "email"
-  | "guide"
-  | "backup";
-const activeTab = ref<SettingsTab>("general");
+const loading = ref(true);
+const loadFailed = ref(false);
+const { activeTab, selectSettingsTab } = useSettingsNavigation(loading, loadFailed);
 const settingsTabs = [
+  { key: "gptDirect" as SettingsTab, icon: "gift" as const },
   { key: "general" as SettingsTab, icon: "home" as const },
   { key: "agreement" as SettingsTab, icon: "document" as const },
   { key: "features" as SettingsTab, icon: "bolt" as const },
   { key: "security" as SettingsTab, icon: "shield" as const },
   { key: "users" as SettingsTab, icon: "user" as const },
   { key: "gateway" as SettingsTab, icon: "server" as const },
+  { key: "openai-vm" as SettingsTab, icon: "server" as const },
   { key: "payment" as SettingsTab, icon: "creditCard" as const },
   { key: "email" as SettingsTab, icon: "mail" as const },
   { key: "guide" as SettingsTab, icon: "book" as const },
@@ -9058,10 +9584,6 @@ const settingsTabKeyboardActions = {
   Home: "first",
   End: "last",
 } as const;
-
-function selectSettingsTab(tab: SettingsTab): void {
-  activeTab.value = tab;
-}
 
 function focusSettingsTab(tab: SettingsTab): void {
   window.requestAnimationFrame(() => {
@@ -9102,8 +9624,6 @@ function handleSettingsTabKeydown(event: KeyboardEvent, tab: SettingsTab): void 
 
 const { copyToClipboard } = useClipboard();
 
-const loading = ref(true);
-const loadFailed = ref(false);
 const saving = ref(false);
 const testingSmtp = ref(false);
 const sendingTestEmail = ref(false);
@@ -9122,12 +9642,17 @@ const adminApiKeyOperating = ref(false);
 const newAdminApiKey = ref("");
 const subscriptionGroups = ref<AdminGroup[]>([]);
 
+
+
+
 // Upstream billing probe state
 const upstreamBillingProbeLoading = ref(true);
 const upstreamBillingProbeSaving = ref(false);
 const upstreamBillingProbeForm = reactive({
   enabled: true,
   interval_minutes: 30,
+  rate_change_notify_enabled: false,
+  rate_change_notify_email: "",
 });
 
 const ollamaCloudUsageLoading = ref(true);
@@ -9182,6 +9707,15 @@ const streamTimeoutForm = reactive({
   temp_unsched_minutes: 5,
   threshold_count: 3,
   threshold_window_minutes: 10,
+});
+
+// OpenAI Response Header Timeout 状态
+const openAIResponseHeaderTimeoutLoading = ref(true);
+const openAIResponseHeaderTimeoutLoadFailed = ref(false);
+const openAIResponseHeaderTimeoutSaving = ref(false);
+const openAIResponseHeaderTimeoutForm = reactive({
+  enabled: true,
+  seconds: 20,
 });
 
 // Rectifier 状态
@@ -9704,6 +10238,10 @@ type SettingsForm = Omit<
 
 const schedulingThresholdPlatforms = SCHEDULING_THRESHOLD_PLATFORMS;
 
+// The stored monitor mode; the save payload omits an unchanged mode so a switch
+// made on the monitor page is not overwritten by this page's older copy.
+let loadedChannelMonitorMode: 'v1' | 'v2' | 'v3' = 'v1'
+const channelMonitorModes = ['v1', 'v2', 'v3'] as const
 // 平台限额表格的行：平台清单顺序中、已在归一化 map 里的平台（清单晚于设置加载时
 // 不渲染尚未归一化的平台，保持模板非空绑定）。
 function platformQuotaRows(map: DefaultPlatformQuotasMap | undefined): string[] {
@@ -9712,9 +10250,13 @@ function platformQuotaRows(map: DefaultPlatformQuotasMap | undefined): string[] 
 
 const form = reactive<SettingsForm>({
   registration_enabled: true,
+  login_rate_limit_enabled: true,
+  registration_ip_limit_enabled: true,
   email_verify_enabled: false,
   registration_email_suffix_whitelist: [],
+  registration_email_alias_block_enabled: true,
   registration_email_domain_quota_enabled: false,
+  promo_code_enabled: true,
   invitation_code_enabled: false,
   password_reset_enabled: false,
   totp_enabled: false,
@@ -9724,6 +10266,7 @@ const form = reactive<SettingsForm>({
   passkey_rp_id: "",
   passkey_rp_origins: [],
   session_binding_enabled: false,
+  mainland_web_block_enabled: false,
   step_up_enabled: false,
   audit_log_retention_days: 180,
   login_agreement_enabled: false,
@@ -9746,7 +10289,7 @@ const form = reactive<SettingsForm>({
   site_logo: "",
   site_subtitle: "Subscription to API Conversion Platform",
   api_base_url: "",
-  api_base_url_follow_host: false,
+  api_base_url_description: "",
   contact_info: "",
   doc_url: "",
   home_content: "",
@@ -9758,7 +10301,8 @@ const form = reactive<SettingsForm>({
   cyber_policy_user_allowlist: "",
   cyber_session_block_enabled: false,
   cyber_session_block_ttl_seconds: 3600,
-  payment_min_amount: 10,
+  cyber_session_identity_strict_enabled: false,
+  payment_min_amount: 1,
   payment_max_amount: 10000,
   payment_daily_limit: 50000,
   payment_max_pending_orders: 3,
@@ -9788,6 +10332,8 @@ const form = reactive<SettingsForm>({
   custom_menu_items: [] as Array<{
     id: string;
     label: string;
+    label_zh?: string;
+    label_en?: string;
     icon_svg: string;
     url: string;
     visibility: "user" | "admin";
@@ -9798,6 +10344,7 @@ const form = reactive<SettingsForm>({
     name: string;
     endpoint: string;
     description: string;
+    recommended?: boolean;
   }>,
   frontend_url: "",
   smtp_host: "",
@@ -9916,9 +10463,15 @@ const form = reactive<SettingsForm>({
   enable_model_fallback: false,
   fallback_model_anthropic: "claude-3-5-sonnet-20241022",
   fallback_model_openai: "gpt-4o",
+  fallback_model_gemini: "gemini-2.5-pro",
+  fallback_model_antigravity: "gemini-2.5-pro",
   grok_default_text_model: "grok-4.5",
   grok_cross_client_model_map_enabled: false,
   grok_default_base_url_mode: "cli",
+  grok_video_source_url_enabled: false,
+  // Identity patch (Claude -> Gemini)
+  enable_identity_patch: true,
+  identity_patch_prompt: "",
   // Ops monitoring (vNext)
   ops_monitoring_enabled: true,
   ops_realtime_monitoring_enabled: true,
@@ -9929,6 +10482,7 @@ const form = reactive<SettingsForm>({
   max_claude_code_version: "",
   // 分组隔离
   allow_ungrouped_key_scheduling: false,
+  account_group_priority_enabled: false,
   openai_low_upstream_rate_priority_enabled: false,
   openai_oauth_scheduling_rate_multiplier: 1,
   openai_advanced_scheduler_enabled: false,
@@ -9946,27 +10500,29 @@ const form = reactive<SettingsForm>({
   openai_advanced_scheduler_weight_previous_response: "",
   openai_advanced_scheduler_weight_session_sticky: "",
   // Gateway forwarding behavior
+  upstream_error_retry: { enabled: false, max_retries: 3, delay_ms: 1000, errors: "" },
+  upstream_error_message: "",
   openai_ttft_mode: "semantic",
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
-  enable_cch_signing: false,
   enable_claude_oauth_system_prompt_injection: true,
   claude_oauth_system_prompt: "",
   claude_oauth_system_prompt_blocks: defaultClaudeOAuthSystemPromptBlocks,
   enable_anthropic_cache_ttl_1h_injection: false,
   rewrite_message_cache_control: false,
   enable_client_dateline_normalization: true,
+  antigravity_user_agent_version: "",
   openai_codex_user_agent: "",
   openai_codex_client_version: "",
   // 只读展示：自动同步任务写入的官方最新稳定版，不参与提交（提交载荷按字段显式构造）
   openai_codex_client_version_synced: "",
   openai_codex_version_auto_sync_enabled: true,
+  openai_request_timezone_enabled: true,
+  openai_request_timezone_auto: true,
   claude_code_client_version: "",
+  // 只读展示：自动同步任务写入的官方最新稳定版，不参与提交（提交载荷按字段显式构造）
   claude_code_client_version_synced: "",
   claude_code_version_auto_sync_enabled: true,
-  openai_codex_ticket_enabled: false,
-  openai_codex_ticket_harvest_proxy_url: "",
-  openai_codex_ticket_harvest_proxy_configured: false,
   // codex_cli_only 加固
   min_codex_version: "",
   max_codex_version: "",
@@ -9982,8 +10538,9 @@ const form = reactive<SettingsForm>({
   account_quota_notify_enabled: false,
   account_quota_notify_emails: [] as NotifyEmailEntry[],
   // Channel Monitor feature switch
+  channel_quality_public_enabled: true,
   channel_monitor_enabled: true,
-  channel_monitor_mode: 'v1' as 'v1' | 'v2',
+  channel_monitor_mode: 'v1' as 'v1' | 'v2' | 'v3',
   channel_monitor_default_interval_seconds: 60,
   channel_monitor_hide_throughput: false,
   channel_monitor_show_quota: false,
@@ -9998,10 +10555,21 @@ const form = reactive<SettingsForm>({
   model_plaza_description: '',
   // Plugin management menu visibility; plugin runtime is unaffected.
   plugin_management_enabled: false,
+  // Support tickets (网站工单) switch + form config
+  support_ticket_enabled: false,
+  support_ticket_config: { categories: [] as string[], max_open_per_user: 5, notice: '' },
   // Affiliate (邀请返利) feature switch
   affiliate_enabled: false,
   // Allow user view error requests
   allow_user_view_error_requests: false,
+  // 使用详情中长上下文计费 x2 徽标展示（默认开启）
+  usage_show_long_context_badge: true,
+  usage_show_cache_rate: true,
+  usage_show_cache_rate_to_users: false,
+  usage_show_upstream_response_model_to_users: false,
+  request_capture_enabled: false,
+  request_capture_quota_mib: 1024,
+  request_capture_retention_days: 7,
 });
 
 // 人机验证 UI 状态：单卡片「总开关 + 服务商单选」，落库仍是三个独立
@@ -10015,6 +10583,9 @@ function applyCaptchaSelection(provider: CaptchaProviderSelection | null): void 
   form.tencent_captcha_enabled = provider === "tencent";
   form.aliyun_captcha_enabled = provider === "aliyun";
 }
+
+// Keep the settings API representation as user IDs; the selector displays emails.
+
 
 // Keep the settings API representation as user IDs; the selector displays emails.
 const riskControlAllowlistedUserIds = computed<number[]>({
@@ -10148,7 +10719,7 @@ const openAIAdvancedSchedulerWeightFields = computed<
     {
       key: "openai_advanced_scheduler_weight_reset",
       label: t("admin.settings.openaiExperimentalScheduler.resetWeight"),
-      placeholder: placeholder("openai_advanced_scheduler_effective_weight_reset", "3"),
+      placeholder: placeholder("openai_advanced_scheduler_effective_weight_reset", "0"),
     },
     {
       key: "openai_advanced_scheduler_weight_quota_headroom",
@@ -10778,6 +11349,8 @@ function addMenuItem() {
   form.custom_menu_items.push({
     id: "",
     label: "",
+    label_zh: "",
+    label_en: "",
     icon_svg: "",
     url: "",
     visibility: "user",
@@ -10808,7 +11381,7 @@ function moveMenuItem(index: number, direction: -1 | 1) {
 
 // Custom endpoint management
 function addEndpoint() {
-  form.custom_endpoints.push({ name: "", endpoint: "", description: "" });
+  form.custom_endpoints.push({ name: "", endpoint: "", description: "", recommended: false });
 }
 
 function removeEndpoint(index: number) {
@@ -10988,6 +11561,7 @@ async function loadSettings() {
         (form as Record<string, unknown>)[key] = value;
       }
     }
+    form.mainland_web_block_enabled = settings.mainland_web_block_enabled === true;
     // For this optional override, null explicitly selects per-account rates.
     if (settings.openai_oauth_scheduling_rate_multiplier === null) {
       form.openai_oauth_scheduling_rate_multiplier = null;
@@ -11014,7 +11588,10 @@ async function loadSettings() {
     form.login_agreement_mode =
       settings.login_agreement_mode === "checkbox" ? "checkbox" : "modal";
     form.channel_monitor_mode =
-      settings.channel_monitor_mode === "v2" ? "v2" : "v1";
+      settings.channel_monitor_mode === "v2" || settings.channel_monitor_mode === "v3"
+        ? settings.channel_monitor_mode
+        : "v1";
+    loadedChannelMonitorMode = form.channel_monitor_mode;
     form.channel_monitor_hide_throughput = Boolean(
       settings.channel_monitor_hide_throughput
     );
@@ -11250,8 +11827,25 @@ const siteBillingModeHint = computed(() =>
 );
 
 async function saveSettings() {
+  if (activeTab.value === 'guide') return;
   saving.value = true;
   try {
+    const upstreamErrorMessage = form.upstream_error_message.trim();
+    if (Array.from(upstreamErrorMessage).length > 500) {
+      appStore.showError(t("admin.settings.upstreamErrorMessage.invalid"));
+      activeTab.value = "gateway";
+      return;
+    }
+    const retry = form.upstream_error_retry;
+    const errorLines = retry.errors.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (!Number.isInteger(retry.max_retries) || retry.max_retries < 1 || retry.max_retries > 10 ||
+        !Number.isInteger(retry.delay_ms) || retry.delay_ms < 100 || retry.delay_ms > 10000 ||
+        (retry.enabled && errorLines.length === 0) || errorLines.length > 100 ||
+        errorLines.some((line) => /^\d+$/.test(line) && (Number(line) < 400 || Number(line) > 599 || Number(line) === 429))) {
+      appStore.showError(t("admin.settings.upstreamErrorRetry.invalid"));
+      activeTab.value = "gateway";
+      return;
+    }
     const normalizedTableDefaultPageSize = Math.floor(
       Number(form.table_default_page_size),
     );
@@ -11410,18 +12004,23 @@ async function saveSettings() {
 
     const payload: UpdateSettingsRequest = {
       registration_enabled: form.registration_enabled,
+      login_rate_limit_enabled: form.login_rate_limit_enabled,
+      registration_ip_limit_enabled: form.registration_ip_limit_enabled,
       email_verify_enabled: form.email_verify_enabled,
       registration_email_suffix_whitelist:
         registrationEmailSuffixWhitelistTags.value.map((suffix) =>
           suffix.startsWith("*.") ? suffix : `@${suffix}`,
         ),
+      registration_email_alias_block_enabled: form.registration_email_alias_block_enabled,
       registration_email_domain_quota_enabled:
         form.registration_email_domain_quota_enabled,
+      promo_code_enabled: form.promo_code_enabled,
       invitation_code_enabled: form.invitation_code_enabled,
       password_reset_enabled: form.password_reset_enabled,
       totp_enabled: form.totp_enabled,
       passkey_enabled: form.passkey_enabled,
       session_binding_enabled: form.session_binding_enabled,
+      mainland_web_block_enabled: form.mainland_web_block_enabled,
       step_up_enabled: form.step_up_enabled,
       // 清空数字框时 v-model.number 会得到空串，后端 int 字段解析空串会 400 拒绝整次保存；
       // 空/非法值回退默认 180（与后端 parseAuditLogRetentionDays("") 语义一致，0 仍表示永久保留）。
@@ -11449,7 +12048,7 @@ async function saveSettings() {
       site_logo: form.site_logo,
       site_subtitle: form.site_subtitle,
       api_base_url: form.api_base_url,
-      api_base_url_follow_host: form.api_base_url_follow_host,
+      api_base_url_description: form.api_base_url_description,
       contact_info: form.contact_info,
       doc_url: form.doc_url,
       home_content: form.home_content,
@@ -11458,7 +12057,10 @@ async function saveSettings() {
       hide_ccs_import_button: form.hide_ccs_import_button,
       table_default_page_size: form.table_default_page_size,
       table_page_size_options: form.table_page_size_options,
-      custom_menu_items: form.custom_menu_items,
+      custom_menu_items: form.custom_menu_items.map((item) => ({
+        ...item,
+        label: item.label.trim() || item.label_zh?.trim() || item.label_en?.trim() || "",
+      })),
       custom_endpoints: form.custom_endpoints,
       frontend_url: form.frontend_url,
       smtp_host: form.smtp_host,
@@ -11579,19 +12181,26 @@ async function saveSettings() {
       enable_model_fallback: form.enable_model_fallback,
       fallback_model_anthropic: form.fallback_model_anthropic,
       fallback_model_openai: form.fallback_model_openai,
+      fallback_model_gemini: form.fallback_model_gemini,
+      fallback_model_antigravity: form.fallback_model_antigravity,
       grok_default_text_model:
         form.grok_default_text_model.trim() || "grok-4.5",
       grok_cross_client_model_map_enabled:
         form.grok_cross_client_model_map_enabled,
       grok_default_base_url_mode: form.grok_default_base_url_mode,
+      grok_video_source_url_enabled: form.grok_video_source_url_enabled,
+      enable_identity_patch: form.enable_identity_patch,
+      identity_patch_prompt: form.identity_patch_prompt,
       min_claude_code_version: form.min_claude_code_version,
       max_claude_code_version: form.max_claude_code_version,
       allow_ungrouped_key_scheduling: form.allow_ungrouped_key_scheduling,
+      upstream_error_retry: { ...form.upstream_error_retry },
+      upstream_error_message: upstreamErrorMessage,
+      account_group_priority_enabled: form.account_group_priority_enabled,
       openai_ttft_mode:
         form.openai_ttft_mode === "visible" ? "visible" : "semantic",
       enable_fingerprint_unification: form.enable_fingerprint_unification,
       enable_metadata_passthrough: form.enable_metadata_passthrough,
-      enable_cch_signing: form.enable_cch_signing,
       enable_claude_oauth_system_prompt_injection:
         form.enable_claude_oauth_system_prompt_injection,
       claude_oauth_system_prompt: form.claude_oauth_system_prompt?.trim()
@@ -11603,19 +12212,19 @@ async function saveSettings() {
       rewrite_message_cache_control: form.rewrite_message_cache_control,
       enable_client_dateline_normalization:
         form.enable_client_dateline_normalization,
+      antigravity_user_agent_version:
+        form.antigravity_user_agent_version?.trim() || "",
       openai_codex_user_agent:
         form.openai_codex_user_agent?.trim() || "",
       openai_codex_client_version:
         form.openai_codex_client_version?.trim() || "",
       openai_codex_version_auto_sync_enabled:
         form.openai_codex_version_auto_sync_enabled,
-      claude_code_client_version:
-        form.claude_code_client_version?.trim() || "",
+      openai_request_timezone_enabled: form.openai_request_timezone_enabled,
+      openai_request_timezone_auto: form.openai_request_timezone_auto,
+      claude_code_client_version: form.claude_code_client_version?.trim() || "",
       claude_code_version_auto_sync_enabled:
         form.claude_code_version_auto_sync_enabled,
-      openai_codex_ticket_enabled: form.openai_codex_ticket_enabled,
-      openai_codex_ticket_harvest_proxy_url:
-        form.openai_codex_ticket_harvest_proxy_url?.trim() || "",
       min_codex_version: form.min_codex_version?.trim() || "",
       max_codex_version: form.max_codex_version?.trim() || "",
       codex_cli_only_allow_app_server_clients:
@@ -11636,6 +12245,8 @@ async function saveSettings() {
       cyber_session_block_enabled: form.cyber_session_block_enabled,
       cyber_session_block_ttl_seconds:
         Number(form.cyber_session_block_ttl_seconds) || 3600,
+      cyber_session_identity_strict_enabled:
+        form.cyber_session_identity_strict_enabled,
       payment_min_amount: Number(form.payment_min_amount) || 0,
       payment_max_amount: Number(form.payment_max_amount) || 0,
       payment_daily_limit: Number(form.payment_daily_limit) || 0,
@@ -11714,8 +12325,11 @@ async function saveSettings() {
         form.account_quota_notify_emails || []
       ).filter((e) => e.email.trim() !== ""),
       // Channel Monitor feature switch
+      channel_quality_public_enabled: form.channel_quality_public_enabled,
       channel_monitor_enabled: form.channel_monitor_enabled,
-      channel_monitor_mode: form.channel_monitor_mode === 'v1' ? 'v1' : 'v2',
+      // Sent only when changed here: the monitor page can switch the mode on its own.
+      channel_monitor_mode:
+        form.channel_monitor_mode === loadedChannelMonitorMode ? undefined : form.channel_monitor_mode,
       channel_monitor_default_interval_seconds:
         Number(form.channel_monitor_default_interval_seconds) || 60,
       channel_monitor_hide_throughput: Boolean(form.channel_monitor_hide_throughput),
@@ -11730,9 +12344,22 @@ async function saveSettings() {
       model_plaza_require_auth: form.model_plaza_require_auth,
       model_plaza_description: form.model_plaza_description,
       plugin_management_enabled: form.plugin_management_enabled,
+      // Support tickets: blank category rows are dropped; the server trims and deduplicates.
+      support_ticket_enabled: form.support_ticket_enabled,
+      support_ticket_config: {
+        categories: form.support_ticket_config.categories.map((category) => category.trim()).filter(Boolean),
+        max_open_per_user: Number(form.support_ticket_config.max_open_per_user) || 5,
+        notice: form.support_ticket_config.notice,
+      },
       // Affiliate (邀请返利) feature switch
       affiliate_enabled: form.affiliate_enabled,
       allow_user_view_error_requests: form.allow_user_view_error_requests,
+      usage_show_long_context_badge: form.usage_show_long_context_badge,
+      usage_show_cache_rate: form.usage_show_cache_rate,
+      usage_show_cache_rate_to_users: form.usage_show_cache_rate_to_users,
+      usage_show_upstream_response_model_to_users: form.usage_show_upstream_response_model_to_users,
+      // Retired request capture fields are returned as zero by the compatibility
+      // DTO. Do not submit them: their legacy validation blocks unrelated saves.
     };
 
     // 仅当 openai_fast_policy_settings 已成功从后端加载时才回写，
@@ -11786,6 +12413,7 @@ async function saveSettings() {
       form.openai_oauth_scheduling_rate_multiplier = null;
     }
     Object.assign(authSourceDefaults, buildAuthSourceDefaultsState(updated));
+    loadedChannelMonitorMode = form.channel_monitor_mode || 'v1';
     form.default_platform_quotas = normalizePlatformQuotasMap(updated.default_platform_quotas);
     form.account_scheduling_thresholds = normalizeAccountSchedulingThresholdsMap(
       updated.account_scheduling_thresholds,
@@ -11947,6 +12575,7 @@ async function sendTestEmail() {
 
 // Admin API Key 方法
 async function loadAdminApiKey() {
+  if (!authStore.isSuperAdmin) { adminApiKeyLoading.value = false; return; }
   adminApiKeyLoading.value = true;
   try {
     const status = await adminAPI.settings.getAdminApiKey();
@@ -12248,6 +12877,41 @@ async function saveStreamTimeoutSettings() {
   }
 }
 
+// OpenAI Response Header Timeout 方法
+async function loadOpenAIResponseHeaderTimeoutSettings() {
+  openAIResponseHeaderTimeoutLoading.value = true;
+  openAIResponseHeaderTimeoutLoadFailed.value = false;
+  try {
+    const settings = await adminAPI.settings.getOpenAIResponseHeaderTimeoutSettings();
+    Object.assign(openAIResponseHeaderTimeoutForm, settings);
+  } catch (_error: unknown) {
+    openAIResponseHeaderTimeoutLoadFailed.value = true;
+  } finally {
+    openAIResponseHeaderTimeoutLoading.value = false;
+  }
+}
+
+async function saveOpenAIResponseHeaderTimeoutSettings() {
+  openAIResponseHeaderTimeoutSaving.value = true;
+  try {
+    const updated = await adminAPI.settings.updateOpenAIResponseHeaderTimeoutSettings({
+      enabled: openAIResponseHeaderTimeoutForm.enabled,
+      seconds: openAIResponseHeaderTimeoutForm.seconds,
+    });
+    Object.assign(openAIResponseHeaderTimeoutForm, updated);
+    appStore.showSuccess(t("admin.settings.openaiResponseHeaderTimeout.saved"));
+  } catch (error: unknown) {
+    appStore.showError(
+      extractApiErrorMessage(
+        error,
+        t("admin.settings.openaiResponseHeaderTimeout.saveFailed"),
+      ),
+    );
+  } finally {
+    openAIResponseHeaderTimeoutSaving.value = false;
+  }
+}
+
 // Rectifier 方法
 async function loadRectifierSettings() {
   rectifierLoading.value = true;
@@ -12498,6 +13162,8 @@ const allPaymentTypes = computed(() => [
   { value: "wxpay", label: t("payment.methods.wxpay") },
   { value: "stripe", label: t("payment.methods.stripe") },
   { value: "airwallex", label: t("payment.methods.airwallex") },
+  { value: "dujiaopay", label: t("payment.methods.dujiaopay") },
+  { value: "paypal", label: t("payment.methods.paypal") },
 ]);
 
 function isPaymentTypeEnabled(type: string): boolean {
@@ -12555,6 +13221,8 @@ const providerKeyOptions = computed(() => [
   { value: "wxpay", label: t("admin.settings.payment.providerWxpay") },
   { value: "stripe", label: t("admin.settings.payment.providerStripe") },
   { value: "airwallex", label: t("admin.settings.payment.providerAirwallex") },
+  { value: "dujiaopay", label: t("admin.settings.payment.providerDujiaoPay") },
+  { value: "paypal", label: t("admin.settings.payment.providerPayPal") },
 ]);
 
 const enabledProviderKeyOptions = computed(() => {
@@ -12861,6 +13529,7 @@ onMounted(() => {
   loadRateLimit429CooldownSettings();
   loadPanelRateLimitSettings();
   loadStreamTimeoutSettings();
+  loadOpenAIResponseHeaderTimeoutSettings();
   loadRectifierSettings();
   loadBetaPolicySettings();
   loadProviders();
@@ -13236,6 +13905,15 @@ watch(
 </script>
 
 <style scoped>
+h2[id^="settings-section-"] {
+  scroll-margin-top: 6rem;
+}
+h2[id^="settings-section-"]:target {
+  outline: 2px solid var(--color-primary-500, #6366f1);
+  outline-offset: 6px;
+  border-radius: 2px;
+}
+
 .default-sub-group-select :deep(.select-trigger) {
   @apply h-[42px];
 }
@@ -13246,11 +13924,11 @@ watch(
 
 /* ============ 系统设置 Tab 导航 ============ */
 .settings-tabs-shell {
-  @apply sticky z-20 -mx-1 rounded-2xl border border-white/80 bg-white/90 p-1.5 backdrop-blur-xl;
+  @apply sticky z-20 -mx-1 rounded-2xl border p-1.5;
   top: 4.75rem;
-  box-shadow:
-    0 12px 28px rgb(15 23 42 / 0.07),
-    0 1px 0 rgb(255 255 255 / 0.9) inset;
+  border-color: var(--kc-line);
+  background: var(--kc-panel);
+  box-shadow: var(--kc-shadow);
 }
 
 .settings-tabs-scroll {
@@ -13268,7 +13946,8 @@ watch(
 }
 
 .settings-tab {
-  @apply relative isolate flex h-10 min-w-[6.75rem] shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl border border-transparent px-3 text-sm font-medium text-gray-600 outline-none transition-colors duration-200 ease-out dark:text-gray-300;
+  @apply relative isolate flex h-10 min-w-[6.75rem] shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl border border-transparent px-3 text-sm font-medium outline-none transition-colors duration-200 ease-out;
+  color: var(--kc-muted);
 }
 
 @media (min-width: 768px) {
@@ -13288,7 +13967,7 @@ watch(
 .settings-tab::before {
   @apply absolute inset-0 -z-10 rounded-xl opacity-0 transition-opacity duration-200;
   content: "";
-  background: linear-gradient(135deg, rgb(248 250 252 / 0.95), rgb(241 245 249 / 0.8));
+  background: var(--kc-hover);
 }
 
 .settings-tab:hover::before,
@@ -13301,10 +13980,10 @@ watch(
 }
 
 .settings-tab-active {
-  @apply border-primary-200/80 bg-white text-primary-700 shadow-sm dark:border-primary-400/30 dark:bg-dark-700/95 dark:text-primary-200;
-  box-shadow:
-    0 8px 18px rgb(15 23 42 / 0.08),
-    0 1px 0 rgb(255 255 255 / 0.92) inset;
+  border-color: var(--kc-line-strong);
+  color: var(--kc-accent-strong);
+  background: var(--kc-accent-soft);
+  box-shadow: none;
 }
 
 .settings-tab-active::before {
@@ -13319,20 +13998,22 @@ watch(
   height: 2px;
   border-radius: 9999px;
   content: "";
-  background: linear-gradient(90deg, #14b8a6, #0ea5e9);
+  background: var(--kc-accent);
 }
 
 .settings-tab-icon {
-  @apply flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-gray-500 transition-colors duration-200 dark:text-gray-400;
+  @apply flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors duration-200;
+  color: var(--kc-muted);
 }
 
 .settings-tab:hover .settings-tab-icon,
 .settings-tab:focus-visible .settings-tab-icon {
-  @apply text-gray-700 dark:text-gray-200;
+  color: var(--kc-ink);
 }
 
 .settings-tab-active .settings-tab-icon {
-  @apply bg-primary-50 text-primary-600 dark:bg-primary-400/10 dark:text-primary-300;
+  color: var(--kc-accent-strong);
+  background: var(--kc-accent-soft);
 }
 
 .settings-tab-label {
@@ -13345,29 +14026,6 @@ watch(
   box-shadow:
     0 10px 26px rgb(15 23 42 / 0.12),
     0 1px 0 rgb(255 255 255 / 0.9) inset;
-}
-</style>
-
-<style>
-/* Dark-mode overrides for the settings tabs shell. Kept in an UNSCOPED block
-   because Vue's scoped-CSS compiler was dropping the `:global(.dark) ...`
-   rules in the production build, leaving inactive tabs unreadable on dark. */
-.dark .settings-tabs-shell {
-  border-color: rgb(51 65 85 / 0.65);
-  background: rgb(15 23 42 / 0.86);
-  box-shadow:
-    0 16px 36px rgb(0 0 0 / 0.28),
-    0 1px 0 rgb(255 255 255 / 0.06) inset;
-}
-
-.dark .settings-tab::before {
-  background: linear-gradient(135deg, rgb(30 41 59 / 0.9), rgb(51 65 85 / 0.62));
-}
-
-.dark .settings-tab-active {
-  box-shadow:
-    0 12px 26px rgb(0 0 0 / 0.22),
-    0 1px 0 rgb(255 255 255 / 0.08) inset;
 }
 
 .dark .settings-save-dock {

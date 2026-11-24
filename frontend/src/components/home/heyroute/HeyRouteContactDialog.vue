@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, shallowRef, watch } fro
 
 import Icon from '@/components/icons/Icon.vue'
 
-export type HeyRouteContactIcon = 'chat' | 'chatBubble' | 'globe'
+export type HeyRouteContactIcon = 'chat' | 'chatBubble' | 'paperAirplane'
 
 export interface HeyRouteContactPlatform {
   id: string

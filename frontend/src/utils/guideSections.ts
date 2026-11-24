@@ -7,7 +7,7 @@ import { readChapterTitle, type GuideChapter } from './guideMarkdown'
  * that is needed to change the default guide; admins override chapters at
  * runtime through the database instead.
  */
-const chapterModules = import.meta.glob<string>('../../../docs/guide/*.md', {
+const chapterModules = import.meta.glob<string>('../../docs/guide/*.md', {
   query: '?raw',
   import: 'default',
   eager: true,

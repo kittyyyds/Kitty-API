@@ -12,8 +12,8 @@ const appStoreMocks = vi.hoisted(() => ({
 vi.mock('@/utils/ipGeoLookup', () => ipGeoMocks)
 vi.mock('@/stores/app', () => ({ useAppStore: () => appStoreMocks }))
 
-import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
+import { mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
 import en from '@/i18n/locales/en/admin/resources'
@@ -34,6 +34,7 @@ const localizedMessages: Record<'en' | 'zh', Record<string, string>> = {
 
 const messages: Record<string, string> = {
   'usage.outputTps': 'Output TPS',
+  'usage.latencyTps': 'Avg speed',
   'admin.usage.userDeletedBadge': 'Deleted',
   'usage.costDetails': 'Cost Breakdown',
   'admin.usage.inputCost': 'Input Cost',
@@ -43,6 +44,7 @@ const messages: Record<string, string> = {
   'usage.inputTokenPrice': 'Input price',
   'usage.outputTokenPrice': 'Output price',
   'usage.perMillionTokens': '/ 1M tokens',
+  'usage.cacheHitRate': 'Cache hit rate',
   'usage.serviceTier': 'Service tier',
   'usage.serviceTierPriority': 'Fast',
   'usage.serviceTierUltrafast': 'Ultrafast',
@@ -176,7 +178,7 @@ describe('admin UsageTable tooltip', () => {
       global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
     })
     expect(wrapper.findAll('[data-testid="output-tps"]').map(cell => cell.text())).toEqual(['50.0 tok/s', '—', '—'])
-    expect(wrapper.text()).toContain('Output TPS')
+    expect(wrapper.text()).toContain('Avg speed')
   })
 
   beforeEach(() => {
@@ -353,6 +355,53 @@ describe('admin UsageTable tooltip', () => {
     expect(text).toContain('$5.0000 / 1M tokens')
     expect(text).toContain('$30.0000 / 1M tokens')
     expect(text).toContain('$0.069568')
+  })
+
+  it('keeps cache token counts beside a compact cache hit rate in the list', async () => {
+    const row = {
+      request_type: 'stream', stream: true,
+      request_id: 'req-admin-cache-hit-rate',
+      actual_cost: 0,
+      total_cost: 0,
+      account_rate_multiplier: 1,
+      rate_multiplier: 1,
+      input_cost: 0,
+      output_cost: 0,
+      cache_creation_cost: 0,
+      cache_read_cost: 0,
+      input_tokens: 100,
+      output_tokens: 10,
+      cache_creation_tokens: 100,
+      cache_read_tokens: 800,
+      image_input_tokens: 0,
+      image_output_tokens: 0,
+      billing_mode: 'token',
+    }
+
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [row],
+        loading: false,
+        columns: [],
+      },
+      global: {
+        stubs: {
+          DataTable: DataTableStub,
+          EmptyState: true,
+          Icon: true,
+          Teleport: true,
+        },
+      },
+    })
+
+    expect(wrapper.get('[data-testid="cache-read-tokens-cell"]').text()).toBe('800')
+    expect(wrapper.get('[data-testid="cache-creation-tokens-cell"]').text()).toBe('100')
+    expect(wrapper.get('[data-testid="cache-hit-rate-cell"]').text()).toBe('80.0%')
+
+    await wrapper.findAll('.group.relative')[0].trigger('mouseenter')
+    await nextTick()
+
+    expect(wrapper.get('[data-testid="token-cache-hit-rate-tooltip"]').text()).toContain('80.00%')
   })
 
   it.each(['token', 'image', 'per_request'])('keeps eight decimal places in %s cost details', async (billingMode) => {
@@ -561,38 +610,6 @@ describe('admin UsageTable tooltip', () => {
 		expect(text).toContain(responseModel)
 		expect(text).toContain(expectedBadge)
 	})
-
-  it('does not render a degraded-route badge in the model cell', () => {
-    const wrapper = mount(UsageTable, {
-      props: {
-        data: [
-          {
-            request_id: 'req-route-degraded',
-            model: 'gpt-6-astra',
-            upstream_response_model: 'gpt-5.4',
-            upstream_model_mismatch: true,
-            route_degraded: true,
-          },
-          { request_id: 'req-route-healthy', model: 'gpt-6-astra', route_degraded: false },
-        ],
-        loading: false,
-        columns: [],
-      },
-      global: {
-        stubs: {
-          DataTable: DataTableStub,
-          EmptyState: true,
-          Icon: true,
-          Teleport: true,
-        },
-      },
-    })
-
-    expect(wrapper.findAll('[data-testid="route-degraded-badge"]')).toHaveLength(0)
-    expect(wrapper.text()).not.toContain('Degraded')
-    expect(wrapper.text()).toContain('gpt-6-astra')
-    expect(wrapper.text()).toContain('Upstream response')
-  })
 
   it.each([
     {
@@ -964,5 +981,122 @@ describe('admin UsageTable deleted-user badge', () => {
 
     expect(wrapper.text()).not.toContain('Deleted')
     expect(wrapper.text()).toContain('active@test.com')
+  })
+})
+
+describe.each([
+  { kind: 'cost', label: 'Cost Breakdown', testId: 'cost-details-tooltip' },
+  { kind: 'token', label: 'usage.tokenDetails', testId: 'token-details-tooltip' },
+])('UsageTable $kind details on mobile', ({ label, testId }) => {
+  let wrapper: VueWrapper | undefined
+
+  beforeEach(() => {
+    locale = 'en'
+    vi.stubGlobal('innerHeight', 780)
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = undefined
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  function mountWithTrigger(viewportWidth = 375, top = 300) {
+    vi.stubGlobal('innerWidth', viewportWidth)
+    wrapper = mount(UsageTable, {
+      attachTo: document.body,
+      props: {
+        data: [{ ...baseImageRow, billing_mode: 'token', image_count: 0, input_tokens: 1000, output_tokens: 100 }],
+        loading: false,
+        columns: [],
+      },
+      global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true } },
+    })
+    const trigger = wrapper.get(`button[aria-label="${label}"]`)
+    vi.spyOn(trigger.element, 'getBoundingClientRect').mockReturnValue({
+      x: viewportWidth - 40,
+      y: top,
+      left: viewportWidth - 40,
+      right: viewportWidth - 24,
+      top,
+      bottom: top + 16,
+      width: 16,
+      height: 16,
+      toJSON: () => ({}),
+    })
+    return trigger
+  }
+
+  function getPanel() {
+    const panel = document.body.querySelector<HTMLElement>(`[data-testid="${testId}"]`)
+    expect(panel).not.toBeNull()
+    return panel!
+  }
+
+  it.each([320, 375, 390])('keeps tapped details within a %ipx viewport', async (viewportWidth) => {
+    const trigger = mountWithTrigger(viewportWidth)
+    await trigger.trigger('click')
+    await nextTick()
+
+    const panel = getPanel()
+    const left = Number.parseFloat(panel.style.left)
+    const width = Number.parseFloat(panel.style.width)
+    const top = Number.parseFloat(panel.style.top)
+    const maxHeight = Number.parseFloat(panel.style.maxHeight)
+    expect(panel.getAttribute('role')).toBe('tooltip')
+    expect(left).toBeGreaterThanOrEqual(8)
+    expect(width).toBeGreaterThan(0)
+    expect(left + width).toBeLessThanOrEqual(viewportWidth - 8)
+    expect(top).toBeGreaterThanOrEqual(8)
+    expect(maxHeight).toBeGreaterThan(0)
+    expect(top + maxHeight).toBeLessThanOrEqual(780 - 8)
+    expect(panel.matches('.overflow-y-auto') || panel.querySelector('.overflow-y-auto')).toBeTruthy()
+  })
+
+  it('opens above a trigger near the bottom of the screen', async () => {
+    const trigger = mountWithTrigger(375, 728)
+    await trigger.trigger('click')
+    await nextTick()
+
+    const panel = getPanel()
+    const bottom = Number.parseFloat(panel.style.bottom)
+    const maxHeight = Number.parseFloat(panel.style.maxHeight)
+    expect(panel.style.top).toBe('')
+    expect(bottom).toBeGreaterThanOrEqual(780 - 728)
+    expect(maxHeight).toBeGreaterThan(0)
+    expect(780 - bottom - maxHeight).toBeGreaterThanOrEqual(8)
+  })
+
+  it('pins details after the hover events preceding a touch click', async () => {
+    const trigger = mountWithTrigger()
+    await trigger.trigger('mouseenter')
+    await trigger.trigger('click')
+    await trigger.trigger('mouseleave')
+    await nextTick()
+    expect(getPanel()).toBeTruthy()
+
+    const panel = getPanel()
+    panel.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    panel.dispatchEvent(new Event('scroll'))
+    await nextTick()
+    expect(getPanel()).toBeTruthy()
+
+    await trigger.trigger('click')
+    expect(document.body.querySelector(`[data-testid="${testId}"]`)).toBeNull()
+  })
+
+  it.each(['outside click', 'Escape', 'outside scroll', 'resize'])('dismisses tapped details on %s', async (action) => {
+    const trigger = mountWithTrigger()
+    await trigger.trigger('click')
+    expect(getPanel()).toBeTruthy()
+
+    if (action === 'outside click') document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    if (action === 'Escape') document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    if (action === 'outside scroll') window.dispatchEvent(new Event('scroll'))
+    if (action === 'resize') window.dispatchEvent(new Event('resize'))
+    await nextTick()
+
+    expect(document.body.querySelector(`[data-testid="${testId}"]`)).toBeNull()
   })
 })

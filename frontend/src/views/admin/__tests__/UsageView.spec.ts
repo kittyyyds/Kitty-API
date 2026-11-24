@@ -3,9 +3,12 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, ref } from 'vue'
 
 import UsageView from '../UsageView.vue'
-import OpsErrorLogTable from '@/views/admin/ops/components/OpsErrorLogTable.vue'
+vi.mock('@/api/admin/latencyObservability', () => ({ getLatencyReport: vi.fn().mockResolvedValue({ groups: [] }) }))
+import DateRangePicker from '@/components/common/DateRangePicker.vue'
+import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'
+import UsageCleanupDialog from '@/components/admin/usage/UsageCleanupDialog.vue'
 
-const { list, exportList, getStats, getSnapshotV2, getById, getModelStats, listErrorLogs, routeQuery, aoaToSheet, sheetAddAoa, saveAs, xlsxWrite } = vi.hoisted(() => {
+const { list, exportList, getStats, getAuditStats, exportAudit, getSnapshotV2, getById, getModelStats, listErrorLogs, routeQuery, aoaToSheet, sheetAddAoa, saveAs, xlsxWrite, listCleanupTasks, createCleanupTask, showWarning } = vi.hoisted(() => {
   vi.stubGlobal('localStorage', {
     getItem: vi.fn(() => null),
     setItem: vi.fn(),
@@ -13,9 +16,14 @@ const { list, exportList, getStats, getSnapshotV2, getById, getModelStats, listE
   })
 
   return {
+    listCleanupTasks: vi.fn(),
+    createCleanupTask: vi.fn(),
+    showWarning: vi.fn(),
     list: vi.fn(),
 		exportList: vi.fn(),
     getStats: vi.fn(),
+    getAuditStats: vi.fn(),
+    exportAudit: vi.fn(),
     getSnapshotV2: vi.fn(),
     getById: vi.fn(),
     getModelStats: vi.fn(),
@@ -34,6 +42,7 @@ const messages: Record<string, string> = {
   'admin.dashboard.hour': 'Hour',
   'admin.usage.failedToLoadUser': 'Failed to load user',
 	'admin.usage.requestId': 'Request ID',
+	'admin.usage.cacheHitRate': 'Cache Hit Rate',
 	'admin.usage.upstreamRequestId': 'Upstream ID',
 	'usage.requestedModel': 'Requested model',
 	'usage.sentUpstreamModel': 'Sent upstream model',
@@ -61,7 +70,10 @@ vi.mock('@/api/admin', () => ({
 
 vi.mock('@/api/admin/usage', () => ({
   adminUsageAPI: {
-		list: exportList,
+	list: exportList,
+    getAuditStats,
+    exportAudit,
+    listCleanupTasks, createCleanupTask,
   },
 }))
 
@@ -84,7 +96,7 @@ vi.mock('@/api/admin/ops', () => ({
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
     showError: vi.fn(),
-    showWarning: vi.fn(),
+    showWarning,
     showSuccess: vi.fn(),
     showInfo: vi.fn(),
   }),
@@ -100,6 +112,7 @@ vi.mock('vue-i18n', async () => {
     ...actual,
     useI18n: () => ({
       t: (key: string) => messages[key] ?? key,
+      locale: ref('en'),
     }),
   }
 })
@@ -112,6 +125,7 @@ vi.mock('vue-router', () => ({
 
 const AppLayoutStub = { template: '<div><slot /></div>' }
 const UsageFiltersStub = defineComponent({
+  emits: ['cleanup', 'update:modelValue', 'change', 'export'],
   setup(_, { expose }) {
     const userKeyword = ref('')
     let userSearchRevision = 0
@@ -126,13 +140,14 @@ const UsageFiltersStub = defineComponent({
     })
     return { userKeyword }
   },
-  template: '<div><span data-test="user-filter-label">{{ userKeyword }}</span><slot name="after-reset" /></div>',
+  template: '<div><button data-test="cleanup-open" @click="$emit(\'cleanup\')">cleanup</button><span data-test="user-filter-label">{{ userKeyword }}</span><slot name="after-reset" /></div>',
 })
 const UsageTableStub = {
-  props: ['columns'],
+  props: ['columns', 'showCacheHitRate'],
   emits: ['userClick'],
   template: '<div data-test="usage-table"><button class="user-click" @click="$emit(\'userClick\', 2)">user</button></div>',
 }
+const UsageConnectionsStub = { props: ['filters', 'refreshKey'], template: '<div data-test="connection-tab" />' }
 const UserTokenRankingStub = {
   emits: ['select-user'],
   template: '<div data-test="ranking"><button class="pick-user" @click="$emit(\'select-user\', 5, \'rank@test.com\')">pick</button></div>',
@@ -158,23 +173,18 @@ const GroupDistributionChartStub = {
   `,
 }
 
-const mountRouteFilteredUsageView = () => mount(UsageView, {
+const mountRouteFilteredUsageView = (realDatePicker = false, realCleanupDialog = false) => mount(UsageView, {
   global: { stubs: {
     AppLayout: AppLayoutStub, UsageStatsCards: true, UsageFilters: UsageFiltersStub,
-    UsageTable: true, UsageExportProgress: true, UsageCleanupDialog: true,
+    UsageTable: true, UsageExportProgress: true, UsageCleanupDialog: !realCleanupDialog,
+    BaseDialog: { props: ['show'], template: '<div v-if="show"><slot /><slot name="footer" /></div>' },
+    ConfirmDialog: { props: ['show'], emits: ['confirm'], template: '<button v-if="show" data-test="cleanup-confirm" @click="$emit(\'confirm\')">confirm</button>' },
     UserBalanceHistoryModal: true, Pagination: true, Select: true,
-    DateRangePicker: true, Icon: true, TokenUsageTrend: true,
+    DateRangePicker: !realDatePicker, Icon: true, TokenUsageTrend: true,
     ModelDistributionChart: true, GroupDistributionChart: true,
-    EndpointDistributionChart: true, UserTokenRanking: true, OpsErrorLogTable: { template: '<div/>', props: ['rows','loading','total','page','pageSize'] }, OpsErrorDetailModal: true,
+    EndpointDistributionChart: true, UserTokenRanking: true,
   } },
 })
-
-function deferredRequest() {
-  let resolve!: (value: unknown) => void
-  let reject!: (reason: Error) => void
-  const promise = new Promise((yes, no) => { resolve = yes; reject = no })
-  return { promise, resolve, reject }
-}
 
 describe('admin UsageView route filters', () => {
   beforeEach(() => {
@@ -201,66 +211,21 @@ describe('admin UsageView route filters', () => {
     vi.useRealTimers()
   })
 
-  it('admin errors keep the newest page when requests finish out of order', async () => {
-    const old = deferredRequest()
-    const current = deferredRequest()
-    listErrorLogs.mockReset().mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise)
+  it('opens an old video receipt with owner, key and settlement date range', async () => {
+    Object.assign(routeQuery, { user_id: '42', api_key_id: '166', start_date: '2026-01-03', end_date: '2026-01-06' })
     const wrapper = mountRouteFilteredUsageView()
     await flushPromises()
-    await wrapper.findAll('[data-testid="usage-detail-tab"]')[1].trigger('click')
-    const table = wrapper.findComponent(OpsErrorLogTable)
-    table.vm.$emit('update:page', 2)
-    await flushPromises()
-    expect(listErrorLogs).toHaveBeenCalledTimes(2)
-    expect(listErrorLogs.mock.calls[1][0].page).toBe(2)
-    current.resolve({ items: [{ id: 2, model: 'current' }], total: 40 })
-    await flushPromises()
-    old.resolve({ items: [{ id: 1, model: 'stale' }], total: 20 })
-    await flushPromises()
-    expect(table.props('page')).toBe(2)
-    expect(table.props('rows')).toEqual([{ id: 2, model: 'current' }])
-    expect(table.props('total')).toBe(40)
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({
+      user_id: 42, api_key_id: 166, start_date: '2026-01-03', end_date: '2026-01-06',
+    }), expect.anything())
     wrapper.unmount()
   })
 
-  it('admin filter changes invalidate pending errors while the tab is hidden', async () => {
-    const old = deferredRequest()
-    listErrorLogs.mockReset().mockReturnValueOnce(old.promise).mockResolvedValueOnce({ items: [{ id: 2 }], total: 1 })
+  it('keeps the migrated usage table in the real admin usage page', async () => {
     const wrapper = mountRouteFilteredUsageView()
     await flushPromises()
-    await wrapper.findAll('[data-testid="usage-detail-tab"]')[1].trigger('click')
-    await wrapper.findAll('[data-testid="usage-detail-tab"]')[0].trigger('click')
-    const vm = wrapper.vm as any
-    vm.filters.model = 'updated-model'
-    wrapper.findComponent(UsageFiltersStub).vm.$emit('change')
-    await flushPromises()
-    old.resolve({ items: [{ id: 1 }], total: 20 })
-    await flushPromises()
-    await wrapper.findAll('[data-testid="usage-detail-tab"]')[1].trigger('click')
-    await flushPromises()
-    expect(listErrorLogs).toHaveBeenCalledTimes(2)
-    expect(listErrorLogs.mock.calls[1][0].model).toBe('updated-model')
-    expect(wrapper.findComponent(OpsErrorLogTable).props('rows')).toEqual([{ id: 2 }])
+    expect(wrapper.find('usage-table-stub').exists()).toBe(true)
     wrapper.unmount()
-  })
-
-  it('uses one exact rolling 24-hour range for the default usage requests', async () => {
-    vi.setSystemTime(new Date('2026-08-15T07:30:45.123Z'))
-
-    mountRouteFilteredUsageView()
-    await flushPromises()
-
-    const requests = [
-      list.mock.calls[0][0],
-      getStats.mock.calls[0][0],
-      getModelStats.mock.calls[0][0],
-    ]
-    for (const params of requests) {
-      expect(params.start_date).toBeUndefined()
-      expect(params.end_date).toBeUndefined()
-      expect(params.start_time).toBe('2026-08-14T07:30:45.123Z')
-      expect(params.end_time).toBe('2026-08-15T07:30:45.123Z')
-    }
   })
 
   it('shows the routed user while applying user_id to usage requests', async () => {
@@ -400,79 +365,6 @@ describe('admin UsageView native compaction filter', () => {
   })
 })
 
-describe('admin UsageView route degradation filter', () => {
-  beforeEach(() => {
-    vi.useFakeTimers()
-    list.mockReset().mockResolvedValue({ items: [], total: 0, pages: 0 })
-    exportList.mockReset().mockResolvedValue({ items: [], total: 0, pages: 0 })
-    getStats.mockReset().mockResolvedValue({
-      total_requests: 0, total_input_tokens: 0, total_output_tokens: 0,
-      total_cache_tokens: 0, total_tokens: 0, total_cost: 0, total_actual_cost: 0, average_duration_ms: 0,
-    })
-    getSnapshotV2.mockReset().mockResolvedValue({ trend: [], models: [], groups: [] })
-    getModelStats.mockReset().mockResolvedValue({ models: [] })
-    saveAs.mockClear()
-  })
-
-  afterEach(() => {
-    vi.useRealTimers()
-  })
-
-  const clearRequestMocks = () => {
-    list.mockClear()
-    getStats.mockClear()
-    getModelStats.mockClear()
-    getSnapshotV2.mockClear()
-  }
-
-  it.each([true, false])('sends route_degraded=%s to the usage list and stats cards only, and clears it on reset', async (value) => {
-    const wrapper = mountRouteFilteredUsageView()
-    vi.advanceTimersByTime(120)
-    await flushPromises()
-
-    expect((wrapper.vm as any).filters.route_degraded).toBeNull()
-    expect(list.mock.calls[0][0].route_degraded ?? null).toBeNull()
-
-    clearRequestMocks()
-    ;(wrapper.vm as any).filters.route_degraded = value
-    ;(wrapper.vm as any).applyFilters()
-    await flushPromises()
-
-    expect(list).toHaveBeenCalledTimes(1)
-    expect(list.mock.calls[0][0]).toEqual(expect.objectContaining({ route_degraded: value, page: 1 }))
-    expect(getStats).toHaveBeenCalledTimes(1)
-    expect(getStats.mock.calls[0][0]).toEqual(expect.objectContaining({ route_degraded: value }))
-    // Dashboard model-stats / snapshot endpoints do not support route_degraded.
-    expect(getModelStats.mock.calls[0][0]).not.toHaveProperty('route_degraded')
-    expect(getSnapshotV2.mock.calls[0][0]).not.toHaveProperty('route_degraded')
-    expect((wrapper.vm as any).breakdownFilters).not.toHaveProperty('route_degraded')
-
-    clearRequestMocks()
-    ;(wrapper.vm as any).resetFilters()
-    await flushPromises()
-
-    expect((wrapper.vm as any).filters.route_degraded).toBeNull()
-    expect(list).toHaveBeenCalledWith(expect.objectContaining({ route_degraded: null }), expect.anything())
-    expect(getStats).toHaveBeenCalledWith(expect.objectContaining({ route_degraded: null }))
-  })
-
-  it('keeps route_degraded on the paged list requests used by Excel export', async () => {
-    const wrapper = mountRouteFilteredUsageView()
-    vi.advanceTimersByTime(120)
-    await flushPromises()
-    ;(wrapper.vm as any).filters.route_degraded = true
-
-    await (wrapper.vm as any).exportToExcel()
-    await flushPromises()
-
-    expect(exportList).toHaveBeenCalledWith(
-      expect.objectContaining({ route_degraded: true, page: 1, page_size: 100, exact_total: true }),
-      expect.anything()
-    )
-    expect(saveAs).toHaveBeenCalledTimes(1)
-  })
-})
-
 describe('admin UsageView distribution metric toggles', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -567,13 +459,13 @@ describe('admin UsageView distribution metric toggles', () => {
     await flushPromises()
 
     expect(getSnapshotV2).toHaveBeenCalledTimes(1)
-    const snapshotParams = getSnapshotV2.mock.calls[0][0]
-    expect(snapshotParams).toEqual(expect.objectContaining({
-      start_date: undefined,
-      end_date: undefined,
-      granularity: 'hour',
+    const now = new Date(Date.now() - 120) // The applied snapshot was captured before advancing timers.
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+    expect(getSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({
+      start_date: yesterday.toISOString(),
+      end_date: now.toISOString(),
+      granularity: 'hour'
     }))
-    expect(Date.parse(snapshotParams.end_time) - Date.parse(snapshotParams.start_time)).toBe(24 * 60 * 60 * 1000)
 
     const modelChart = wrapper.find('[data-test="model-chart"]')
     const groupChart = wrapper.find('[data-test="group-chart"]')
@@ -597,7 +489,7 @@ describe('admin UsageView distribution metric toggles', () => {
   })
 })
 
-describe('admin UsageView request ID column visibility', () => {
+describe('admin UsageView column visibility', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.mocked(localStorage.getItem).mockReset().mockReturnValue(null)
@@ -615,7 +507,7 @@ describe('admin UsageView request ID column visibility', () => {
     vi.useRealTimers()
   })
 
-  it('keeps request ID hidden by default and allows enabling it from column settings', async () => {
+  it('keeps cache hit rate inside latency instead of a separate column', async () => {
     const wrapper = mount(UsageView, {
       global: {
         stubs: {
@@ -643,12 +535,20 @@ describe('admin UsageView request ID column visibility', () => {
 
     const usageTable = wrapper.findComponent(UsageTableStub)
     expect(usageTable.props('columns')).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ key: 'cache_hit_rate' })]),
+    )
+    expect(usageTable.props('columns')).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ key: 'request_id' })]),
     )
 
     await wrapper.get('button[title="admin.users.columnSettings"]').trigger('click')
+    const cacheHitRateToggle = wrapper.findAll('button').find((button) => button.text() === 'Cache Hit Rate')
     const requestIdToggle = wrapper.findAll('button').find((button) => button.text() === 'Request ID')
+    expect(cacheHitRateToggle).toBeUndefined()
     expect(requestIdToggle).toBeDefined()
+    expect(usageTable.props('columns')).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ key: 'cache_hit_rate' })]),
+    )
     await requestIdToggle!.trigger('click')
 
     expect(usageTable.props('columns')).toEqual(
@@ -803,14 +703,13 @@ describe('admin UsageView errors tab filter forwarding', () => {
     vm.filters.group_id = 3
     await flushPromises()
 
-    // 切换到「错误请求」标签（第二个 tab 按钮）触发 loadAdminErrors
+    // 切换到「错误请求」标签（第三个 tab 按钮）触发 loadAdminErrors
     const tabs = wrapper.findAll('[data-testid="usage-detail-tab"]')
-    await tabs[1].trigger('click')
+    await tabs[2].trigger('click')
     await flushPromises()
 
     expect(listErrorLogs).toHaveBeenCalledWith(expect.objectContaining({
       view: 'all',
-      status_scope: 'request',
       model: 'gpt-5.3-codex',
       account_id: 7,
       group_id: 3,
@@ -825,6 +724,11 @@ describe('admin UsageView ranking tab', () => {
     getStats.mockReset()
     getSnapshotV2.mockReset()
     getModelStats.mockReset()
+    getAuditStats.mockReset().mockResolvedValue({
+      total_records: 0, audited_records: 0, coverage_pct: 0,
+      counts: { pass: 0, warning: 0, anomaly: 0, unverifiable: 0, not_applicable: 0, unknown: 0, missing: 0 },
+      by_platform: [], by_account: [], by_model: [],
+    })
 
     list.mockResolvedValue({ items: [], total: 0, pages: 0 })
     getStats.mockResolvedValue({
@@ -847,7 +751,8 @@ describe('admin UsageView ranking tab', () => {
         UserBalanceHistoryModal: true, Pagination: true, Select: true,
         DateRangePicker: true, Icon: true, TokenUsageTrend: true,
         ModelDistributionChart: true, GroupDistributionChart: true, EndpointDistributionChart: true,
-        UserTokenRanking: UserTokenRankingStub, OpsErrorLogTable: true, OpsErrorDetailModal: true,
+        UserTokenRanking: UserTokenRankingStub,
+        UsageConnections: UsageConnectionsStub, OpsErrorLogTable: true, OpsErrorDetailModal: true,
       } },
     })
     vi.advanceTimersByTime(120)
@@ -857,8 +762,12 @@ describe('admin UsageView ranking tab', () => {
     expect(wrapper.find('[data-test="ranking"]').exists()).toBe(false)
 
     const tabs = wrapper.findAll('[data-testid="usage-detail-tab"]')
-    expect(tabs).toHaveLength(3)
-    await tabs[2].trigger('click')
+    expect(tabs).toHaveLength(6)
+    await tabs[4].trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="connection-tab"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="ranking"]').exists()).toBe(false)
+    await tabs[3].trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-test="ranking"]').exists()).toBe(true)
 
@@ -871,29 +780,82 @@ describe('admin UsageView ranking tab', () => {
     expect((wrapper.vm as any).filters.user_id).toBe(5)
     expect(list).toHaveBeenCalledWith(expect.objectContaining({ user_id: 5 }), expect.anything())
   })
+})
 
-  it('offers ranking column settings including notes', async () => {
+describe('admin UsageView authenticity audit tab', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    list.mockReset().mockResolvedValue({ items: [], total: 0, pages: 0 })
+    exportList.mockReset().mockResolvedValue({
+      items: [{ id: 1, request_id: 'audit-1', model: 'gpt-5.6' }],
+      total: 1,
+      pages: 1,
+    })
+    getStats.mockReset().mockResolvedValue({
+      total_requests: 0, total_input_tokens: 0, total_output_tokens: 0,
+      total_cache_tokens: 0, total_tokens: 0, total_cost: 0, total_actual_cost: 0, average_duration_ms: 0,
+    })
+    getSnapshotV2.mockReset().mockResolvedValue({ trend: [], models: [], groups: [] })
+    getModelStats.mockReset().mockResolvedValue({ models: [] })
+    getAuditStats.mockReset().mockResolvedValue({
+      total_records: 3,
+      audited_records: 2,
+      coverage_pct: 66.7,
+      counts: { pass: 1, warning: 0, anomaly: 1, unverifiable: 0, not_applicable: 0, unknown: 0, missing: 1 },
+      by_platform: [], by_account: [], by_model: [],
+    })
+    exportAudit.mockReset().mockResolvedValue(new Blob(['audit']))
+    saveAs.mockClear()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('loads the audit list and statistics only when the audit tab is opened', async () => {
     const wrapper = mount(UsageView, {
       global: { stubs: {
         AppLayout: AppLayoutStub, UsageStatsCards: true, UsageFilters: UsageFiltersStub,
-        UsageTable: true, UsageExportProgress: true, UsageCleanupDialog: true,
+        UsageTable: true, UsageAuditPanel: true, UsageExportProgress: true, UsageCleanupDialog: true,
         UserBalanceHistoryModal: true, Pagination: true, Select: true,
         DateRangePicker: true, Icon: true, TokenUsageTrend: true,
         ModelDistributionChart: true, GroupDistributionChart: true, EndpointDistributionChart: true,
-        UserTokenRanking: UserTokenRankingStub, OpsErrorLogTable: true, OpsErrorDetailModal: true,
+        UserTokenRanking: true, OpsErrorLogTable: true, OpsErrorDetailModal: true,
       } },
     })
     vi.advanceTimersByTime(120)
     await flushPromises()
 
+    expect(getAuditStats).not.toHaveBeenCalled()
     const tabs = wrapper.findAll('[data-testid="usage-detail-tab"]')
-    await tabs[2].trigger('click')
+    await tabs[1].trigger('click')
     await flushPromises()
 
-    await wrapper.get('[data-testid="usage-column-settings"]').trigger('click')
-    expect(wrapper.find('[data-testid="usage-column-toggle-notes"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="usage-column-toggle-notes"]').text())
-      .toContain('admin.usage.tokenRanking.columns.notes')
+    expect(getAuditStats).toHaveBeenCalledWith(expect.objectContaining({ exact_total: true }))
+    expect(exportList).toHaveBeenCalledWith(expect.objectContaining({ exact_total: true, page: 1 }), expect.anything())
+    expect((wrapper.vm as any).activeTab).toBe('audit')
+  })
+
+  it('passes audit filters to the dedicated export endpoint', async () => {
+    const wrapper = mount(UsageView, {
+      global: { stubs: {
+        AppLayout: AppLayoutStub, UsageStatsCards: true, UsageFilters: UsageFiltersStub,
+        UsageTable: true, UsageAuditPanel: true, UsageExportProgress: true, UsageCleanupDialog: true,
+        UserBalanceHistoryModal: true, Pagination: true, Select: true,
+        DateRangePicker: true, Icon: true, TokenUsageTrend: true,
+        ModelDistributionChart: true, GroupDistributionChart: true, EndpointDistributionChart: true,
+        UserTokenRanking: true, OpsErrorLogTable: true, OpsErrorDetailModal: true,
+      } },
+    })
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+
+    ;(wrapper.vm as any).filters.audit_status = 'anomaly'
+    ;(wrapper.vm as any).activeTab = 'audit'
+    await (wrapper.vm as any).exportAudit('csv')
+
+    expect(exportAudit).toHaveBeenCalledWith(expect.objectContaining({ audit_status: 'anomaly' }), 'csv')
+    expect(saveAs).toHaveBeenCalledWith(expect.any(Blob), expect.stringMatching(/usage-audit_.*\.csv$/))
   })
 })
 
@@ -912,8 +874,8 @@ describe('admin UsageView model audit export', () => {
 				request_type: 'sync',
 				input_tokens: 1,
 				output_tokens: 1,
-				cache_read_tokens: 0,
-				cache_creation_tokens: 0,
+				cache_read_tokens: 80,
+				cache_creation_tokens: 10,
 				duration_ms: 10,
 			}],
 			total: 1,
@@ -958,6 +920,148 @@ describe('admin UsageView model audit export', () => {
 		])
 		const row = sheetAddAoa.mock.calls[0][1][0]
 		expect(row.slice(4, 8)).toEqual(['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'Yes'])
+		const cacheHitRateIndex = headers.indexOf('Cache Hit Rate')
+		expect(cacheHitRateIndex).toBeGreaterThan(-1)
+		expect(row[cacheHitRateIndex]).toBe('87.9%')
 		expect(saveAs).toHaveBeenCalledTimes(1)
 	})
+})
+describe('admin UsageView rolling 24 hour requests', () => {
+  let wrapper: ReturnType<typeof mountRouteFilteredUsageView> | undefined
+  const now = new Date('2026-10-01T00:01:02.123+09:00')
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(now)
+    Object.keys(routeQuery).forEach(key => delete routeQuery[key])
+    list.mockReset().mockResolvedValue({ items: [], total: 0, pages: 0 })
+    exportList.mockReset().mockResolvedValue({ items: [], total: 0, pages: 0 })
+    getStats.mockReset().mockResolvedValue({ total_requests: 2, total_cost: 12, total_actual_cost: 3, total_account_cost: 5 })
+    getModelStats.mockReset().mockResolvedValue({ models: [] })
+    getSnapshotV2.mockReset().mockResolvedValue({ trend: [], groups: [] })
+    listErrorLogs.mockReset().mockResolvedValue({ items: [], total: 0 })
+  })
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = undefined
+    Object.keys(routeQuery).forEach(key => delete routeQuery[key])
+    vi.useRealTimers()
+  })
+
+  const expectRequests = (end: Date) => {
+    const range = { start_date: new Date(end.getTime() - 86_400_000).toISOString(), end_date: end.toISOString() }
+    for (const request of [list, getStats, getModelStats, getSnapshotV2]) {
+      expect(request.mock.lastCall?.[0]).toMatchObject(range)
+      const params = request.mock.lastCall![0]
+      expect(Date.parse(params.end_date) - Date.parse(params.start_date)).toBe(86_400_000)
+    }
+    expect(getSnapshotV2.mock.lastCall?.[0].granularity).toBe('hour')
+    return range
+  }
+
+  it.each([
+    ['rolling', undefined, undefined],
+    ['routed exact', '2026-09-30T00:00:00Z', '2026-10-01T00:00:00Z'],
+    ['mixed', '2026-09-30', '2026-10-01T00:00:00Z'],
+  ])('blocks %s cleanup until calendar dates are explicitly selected', async (_, start, end) => {
+    if (start) routeQuery.start_date = start
+    if (end) routeQuery.end_date = end
+    listCleanupTasks.mockReset().mockResolvedValue({ items: [], total: 0 })
+    createCleanupTask.mockReset()
+    showWarning.mockClear()
+    wrapper = mountRouteFilteredUsageView(true, true)
+    await flushPromises()
+    await wrapper.get('[data-test="cleanup-open"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('button').some(b => b.text() === 'admin.usage.cleanup.submit')).toBe(false)
+    expect(wrapper.find('[data-test="cleanup-confirm"]').exists()).toBe(false)
+    expect(listCleanupTasks).not.toHaveBeenCalled()
+    expect(createCleanupTask).not.toHaveBeenCalled()
+    expect(showWarning).toHaveBeenCalledWith('admin.usage.cleanup.calendarRangeRequired')
+  })
+
+  it('submits unchanged natural dates after an explicit picker selection', async () => {
+    listCleanupTasks.mockReset().mockResolvedValue({ items: [], total: 0 })
+    createCleanupTask.mockReset().mockResolvedValue({ id: 1 })
+    wrapper = mountRouteFilteredUsageView(true, true)
+    await flushPromises()
+    await wrapper.get('[data-test="cleanup-open"]').trigger('click')
+    const picker = wrapper.findComponent(DateRangePicker)
+    await picker.get('.date-picker-trigger').trigger('click')
+    await picker.findAll('.date-picker-preset').find(b => b.text() === 'dates.today')!.trigger('click')
+    await picker.get('.date-picker-apply').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="cleanup-open"]').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.findComponent(UsageCleanupDialog)
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    expect(dialog.props()).toMatchObject({ show: true, startDate: today, endDate: today })
+    await dialog.findAll('button').find(b => b.text() === 'admin.usage.cleanup.submit')!.trigger('click')
+    await wrapper.get('[data-test="cleanup-confirm"]').trigger('click')
+    await flushPromises()
+    expect(createCleanupTask).toHaveBeenCalledOnce()
+    expect(createCleanupTask).toHaveBeenCalledWith({ start_date: today, end_date: today, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })
+  })
+
+  it('uses the same precise cross-midnight window for list, cards and charts on initial load', async () => {
+    wrapper = mountRouteFilteredUsageView(true)
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+    expectRequests(now)
+    expect(wrapper.findComponent(DateRangePicker).get('.date-picker-trigger').text()).toContain('dates.last24Hours')
+    expect(wrapper.findComponent(UsageStatsCards).props('stats')).toMatchObject({
+      total_actual_cost: 3, total_cost: 12, total_account_cost: 5
+    })
+  })
+
+  it('refreshes the rolling window once and keeps pagination/export on that applied snapshot', async () => {
+    wrapper = mountRouteFilteredUsageView()
+    await flushPromises()
+    const refreshedAt = new Date('2026-10-02T00:00:00.456+09:00')
+    vi.setSystemTime(refreshedAt)
+    ;(wrapper.vm as any).refreshData()
+    await flushPromises()
+    const range = expectRequests(refreshedAt)
+    vi.setSystemTime(new Date('2026-10-02T00:05:00.789+09:00'))
+    ;(wrapper.vm as any).handlePageChange(2)
+    await flushPromises()
+    expect(list.mock.lastCall?.[0]).toMatchObject({ ...range, page: 2 })
+    await (wrapper.vm as any).exportToExcel()
+    expect(exportList.mock.lastCall?.[0]).toMatchObject(range)
+    expect((wrapper.vm as any).connectionFilters).toMatchObject({ start_time: range.start_date, end_time: range.end_date })
+    ;(wrapper.vm as any).switchTab('errors')
+    await flushPromises()
+    expect(listErrorLogs.mock.lastCall?.[0]).toMatchObject({ start_time: range.start_date, end_time: range.end_date })
+  })
+
+  it('applies the actual picker selection after midnight and resets back to rolling time', async () => {
+    routeQuery.start_date = '2026-09-20'
+    routeQuery.end_date = '2026-09-25'
+    wrapper = mountRouteFilteredUsageView(true)
+    await flushPromises()
+    const picker = wrapper.findComponent(DateRangePicker)
+    await picker.get('.date-picker-trigger').trigger('click')
+    await picker.findAll('.date-picker-preset').find(b => b.text() === 'dates.last24Hours')!.trigger('click')
+    await picker.get('.date-picker-apply').trigger('click')
+    await flushPromises()
+    expectRequests(now)
+    const resetAt = new Date('2026-10-02T00:00:00.789+09:00')
+    vi.setSystemTime(resetAt)
+    ;(wrapper.vm as any).resetFilters()
+    await flushPromises()
+    expectRequests(resetAt)
+  })
+
+  it('preserves manual/routed calendar dates on refresh', async () => {
+    routeQuery.start_date = '2026-09-30'
+    routeQuery.end_date = '2026-10-01'
+    wrapper = mountRouteFilteredUsageView(true)
+    await flushPromises()
+    ;(wrapper.vm as any).refreshData()
+    await flushPromises()
+    for (const request of [list, getStats, getModelStats, getSnapshotV2]) {
+      expect(request.mock.lastCall?.[0]).toMatchObject({ start_date: '2026-09-30', end_date: '2026-10-01' })
+    }
+    expect(wrapper.findComponent(DateRangePicker).get('.date-picker-trigger').text()).not.toContain('dates.last24Hours')
+  })
 })

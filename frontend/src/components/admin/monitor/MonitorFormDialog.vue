@@ -21,7 +21,8 @@
             type="button"
             :data-testid="`monitor-check-mode-${opt.value}`"
             :aria-pressed="form.check_mode === opt.value"
-            class="rounded-lg border-2 px-3 py-2 text-left transition-colors"
+            :disabled="opt.disabled"
+            class="rounded-lg border-2 px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             :class="checkModeButtonClass(opt.value)"
             @click="selectCheckMode(opt.value)"
           >
@@ -102,6 +103,25 @@
           <button type="button" @click="useCurrentDomain" class="btn btn-secondary whitespace-nowrap">
             {{ t('admin.channelMonitor.form.useCurrentDomain') }}
           </button>
+        </div>
+      </div>
+
+      <div v-if="usesProbePart">
+        <label for="monitor-request-path-preset" class="input-label">{{ t('admin.channelMonitor.form.requestPath') }}</label>
+        <Select
+          id="monitor-request-path-preset"
+          v-model="requestPathSelection"
+          data-testid="monitor-request-path-preset"
+          :aria-label="t('admin.channelMonitor.form.requestPath')"
+          aria-describedby="monitor-request-path-hint"
+          :options="requestPathOptions"
+          :searchable="false"
+        />
+        <p id="monitor-request-path-hint" class="mt-1 text-xs text-gray-400">{{ t('admin.channelMonitor.form.requestPathHint') }}</p>
+        <div v-if="requestPathSelection === CUSTOM_REQUEST_PATH" class="mt-3">
+          <label for="monitor-request-path" class="input-label">{{ t('admin.channelMonitor.form.requestPathCustom') }}</label>
+          <input id="monitor-request-path" v-model="form.request_path" data-testid="monitor-request-path" type="text" maxlength="500" class="input" placeholder="/v1/chat/completions" aria-describedby="monitor-request-path-custom-hint" @input="forceCustomPath = true" />
+          <p id="monitor-request-path-custom-hint" class="mt-1 text-xs text-gray-400">{{ t('admin.channelMonitor.form.requestPathCustomHint') }}</p>
         </div>
       </div>
 
@@ -262,7 +282,9 @@ import { useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
 import {
   PROVIDER_OPENAI,
   PROVIDER_ANTHROPIC,
+  PROVIDER_GEMINI,
   PROVIDER_GROK,
+  PROVIDER_ANTIGRAVITY,
   PROVIDER_KIMI,
   PROVIDER_ZHIPU,
   PROVIDER_DEEPSEEK,
@@ -322,6 +344,7 @@ interface MonitorForm {
   check_mode: CheckMode
   account_id: number | null
   endpoint: string
+  request_path: string
   api_key: string
   primary_model: string
   extra_models: string[]
@@ -343,6 +366,7 @@ const form = reactive<MonitorForm>({
   check_mode: CHECK_MODE_PROBE,
   account_id: null,
   endpoint: '',
+  request_path: '',
   api_key: '',
   primary_model: '',
   extra_models: [],
@@ -359,6 +383,48 @@ const form = reactive<MonitorForm>({
 // quota / quota_probe 需要关联账号；probe / quota_probe 需要探活字段。
 const usesQuotaMode = computed(() => form.check_mode !== CHECK_MODE_PROBE)
 const usesProbePart = computed(() => form.check_mode !== CHECK_MODE_QUOTA)
+
+const CUSTOM_REQUEST_PATH = '__custom__'
+const forceCustomPath = ref(false)
+
+// Paths only change the URL; offer presets matching the adapter's request body.
+const requestPathPresets = computed<string[]>(() => {
+  if (form.provider === PROVIDER_GEMINI || form.provider === PROVIDER_ANTIGRAVITY || form.provider === PROVIDER_OPENCODE_GO) return []
+  if (form.provider === PROVIDER_ANTHROPIC) return ['/v1/messages', '/messages']
+  if (form.provider === PROVIDER_OPENAI && form.api_mode === API_MODE_RESPONSES) return ['/v1/responses', '/responses']
+  const paths = ['/v1/chat/completions', '/chat/completions']
+  if (form.provider === PROVIDER_ZHIPU) paths.push('/api/paas/v4/chat/completions')
+  return paths
+})
+
+const defaultRequestPath = computed(() => {
+  if (form.provider === PROVIDER_GEMINI) return '/v1beta/models/{model}:generateContent'
+  if (form.provider === PROVIDER_ZHIPU) return '/api/paas/v4/chat/completions'
+  return requestPathPresets.value[0] || ''
+})
+
+const requestPathOptions = computed(() => [
+  {
+    value: '',
+    label: defaultRequestPath.value
+      ? `${t('admin.channelMonitor.form.requestPathDefault')} (${defaultRequestPath.value})`
+      : t('admin.channelMonitor.form.requestPathDefault'),
+  },
+  ...requestPathPresets.value.map(path => ({ value: path, label: path })),
+  { value: CUSTOM_REQUEST_PATH, label: t('admin.channelMonitor.form.requestPathCustom') },
+])
+
+const requestPathSelection = computed<string>({
+  get: () => {
+    if (forceCustomPath.value) return CUSTOM_REQUEST_PATH
+    if (!form.request_path) return ''
+    return requestPathPresets.value.includes(form.request_path) ? form.request_path : CUSTOM_REQUEST_PATH
+  },
+  set: (value) => {
+    forceCustomPath.value = value === CUSTOM_REQUEST_PATH
+    if (!forceCustomPath.value) form.request_path = value
+  },
+})
 
 // jitter 上限与后端校验一致：interval - jitter 不得低于最小检测间隔 15 秒。
 const maxJitterSeconds = computed<number>(() => Math.max(0, (form.interval_seconds || 0) - 15))
@@ -468,7 +534,9 @@ interface ProviderOption {
 const providerOptions = computed<ProviderOption[]>(() => [
   { value: PROVIDER_ANTHROPIC, label: t('monitorCommon.providers.anthropic') },
   { value: PROVIDER_OPENAI, label: t('monitorCommon.providers.openai') },
+  { value: PROVIDER_GEMINI, label: t('monitorCommon.providers.gemini') },
   { value: PROVIDER_GROK, label: t('monitorCommon.providers.grok') },
+  { value: PROVIDER_ANTIGRAVITY, label: t('monitorCommon.providers.antigravity') },
   { value: PROVIDER_KIMI, label: t('monitorCommon.providers.kimi') },
   { value: PROVIDER_ZHIPU, label: t('monitorCommon.providers.zhipu') },
   { value: PROVIDER_DEEPSEEK, label: t('monitorCommon.providers.deepseek') },
@@ -489,6 +557,7 @@ interface CheckModeOption {
   value: CheckMode
   label: string
   hint: string
+  disabled: boolean
 }
 
 const checkModeOptions = computed<CheckModeOption[]>(() => [
@@ -496,16 +565,21 @@ const checkModeOptions = computed<CheckModeOption[]>(() => [
     value: CHECK_MODE_PROBE,
     label: t('admin.channelMonitor.form.checkModeProbe'),
     hint: t('admin.channelMonitor.form.checkModeProbeHint'),
+    // antigravity 无探活 adapter，仅配额模式。
+    disabled: form.provider === PROVIDER_ANTIGRAVITY,
   },
   {
     value: CHECK_MODE_QUOTA,
     label: t('admin.channelMonitor.form.checkModeQuota'),
     hint: t('admin.channelMonitor.form.checkModeQuotaHint'),
+    disabled: false,
   },
   {
     value: CHECK_MODE_QUOTA_PROBE,
     label: t('admin.channelMonitor.form.checkModeQuotaProbe'),
     hint: t('admin.channelMonitor.form.checkModeQuotaProbeHint'),
+    // antigravity 无探活 adapter，只支持配额模式。
+    disabled: form.provider === PROVIDER_ANTIGRAVITY,
   },
 ])
 
@@ -518,6 +592,7 @@ function checkModeButtonClass(mode: CheckMode): string {
 }
 
 function selectCheckMode(mode: CheckMode) {
+  if (checkModeOptions.value.find((opt) => opt.value === mode)?.disabled) return
   form.check_mode = mode
   if (!usesQuotaMode.value) form.account_id = null
 }
@@ -667,6 +742,18 @@ function selectProvider(provider: Provider) {
   form.account_id = null
   pinnedAccount.value = null
   accountHydrationFailed.value = false
+  // antigravity 仅配额模式：切到它时强制 quota（checkModeOptions 同步禁用其余项）。
+  if (provider === PROVIDER_ANTIGRAVITY && form.check_mode !== CHECK_MODE_QUOTA) {
+    form.check_mode = CHECK_MODE_QUOTA
+  }
+  // 对称还原：从 antigravity 切走时撤掉强制 quota，否则编辑存量 antigravity
+  // 监控换平台后仍停留在 quota（目标平台未必支持），update 会携带残留配置。
+  // 同步清掉 quota 占位模型（loadFromMonitor 回填的 'quota'），否则切回
+  // probe 后拿 'quota' 当探活模型（与离开 grok 清 DEFAULT_GROK_MODEL 同理）。
+  if (previousProvider === PROVIDER_ANTIGRAVITY && form.check_mode === CHECK_MODE_QUOTA) {
+    form.check_mode = CHECK_MODE_PROBE
+    if (form.primary_model.trim() === 'quota') form.primary_model = ''
+  }
   if (provider === PROVIDER_GROK) {
     if (!form.endpoint.trim()) form.endpoint = DEFAULT_GROK_ENDPOINT
     if (!form.primary_model.trim()) form.primary_model = DEFAULT_GROK_MODEL
@@ -701,6 +788,7 @@ watch(() => form.api_mode, () => {
 
 function resetForm() {
   suppressFormWatchers = true
+  forceCustomPath.value = false
   form.name = ''
   form.provider = PROVIDER_ANTHROPIC
   form.api_mode = API_MODE_CHAT_COMPLETIONS
@@ -709,6 +797,7 @@ function resetForm() {
   pinnedAccount.value = null
   accountHydrationFailed.value = false
   form.endpoint = ''
+  form.request_path = ''
   form.api_key = ''
   form.primary_model = ''
   form.extra_models = []
@@ -725,12 +814,14 @@ function resetForm() {
 
 function loadFromMonitor(m: ChannelMonitor) {
   suppressFormWatchers = true
+  forceCustomPath.value = false
   form.name = m.name
   form.provider = m.provider
   form.api_mode = normalizeAPIMode(m.api_mode)
   form.check_mode = m.check_mode || CHECK_MODE_PROBE
   form.account_id = m.account_id ?? null
   form.endpoint = m.endpoint
+  form.request_path = m.request_path || ''
   form.api_key = ''
   form.primary_model = m.primary_model
   form.extra_models = [...(m.extra_models || [])]
@@ -799,6 +890,7 @@ function buildPayload(): CreateParams {
     check_mode: form.check_mode,
     account_id: usesQuotaMode.value ? form.account_id : null,
     endpoint: usesProbePart.value ? form.endpoint.trim() : '',
+    request_path: usesProbePart.value ? form.request_path.trim() : '',
     api_key: usesProbePart.value ? form.api_key.trim() : '',
     primary_model: usesProbePart.value ? form.primary_model.trim() : 'quota',
     extra_models: usesProbePart.value ? form.extra_models : [],

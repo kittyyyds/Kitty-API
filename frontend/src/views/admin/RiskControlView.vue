@@ -1,1049 +1,387 @@
 <template>
   <AppLayout>
-    <div class="space-y-7" data-test="risk-control-view">
-      <div v-if="loading" class="flex min-h-64 items-center justify-center">
+    <div class="space-y-6">
+      <SecurityAuditNav active="/admin/risk-control" />
+      <div v-if="loading" class="flex items-center justify-center py-16">
         <div class="h-8 w-8 animate-spin rounded-full border-b-2 border-primary-600"></div>
       </div>
 
-      <div
-        v-else-if="configLoadError"
-        class="flex min-h-64 flex-col items-center justify-center gap-4 text-center"
-        data-test="risk-config-load-error"
-      >
-        <Icon name="exclamationTriangle" size="lg" class="text-amber-500" />
-        <div>
-          <p class="font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.configUnavailable') }}</p>
-          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.configUnavailableHint') }}</p>
-        </div>
-        <button type="button" class="btn btn-secondary inline-flex items-center gap-2" @click="loadInitial">
-          <Icon name="refresh" size="sm" />
-          {{ t('admin.riskControl.retryLoad') }}
-        </button>
-      </div>
-
       <template v-else>
-        <header class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">
-              {{ t('admin.riskControl.title') }}
-            </h1>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              {{ t('admin.riskControl.description') }}
-            </p>
+            <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.title') }}</h1>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.description') }}</p>
           </div>
-          <div class="flex flex-wrap gap-2">
-            <button
-              type="button"
-              class="btn btn-secondary inline-flex items-center gap-2"
-              :disabled="refreshing || !configLoaded"
-              :title="t('admin.riskControl.refresh')"
-              @click="refreshAll"
-            >
-              <Icon name="refresh" size="sm" :class="refreshing ? 'animate-spin' : ''" />
-              {{ t('admin.riskControl.refresh') }}
+          <div class="flex flex-wrap items-center gap-2">
+            <button type="button" class="btn btn-secondary inline-flex items-center gap-2" :disabled="statusLoading" @click="loadStatus(false)">
+              <Icon name="refresh" size="sm" :class="statusLoading ? 'animate-spin' : ''" />
+              {{ t('admin.riskControl.refreshStatus') }}
             </button>
-            <button
-              type="button"
-              class="btn btn-primary inline-flex items-center gap-2"
-              :disabled="saving || !configLoaded"
-              data-test="save-risk-control"
-              @click="saveConfig"
-            >
-              <Icon name="check" size="sm" />
-              {{ saving ? t('common.saving') : t('admin.riskControl.saveConfig') }}
+            <button type="button" class="btn btn-primary inline-flex items-center gap-2" @click="openSettings">
+              <Icon name="cog" size="sm" />
+              {{ t('admin.riskControl.openSettings') }}
             </button>
           </div>
-        </header>
-
-        <div
-          v-if="statusLoadError"
-          class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-900/20 dark:text-amber-100"
-          role="alert"
-          data-test="risk-status-error"
-        >
-          <span>{{ t('admin.riskControl.statusUnavailable') }}</span>
-          <button
-            type="button"
-            class="btn btn-secondary btn-sm inline-flex items-center gap-1.5"
-            :disabled="statusLoading"
-            @click="loadStatus(false)"
-          >
-            <Icon name="refresh" size="xs" :class="statusLoading ? 'animate-spin' : ''" />
-            {{ t('admin.riskControl.retryStatus') }}
-          </button>
         </div>
 
-        <div
-          class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-[repeat(11,minmax(0,1fr))]"
-          data-test="risk-overview"
-        >
+        <section class="space-y-3">
+          <h2>
+            <button
+              id="moderation-users-toggle"
+              type="button"
+              class="btn btn-secondary"
+              data-test="moderation-users-toggle"
+              :aria-expanded="moderationUsersExpanded"
+              aria-controls="moderation-users-region"
+              @click="moderationUsersMounted = true; moderationUsersExpanded = !moderationUsersExpanded"
+            >{{ t('admin.moderationUsers.listTitle') }}</button>
+          </h2>
+          <div id="moderation-users-region" v-show="moderationUsersExpanded" role="region" aria-labelledby="moderation-users-toggle">
+            <ModerationUsersSummary v-if="moderationUsersMounted" />
+          </div>
+        </section>
+        <p class="text-sm text-gray-600 dark:text-gray-300" data-test="active-audit-engine">
+          {{ t('admin.riskControl.activeEngine', { engine: engineLabel(status?.engine ?? savedEngine) }) }}
+        </p>
+        <p v-if="status?.enabled && status.risk_control_enabled && status.mode !== 'off' && status.pre_block_api_key_available_count === 0" class="text-sm text-amber-700 dark:text-amber-300" role="status">
+          {{ t('admin.riskControl.engineUnavailable') }}
+        </p>
+
+        <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
           <div
             v-for="item in overviewItems"
             :key="item.key"
             class="rounded-lg border border-gray-100 bg-white px-4 py-3 shadow-sm dark:border-dark-700 dark:bg-dark-800"
-            :class="item.key === 'second-layer-cache' ? 'xl:col-span-3' : 'xl:col-span-2'"
-            :data-test="`risk-overview-${item.key}`"
-            :data-cache-hits="item.cacheMetrics?.hits"
-            :data-cache-misses="item.cacheMetrics?.misses"
-            :data-cache-writes="item.cacheMetrics?.writes"
-            :data-cache-errors="item.cacheMetrics?.errors"
           >
-            <div class="flex items-center gap-3">
+            <div class="flex min-w-0 items-center gap-3">
               <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg" :class="item.iconClass">
                 <Icon :name="item.icon" size="sm" />
               </div>
-              <div class="min-w-0">
-                <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ item.label }}</p>
-                <p class="mt-1 truncate text-lg font-semibold text-gray-900 dark:text-white">{{ item.value }}</p>
-                <p class="truncate text-xs text-gray-500 dark:text-gray-400" :title="item.meta">{{ item.meta }}</p>
+              <div class="min-w-0 flex-1">
+                <div class="flex min-w-0 items-center justify-between gap-2">
+                  <p class="truncate text-xs font-medium text-gray-500 dark:text-gray-400">{{ item.label }}</p>
+                  <span
+                    v-if="item.badge"
+                    class="inline-flex flex-shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium"
+                    :class="item.badgeClass"
+                  >
+                    {{ item.badge }}
+                  </span>
+                </div>
+                <div class="mt-1 flex min-w-0 items-baseline gap-2">
+                  <p class="truncate text-xl font-semibold leading-7 text-gray-900 dark:text-white">{{ item.value }}</p>
+                  <p v-if="item.meta" class="truncate text-xs text-gray-500 dark:text-gray-400">{{ item.meta }}</p>
+                </div>
               </div>
             </div>
           </div>
         </div>
 
-        <section class="border-y border-gray-200 py-6 dark:border-dark-700" aria-labelledby="reviewers-heading">
-          <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <h2 id="reviewers-heading" class="text-lg font-semibold text-gray-900 dark:text-white">
-                {{ t('admin.riskControl.reviewersTitle') }}
-              </h2>
-              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                {{ t('admin.riskControl.reviewersSummary') }}
-              </p>
+        <div
+          v-if="showPreBlockRuntimeCard"
+          data-test="pre-block-runtime-cards"
+          class="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,520px)_minmax(0,1fr)]"
+        >
+          <div data-test="pre-block-sync-card" class="card">
+            <div class="flex flex-col gap-4 border-b border-gray-100 px-6 py-4 dark:border-dark-700 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.preBlockSyncStatus') }}</h2>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.preBlockSyncHint') }}</p>
+              </div>
+              <span class="inline-flex w-fit items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600 dark:bg-dark-700 dark:text-gray-300">
+                {{ modeLabel(status?.mode ?? configForm.mode) }}
+              </span>
             </div>
-            <div class="flex items-center gap-3">
-              <span class="text-sm text-gray-600 dark:text-gray-300">{{ t('admin.riskControl.enabled') }}</span>
-              <Toggle v-model="configForm.enabled" data-test="risk-control-enabled" />
+
+            <div class="p-6">
+              <div data-test="pre-block-metric-grid" class="grid grid-cols-2 gap-3 md:grid-cols-3">
+                <div
+                  v-for="item in preBlockMetricItems"
+                  :key="item.key"
+                  class="rounded-lg p-4"
+                  :class="item.class"
+                >
+                  <p class="text-xs text-gray-500 dark:text-gray-400">{{ item.label }}</p>
+                  <p class="mt-2 truncate text-2xl font-semibold leading-8" :class="item.valueClass">{{ item.value }}</p>
+                  <p v-if="item.meta" class="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">{{ item.meta }}</p>
+                </div>
+              </div>
             </div>
           </div>
-          <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <article class="rounded-lg border border-gray-200 bg-white p-5 dark:border-dark-700 dark:bg-dark-800">
-              <div class="flex items-start justify-between gap-4">
-                <div class="flex min-w-0 items-start gap-3">
-                  <span
-                    class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300"
-                  >
-                    <Icon name="cloud" size="md" />
-                  </span>
-                  <div class="min-w-0">
-                    <h3 class="font-semibold text-gray-900 dark:text-white">
-                      {{ t('admin.riskControl.onlineReviewersTitle') }}
-                    </h3>
-                    <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                      {{
-                        t('admin.riskControl.onlineReviewersMeta', {
-                          threshold: percent(configForm.deepseek_threshold),
-                        })
-                      }}
-                    </p>
+
+          <div data-test="pre-block-api-key-load-card" class="card">
+            <div class="flex flex-col gap-4 border-b border-gray-100 px-6 py-4 dark:border-dark-700 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.preBlockAPIKeyLoad') }}</h2>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                  {{ t('admin.riskControl.preBlockAPIKeyLoadHint') }}
+                </p>
+              </div>
+              <span class="inline-flex w-fit items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600 dark:bg-dark-700 dark:text-gray-300">
+                {{ preBlockAPIKeyLoadSummaryText }}
+              </span>
+            </div>
+
+            <div class="p-6">
+              <div
+                v-if="preBlockAPIKeyLoads.length > 0"
+                data-test="pre-block-api-key-load-list"
+                class="max-h-[280px] space-y-3 overflow-y-auto pr-1"
+              >
+                <div
+                  v-for="item in preBlockAPIKeyLoads"
+                  :key="item.key_hash || item.index"
+                  class="rounded-lg bg-gray-50 p-3 dark:bg-dark-700/50"
+                >
+                  <div class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div class="min-w-0">
+                      <div class="flex min-w-0 items-center gap-2">
+                        <span class="font-mono text-sm font-semibold text-gray-900 dark:text-white">#{{ item.index + 1 }}</span>
+                        <span class="truncate font-mono text-sm text-gray-700 dark:text-gray-200">{{ item.masked || '-' }}</span>
+                        <span class="h-2 w-2 flex-shrink-0 rounded-full" :class="apiKeyStatusDotClass(item.status)"></span>
+                      </div>
+                      <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        {{ t('admin.riskControl.preBlockAPIKeyTotals', { total: formatNumber(item.total), success: formatNumber(item.success), errors: formatNumber(item.errors) }) }}
+                      </p>
+                    </div>
+                    <div class="grid grid-cols-4 gap-2 text-right text-xs text-gray-500 dark:text-gray-400 sm:min-w-[280px]">
+                      <div>
+                        <p>{{ t('admin.riskControl.preBlockKeyActiveShort') }}</p>
+                        <p class="mt-1 text-sm font-semibold text-sky-700 dark:text-sky-300">{{ formatNumber(item.active) }}</p>
+                      </div>
+                      <div>
+                        <p>{{ t('admin.riskControl.preBlockKeyTotalShort') }}</p>
+                        <p class="mt-1 text-sm font-semibold text-gray-900 dark:text-white">{{ formatNumber(item.total) }}</p>
+                      </div>
+                      <div>
+                        <p>{{ t('admin.riskControl.preBlockKeyAvgShort') }}</p>
+                        <p class="mt-1 text-sm font-semibold text-gray-900 dark:text-white">{{ formatNumber(item.avg_latency_ms) }} ms</p>
+                      </div>
+                      <div>
+                        <p>{{ t('admin.riskControl.preBlockKeyLastShort') }}</p>
+                        <p class="mt-1 text-sm font-semibold text-gray-900 dark:text-white">{{ formatNumber(item.last_latency_ms) }} ms</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="mt-3 h-1.5 overflow-hidden rounded-full bg-white dark:bg-dark-900">
+                    <div class="h-full rounded-full bg-sky-500" :style="{ width: preBlockAPIKeyLoadWidth(item.total) }"></div>
                   </div>
                 </div>
-                <Toggle
-                  v-model="configForm.remote_reviewers_enabled"
-                  data-test="deepseek-enabled"
-                  data-reviewer-pool-toggle="true"
-                  @update:model-value="configForm.deepseek_enabled = configForm.remote_reviewers_enabled"
-                />
               </div>
-              <div class="mt-4 flex flex-wrap gap-2 text-xs">
-                <span class="rounded-md bg-gray-100 px-2 py-1 text-gray-600 dark:bg-dark-700 dark:text-gray-300">
-                  {{ t('admin.riskControl.nonThinking') }}
-                </span>
-                <span class="rounded-md bg-gray-100 px-2 py-1 text-gray-600 dark:bg-dark-700 dark:text-gray-300">
-                  {{ t('admin.riskControl.textOnly') }}
-                </span>
-                <span
-                  class="rounded-md px-2 py-1"
-                  :class="reachableChannelCount > 0 ? statusClasses.healthy : statusClasses.unknown"
-                >
-                  {{
-                    t('admin.riskControl.remoteProviderHealthSummary', {
-                      reachable: reachableChannelCount,
-                      enabled: enabledChannelCount,
-                      providers: reachableProviderCount,
-                    })
-                  }}
-                </span>
-                <span
-                  class="rounded-md px-2 py-1"
-                  :class="restrictionConsensusReady ? statusClasses.healthy : statusClasses.warning"
-                  data-test="restriction-consensus-gate"
-                >
-                  {{
-                    t(
-                      restrictionConsensusReady
-                        ? 'admin.riskControl.restrictionConsensusReady'
-                        : 'admin.riskControl.restrictionConsensusUnavailable',
-                      {
-                        reachable: reachableProviderCount,
-                        required: restrictedConsensusRequired,
-                      }
-                    )
-                  }}
-                </span>
-              </div>
-              <div class="mt-4 border-t border-gray-100 pt-4 dark:border-dark-700">
-                <p class="text-xs font-medium text-gray-600 dark:text-gray-300">
-                  {{ t('admin.riskControl.remoteUnavailablePolicy') }}
-                </p>
-                <div
-                  class="mt-2 inline-flex rounded-lg bg-gray-100 p-1 dark:bg-dark-900"
-                  role="group"
-                  :aria-label="t('admin.riskControl.remoteUnavailablePolicy')"
-                >
-                  <button
-                    type="button"
-                    class="min-h-9 rounded-md px-3 py-1.5 text-xs font-medium transition-colors"
-                    :class="
-                      configForm.remote_unavailable_policy === 'risk_tiered'
-                        ? 'bg-white text-gray-900 shadow-sm dark:bg-dark-700 dark:text-white'
-                        : 'text-gray-500 dark:text-gray-400'
-                    "
-                    data-test="remote-unavailable-risk-tiered"
-                    @click="configForm.remote_unavailable_policy = 'risk_tiered'"
-                  >
-                    {{ t('admin.riskControl.remoteUnavailableRiskTiered') }}
-                  </button>
-                  <button
-                    type="button"
-                    class="min-h-9 rounded-md px-3 py-1.5 text-xs font-medium transition-colors"
-                    :class="
-                      configForm.remote_unavailable_policy === 'fail_closed'
-                        ? 'bg-white text-gray-900 shadow-sm dark:bg-dark-700 dark:text-white'
-                        : 'text-gray-500 dark:text-gray-400'
-                    "
-                    data-test="remote-unavailable-fail-closed"
-                    @click="configForm.remote_unavailable_policy = 'fail_closed'"
-                  >
-                    {{ t('admin.riskControl.remoteUnavailableFailClosed') }}
-                  </button>
-                </div>
-                <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                  {{
-                    configForm.remote_unavailable_policy === 'risk_tiered'
-                      ? t('admin.riskControl.remoteUnavailableRiskTieredHint')
-                      : t('admin.riskControl.remoteUnavailableFailClosedHint')
-                  }}
-                </p>
-              </div>
-            </article>
-
-          </div>
-        </section>
-
-        <section aria-labelledby="managed-providers-heading" data-test="managed-provider-catalog">
-          <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <h2 id="managed-providers-heading" class="text-lg font-semibold text-gray-900 dark:text-white">
-                {{ t('admin.riskControl.managedProvidersTitle') }}
-              </h2>
-              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                {{ t('admin.riskControl.managedProvidersSummary') }}
+              <p v-else class="rounded-lg bg-gray-50 p-4 text-sm text-gray-500 dark:bg-dark-700/50 dark:text-gray-400">
+                {{ t('admin.riskControl.preBlockAPIKeyLoadEmpty') }}
               </p>
             </div>
-            <span class="rounded-md bg-gray-100 px-2 py-1 text-xs text-gray-600 dark:bg-dark-700 dark:text-gray-300">
-              {{ t('admin.riskControl.managedProvidersNonThinking') }}
-            </span>
+          </div>
+        </div>
+
+        <div v-if="showWorkerRuntimeCard" class="card">
+          <div class="flex flex-col gap-4 border-b border-gray-100 px-6 py-4 dark:border-dark-700 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.workerStatus') }}</h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.workerStatusHint') }}</p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+              <span>{{ t('admin.riskControl.autoRefresh') }}</span>
+              <span v-if="status?.last_cleanup_at">
+                {{ t('admin.riskControl.lastCleanup', { time: formatDateTime(status.last_cleanup_at) }) }}
+              </span>
+            </div>
           </div>
 
-          <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
-            <article
-              v-for="provider in managedProviderRows"
-              :key="provider.id"
-              class="rounded-lg border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800"
-              :data-test="`managed-provider-${provider.id}`"
-            >
-              <div class="flex min-w-0 items-start gap-3">
-                <span
-                  class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-sky-50 text-sky-700 dark:bg-sky-900/20 dark:text-sky-300"
-                >
-                  <Icon name="server" size="sm" />
-                </span>
-                <div class="min-w-0">
-                  <h3 class="truncate font-semibold text-gray-900 dark:text-white">{{ provider.label }}</h3>
-                  <p class="mt-1 truncate font-mono text-xs text-gray-500 dark:text-gray-400">{{ provider.id }}</p>
+          <div class="grid grid-cols-1 gap-6 p-6 xl:grid-cols-[minmax(0,360px)_1fr]">
+            <div class="space-y-4">
+              <div class="rounded-lg border border-gray-100 p-4 dark:border-dark-700">
+                <div class="flex items-center justify-between gap-3">
+                  <div>
+                    <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.queueUsage') }}</p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {{ formatNumber(status?.queue_length ?? 0) }} / {{ formatNumber(status?.queue_size ?? configForm.queue_size) }}
+                    </p>
+                  </div>
+                  <span class="text-sm font-semibold text-gray-900 dark:text-white">{{ queueUsagePercent }}</span>
+                </div>
+                <div class="mt-4 h-2 overflow-hidden rounded-full bg-gray-100 dark:bg-dark-700">
+                  <div class="h-full rounded-full bg-primary-500 transition-all duration-300" :style="queueUsageStyle"></div>
                 </div>
               </div>
-              <div class="mt-3 flex flex-wrap gap-1.5">
+
+              <div class="grid grid-cols-2 gap-3">
+                <div class="rounded-lg bg-gray-50 p-4 dark:bg-dark-700/50">
+                  <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.activeWorkers') }}</p>
+                  <p class="mt-2 text-2xl font-semibold text-gray-900 dark:text-white">{{ status?.active_workers ?? 0 }}</p>
+                </div>
+                <div class="rounded-lg bg-emerald-50 p-4 dark:bg-emerald-900/10">
+                  <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.idleWorkers') }}</p>
+                  <p class="mt-2 text-2xl font-semibold text-emerald-700 dark:text-emerald-300">{{ status?.idle_workers ?? configForm.worker_count }}</p>
+                </div>
+                <div class="rounded-lg bg-gray-50 p-4 dark:bg-dark-700/50">
+                  <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.processed') }}</p>
+                  <p class="mt-2 text-2xl font-semibold text-gray-900 dark:text-white">{{ formatNumber(status?.processed ?? 0) }}</p>
+                </div>
+                <div class="rounded-lg bg-gray-50 p-4 dark:bg-dark-700/50">
+                  <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.droppedErrors') }}</p>
+                  <p class="mt-2 text-2xl font-semibold text-gray-900 dark:text-white">{{ formatNumber((status?.dropped ?? 0) + (status?.errors ?? 0)) }}</p>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div class="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.workerPool') }}</p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.riskControl.workerPoolMeta', { active: status?.active_workers ?? 0, idle: status?.idle_workers ?? configForm.worker_count, total: status?.worker_count ?? configForm.worker_count }) }}
+                  </p>
+                </div>
+                <span class="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600 dark:bg-dark-700 dark:text-gray-300">
+                  {{ modeLabel(status?.mode ?? configForm.mode) }}
+                </span>
+              </div>
+              <div class="grid grid-cols-2 gap-2 sm:grid-cols-4 md:grid-cols-6 xl:grid-cols-8 2xl:grid-cols-10">
+                <div
+                  v-for="worker in workerSlots"
+                  :key="worker.id"
+                  class="flex h-12 items-center justify-between rounded-lg border px-3 transition-colors"
+                  :class="workerSlotClass(worker.state)"
+                  :title="worker.label"
+                >
+                  <span class="text-sm font-semibold">#{{ worker.id }}</span>
+                  <span class="h-2.5 w-2.5 rounded-full" :class="workerDotClass(worker.state)"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="flex flex-col gap-4 border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.records') }}</h2>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.recordsHint') }}</p>
+              </div>
+              <button type="button" class="btn btn-secondary inline-flex items-center gap-2" :disabled="logsLoading" @click="loadLogs">
+                <Icon name="refresh" size="sm" :class="logsLoading ? 'animate-spin' : ''" />
+                {{ t('admin.riskControl.refresh') }}
+              </button>
+            </div>
+
+            <div class="flex flex-col gap-2 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 dark:border-dark-700 dark:bg-dark-900/30 sm:flex-row sm:items-center sm:justify-between">
+              <div class="flex min-w-0 items-center gap-2 text-sm text-gray-700 dark:text-gray-200">
+                <Icon name="filter" size="sm" class="flex-shrink-0 text-gray-400" />
+                <span class="font-medium">{{ t('admin.riskControl.modelFilter') }}</span>
+                <span class="truncate text-gray-500 dark:text-gray-400">{{ modelFilterSummary }}</span>
+              </div>
+              <div v-if="modelFilterPreviewModels.length > 0" class="flex flex-wrap gap-1.5">
                 <span
-                  v-for="model in provider.models"
+                  v-for="model in modelFilterPreviewModels"
                   :key="model"
-                  class="rounded-md bg-gray-100 px-2 py-1 font-mono text-xs text-gray-700 dark:bg-dark-700 dark:text-gray-300"
+                  class="inline-flex max-w-[180px] items-center truncate rounded-md bg-white px-2 py-1 font-mono text-xs text-gray-600 shadow-sm dark:bg-dark-800 dark:text-gray-300"
                 >
                   {{ model }}
                 </span>
-              </div>
-              <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
-                {{ t('admin.riskControl.managedProviderModelsCount', { count: provider.models.length }) }}
-              </p>
-            </article>
-          </div>
-        </section>
-
-        <section aria-labelledby="stages-heading">
-          <div class="mb-4">
-            <h2 id="stages-heading" class="text-lg font-semibold text-gray-900 dark:text-white">
-              {{ t('admin.riskControl.layerStagesTitle') }}
-            </h2>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              {{ t('admin.riskControl.layerStagesSummary') }}
-            </p>
-          </div>
-
-          <div class="divide-y divide-gray-200 border-y border-gray-200 dark:divide-dark-700 dark:border-dark-700">
-            <div
-              v-for="layer in layerRows"
-              :key="layer.id"
-              class="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between"
-              :data-test="`${layer.id}-stage-row`"
-            >
-              <div>
-                <p class="font-medium text-gray-900 dark:text-white">{{ layer.label }}</p>
-                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ layer.meta }}</p>
-              </div>
-              <div
-                class="inline-flex w-fit rounded-lg bg-gray-100 p-1 dark:bg-dark-800"
-                role="group"
-                :aria-label="layer.label"
-              >
-                <button
-                  v-for="stage in stageOptions"
-                  :key="stage.value"
-                  type="button"
-                  class="min-h-9 min-w-24 rounded-md px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45"
-                  :class="
-                    layer.stage === stage.value
-                      ? stage.activeClass
-                      : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
-                  "
-                  :data-test="`${layer.id}-stage-${stage.value}`"
-                  @click="setLayerStage(layer.id, stage.value)"
-                >
-                  {{ stage.label }}
-                </button>
-              </div>
-            </div>
-          </div>
-          <div
-            class="mt-3 flex items-start gap-2 rounded-lg px-3 py-2 text-sm"
-            :class="secondLayerEnforceReady ? statusClasses.healthy : statusClasses.warning"
-            data-test="enforce-health-gate"
-          >
-            <Icon
-              :name="secondLayerEnforceReady ? 'checkCircle' : 'exclamationTriangle'"
-              size="sm"
-              class="mt-0.5 flex-shrink-0"
-            />
-            <span>{{ enforceGateText }}</span>
-          </div>
-        </section>
-
-        <section aria-labelledby="channels-heading" data-test="deepseek-channels">
-          <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <h2 id="channels-heading" class="text-lg font-semibold text-gray-900 dark:text-white">
-                {{ t('admin.riskControl.remoteReviewersChannelsTitle') }}
-              </h2>
-              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                {{ t('admin.riskControl.remoteReviewersChannelsSummary') }}
-              </p>
-            </div>
-            <button
-              type="button"
-              class="btn btn-secondary inline-flex items-center gap-2"
-              data-test="add-deepseek-channel"
-              @click="addChannel"
-            >
-              <Icon name="plus" size="sm" />
-              {{ t('admin.riskControl.addChannel') }}
-            </button>
-          </div>
-
-          <p
-            v-if="configForm.deepseek_channels.length === 0"
-            class="border-y border-gray-200 py-8 text-center text-sm text-gray-500 dark:border-dark-700 dark:text-gray-400"
-          >
-            {{ t('admin.riskControl.noRemoteReviewers') }}
-          </p>
-
-          <div v-else class="space-y-3">
-            <article
-              v-for="(channel, index) in configForm.deepseek_channels"
-              :key="channel.id"
-              class="rounded-lg border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800"
-              :data-test="`deepseek-channel-${index}`"
-            >
-              <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <div class="flex min-w-0 items-center gap-3">
-                  <span
-                    class="flex h-8 min-w-8 items-center justify-center rounded-md bg-gray-100 px-2 text-xs font-semibold text-gray-600 dark:bg-dark-700 dark:text-gray-300"
-                  >
-                    {{ index + 1 }}
-                  </span>
-                  <div class="min-w-0">
-                    <p class="truncate font-medium text-gray-900 dark:text-white">
-                      {{ channel.name || t('admin.riskControl.unnamedChannel') }}
-                    </p>
-                    <p class="truncate text-xs text-gray-500 dark:text-gray-400">
-                      {{ reviewerProviderLabel(channel.provider) }} · {{ channel.id }}
-                    </p>
-                  </div>
-                  <span class="rounded-md px-2 py-1 text-xs font-medium" :class="channelStatusClass(channel)">
-                    {{ channelStatusLabel(channel) }}
-                  </span>
-                  <span
-                    class="rounded-md px-2 py-1 text-xs font-medium"
-                    :class="heartbeatStatusClass(channel)"
-                    :data-test="`deepseek-channel-heartbeat-status-${index}`"
-                  >
-                    {{ t('admin.riskControl.heartbeatLabel') }}: {{ heartbeatStatusLabel(channel) }}
-                  </span>
-                </div>
-                <div class="flex items-center gap-1">
-                  <Toggle v-model="channel.enabled" :data-test="`deepseek-channel-enabled-${index}`" />
-                  <button
-                    type="button"
-                    class="btn btn-ghost btn-sm p-2"
-                    :disabled="index === 0"
-                    :title="t('admin.riskControl.moveChannelUp')"
-                    :aria-label="t('admin.riskControl.moveChannelUp')"
-                    :data-test="`deepseek-channel-move-up-${index}`"
-                    @click="moveChannel(index, -1)"
-                  >
-                    <Icon name="arrowUp" size="sm" />
-                  </button>
-                  <button
-                    type="button"
-                    class="btn btn-ghost btn-sm p-2"
-                    :disabled="index === configForm.deepseek_channels.length - 1"
-                    :title="t('admin.riskControl.moveChannelDown')"
-                    :aria-label="t('admin.riskControl.moveChannelDown')"
-                    :data-test="`deepseek-channel-move-down-${index}`"
-                    @click="moveChannel(index, 1)"
-                  >
-                    <Icon name="arrowDown" size="sm" />
-                  </button>
-                  <button
-                    type="button"
-                    class="btn btn-ghost btn-sm p-2 text-red-600 dark:text-red-300"
-                    :title="t('admin.riskControl.removeChannel')"
-                    :aria-label="t('admin.riskControl.removeChannel')"
-                    @click="removeChannel(index)"
-                  >
-                    <Icon name="trash" size="sm" />
-                  </button>
-                </div>
-              </div>
-
-              <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-12">
-                <label class="xl:col-span-2">
-                  <span class="input-label">{{ t('admin.riskControl.channelProvider') }}</span>
-                  <select
-                    :value="normalizeReviewerProvider(channel.provider)"
-                    class="input"
-                    :data-test="`remote-reviewer-provider-${index}`"
-                    @change="setReviewerProvider(channel, ($event.target as HTMLSelectElement).value)"
-                  >
-                    <option v-for="provider in reviewerProviderOptions" :key="provider.value" :value="provider.value">
-                      {{ provider.label }}
-                    </option>
-                  </select>
-                </label>
-                <label class="xl:col-span-3">
-                  <span class="input-label">{{ t('admin.riskControl.channelName') }}</span>
-                  <input
-                    v-model.trim="channel.name"
-                    class="input"
-                    type="text"
-                    :data-test="`deepseek-channel-name-${index}`"
-                  />
-                </label>
-                <label class="xl:col-span-4">
-                  <span class="input-label">{{ t('admin.riskControl.channelBaseURL') }}</span>
-                  <input
-                    v-model.trim="channel.base_url"
-                    class="input"
-                    type="url"
-                    :placeholder="reviewerProviderPreset(channel.provider).baseURL"
-                    :data-test="`deepseek-channel-url-${index}`"
-                  />
-                </label>
-                <label class="xl:col-span-3">
-                  <span class="input-label">{{ t('admin.riskControl.channelModel') }}</span>
-                  <input
-                    v-model.trim="channel.model"
-                    class="input"
-                    type="text"
-                    :placeholder="reviewerProviderPreset(channel.provider).model"
-                    :data-test="`deepseek-channel-model-${index}`"
-                  />
-                </label>
-                <label class="xl:col-span-2">
-                  <span class="input-label">{{ t('admin.riskControl.channelTimeout') }}</span>
-                  <input
-                    v-model.number="channel.timeout_ms"
-                    class="input"
-                    type="number"
-                    min="100"
-                    max="30000"
-                    step="100"
-                    :data-test="`deepseek-channel-timeout-${index}`"
-                  />
-                </label>
-              </div>
-
-              <div class="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
-                <div>
-                  <label :for="`channel-key-${channel.id}`" class="input-label">{{
-                    t('admin.riskControl.channelAPIKey')
-                  }}</label>
-                  <div class="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-                    <input
-                      :id="`channel-key-${channel.id}`"
-                      v-model="channel.api_key"
-                      class="input font-mono"
-                      type="password"
-                      autocomplete="new-password"
-                      :placeholder="
-                        channel.api_key_configured
-                          ? channel.api_key_masked
-                          : t('admin.riskControl.channelAPIKeyPlaceholder')
-                      "
-                      :disabled="channel.clear_api_key"
-                      :data-test="`deepseek-channel-key-${index}`"
-                    />
-                    <button
-                      type="button"
-                      class="btn btn-secondary inline-flex items-center justify-center gap-2"
-                      :class="channel.clear_api_key ? 'border-red-300 text-red-700 dark:text-red-300' : ''"
-                      :disabled="!channel.api_key_configured && !channel.clear_api_key"
-                      @click="toggleClearChannelKey(channel)"
-                    >
-                      <Icon :name="channel.clear_api_key ? 'x' : 'trash'" size="sm" />
-                      {{
-                        channel.clear_api_key
-                          ? t('admin.riskControl.keepChannelKey')
-                          : t('admin.riskControl.clearChannelKey')
-                      }}
-                    </button>
-                  </div>
-                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    {{ channelKeyStatus(channel) }}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  class="btn btn-secondary inline-flex min-w-32 items-center justify-center gap-2"
-                  :disabled="!canTestChannel(channel) || testingChannelID !== null"
-                  :data-test="`test-api-availability-${index}`"
-                  @click="testChannel(channel)"
-                >
-                  <Icon name="beaker" size="sm" :class="testingChannelID === channel.id ? 'animate-pulse' : ''" />
-                  {{
-                    testingChannelID === channel.id
-                      ? t('admin.riskControl.testingAPIAvailability')
-                      : t('admin.riskControl.testAPIAvailability')
-                  }}
-                </button>
-              </div>
-
-              <div class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
-                <span>{{ t('admin.riskControl.channelBreaker') }}: {{ breakerLabel(channel) }}</span>
-                <span>{{ t('admin.riskControl.channelLatency') }}: {{ latencyText(channel.last_latency_ms) }}</span>
-                <span
-                  >{{ t('admin.riskControl.channelHealthChecked') }}:
-                  {{ dateOrDash(channel.last_health_checked_at) }}</span
-                >
-                <span
-                  :data-test="`deepseek-channel-heartbeat-${index}`"
-                  :title="heartbeatError(channel) || undefined"
-                >
-                  {{ t('admin.riskControl.heartbeatChecked') }}:
-                  {{ dateOrDash(heartbeatCheckedAt(channel)) }}
-                  <template v-if="heartbeatLatency(channel) !== undefined">
-                    · {{ latencyText(heartbeatLatency(channel)) }}
-                  </template>
-                  <template v-if="heartbeatHTTPStatus(channel)"> · HTTP {{ heartbeatHTTPStatus(channel) }}</template>
-                </span>
-                <span v-if="channel.last_error" class="text-amber-700 dark:text-amber-300">{{
-                  channel.last_error
-                }}</span>
-                <span v-if="heartbeatError(channel)" class="text-amber-700 dark:text-amber-300">
-                  {{ heartbeatError(channel) }}
-                </span>
-              </div>
-
-              <div
-                v-if="channelTestResults[channel.id]"
-                class="mt-3 rounded-lg border px-3 py-2 text-sm"
-                :class="channelTestResults[channel.id]?.reachable ? statusClasses.healthy : statusClasses.warning"
-                :data-test="`deepseek-channel-test-result-${index}`"
-              >
-                {{ channelTestResultText(channelTestResults[channel.id]!) }}
-              </div>
-            </article>
-          </div>
-        </section>
-
-        <section class="border-y border-gray-200 py-6 dark:border-dark-700" aria-labelledby="policy-heading">
-          <div class="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_180px_180px]">
-            <div>
-              <h2 id="policy-heading" class="text-lg font-semibold text-gray-900 dark:text-white">
-                {{ t('admin.riskControl.policyTitle') }}
-              </h2>
-              <div class="mt-3 flex flex-wrap gap-2">
-                <span
-                  class="rounded-md bg-gray-100 px-2 py-1 font-mono text-xs text-gray-700 dark:bg-dark-700 dark:text-gray-300"
-                >
-                  {{ configForm.policy_version || '-' }}
-                </span>
-                <span
-                  v-for="category in policyCategories"
-                  :key="category"
-                  class="rounded-md bg-emerald-50 px-2 py-1 text-xs text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300"
-                >
-                  {{ t(`admin.riskControl.policyCategories.${category}`) }}
+                <span v-if="hiddenModelFilterModelCount > 0" class="inline-flex rounded-md bg-white px-2 py-1 text-xs text-gray-500 shadow-sm dark:bg-dark-800 dark:text-gray-400">
+                  +{{ hiddenModelFilterModelCount }}
                 </span>
               </div>
             </div>
-            <label>
-              <span class="input-label">{{ t('admin.riskControl.confidenceThreshold') }}</span>
-              <input
-                :value="percent(configForm.deepseek_threshold)"
-                class="input bg-gray-50 dark:bg-dark-700"
-                type="text"
-                readonly
-                data-test="deepseek-threshold"
-              />
-            </label>
-            <label>
-              <span class="input-label">{{ t('admin.riskControl.totalReviewBudget') }}</span>
-              <input
-                v-model.number="configForm.deepseek_total_timeout_ms"
-                class="input"
-                type="number"
-                min="100"
-                max="120000"
-                step="100"
-                data-test="deepseek-total-timeout"
-              />
-            </label>
-          </div>
-        </section>
 
-        <section aria-labelledby="keywords-heading">
-          <div class="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <h2 id="keywords-heading" class="text-lg font-semibold text-gray-900 dark:text-white">
-                {{ t('admin.riskControl.keywordTiersTitle') }}
-              </h2>
-              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                {{ t('admin.riskControl.keywordTiersSummary') }}
-              </p>
-            </div>
-            <span class="text-sm text-gray-500 dark:text-gray-400">
-              {{
-                t('admin.riskControl.keywordCounts', { layer1: layer1Keywords.length, layer2: layer2Keywords.length })
-              }}
-            </span>
-          </div>
-          <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
-            <label>
-              <span class="input-label">{{ t('admin.riskControl.layer1Keywords') }}</span>
-              <textarea
-                v-model="configForm.layer1_keywords_text"
-                class="input min-h-44 resize-y font-mono text-sm"
-                data-test="layer1-keywords"
-              ></textarea>
-              <span class="mt-2 block text-xs text-gray-500 dark:text-gray-400">{{
-                t('admin.riskControl.layer1KeywordsMeta')
-              }}</span>
-            </label>
-            <label>
-              <span class="input-label">{{ t('admin.riskControl.layer2Keywords') }}</span>
-              <textarea
-                v-model="configForm.layer2_keywords_text"
-                class="input min-h-44 resize-y font-mono text-sm"
-                data-test="layer2-keywords"
-              ></textarea>
-              <span class="mt-2 block text-xs text-gray-500 dark:text-gray-400">{{
-                t('admin.riskControl.layer2KeywordsMeta')
-              }}</span>
-            </label>
-          </div>
-        </section>
-
-        <details class="border-y border-gray-200 py-4 dark:border-dark-700" data-test="advanced-risk-settings">
-          <summary
-            class="flex cursor-pointer list-none items-center justify-between gap-3 font-medium text-gray-900 dark:text-white"
-          >
-            <span>{{ t('admin.riskControl.advancedSettings') }}</span>
-            <Icon name="chevronDown" size="sm" />
-          </summary>
-          <div class="mt-5 grid grid-cols-1 gap-6 lg:grid-cols-3">
-            <div class="space-y-4">
-              <h3 class="font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.scopeTitle') }}</h3>
-              <label class="flex items-center justify-between gap-3">
-                <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.riskControl.allGroups') }}</span>
-                <Toggle v-model="configForm.all_groups" />
-              </label>
-              <div
-                v-if="!configForm.all_groups"
-                class="max-h-44 space-y-2 overflow-y-auto rounded-lg border border-gray-200 p-3 dark:border-dark-700"
-              >
-                <label
-                  v-for="group in groups"
-                  :key="group.id"
-                  class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300"
-                >
-                  <input
-                    v-model="configForm.group_ids"
-                    type="checkbox"
-                    :value="group.id"
-                    class="h-4 w-4 rounded border-gray-300 text-primary-600"
-                  />
-                  <span class="truncate">{{ group.name }}</span>
-                </label>
-              </div>
-              <label>
-                <span class="input-label">{{ t('admin.riskControl.modelFilter') }}</span>
-                <select v-model="configForm.model_filter_type" class="input" data-test="model-filter-type">
-                  <option value="all">{{ t('admin.riskControl.modelFilterAll') }}</option>
-                  <option value="include">{{ t('admin.riskControl.modelFilterInclude') }}</option>
-                  <option value="exclude">{{ t('admin.riskControl.modelFilterExclude') }}</option>
-                </select>
-              </label>
-              <textarea
-                v-if="configForm.model_filter_type !== 'all'"
-                v-model="configForm.model_filter_models_text"
-                class="input min-h-20 resize-y font-mono text-sm"
-                :placeholder="t('admin.riskControl.modelFilterModels')"
-                data-test="model-filter-models"
-              ></textarea>
-              <div v-if="configForm.model_filter_type !== 'all'" class="space-y-2" data-test="managed-model-filter-presets">
-                <p class="text-xs text-gray-500 dark:text-gray-400">
-                  {{ t('admin.riskControl.managedProviderFilterHint') }}
-                </p>
-                <div v-for="provider in managedProviderRows" :key="provider.id" class="space-y-1.5">
-                  <p class="text-xs font-medium text-gray-600 dark:text-gray-300">{{ provider.label }}</p>
-                  <div class="flex flex-wrap gap-1.5">
-                    <button
-                      v-for="model in provider.models"
-                      :key="model"
-                      type="button"
-                      class="inline-flex items-center gap-1 rounded-md border px-2 py-1 font-mono text-xs transition-colors"
-                      :class="
-                        isModelFilterSelected(model)
-                          ? 'border-primary-300 bg-primary-50 text-primary-700 dark:border-primary-700 dark:bg-primary-900/20 dark:text-primary-300'
-                          : 'border-gray-200 text-gray-600 hover:border-primary-300 hover:text-primary-700 dark:border-dark-600 dark:text-gray-300 dark:hover:border-primary-700 dark:hover:text-primary-300'
-                      "
-                      :data-test="`managed-model-filter-${model.replace(/[^a-z0-9]+/gi, '-')}`"
-                      @click="toggleModelFilterModel(model)"
-                    >
-                      <Icon :name="isModelFilterSelected(model) ? 'check' : 'plus'" size="xs" />
-                      {{ model }}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="space-y-4">
-              <h3 class="font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.responseTitle') }}</h3>
-              <label>
-                <span class="input-label">{{ t('admin.riskControl.blockStatus') }}</span>
-                <input v-model.number="configForm.block_status" class="input" type="number" min="400" max="599" />
-              </label>
-              <label>
-                <span class="input-label">{{ t('admin.riskControl.blockMessage') }}</span>
-                <input v-model.trim="configForm.block_message" class="input" type="text" />
-              </label>
-              <label class="flex items-center justify-between gap-3">
-                <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.riskControl.emailOnHit') }}</span>
-                <Toggle v-model="configForm.email_on_hit" />
-              </label>
-              <label class="flex items-center justify-between gap-3">
-                <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.riskControl.autoBan') }}</span>
-                <Toggle v-model="configForm.auto_ban_enabled" />
-              </label>
-              <label class="flex items-center justify-between gap-3">
-                <span class="min-w-0">
-                  <span class="block text-sm text-gray-700 dark:text-gray-300">{{
-                    t('admin.riskControl.cyberPolicyExcludeBan')
-                  }}</span>
-                  <span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">{{
-                    t('admin.riskControl.cyberPolicyExcludeBanHint')
-                  }}</span>
-                </span>
-                <Toggle
-                  v-model="configForm.cyber_policy_exclude_from_ban_count"
-                  class="flex-shrink-0"
-                  data-test="cyber-policy-exclude-ban"
-                />
-              </label>
-              <label>
-                <span class="input-label">{{ t('admin.riskControl.banThreshold') }}</span>
-                <input v-model.number="configForm.ban_threshold" class="input" type="number" min="1" max="1000" />
-              </label>
-            </div>
-
-            <div class="space-y-4">
-              <h3 class="font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.retentionTitle') }}</h3>
-              <label class="flex items-center justify-between gap-3">
-                <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.riskControl.recordNonHits') }}</span>
-                <Toggle v-model="configForm.record_non_hits" />
-              </label>
-              <label>
-                <span class="input-label">{{ t('admin.riskControl.hitRetentionDays') }}</span>
-                <input v-model.number="configForm.hit_retention_days" class="input" type="number" min="1" max="3650" />
-              </label>
-              <label>
-                <span class="input-label">{{ t('admin.riskControl.nonHitRetentionDays') }}</span>
-                <input v-model.number="configForm.non_hit_retention_days" class="input" type="number" min="1" max="3" />
-              </label>
-              <p v-if="status?.last_cleanup_at" class="text-xs text-gray-500 dark:text-gray-400">
-                {{
-                  t('admin.riskControl.archiveRetentionStatus', {
-                    count: status.last_cleanup_deleted_archives ?? 0,
-                    at: formatDateTime(status.last_cleanup_at),
-                  })
-                }}
-              </p>
-              <label>
-                <span class="input-label">{{ t('admin.riskControl.violationWindowHours') }}</span>
-                <input
-                  v-model.number="configForm.violation_window_hours"
-                  class="input"
-                  type="number"
-                  min="1"
-                  max="8760"
-                />
-              </label>
+            <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-6">
+              <Select v-model="filters.result" :options="resultOptions" @change="reloadLogsFromFirstPage" />
+              <Select v-model="filters.group_id" :options="groupFilterOptions" @change="reloadLogsFromFirstPage" />
+              <Select v-model="filters.endpoint" :options="endpointOptions" @change="reloadLogsFromFirstPage" />
+              <input v-model.trim="filters.search" type="search" class="input" :placeholder="t('admin.riskControl.filters.search')" @keyup.enter="reloadLogsFromFirstPage" />
+              <input v-model="filters.from" type="datetime-local" class="input" :title="t('admin.riskControl.filters.from')" @change="reloadLogsFromFirstPage" />
+              <input v-model="filters.to" type="datetime-local" class="input" :title="t('admin.riskControl.filters.to')" @change="reloadLogsFromFirstPage" />
             </div>
           </div>
 
-          <div class="mt-6 rounded-lg border border-gray-200 p-4 dark:border-dark-700" data-test="flagged-hash-controls">
-            <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-              <div>
-                <p class="text-sm font-medium text-gray-900 dark:text-white">
-                  {{ t('admin.riskControl.flaggedHashCount', { count: status?.flagged_hash_count ?? 0 }) }}
-                </p>
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.flaggedHashHint') }}</p>
-              </div>
-              <button
-                type="button"
-                class="btn btn-secondary inline-flex items-center justify-center gap-2 text-red-600 hover:text-red-700 dark:text-red-300"
-                :disabled="hashActionLoading || !status || (status.flagged_hash_count ?? 0) === 0"
-                data-test="clear-flagged-hashes"
-                @click="requestClearFlaggedHashes"
-              >
-                <Icon name="trash" size="sm" :class="hashActionLoading ? 'animate-pulse' : ''" />
-                {{ t('admin.riskControl.clearFlaggedHashes') }}
-              </button>
-            </div>
-            <div class="mt-3 flex flex-col gap-2 sm:flex-row">
-              <input
-                v-model.trim="flaggedHashInput"
-                type="text"
-                class="input font-mono text-sm"
-                :placeholder="t('admin.riskControl.flaggedHashPlaceholder')"
-                data-test="flagged-hash-input"
-                @keyup.enter="requestDeleteFlaggedHash"
-              />
-              <button
-                type="button"
-                class="btn btn-secondary inline-flex items-center justify-center gap-2"
-                :disabled="hashActionLoading || !isFlaggedHashInputValid"
-                data-test="delete-flagged-hash"
-                @click="requestDeleteFlaggedHash"
-              >
-                <Icon name="trash" size="sm" />
-                {{ t('admin.riskControl.deleteFlaggedHash') }}
-              </button>
-            </div>
-          </div>
-        </details>
-
-        <section
-          class="overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-dark-700 dark:bg-dark-800"
-          aria-labelledby="records-heading"
-        >
-          <div class="border-b border-gray-200 px-4 py-4 dark:border-dark-700 sm:px-5">
-            <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <h2 id="records-heading" class="text-lg font-semibold text-gray-900 dark:text-white">
-                  {{ t('admin.riskControl.records') }}
-                </h2>
-                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.recordsSummary') }}</p>
-              </div>
-              <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                <input
-                  v-model.trim="filters.search"
-                  class="input"
-                  type="search"
-                  :placeholder="t('admin.riskControl.filters.search')"
-                  @keyup.enter="reloadLogs"
-                />
-                <input
-                  v-model="filters.from"
-                  class="input"
-                  type="datetime-local"
-                  :title="t('admin.riskControl.filters.from')"
-                  @change="reloadLogs"
-                />
-                <input
-                  v-model="filters.to"
-                  class="input"
-                  type="datetime-local"
-                  :title="t('admin.riskControl.filters.to')"
-                  @change="reloadLogs"
-                />
-              </div>
-            </div>
-
-            <div class="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5" data-test="audit-log-filters">
-              <select v-model="filters.group_id" class="input" :title="t('admin.riskControl.filters.allGroups')" @change="reloadLogs">
-                <option :value="0">{{ t('admin.riskControl.filters.allGroups') }}</option>
-                <option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option>
-              </select>
-              <input
-                v-model.trim="filters.endpoint"
-                class="input"
-                type="text"
-                :placeholder="t('admin.riskControl.filters.allEndpoints')"
-                @keyup.enter="reloadLogs"
-              />
-              <select v-model="filters.context_class" class="input" @change="reloadLogs">
-                <option value="">{{ t('admin.riskControl.filters.allContexts') }}</option>
-                <option v-for="context in contextFilterOptions" :key="context" :value="context">{{ contextLabel(context) }}</option>
-              </select>
-              <input
-                v-model.trim="filters.model_profile"
-                class="input"
-                type="text"
-                :placeholder="t('admin.riskControl.filters.allProfiles')"
-                @keyup.enter="reloadLogs"
-              />
-              <input
-                v-model.trim="filters.decision_source"
-                class="input"
-                type="text"
-                :placeholder="t('admin.riskControl.filters.allDecisionSources')"
-                @keyup.enter="reloadLogs"
-              />
-            </div>
-
-            <nav
-              class="mt-4 grid grid-cols-2 gap-1 rounded-lg bg-gray-100 p-1 dark:bg-dark-900 sm:grid-cols-3 lg:grid-cols-7"
-              role="tablist"
-              :aria-label="t('admin.riskControl.records')"
-            >
-              <button
-                v-for="tab in recordTabs"
-                :key="tab.value"
-                type="button"
-                role="tab"
-                class="min-h-10 rounded-md px-3 py-2 text-sm font-medium transition-colors"
-                :class="
-                  filters.result === tab.value
-                    ? 'bg-white text-gray-900 shadow-sm dark:bg-dark-700 dark:text-white'
-                    : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
-                "
-                :aria-selected="filters.result === tab.value"
-                :data-test="`record-tab-${tab.value}`"
-                @click="selectLogView(tab.value)"
-              >
-                {{ tab.label }}
-              </button>
-            </nav>
-          </div>
-
-          <div class="overflow-x-auto" data-test="audit-log-table">
-            <table class="min-w-[1120px] w-full divide-y divide-gray-200 dark:divide-dark-700">
-              <thead class="bg-gray-50 dark:bg-dark-900/40">
+          <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200 dark:divide-dark-700">
+              <thead class="bg-gray-50 dark:bg-dark-800">
                 <tr>
-                  <th
-                    v-for="column in logColumns"
-                    :key="column"
-                    class="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400"
-                  >
-                    {{ t(`admin.riskControl.table.${column}`) }}
-                  </th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.time') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.group') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.user') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.apiKey') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.endpoint') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.result') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.highest') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.actionMeta') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.latency') }}</th>
+                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.input') }}</th>
                 </tr>
               </thead>
-              <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
+              <tbody class="divide-y divide-gray-100 bg-white dark:divide-dark-800 dark:bg-dark-800">
                 <tr v-if="logsLoading">
-                  <td
-                    :colspan="logColumns.length"
-                    class="px-4 py-12 text-center text-sm text-gray-500 dark:text-gray-400"
-                  >
-                    {{ t('common.loading') }}
-                  </td>
+                  <td colspan="10" class="px-5 py-12 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('common.loading') }}</td>
                 </tr>
                 <tr v-else-if="logs.length === 0">
-                  <td
-                    :colspan="logColumns.length"
-                    class="px-4 py-12 text-center text-sm text-gray-500 dark:text-gray-400"
-                  >
-                    {{ t('admin.riskControl.emptyLogs') }}
-                  </td>
+                  <td colspan="10" class="px-5 py-12 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.emptyLogs') }}</td>
                 </tr>
-                <tr v-for="row in logs" v-else :key="row.id" class="hover:bg-gray-50 dark:hover:bg-dark-700/50">
-                  <td class="whitespace-nowrap px-4 py-3 text-sm text-gray-600 dark:text-gray-300">
-                    {{ formatDateTime(row.created_at) }}
-                  </td>
-                  <td class="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
-                    <div class="max-w-48 truncate">{{ row.user_email || '-' }}</div>
-                    <div class="text-xs text-gray-400">{{ row.group_name || '-' }}</div>
-                  </td>
-                  <td class="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
-                    <div class="max-w-48 truncate">{{ row.model || '-' }}</div>
-                    <div class="text-xs text-gray-400">{{ row.keyword_tier || row.context_class || '-' }}</div>
-                  </td>
-                  <td class="px-4 py-3">
-                    <span
-                      class="inline-flex rounded-md px-2 py-1 text-xs font-medium"
-                      :class="resultClass(row)"
-                      data-test="audit-decision-label"
-                    >{{
-                      resultLabel(row)
-                    }}</span>
-                    <div
-                      v-if="decisionMeta(row)"
-                      class="mt-1 max-w-48 text-xs text-gray-500 dark:text-gray-400"
-                      data-test="audit-decision-meta"
-                    >
-                      {{ decisionMeta(row) }}
-                    </div>
-                  </td>
-                  <td class="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
-                    <div>{{ row.deepseek_category || row.highest_category || '-' }}</div>
-                    <div class="text-xs text-gray-400" data-test="review-confidence">{{ confidenceText(row) }}</div>
-                    <div
-                      v-if="row.deepseek_reason"
-                      class="mt-1 max-w-48 truncate text-xs text-gray-500 dark:text-gray-400"
-                    >
-                      {{ row.deepseek_reason }}
-                    </div>
-                  </td>
-                  <td class="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
-                    <div>{{ firstAttemptName(row) }}</div>
-                    <div class="text-xs text-gray-400">{{ attemptSummary(row) }}</div>
-                  </td>
-                  <td class="whitespace-nowrap px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
-                    {{ latencyText(row.upstream_latency_ms) }}
-                  </td>
-                  <td class="w-72 px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
-                    <button
-                      type="button"
-                      class="group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-gray-100 dark:hover:bg-dark-700"
-                      @click="openLog(row)"
-                    >
-                      <span class="min-w-0 flex-1 truncate">{{ row.input_excerpt || row.error || '-' }}</span>
-                      <Icon name="eye" size="xs" class="flex-shrink-0 text-gray-400" />
-                    </button>
-                  </td>
-                </tr>
+                <template v-else>
+                  <tr v-for="row in logs" :key="row.id" class="hover:bg-gray-50 dark:hover:bg-dark-700/60">
+                    <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">{{ formatDateTime(row.created_at) }}</td>
+                    <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">{{ row.group_name || '-' }}</td>
+                    <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+                      <div>{{ row.user_email || '-' }}</div>
+                      <div v-if="row.user_id" class="text-xs text-gray-400">UID {{ row.user_id }}</div>
+                    </td>
+                    <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">{{ row.api_key_name || '-' }}</td>
+                    <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+                      <div>{{ row.endpoint || '-' }}</div>
+                      <div class="text-xs text-gray-400">{{ row.provider || '-' }} / {{ row.model || '-' }}</div>
+                    </td>
+                    <td class="whitespace-nowrap px-5 py-4">
+                      <span class="inline-flex rounded-md px-2 py-1 text-xs font-medium" :class="resultBadgeClass(row)">
+                        {{ resultLabel(row) }}
+                      </span>
+                    </td>
+                    <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+                      <div>{{ row.highest_category || '-' }}</div>
+                      <div class="text-xs text-gray-400">{{ percent(row.highest_score) }}</div>
+                      <div v-if="row.matched_keyword" class="mt-0.5 text-xs font-medium text-red-600 dark:text-red-300" :title="t('admin.riskControl.matchedKeyword') + ': ' + row.matched_keyword">
+                        {{ t('admin.riskControl.matchedKeyword') }}: {{ row.matched_keyword }}
+                      </div>
+                    </td>
+                    <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+                      <div>{{ violationCountText(row) }}</div>
+                      <div class="text-xs text-gray-400">
+                        {{ row.email_sent ? t('admin.riskControl.emailSent') : t('admin.riskControl.emailNotSent') }}
+                        <span v-if="row.auto_banned"> / {{ t('admin.riskControl.autoBanned') }}</span>
+                      </div>
+                      <button
+                        v-if="canUnbanRow(row)"
+                        type="button"
+                        class="mt-2 inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-900/60 dark:bg-emerald-900/20 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
+                        :disabled="unbanningUserID === row.user_id"
+                        @click="unbanUser(row)"
+                      >
+                        <Icon name="checkCircle" size="xs" :class="unbanningUserID === row.user_id ? 'animate-spin' : ''" />
+                        {{ t('admin.moderationUsers.title') }}
+                      </button>
+                    </td>
+                    <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+                      <div>{{ latencyText(row.upstream_latency_ms) }}</div>
+                      <div v-if="row.queue_delay_ms !== null && row.queue_delay_ms !== undefined" class="text-xs text-gray-400">
+                        {{ t('admin.riskControl.queueDelay', { ms: row.queue_delay_ms }) }}
+                      </div>
+                    </td>
+                    <td class="w-[320px] max-w-sm px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+                      <button
+                        type="button"
+                        class="group flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-dark-700"
+                        :title="inputSummaryText(row)"
+                        @click="openInputDetail(row)"
+                      >
+                        <span class="min-w-0 flex-1 truncate">{{ inputSummaryText(row) }}</span>
+                        <span v-if="row.action === 'cyber_policy'" class="text-xs">{{ evidenceStatusLabel(row.evidence_status) }}</span>
+                        <Icon name="eye" size="xs" class="flex-shrink-0 text-gray-300 transition-colors group-hover:text-primary-500 dark:text-gray-500" />
+                      </button>
+                    </td>
+                  </tr>
+                </template>
               </tbody>
             </table>
           </div>
@@ -1051,344 +389,958 @@
           <Pagination
             v-if="pagination.total > 0"
             :page="pagination.page"
-            :page-size="pagination.page_size"
             :total="pagination.total"
-            @update:page="changePage"
-            @update:page-size="changePageSize"
+            :page-size="pagination.page_size"
+            @update:page="onPageChange"
+            @update:pageSize="onPageSizeChange"
           />
-        </section>
+        </div>
       </template>
 
-      <BaseDialog
-        :show="selectedLog !== null"
-        :title="t('admin.riskControl.inputDetailTitle')"
-        width="extra-wide"
-        @close="closeLogDetail"
-      >
-        <div v-if="selectedLog" class="space-y-5" data-test="audit-log-detail">
-          <dl class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <div v-for="item in selectedLogMeta" :key="item.label" class="min-w-0">
-              <dt class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ item.label }}</dt>
-              <dd class="mt-1 break-words text-sm text-gray-900 dark:text-white">{{ item.value }}</dd>
-            </div>
-          </dl>
-
-          <div
-            v-if="selectedLog.source_log_id && selectedLog.source_log_id !== selectedLog.id"
-            class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 dark:border-sky-900/50 dark:bg-sky-900/10"
-            data-test="replay-source"
-          >
-            <div class="min-w-0 text-sm text-sky-900 dark:text-sky-100">
-              <span class="font-medium">{{ t('admin.riskControl.auditReplaySource') }}</span>
-              <span class="ml-2 font-mono">#{{ selectedLog.source_log_id }}</span>
-            </div>
+      <BaseDialog :show="settingsOpen" :title="t('admin.riskControl.settingsTitle')" width="extra-wide" :show-close-button="!saving" :close-on-escape="!saving" @close="closeSettings">
+        <fieldset :disabled="saving" class="min-w-0 space-y-6">
+          <div class="flex gap-2 overflow-x-auto border-b border-gray-100 pb-3 dark:border-dark-700">
             <button
+              v-for="tab in settingsTabs"
+              :key="tab.id"
               type="button"
-              class="btn btn-secondary inline-flex items-center gap-1.5"
-              :disabled="sourceLogLoading"
-              data-test="open-replay-source"
-              @click="openReplaySource"
+              class="inline-flex whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium transition-colors"
+              :class="activeSettingsTab === tab.id ? 'bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-dark-700 dark:hover:text-white'"
+              @click="activeSettingsTab = tab.id"
             >
-              <Icon name="arrowRight" size="sm" />
-              {{ sourceLogLoading ? t('common.loading') : t('admin.riskControl.viewOriginalEvidence') }}
+              {{ tab.label }}
             </button>
-            <p v-if="sourceLogError" class="basis-full text-xs text-amber-700 dark:text-amber-300">
-              {{ t('admin.riskControl.replaySourceUnavailable') }}
-            </p>
+            <NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.moderationUpstreamAccountScope" :user-id="auth.user?.id" />
           </div>
 
-          <div v-if="selectedLog.review_attempts?.length" data-test="review-attempts">
-            <h3 class="text-sm font-semibold text-gray-900 dark:text-white">
-              {{ t('admin.riskControl.reviewAttempts') }}
-            </h3>
-            <div
-              class="mt-2 divide-y divide-gray-100 rounded-lg border border-gray-200 dark:divide-dark-700 dark:border-dark-700"
-            >
-              <div
-                v-for="(attempt, index) in selectedLog.review_attempts"
-                :key="`${attempt.channel_id}-${index}`"
-                class="grid grid-cols-1 gap-1 px-3 py-2 text-sm sm:grid-cols-[minmax(0,1fr)_120px_100px]"
-              >
-                <span class="truncate text-gray-900 dark:text-white">{{
-                  `${attempt.provider || attempt.reviewer || '-'} · ${attempt.channel_name || attempt.channel_id || '-'}`
-                }}</span>
-                <span class="text-gray-500 dark:text-gray-400">
-                  {{ attempt.verdict || attempt.outcome || (attempt.http_status ? `HTTP ${attempt.http_status}` : '-') }}
-                </span>
-                <span class="text-gray-500 dark:text-gray-400">{{ latencyText(attempt.latency_ms) }}</span>
-                <span v-if="attempt.error" class="text-xs text-amber-700 dark:text-amber-300 sm:col-span-3">{{
-                  attempt.error
-                }}</span>
+          <div v-if="activeSettingsTab === 'basic'" class="space-y-5">
+            <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
+              <div class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700">
+                <div>
+                  <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.enabled') }}</p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.enabledHint') }}</p>
+                </div>
+                <Toggle v-model="configForm.enabled" />
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.riskControl.mode') }}</label>
+                <Select v-model="configForm.mode" :options="modeOptions" />
+                <p class="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ modeDescription(configForm.mode) }}</p>
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.riskControl.engine') }}</label>
+                <Select data-test="audit-engine-select" :model-value="configForm.engine" :options="engineOptions" :disabled="apiKeyTesting || saving" @update:model-value="switchEngine" />
+              </div>
+              <div v-if="configForm.engine === 'typesafe'" class="lg:col-span-2 text-sm text-amber-700 dark:text-amber-300" role="status">
+                {{ t('admin.riskControl.typeSafeNotice') }}
+              </div>
+              <div>
+                <label class="input-label">{{ t(configForm.engine === 'typesafe' ? 'admin.riskControl.defaultKeyUrl' : 'admin.riskControl.baseUrl') }}</label>
+                <input ref="baseUrlInput" v-model.trim="configForm.base_url" data-test="audit-base-url" type="url" class="input" :placeholder="configForm.engine === 'typesafe' ? 'https://api.typesafe.ai' : 'https://api.openai.com'" />
+                <p v-if="configForm.engine === 'typesafe'" data-test="audit-base-url-hint" class="input-hint">{{ t('admin.riskControl.typeSafeBaseUrlHint') }}</p>
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.riskControl.model') }}</label>
+                <input v-model.trim="configForm.model" data-test="audit-model" type="text" class="input" :placeholder="configForm.engine === 'typesafe' ? 'jev-latest' : 'omni-moderation-latest'" />
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.riskControl.timeoutMs') }}</label>
+                <input v-model.number="configForm.timeout_ms" type="number" min="500" max="30000" class="input" />
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.riskControl.retryCount') }}</label>
+                <input v-model.number="configForm.retry_count" type="number" min="0" max="5" class="input" />
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.riskControl.sampleRate') }}</label>
+                <div class="relative">
+                  <input v-model.number="configForm.sample_rate" type="number" min="0" max="100" step="1" class="input pr-8" />
+                  <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">%</span>
+                </div>
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.riskControl.proxy') }}</label>
+                <ProxySelector v-model="configForm.proxy_id" :proxies="proxies" />
+                <p class="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.proxyHint') }}</p>
+              </div>
+            </div>
+
+            <div class="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
+              <div class="flex flex-col gap-4 border-b border-gray-100 bg-gray-50 px-4 py-4 dark:border-dark-700 dark:bg-dark-800/60 lg:flex-row lg:items-center lg:justify-between">
+                <div class="flex items-start gap-3">
+                  <span class="mt-0.5 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-primary-50 text-primary-600 dark:bg-primary-900/30 dark:text-primary-300">
+                    <Icon name="key" size="md" />
+                  </span>
+                  <div>
+                    <label class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.apiKeys') }}</label>
+                    <p class="mt-1 max-w-3xl text-xs leading-5 text-gray-500 dark:text-gray-400">
+                      {{ t('admin.riskControl.apiKeysHint', { count: configForm.api_key_count }) }}
+                    </p>
+                  </div>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    class="btn btn-secondary inline-flex items-center gap-2"
+                    :disabled="apiKeyTesting || inputApiKeyCount === 0 || configForm.clear_api_key"
+                    @click="testApiKeys(true)"
+                  >
+                    <Icon name="beaker" size="sm" :class="apiKeyTesting ? 'animate-pulse' : ''" />
+                    {{ apiKeyTesting ? t('admin.riskControl.testingApiKeys') : t('admin.riskControl.testInputApiKeys') }}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-secondary inline-flex items-center gap-2"
+                    :disabled="apiKeyTesting || effectiveStoredApiKeyCount === 0 || pendingDeletedApiKeyCount > 0 || configForm.clear_api_key || configForm.api_keys_mode === 'replace'"
+                    @click="testApiKeys(false)"
+                  >
+                    <Icon name="shield" size="sm" />
+                    {{ storedApiKeyTestButtonText }}
+                  </button>
+                  <button
+                    v-if="configForm.api_key_configured"
+                    type="button"
+                    class="btn btn-secondary inline-flex items-center gap-2"
+                    @click="toggleClearApiKey"
+                  >
+                    <Icon :name="configForm.clear_api_key ? 'x' : 'trash'" size="sm" />
+                    {{ configForm.clear_api_key ? t('admin.riskControl.keepApiKey') : t('admin.riskControl.clearApiKey') }}
+                  </button>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 gap-4 p-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,440px)]">
+                <div class="space-y-3">
+                  <div class="flex flex-col gap-2 rounded-lg border border-gray-100 bg-gray-50 p-2 dark:border-dark-700 dark:bg-dark-900/30 sm:flex-row sm:items-center sm:justify-between">
+                    <div class="text-xs leading-5 text-gray-500 dark:text-gray-400">
+                      <span class="font-medium text-gray-700 dark:text-gray-200">{{ t('admin.riskControl.apiKeysWriteMode') }}</span>
+                      <span class="ml-2">{{ apiKeysModeHint }}</span>
+                    </div>
+                    <div class="inline-flex rounded-lg bg-white p-1 shadow-sm dark:bg-dark-800">
+                      <button
+                        type="button"
+                        class="rounded-md px-3 py-1.5 text-xs font-medium transition-colors"
+                        :class="configForm.api_keys_mode === 'append' ? 'bg-primary-500 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700'"
+                        :disabled="configForm.clear_api_key"
+                        @click="setAPIKeysMode('append')"
+                      >
+                        {{ t('admin.riskControl.apiKeysModeAppend') }}
+                      </button>
+                      <button
+                        type="button"
+                        class="rounded-md px-3 py-1.5 text-xs font-medium transition-colors"
+                        :class="configForm.api_keys_mode === 'replace' ? 'bg-amber-500 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700'"
+                        :disabled="configForm.clear_api_key"
+                        @click="setAPIKeysMode('replace')"
+                      >
+                        {{ t('admin.riskControl.apiKeysModeReplace') }}
+                      </button>
+                    </div>
+                  </div>
+                  <textarea
+                    v-model="configForm.api_keys_text"
+                    class="input min-h-44 resize-y font-mono text-sm"
+                    :placeholder="apiKeysPlaceholder"
+                    autocomplete="new-password"
+                    :disabled="configForm.clear_api_key"
+                  ></textarea>
+                  <div class="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                    <span class="inline-flex rounded-md bg-gray-100 px-2 py-1 dark:bg-dark-700">
+                      {{ t('admin.riskControl.inputApiKeyCount', { count: inputApiKeyCount }) }}
+                    </span>
+                    <span v-if="configForm.api_key_configured" class="inline-flex rounded-md bg-gray-100 px-2 py-1 dark:bg-dark-700">
+                      {{ t('admin.riskControl.storedApiKeyCount', { count: configForm.api_key_count }) }}
+                    </span>
+                    <span v-if="configForm.clear_api_key" class="inline-flex rounded-md bg-red-50 px-2 py-1 text-red-700 dark:bg-red-900/20 dark:text-red-300">
+                      {{ t('admin.riskControl.apiKeyWillClear') }}
+                    </span>
+                    <span v-else-if="pendingDeletedApiKeyCount > 0" class="inline-flex rounded-md bg-amber-50 px-2 py-1 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+                      {{ t('admin.riskControl.apiKeyPendingDeleteCount', { count: pendingDeletedApiKeyCount }) }}
+                    </span>
+                    <span v-if="configForm.api_keys_mode === 'replace'" class="inline-flex rounded-md bg-amber-50 px-2 py-1 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+                      {{ t('admin.riskControl.apiKeysReplaceWarning') }}
+                    </span>
+                  </div>
+
+                  <div class="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-dark-700 dark:bg-dark-900/30" @paste="handleModerationImagePaste">
+                    <div class="mb-3 flex items-center justify-between gap-3">
+                      <div>
+                        <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.auditTestInput') }}</p>
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.auditTestInputHint') }}</p>
+                      </div>
+                      <button
+                        v-if="moderationTestPrompt || moderationTestImages.length > 0 || moderationTestResult"
+                        type="button"
+                        class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-gray-500 hover:bg-white hover:text-gray-900 dark:text-gray-400 dark:hover:bg-dark-800 dark:hover:text-white"
+                        @click="clearModerationTestInput"
+                      >
+                        <Icon name="x" size="xs" />
+                        {{ t('admin.riskControl.clearAuditTest') }}
+                      </button>
+                    </div>
+                    <textarea
+                      v-model="moderationTestPrompt"
+                      class="input min-h-24 resize-y text-sm"
+                      :placeholder="t('admin.riskControl.auditTestPromptPlaceholder')"
+                    ></textarea>
+                    <div
+                      class="mt-3 rounded-lg border border-dashed border-gray-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-800"
+                      @dragover.prevent
+                      @drop.prevent="handleModerationImageDrop"
+                    >
+                      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div class="flex items-start gap-2">
+                          <Icon name="upload" size="md" class="mt-0.5 text-gray-400" />
+                          <div>
+                            <p class="text-sm font-medium text-gray-800 dark:text-gray-100">{{ t('admin.riskControl.auditTestImages') }}</p>
+                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.auditTestImagesHint') }}</p>
+                          </div>
+                        </div>
+                        <label class="btn btn-secondary inline-flex cursor-pointer items-center gap-2">
+                          <Icon name="plus" size="sm" />
+                          {{ t('admin.riskControl.addAuditTestImage') }}
+                          <input type="file" accept="image/*" multiple class="sr-only" @change="handleModerationImageUpload" />
+                        </label>
+                      </div>
+                      <div v-if="moderationTestImages.length > 0" class="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        <div
+                          v-for="(image, index) in moderationTestImages"
+                          :key="image.slice(0, 64) + index"
+                          class="group relative aspect-square overflow-hidden rounded-lg border border-gray-100 bg-gray-100 dark:border-dark-700 dark:bg-dark-700"
+                        >
+                          <img :src="image" alt="" class="h-full w-full object-cover" />
+                          <button
+                            type="button"
+                            class="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100"
+                            @click="removeModerationTestImage(index)"
+                          >
+                            <Icon name="x" size="xs" :stroke-width="2" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div data-test="audit-key-statuses" class="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-dark-700 dark:bg-dark-900/30">
+                  <div class="mb-3 flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                      <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.apiKeyHealth') }}</p>
+                      <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.apiKeyFreezeRule') }}</p>
+                      <button
+                        v-if="configForm.engine === 'typesafe'"
+                        data-test="audit-edit-base-url"
+                        type="button"
+                        class="mt-2 text-xs font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+                        @click="baseUrlInput?.focus()"
+                      >
+                        {{ t('admin.riskControl.editBaseUrl') }}
+                      </button>
+                    </div>
+                    <span class="inline-flex shrink-0 items-center whitespace-nowrap rounded-full bg-white px-2 py-0.5 text-[11px] font-medium leading-5 text-gray-600 shadow-sm dark:bg-dark-800 dark:text-gray-300">
+                      {{ t('admin.riskControl.apiKeyRows', { count: apiKeyRows.length }) }}
+                    </span>
+                  </div>
+
+                  <div v-if="apiKeyRows.length === 0" class="flex min-h-32 flex-col items-center justify-center rounded-lg border border-dashed border-gray-200 bg-white px-4 py-6 text-center dark:border-dark-700 dark:bg-dark-800">
+                    <Icon name="infoCircle" size="lg" class="text-gray-300 dark:text-dark-500" />
+                    <p class="mt-2 text-sm font-medium text-gray-700 dark:text-gray-200">{{ t('admin.riskControl.apiKeyHealthEmpty') }}</p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.apiKeyHealthEmptyHint') }}</p>
+                  </div>
+                  <div v-else class="space-y-2">
+                    <div class="space-y-2" :class="apiKeyRowsExpanded ? 'max-h-72 overflow-y-auto pr-1' : ''">
+                      <div
+                        v-for="(row, index) in visibleApiKeyRows"
+                        :key="apiKeyRowKey(row, index)"
+                        class="rounded-lg border bg-white p-2.5 shadow-sm dark:bg-dark-800"
+                        :class="isStoredApiKeyPendingDelete(row) ? 'border-amber-200 opacity-70 dark:border-amber-800/60' : 'border-gray-100 dark:border-dark-700'"
+                      >
+                        <div class="flex items-start justify-between gap-2">
+                          <div class="min-w-0">
+                            <div class="flex min-w-0 flex-wrap items-center gap-2">
+                              <span class="truncate font-mono text-sm font-semibold text-gray-900 dark:text-white">{{ row.masked || '-' }}</span>
+                              <span
+                                class="inline-flex rounded-md px-1.5 py-0.5 text-[11px] font-medium"
+                                :class="row.configured ? 'bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300' : 'bg-purple-50 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300'"
+                              >
+                                {{ isStoredApiKeyPendingDelete(row) ? t('admin.riskControl.apiKeyPendingDelete') : row.configured ? t('admin.riskControl.apiKeyConfigured') : t('admin.riskControl.apiKeyTemporary') }}
+                              </span>
+                            </div>
+                            <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ apiKeyStatusMeta(row) }}</p>
+                          </div>
+                          <div class="flex flex-shrink-0 items-center gap-1.5">
+                            <span class="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium" :class="apiKeyStatusBadgeClass(row.status)">
+                              <span class="h-1.5 w-1.5 rounded-full" :class="apiKeyStatusDotClass(row.status)"></span>
+                              {{ apiKeyStatusLabel(row.status) }}
+                            </span>
+                            <button
+                              v-if="row.configured && !configForm.clear_api_key"
+                              type="button"
+                              class="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-dark-700 dark:hover:text-gray-200"
+                              :title="isStoredApiKeyPendingDelete(row) ? t('admin.riskControl.undoDeleteApiKey') : t('admin.riskControl.deleteApiKey')"
+                              @click="toggleDeleteStoredApiKey(row)"
+                            >
+                              <Icon :name="isStoredApiKeyPendingDelete(row) ? 'refresh' : 'trash'" size="xs" />
+                            </button>
+                          </div>
+                        </div>
+                        <ModerationKeyURLEditor
+                          v-if="configForm.engine === 'typesafe' && row.configured && row.key_hash && row.base_url"
+                          :row="row"
+                          :disabled="saving || configForm.clear_api_key || isStoredApiKeyPendingDelete(row)"
+                          :persist="saveKeyURL"
+                        />
+                        <p v-if="row.last_error" class="mt-1.5 rounded-md bg-amber-50 px-2 py-1.5 text-xs leading-5 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+                          {{ row.last_error }}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div v-if="canToggleApiKeyRows" class="flex items-center justify-between gap-3 rounded-lg border border-dashed border-gray-200 bg-white px-3 py-2 text-xs text-gray-500 dark:border-dark-700 dark:bg-dark-800 dark:text-gray-400">
+                      <span class="min-w-0 truncate">
+                        {{ apiKeyRowsExpanded ? t('admin.riskControl.apiKeyRowsExpanded', { count: apiKeyRows.length }) : t('admin.riskControl.apiKeyRowsCollapsed', { count: hiddenApiKeyRowCount }) }}
+                      </span>
+                      <button
+                        type="button"
+                        class="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 font-medium text-primary-600 transition-colors hover:bg-primary-50 hover:text-primary-700 dark:text-primary-300 dark:hover:bg-primary-900/20"
+                        @click="apiKeyRowsExpanded = !apiKeyRowsExpanded"
+                      >
+                        <Icon :name="apiKeyRowsExpanded ? 'chevronUp' : 'chevronDown'" size="xs" />
+                        {{ apiKeyRowsExpanded ? t('admin.riskControl.collapseApiKeyRows') : t('admin.riskControl.expandApiKeyRows') }}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div v-if="moderationTestResult" class="mt-4 rounded-lg border border-gray-100 bg-white p-3 dark:border-dark-700 dark:bg-dark-800">
+                    <p v-if="moderationTestResult.engine_meta" class="mb-2 break-words text-xs text-gray-500">
+                      {{ engineLabel(moderationTestResult.engine_meta.engine) }} · {{ moderationTestResult.engine_meta.model }} · {{ moderationTestResult.engine_meta.rules_version }}
+                      <span v-if="moderationTestResult.engine_meta.skipped_images"> · {{ t('admin.riskControl.skippedImages', { count: moderationTestResult.engine_meta.skipped_images }) }}</span>
+                    </p>
+                    <div class="flex items-start justify-between gap-3">
+                      <div>
+                        <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.auditTestResult') }}</p>
+                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                          {{ t('admin.riskControl.auditTestHighest', { category: moderationTestResult.highest_category || '-', score: percent(moderationTestResult.highest_score) }) }}
+                        </p>
+                      </div>
+                      <span class="inline-flex rounded-full px-2 py-1 text-xs font-medium" :class="moderationTestResult.flagged ? 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'">
+                        {{ moderationTestResult.flagged ? t('admin.riskControl.auditTestFlagged') : t('admin.riskControl.auditTestPassed') }}
+                      </span>
+                    </div>
+                    <div class="mt-3">
+                      <div class="mb-2 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+                        <span>{{ t('admin.riskControl.auditTestComposite') }}</span>
+                        <span class="font-semibold text-gray-900 dark:text-white">{{ percent(moderationTestResult.composite_score) }}</span>
+                      </div>
+                      <div class="h-2 overflow-hidden rounded-full bg-gray-100 dark:bg-dark-700">
+                        <div class="h-full rounded-full" :class="moderationTestResult.flagged ? 'bg-red-500' : 'bg-emerald-500'" :style="{ width: percentWidth(moderationTestResult.composite_score) }"></div>
+                      </div>
+                    </div>
+                    <div class="mt-3 max-h-52 space-y-2 overflow-y-auto pr-1">
+                      <div v-for="score in moderationScoreRows" :key="score.category">
+                        <div class="mb-1 flex items-center justify-between gap-3 text-xs">
+                          <span class="truncate text-gray-600 dark:text-gray-300">{{ score.category }} · {{ t(!score.enabled ? 'admin.riskControl.categoryDisabled' : score.hit ? 'admin.riskControl.categoryHit' : 'admin.riskControl.categoryNoHit') }}</span>
+                          <span class="font-mono text-gray-500 dark:text-gray-400">{{ percent(score.score) }} / {{ percent(score.threshold) }}</span>
+                        </div>
+                        <div class="h-1.5 overflow-hidden rounded-full bg-gray-100 dark:bg-dark-700">
+                          <div class="h-full rounded-full" :class="score.hit ? 'bg-red-500' : 'bg-primary-500'" :style="{ width: percentWidth(score.score) }"></div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
 
-          <div v-if="evidenceWindows.length" class="space-y-3" data-test="evidence-windows">
-            <h3 class="text-sm font-semibold text-gray-900 dark:text-white">
-              {{
-                originalLog
-                  ? `${t('admin.riskControl.inputDetailContent')} · ${t('admin.riskControl.auditReplaySource')}`
-                  : t('admin.riskControl.inputDetailContent')
-              }}
-            </h3>
-            <div
-              v-for="(window, index) in evidenceWindows"
-              :key="`${window.path}-${index}`"
-              class="rounded-lg border border-gray-200 p-3 dark:border-dark-700"
-              data-test="evidence-window"
-            >
-              <div class="flex flex-wrap gap-2 text-xs text-gray-500 dark:text-gray-400">
-                <span>{{ window.context_class }}</span>
-                <span class="font-mono">{{ window.path }}</span>
+          <div v-else-if="activeSettingsTab === 'scope'" class="space-y-5">
+            <ModerationUpstreamAccountSelector v-model="configForm.upstream_account_ids" v-model:scope="configForm.upstream_account_scope" :groups="groups" :disabled="saving" @busy="upstreamSelecting = $event">
+              <template #badge><NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.moderationUpstreamAccountScope" :user-id="auth.user?.id" /></template>
+            </ModerationUpstreamAccountSelector>
+            <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h3 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.groupScope') }}</h3>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.groupScopeHint') }}</p>
               </div>
-              <div
-                class="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded-md bg-gray-50 p-3 font-mono text-xs text-gray-700 dark:bg-dark-900/50 dark:text-gray-300"
-                data-test="evidence-text"
-              >
-                <span
-                  v-for="(segment, segmentIndex) in evidenceSegments(window)"
-                  :key="`${segmentIndex}-${segment.text}`"
-                  :class="
-                    segment.matched
-                      ? 'rounded bg-amber-200 px-0.5 text-amber-950 ring-1 ring-amber-400/70 dark:bg-amber-700/70 dark:text-amber-50 dark:ring-amber-300/60'
-                      : undefined
-                  "
-                  :data-test="segment.matched ? 'evidence-match' : undefined"
-                  :title="segment.matched ? evidenceMatchTitle(segment.matches) : undefined"
-                >{{ segment.text }}</span>
-              </div>
-              <div v-if="window.matches?.length" class="mt-2 flex flex-wrap gap-1">
-                <span
-                  v-for="match in window.matches"
-                  :key="`${match.rule_id}-${match.start}`"
-                  class="rounded bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:bg-amber-900/20 dark:text-amber-300"
+              <div class="inline-flex rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
+                <button
+                  type="button"
+                  class="rounded-md px-3 py-1.5 text-sm font-medium transition-colors"
+                  :class="configForm.all_groups ? 'bg-white text-gray-900 shadow-sm dark:bg-dark-800 dark:text-white' : 'text-gray-500 dark:text-gray-400'"
+                  @click="configForm.all_groups = true"
                 >
-                  {{ match.keyword }} · {{ match.tier }}
-                </span>
+                  {{ t('admin.riskControl.allGroups') }}
+                </button>
+                <button
+                  type="button"
+                  class="rounded-md px-3 py-1.5 text-sm font-medium transition-colors"
+                  :class="!configForm.all_groups ? 'bg-white text-gray-900 shadow-sm dark:bg-dark-800 dark:text-white' : 'text-gray-500 dark:text-gray-400'"
+                  @click="configForm.all_groups = false"
+                >
+                  {{ t('admin.riskControl.selectedGroups') }}
+                </button>
               </div>
             </div>
-          </div>
 
-          <div v-else class="rounded-lg bg-gray-50 p-4 text-sm text-gray-700 dark:bg-dark-900/40 dark:text-gray-300">
-            {{ evidenceLog?.input_excerpt || evidenceLog?.error || '-' }}
-          </div>
+            <div v-if="!configForm.all_groups" class="space-y-4">
+              <div class="relative">
+                <Icon name="search" size="sm" class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input v-model.trim="groupSearch" type="search" class="input pl-9" :placeholder="t('admin.riskControl.searchGroups')" />
+              </div>
+              <div class="grid max-h-[420px] grid-cols-1 gap-3 overflow-y-auto pr-1 md:grid-cols-2 xl:grid-cols-3">
+                <button
+                  v-for="group in filteredGroups"
+                  :key="group.id"
+                  type="button"
+                  class="flex min-h-20 items-center justify-between rounded-lg border p-4 text-left transition-colors"
+                  :class="isGroupSelected(group.id) ? 'border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/20' : 'border-gray-100 hover:bg-gray-50 dark:border-dark-700 dark:hover:bg-dark-700/60'"
+                  @click="toggleGroup(group.id)"
+                >
+                  <span class="min-w-0">
+                    <span class="block truncate text-sm font-semibold text-gray-900 dark:text-white">{{ group.name }}</span>
+                    <span class="mt-1 inline-flex rounded-md bg-gray-100 px-2 py-0.5 text-xs text-gray-500 dark:bg-dark-700 dark:text-gray-400">{{ group.platform }}</span>
+                  </span>
+                  <span
+                    class="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border"
+                    :class="isGroupSelected(group.id) ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-300 text-transparent dark:border-dark-500'"
+                  >
+                    <Icon name="check" size="xs" :stroke-width="2" />
+                  </span>
+                </button>
+                <p v-if="filteredGroups.length === 0" class="text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.noGroups') }}</p>
+              </div>
+            </div>
 
-          <section
-            v-if="selectedLog.archive_id"
-            class="space-y-3 rounded-lg border border-gray-200 p-4 dark:border-dark-700"
-            data-test="archive-controls"
-          >
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <div class="min-w-0">
-                <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.archiveTitle') }}</h3>
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  {{ t(`admin.riskControl.archiveStatus.${selectedLog.archive_status || 'none'}`) }}
-                  <span v-if="selectedLog.archive_bytes"> · {{ selectedLog.archive_bytes }} bytes</span>
+            <div class="space-y-4 rounded-lg border border-gray-100 p-4 dark:border-dark-700">
+              <div class="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <h3 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.modelFilter') }}</h3>
+                  <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.modelFilterHint') }}</p>
+                </div>
+                <span class="inline-flex w-fit rounded-md bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600 dark:bg-dark-700 dark:text-gray-300">
+                  {{ modelFilterSummary }}
+                </span>
+              </div>
+
+              <div class="grid grid-cols-1 gap-2 md:grid-cols-3">
+                <button
+                  v-for="option in modelFilterOptions"
+                  :key="option.value"
+                  type="button"
+                  class="rounded-lg border p-3 text-left transition-colors"
+                  :class="configForm.model_filter_type === option.value
+                    ? 'border-primary-300 bg-primary-50 text-primary-900 shadow-sm dark:border-primary-700 dark:bg-primary-900/20 dark:text-primary-100'
+                    : 'border-gray-100 hover:bg-gray-50 dark:border-dark-700 dark:hover:bg-dark-700/60'"
+                  @click="setModelFilterType(option.value)"
+                >
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="text-sm font-semibold">{{ option.label }}</span>
+                    <span
+                      class="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border"
+                      :class="configForm.model_filter_type === option.value
+                        ? 'border-primary-500 bg-primary-500 text-white'
+                        : 'border-gray-300 text-transparent dark:border-dark-500'"
+                    >
+                      <Icon name="check" size="xs" :stroke-width="2" />
+                    </span>
+                  </div>
+                  <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ option.description }}</p>
+                </button>
+              </div>
+
+              <div v-if="configForm.model_filter_type !== 'all'" class="space-y-2">
+                <label class="input-label">{{ t('admin.riskControl.modelFilterModels') }}</label>
+                <ModelWhitelistSelector v-model="configForm.model_filter_models" />
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.riskControl.modelFilterModelCount', { count: modelFilterModelCount }) }}
                 </p>
               </div>
-              <div v-if="selectedLog.archive_status === 'available'" class="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  class="btn btn-secondary inline-flex items-center gap-1.5"
-                  :disabled="archiveActionLoading"
-                  @click="previewSelectedArchive"
-                >
-                  <Icon name="eye" size="sm" />
-                  {{ t('admin.riskControl.archivePreview') }}
-                </button>
-                <button
-                  type="button"
-                  class="btn btn-secondary inline-flex items-center gap-1.5"
-                  :disabled="archiveActionLoading"
-                  @click="downloadSelectedArchive"
-                >
-                  <Icon name="download" size="sm" />
-                  {{ t('admin.riskControl.archiveDownload') }}
-                </button>
-                <button
-                  type="button"
-                  class="btn btn-secondary inline-flex items-center gap-1.5 text-red-600 dark:text-red-300"
-                  :disabled="archiveActionLoading"
-                  @click="deleteSelectedArchive"
-                >
-                  <Icon name="trash" size="sm" />
-                  {{ t('admin.riskControl.archiveDelete') }}
-                </button>
-              </div>
             </div>
-            <div v-if="archivePreview" class="rounded-md bg-gray-50 p-3 dark:bg-dark-900/50" data-test="archive-preview">
-              <div class="mb-2 text-xs text-gray-500 dark:text-gray-400">
-                {{ t('admin.riskControl.archivePreviewBytes', { returned: archivePreview.returned_bytes, total: archivePreview.total_bytes }) }}
-                <span v-if="archivePreview.truncated"> · {{ t('admin.riskControl.archivePreviewTruncated') }}</span>
-              </div>
-              <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-gray-700 dark:text-gray-300">{{ archivePreview.content }}</pre>
-            </div>
-            <p v-if="selectedLog.archive_incomplete" class="text-xs text-amber-700 dark:text-amber-300">
-              {{ t('admin.riskControl.archiveIncomplete') }}
-            </p>
-          </section>
+          </div>
 
-          <div
-            v-if="selectedLog.user_id && selectedLog.user_status === 'disabled'"
-            class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-900/50 dark:bg-amber-900/10"
-            data-test="unban-control"
-          >
-            <div class="text-sm text-amber-900 dark:text-amber-100">
-              <p>{{ t('admin.riskControl.autoBanned') }}</p>
-              <p class="text-xs">{{ t('admin.users.enableUserHint') }}</p>
+          <div v-else-if="activeSettingsTab === 'runtime'" class="grid grid-cols-1 gap-5 lg:grid-cols-2">
+            <div>
+              <label class="input-label">{{ t('admin.riskControl.workerCount') }}</label>
+              <input v-model.number="configForm.worker_count" type="number" min="1" max="32" class="input" />
             </div>
-            <button
-              type="button"
-              class="btn btn-secondary inline-flex items-center gap-1.5"
-              :disabled="unbanActionLoading"
-              @click="requestUnbanSelectedUser"
+            <div>
+              <label class="input-label">{{ t('admin.riskControl.queueSize') }}</label>
+              <input v-model.number="configForm.queue_size" type="number" min="100" max="100000" class="input" />
+            </div>
+            <div class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700 lg:col-span-2">
+              <div>
+                <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.recordNonHits') }}</p>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.recordNonHitsHint') }}</p>
+              </div>
+              <Toggle v-model="configForm.record_non_hits" />
+            </div>
+            <div class="space-y-4 rounded-lg border border-gray-100 p-4 dark:border-dark-700 lg:col-span-2">
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.preHashCheck') }}</p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.preHashCheckHint') }}</p>
+                </div>
+                <Toggle v-model="configForm.pre_hash_check_enabled" />
+              </div>
+              <div class="rounded-lg bg-gray-50 p-3 dark:bg-dark-900/30">
+                <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                  <div>
+                    <p class="text-sm font-medium text-gray-900 dark:text-white">
+                      {{ t('admin.riskControl.flaggedHashCount', { count: formatNumber(status?.flagged_hash_count ?? 0) }) }}
+                    </p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.flaggedHashHint') }}</p>
+                  </div>
+                  <button
+                    type="button"
+                    class="btn btn-secondary inline-flex items-center justify-center gap-2 text-red-600 hover:text-red-700 dark:text-red-300"
+                    :disabled="hashActionLoading || (status?.flagged_hash_count ?? 0) === 0"
+                    @click="clearFlaggedHashes"
+                  >
+                    <Icon name="trash" size="sm" :class="hashActionLoading ? 'animate-pulse' : ''" />
+                    {{ t('admin.riskControl.clearFlaggedHashes') }}
+                  </button>
+                </div>
+                <div class="mt-3 flex flex-col gap-2 sm:flex-row">
+                  <input
+                    v-model.trim="flaggedHashInput"
+                    type="text"
+                    class="input font-mono text-sm"
+                    :placeholder="t('admin.riskControl.flaggedHashPlaceholder')"
+                  />
+                  <button
+                    type="button"
+                    class="btn btn-secondary inline-flex items-center justify-center gap-2"
+                    :disabled="hashActionLoading || !isFlaggedHashInputValid"
+                    @click="deleteFlaggedHash"
+                  >
+                    <Icon name="trash" size="sm" />
+                    {{ t('admin.riskControl.deleteFlaggedHash') }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-else-if="activeSettingsTab === 'response'" class="space-y-5">
+            <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
+              <div>
+                <label class="input-label">{{ t('admin.riskControl.blockStatus') }}</label>
+                <input v-model.number="configForm.block_status" type="number" min="400" max="599" class="input" />
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.riskControl.blockMessage') }}</label>
+                <input v-model.trim="configForm.block_message" type="text" class="input" />
+              </div>
+              <div class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700">
+                <div>
+                  <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.emailOnHit') }}</p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.emailOnHitHint') }}</p>
+                </div>
+                <Toggle v-model="configForm.email_on_hit" />
+              </div>
+              <div class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700">
+                <div>
+                  <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.autoBan') }}</p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.autoBanHint') }}</p>
+                </div>
+                <Toggle v-model="configForm.auto_ban_enabled" />
+              </div>
+              <div class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700 lg:col-span-2">
+                <div>
+                  <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.cyberPolicyExcludeBan') }}</p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.cyberPolicyExcludeBanHint') }}</p>
+                </div>
+                <Toggle v-model="configForm.cyber_policy_exclude_from_ban_count" />
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.riskControl.banThreshold') }}</label>
+                <input v-model.number="configForm.ban_threshold" type="number" min="1" max="1000" class="input" />
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.riskControl.violationWindowHours') }}</label>
+                <input v-model.number="configForm.violation_window_hours" type="number" min="1" max="8760" class="input" />
+              </div>
+            </div>
+          </div>
+
+          <div v-else-if="activeSettingsTab === 'riskThresholds'" class="space-y-5">
+            <p class="text-sm font-medium">{{ engineLabel(configForm.engine) }}</p>
+            <p v-if="configForm.engine === 'typesafe'" class="text-sm text-amber-700 dark:text-amber-300">{{ t('admin.riskControl.typeSafeThresholds') }}</p>
+            <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h3 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.riskThresholds') }}</h3>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.riskThresholdsHint') }}</p>
+              </div>
+              <button
+                type="button"
+                class="btn btn-secondary inline-flex items-center justify-center gap-2"
+                @click="resetRiskThresholds"
+              >
+                <Icon name="refresh" size="sm" />
+                {{ t('admin.riskControl.riskThresholdReset') }}
+              </button>
+            </div>
+
+            <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <div
+                v-for="row in riskThresholdRows"
+                :key="row.category"
+                class="rounded-lg border border-gray-100 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-900/30"
+              >
+                <div class="flex items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <label class="block truncate text-sm font-semibold text-gray-900 dark:text-white" :for="`risk-threshold-${row.category}`">
+                      {{ row.category }}
+                    </label>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t('admin.riskControl.riskThresholdDefault', { value: formatThresholdPercent(row.defaultValue) }) }}
+                    </p>
+                  </div>
+                  <span class="inline-flex shrink-0 rounded-md bg-white px-2 py-1 font-mono text-xs font-medium text-gray-600 shadow-sm dark:bg-dark-800 dark:text-gray-300">
+                    {{ formatThresholdPercent(row.value) }}
+                  </span>
+                </div>
+                <template v-if="optionalModerationCategories.some(category => category === row.category)">
+                  <label class="mt-3 flex items-center gap-2 text-sm">
+                    <input v-model="configForm.category_settings[row.category].enabled" type="checkbox" :aria-label="`${row.category}: ${t('admin.riskControl.categoryEnabled')}`" :data-test="`risk-enabled-${row.category}`" />
+                    {{ t('admin.riskControl.categoryEnabled') }}
+                  </label>
+                  <p class="mt-2 text-xs text-amber-700 dark:text-amber-300">{{ t(`admin.riskControl.categoryDescriptions.${row.category}`) }}</p>
+                </template>
+                <div class="mt-3">
+                  <label class="sr-only" :for="`risk-threshold-${row.category}`">
+                    {{ t('admin.riskControl.riskThresholdPercent') }}
+                  </label>
+                  <div class="relative">
+                    <input
+                      :id="`risk-threshold-${row.category}`"
+                      v-model.number="configForm.thresholds[row.category]"
+                      :data-test="`risk-threshold-${row.category}`"
+                      :disabled="configForm.category_settings[row.category]?.enabled === false"
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.1"
+                      class="input pr-8 font-mono"
+                    />
+                    <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-else-if="activeSettingsTab === 'keywords'" class="space-y-5">
+            <div
+              class="flex items-start gap-3 rounded-lg border p-4"
+              :class="keywordNotice.toneClass"
             >
-              <Icon name="check" size="sm" />
-              {{ t('admin.riskControl.unbanUser') }}
+              <Icon
+                :name="keywordNotice.icon"
+                size="md"
+                :class="keywordNotice.iconClass"
+              />
+              <div class="text-sm leading-6">
+                <p class="font-medium" :class="keywordNotice.titleClass">{{ keywordNotice.title }}</p>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ keywordNotice.description }}</p>
+              </div>
+            </div>
+
+            <div class="space-y-2">
+              <label class="input-label">{{ t('admin.riskControl.keywordBlockingMode') }}</label>
+              <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <button
+                  v-for="option in keywordBlockingModeOptions"
+                  :key="option.value"
+                  type="button"
+                  class="rounded-lg border p-3 text-left transition-colors"
+                  :class="configForm.keyword_blocking_mode === option.value
+                    ? 'border-primary-300 bg-primary-50 text-primary-900 shadow-sm dark:border-primary-700 dark:bg-primary-900/20 dark:text-primary-100'
+                    : 'border-gray-100 hover:bg-gray-50 dark:border-dark-700 dark:hover:bg-dark-700/60'"
+                  @click="configForm.keyword_blocking_mode = option.value"
+                >
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="text-sm font-semibold">{{ option.label }}</span>
+                    <span
+                      class="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border"
+                      :class="configForm.keyword_blocking_mode === option.value
+                        ? 'border-primary-500 bg-primary-500 text-white'
+                        : 'border-gray-300 text-transparent dark:border-dark-500'"
+                    >
+                      <Icon name="check" size="xs" :stroke-width="2" />
+                    </span>
+                  </div>
+                  <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ option.description }}</p>
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <div class="mb-2 flex items-center justify-between">
+                <label class="input-label mb-0">{{ t('admin.riskControl.blockedKeywords') }}</label>
+                <span class="inline-flex rounded-md bg-gray-100 px-2 py-1 text-xs text-gray-500 dark:bg-dark-700 dark:text-gray-300">
+                  {{ t('admin.riskControl.blockedKeywordCount', { count: blockedKeywordCount }) }}
+                </span>
+              </div>
+              <textarea
+                v-model="configForm.blocked_keywords_text"
+                class="input min-h-52 resize-y font-mono text-sm"
+                :placeholder="t('admin.riskControl.blockedKeywordsPlaceholder')"
+                :disabled="configForm.keyword_blocking_mode === 'api_only'"
+              ></textarea>
+              <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.riskControl.blockedKeywordsLimit', { max: blockedKeywordMax }) }}
+              </p>
+            </div>
+          </div>
+
+          <div v-else class="grid grid-cols-1 gap-5 lg:grid-cols-2">
+            <CyberEvidenceSettings />
+            <div>
+              <label class="input-label">{{ t('admin.riskControl.hitRetentionDays') }}</label>
+              <input v-model.number="configForm.hit_retention_days" type="number" min="1" max="3650" class="input" />
+            </div>
+            <div>
+              <label class="input-label">{{ t('admin.riskControl.nonHitRetentionDays') }}</label>
+              <input v-model.number="configForm.non_hit_retention_days" type="number" min="1" max="3" class="input" />
+            </div>
+            <div class="rounded-lg border border-gray-100 p-4 text-sm text-gray-500 dark:border-dark-700 dark:text-gray-400 lg:col-span-2">
+              <div class="flex flex-wrap items-center gap-3">
+                <Icon name="database" size="md" class="text-gray-400" />
+                <span>{{ t('admin.riskControl.cleanupStats', { hit: status?.last_cleanup_deleted_hit ?? 0, nonHit: status?.last_cleanup_deleted_non_hit ?? 0 }) }}</span>
+              </div>
+            </div>
+          </div>
+        </fieldset>
+
+        <template #footer>
+          <div class="flex justify-end gap-2">
+            <button type="button" class="btn btn-secondary" :disabled="saving" @click="closeSettings">{{ t('common.cancel') }}</button>
+            <button type="button" class="btn btn-primary inline-flex items-center gap-2" :disabled="saving || upstreamSelecting" @click="saveConfig">
+              <Icon v-if="saving" name="refresh" size="sm" class="animate-spin" />
+              <Icon v-else name="check" size="sm" />
+              {{ saving ? t('common.saving') : t('admin.riskControl.saveConfig') }}
             </button>
           </div>
-        </div>
-        <template #footer>
-          <button type="button" class="btn btn-secondary" @click="closeLogDetail">{{ t('common.close') }}</button>
         </template>
+      </BaseDialog>
+
+      <BaseDialog
+        :show="inputDetailRow !== null"
+        :title="t('admin.riskControl.inputDetailTitle')"
+        width="wide"
+        @close="closeInputDetail"
+      >
+        <div v-if="inputDetailRow" class="space-y-5">
+          <CyberEvidencePanel v-if="inputDetailRow.action === 'cyber_policy'" :key="inputDetailRow.id" :log-id="inputDetailRow.id" />
+          <div class="text-sm break-words" data-test="audit-engine-meta">
+            <span class="font-medium">{{ t('admin.riskControl.auditSource') }}: </span>
+            <template v-if="inputDetailRow.engine_meta">
+              {{ engineLabel(inputDetailRow.engine_meta.engine) }} · {{ inputDetailRow.engine_meta.model || '-' }} · {{ inputDetailRow.engine_meta.rules_version || '-' }}
+              <span v-if="inputDetailRow.engine_meta.skipped_images"> · {{ t('admin.riskControl.skippedImages', { count: inputDetailRow.engine_meta.skipped_images }) }}</span>
+            </template>
+            <template v-else>{{ ['cyber_policy', 'keyword_block', 'hash_block'].includes(inputDetailRow.action) ? '-' : t('admin.riskControl.legacyAuditSource') }}</template>
+          </div>
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div class="rounded-lg border border-gray-100 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-800/70">
+              <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.time') }}</p>
+              <p class="mt-1 truncate text-sm font-semibold text-gray-900 dark:text-white">{{ formatDateTime(inputDetailRow.created_at) }}</p>
+            </div>
+            <div class="rounded-lg border border-gray-100 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-800/70">
+              <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.user') }}</p>
+              <p class="mt-1 truncate text-sm font-semibold text-gray-900 dark:text-white">{{ inputDetailRow.user_email || '-' }}</p>
+            </div>
+            <div class="rounded-lg border border-gray-100 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-800/70">
+              <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.result') }}</p>
+              <span class="mt-1 inline-flex rounded-md px-2 py-1 text-xs font-medium" :class="resultBadgeClass(inputDetailRow)">
+                {{ resultLabel(inputDetailRow) }}
+              </span>
+            </div>
+            <div class="rounded-lg border border-gray-100 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-800/70">
+              <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.highest') }}</p>
+              <p class="mt-1 truncate text-sm font-semibold text-gray-900 dark:text-white">
+                {{ inputDetailRow.highest_category || '-' }} / {{ percent(inputDetailRow.highest_score) }}
+              </p>
+            </div>
+            <div v-if="inputDetailRow.matched_keyword" class="rounded-lg border border-red-100 bg-red-50 p-4 dark:border-red-900/60 dark:bg-red-900/20">
+              <p class="text-xs font-medium text-red-500 dark:text-red-300">{{ t('admin.riskControl.matchedKeyword') }}</p>
+              <p class="mt-1 truncate text-sm font-semibold text-red-700 dark:text-red-200" :title="inputDetailRow.matched_keyword">{{ inputDetailRow.matched_keyword }}</p>
+            </div>
+          </div>
+
+          <div v-if="logScoreRows.length" class="space-y-2" data-test="audit-score-snapshot">
+            <p class="text-sm font-semibold">{{ t('admin.riskControl.categorySnapshot') }}</p>
+            <div v-for="score in logScoreRows" :key="score.category" class="flex justify-between gap-3 text-sm" :data-test="`audit-score-${score.category}`">
+              <span>{{ score.category }} · {{ t(!score.enabled ? 'admin.riskControl.categoryDisabled' : score.hit ? 'admin.riskControl.categoryHit' : 'admin.riskControl.categoryNoHit') }}</span>
+              <span class="font-mono">{{ percent(score.score) }} / {{ Number.isFinite(score.threshold) ? percent(score.threshold) : '-' }}</span>
+            </div>
+          </div>
+
+          <div class="rounded-xl border border-gray-100 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-800">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ t(inputDetailRow.action === 'cyber_policy' ? 'admin.riskControl.evidence.input' : 'admin.riskControl.inputDetailContent') }}</p>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ inputDetailRow.endpoint || '-' }} · {{ inputDetailRow.provider || '-' }} / {{ inputDetailRow.model || '-' }}
+                </p>
+              </div>
+              <span v-if="inputDetailRow.group_name" class="inline-flex rounded-md bg-sky-50 px-2.5 py-1 text-xs font-medium text-sky-700 dark:bg-sky-900/20 dark:text-sky-300">
+                {{ inputDetailRow.group_name }}
+              </span>
+            </div>
+            <pre class="mt-4 max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-gray-950 p-4 text-sm leading-6 text-gray-100 shadow-inner dark:bg-black/50">{{ inputDetailText }}</pre>
+            <template v-if="inputDetailRow.error">
+              <p class="mt-4 text-sm font-medium">{{ t(inputDetailRow.action === 'cyber_policy' ? 'admin.riskControl.evidence.reason' : 'admin.riskControl.errorDetail') }}</p>
+              <pre class="max-h-40 overflow-auto whitespace-pre-wrap break-words text-sm">{{ inputDetailRow.error }}</pre>
+            </template>
+          </div>
+        </div>
+
+        <template #footer>
+          <div class="flex justify-end">
+            <button type="button" class="btn btn-secondary" @click="closeInputDetail">{{ t('common.close') }}</button>
+          </div>
+        </template>
+      </BaseDialog>
+      <BaseDialog :show="recoveryUserID !== null" :title="t('admin.moderationUsers.title')" @close="recoveryUserID = null">
+        <ModerationUserPanel v-if="recoveryUserID !== null" :key="recoveryUserID" :user-id="recoveryUserID" @changed="loadLogs()" />
       </BaseDialog>
     </div>
   </AppLayout>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { moderationThresholdDefaults, moderationCategorySettings, moderationScoreRows as buildModerationScoreRows, optionalModerationCategories } from '@/utils/contentModerationCategories'
+import { computed, onMounted, onUnmounted, reactive, ref, toRaw } from 'vue'
 import { useI18n } from 'vue-i18n'
+import ModerationUpstreamAccountSelector from '@/components/admin/moderation/ModerationUpstreamAccountSelector.vue'
+import NewFeatureBadge from '@/components/common/NewFeatureBadge.vue'
+import { NEW_FEATURE_NOTICES } from '@/constants/newFeatureNotices'
+import { useAuthStore } from '@/stores/auth'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import SecurityAuditNav from '@/components/admin/security/SecurityAuditNav.vue'
+import ModerationUsersSummary from '@/components/admin/moderation/ModerationUsersSummary.vue'
+import ModerationUserPanel from '@/components/admin/moderation/ModerationUserPanel.vue'
+import ModerationKeyURLEditor from '@/components/admin/ModerationKeyURLEditor.vue'
+import CyberEvidencePanel from '@/components/admin/CyberEvidencePanel.vue'
+import CyberEvidenceSettings from '@/components/admin/CyberEvidenceSettings.vue'
 import Icon from '@/components/icons/Icon.vue'
+import Select from '@/components/common/Select.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import Pagination from '@/components/common/Pagination.vue'
-import { OPENAI_COMPATIBLE_PROVIDER_PRESETS } from '@/components/account/openAICompatibleProviderPresets'
+import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
+import ProxySelector from '@/components/common/ProxySelector.vue'
 import { adminAPI } from '@/api/admin'
 import type {
+  ContentModerationAPIKeyLoad,
+  ContentModerationAPIKeyStatus,
   ContentModerationConfig,
-  ContentModerationEvidenceMatch,
-  ContentModerationEvidenceWindow,
-  ContentModerationFirstLayerStage,
-  ContentModerationLayerStage,
   ContentModerationLog,
-  ContentModerationLogView,
+  ContentModerationModelFilter,
   ContentModerationModelFilterType,
-  ContentModerationRemoteUnavailablePolicy,
   ContentModerationRuntimeStatus,
-  ContentModerationChannelHeartbeat,
-  ContentModerationArchivePreview,
-  DeepSeekModerationChannel,
-  TestDeepSeekChannelResponse,
+  ContentModerationTestAuditResult,
+  KeywordBlockingMode,
+  ModerationMode,
+  ModerationEngine,
+  UpdateModerationEngineConfig,
   UpdateContentModerationConfig,
 } from '@/api/admin/riskControl'
-import type { AdminGroup } from '@/types'
+import type { AdminGroup, Proxy, SelectOption } from '@/types'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { formatDateTime as formatDateTimeValue } from '@/utils/format'
 
-type EditableDeepSeekChannel = DeepSeekModerationChannel & {
-  api_key: string
-  clear_api_key: boolean
-}
-
-type LayerID = 'layer1' | 'layer2'
-type AuditDecisionState =
-  | 'default'
-  | 'evidence_capacity'
-  | 'evidence_truncated'
-  | 'review_disagreement'
-  | 'review_unavailable'
-  | 'restricted_confirmed'
-  | 'restricted_single_vote'
-  | 'restricted_unconfirmed'
-type OverviewIcon = 'shield' | 'cloud' | 'swap' | 'document' | 'database'
-
-interface OverviewCacheMetrics {
-  hits: number
-  misses: number
-  writes: number
-  errors: number
-}
-
-interface OverviewItem {
+type SettingsTab = 'basic' | 'scope' | 'runtime' | 'response' | 'riskThresholds' | 'retention' | 'keywords'
+type WorkerSlotState = 'active' | 'idle' | 'disabled'
+type APIKeysWriteMode = 'append' | 'replace'
+type OverviewIcon = 'shield' | 'key' | 'users' | 'document'
+type OverviewItem = {
   key: string
   label: string
   value: string
   meta: string
   icon: OverviewIcon
   iconClass: string
-  cacheMetrics?: OverviewCacheMetrics
+  badge?: string
+  badgeClass?: string
+}
+type RiskThresholdRow = {
+  category: string
+  value: number
+  defaultValue: number
 }
 
-interface EvidenceTextSegment {
-  text: string
-  matched: boolean
-  matches: ContentModerationEvidenceMatch[]
-}
-
-const remotePoolMinimumProviders = 1
-const restrictedConsensusRequired = 2
+const maxModerationTestImages = 1
+const maxModerationTestImageSize = 8 * 1024 * 1024
+const maxVisibleApiKeyRows: number = 3
+const blockedKeywordMax = 10000
+const riskThresholdDefaults = moderationThresholdDefaults('openai')
 
 const { t } = useI18n()
+// Mount on first use, then keep the list and any unsubmitted drafts alive.
+const moderationUsersMounted = ref(false)
+const moderationUsersExpanded = ref(false)
 const appStore = useAppStore()
-
-const loading = ref(true)
-const configLoaded = ref(false)
-const configLoadError = ref(false)
-const refreshing = ref(false)
-const saving = ref(false)
-const logsLoading = ref(false)
-const sourceLogLoading = ref(false)
-const sourceLogError = ref(false)
-const statusLoading = ref(false)
-const statusLoadError = ref(false)
-const hashActionLoading = ref(false)
-const flaggedHashInput = ref('')
-const archivePreview = ref<ContentModerationArchivePreview | null>(null)
-const archiveActionLoading = ref(false)
-const unbanActionLoading = ref(false)
-const testingChannelID = ref<string | null>(null)
-const status = ref<ContentModerationRuntimeStatus | null>(null)
-const groups = ref<AdminGroup[]>([])
-const logs = ref<ContentModerationLog[]>([])
-const selectedLog = ref<ContentModerationLog | null>(null)
-const originalLog = ref<ContentModerationLog | null>(null)
-const channelTestResults = reactive<Record<string, TestDeepSeekChannelResponse | undefined>>({})
-const savedChannelDigests = reactive<Record<string, string | undefined>>({})
-let refreshTimer: number | null = null
-let logRequestSequence = 0
-
-const isFlaggedHashInputValid = computed(() => /^[a-f0-9]{64}$/i.test(flaggedHashInput.value))
-const contextFilterOptions = computed(() =>
-  [...new Set(logs.value.map((row) => row.context_class).filter((value): value is string => Boolean(value)))].sort()
-)
-
-const heartbeatByChannelID = computed(() => {
-  const entries = status.value?.remote_heartbeats ?? []
-  return new Map(entries.map((heartbeat) => [heartbeat.channel_id, heartbeat]))
-})
-
-const evidenceLog = computed(() => originalLog.value || selectedLog.value)
-const evidenceWindows = computed(() => evidenceLog.value?.evidence_windows ?? [])
-
+const auth = useAuthStore()
 const defaultBlockMessage = () => t('admin.riskControl.defaultBlockMessage')
 
+const loading = ref(true)
+const saving = ref(false)
+const upstreamSelecting = ref(false)
+const savedUpstreamScope = ref<{ scope: 'all' | 'selected'; ids: number[] }>({ scope: 'all', ids: [] })
+const logsLoading = ref(false)
+const statusLoading = ref(false)
+const apiKeyTesting = ref(false)
+const hashActionLoading = ref(false)
+const unbanningUserID = ref<number | null>(null)
+const settingsOpen = ref(false)
+const baseUrlInput = ref<HTMLInputElement | null>(null)
+const activeSettingsTab = ref<SettingsTab>('basic')
+const groupSearch = ref('')
+const flaggedHashInput = ref('')
+const groups = ref<AdminGroup[]>([])
+const proxies = ref<Proxy[]>([])
+const logs = ref<ContentModerationLog[]>([])
+const status = ref<ContentModerationRuntimeStatus | null>(null)
+const testedApiKeyStatuses = ref<ContentModerationAPIKeyStatus[]>([])
+const pendingDeleteApiKeyHashes = ref<string[]>([])
+const apiKeyRowsExpanded = ref<boolean>(false)
+const moderationTestPrompt = ref('')
+const moderationTestImages = ref<string[]>([])
+const moderationTestResult = ref<ContentModerationTestAuditResult | null>(null)
+const inputDetailRow = ref<ContentModerationLog | null>(null)
+const savedEngine = ref<ModerationEngine>('openai')
+const engineOptions: SelectOption[] = [{ value: 'openai', label: 'OpenAI' }, { value: 'typesafe', label: 'TypeSafe AI' }]
+const engineLabel = (engine: ModerationEngine) => engine === 'typesafe' ? 'TypeSafe AI' : 'OpenAI'
+let statusTimer: number | null = null
+
 const configForm = reactive({
-  enabled: true,
-  mode: 'pre_block' as const,
-  deepseek_enabled: true,
-  remote_reviewers_enabled: true,
-  remote_consensus_required: remotePoolMinimumProviders,
-  remote_unavailable_policy: 'fail_closed' as ContentModerationRemoteUnavailablePolicy,
-  deepseek_total_timeout_ms: 10000,
-  deepseek_threshold: 0.8,
-  policy_version: '',
-  deepseek_channels: [] as EditableDeepSeekChannel[],
+  engine: 'openai' as ModerationEngine,
+  enabled: false,
+  mode: 'pre_block' as ModerationMode,
+  base_url: 'https://api.openai.com',
+  model: 'omni-moderation-latest',
+  proxy_id: null as number | null,
+  api_keys_text: '',
+  api_key_configured: false,
+  api_key_masked: '',
+  api_key_count: 0,
+  api_key_masks: [] as string[],
+  api_key_statuses: [] as ContentModerationAPIKeyStatus[],
+  api_keys_mode: 'append' as APIKeysWriteMode,
+  clear_api_key: false,
+  timeout_ms: 3000,
+  retry_count: 2,
+  sample_rate: 100,
+  upstream_account_scope: 'all' as 'all' | 'selected',
+  upstream_account_ids: [] as number[],
   all_groups: true,
   group_ids: [] as number[],
   record_non_hits: false,
+  worker_count: 4,
+  queue_size: 32768,
   block_status: 403,
   block_message: defaultBlockMessage(),
   email_on_hit: true,
@@ -1398,1173 +1350,1207 @@ const configForm = reactive({
   violation_window_hours: 720,
   hit_retention_days: 180,
   non_hit_retention_days: 3,
+  pre_hash_check_enabled: false,
+  thresholds: { ...riskThresholdDefaults } as Record<string, number>,
+  category_settings: moderationCategorySettings('openai'),
+  blocked_keywords_text: '',
+  keyword_blocking_mode: 'keyword_and_api' as KeywordBlockingMode,
   model_filter_type: 'all' as ContentModerationModelFilterType,
-  model_filter_models_text: '',
-  first_layer_stage: 'shadow' as ContentModerationFirstLayerStage,
-  second_layer_stage: 'shadow' as ContentModerationLayerStage,
-  layer1_keywords_text: '',
-  layer2_keywords_text: '',
+  model_filter_models: [] as string[],
 })
 
-const pagination = reactive({ page: 1, page_size: 20, total: 0, pages: 1 })
+const engineFields = ['base_url', 'model', 'proxy_id', 'api_keys_text', 'api_key_configured', 'api_key_masked', 'api_key_count', 'api_key_masks', 'api_key_statuses', 'api_keys_mode', 'clear_api_key', 'timeout_ms', 'retry_count', 'thresholds', 'category_settings'] as const
+type EngineDraft = Pick<typeof configForm, typeof engineFields[number]> & { pendingDeletes: string[] }
+const engineDrafts = ref<Partial<Record<ModerationEngine, EngineDraft>>>({})
+
+function captureEngineDraft(): EngineDraft {
+  return structuredClone({ ...Object.fromEntries(engineFields.map(key => [key, toRaw(configForm)[key]])), pendingDeletes: [...pendingDeleteApiKeyHashes.value] }) as EngineDraft
+}
+
+function switchEngine(value: string | number | boolean | null) {
+  if ((value !== 'openai' && value !== 'typesafe') || apiKeyTesting.value || saving.value) return
+  engineDrafts.value[configForm.engine] = captureEngineDraft()
+  configForm.engine = value
+  const draft = engineDrafts.value[value]
+  if (draft) {
+    const { pendingDeletes, ...fields } = structuredClone(toRaw(draft))
+    Object.assign(configForm, fields)
+    pendingDeleteApiKeyHashes.value = pendingDeletes
+  }
+  testedApiKeyStatuses.value = []
+  moderationTestResult.value = null
+}
+
+function engineDraftFromConfig(config: ContentModerationConfig | undefined, engine: ModerationEngine): EngineDraft {
+  return {
+    base_url: config?.base_url || (engine === 'typesafe' ? 'https://api.typesafe.ai' : 'https://api.openai.com'),
+    model: config?.model || (engine === 'typesafe' ? 'jev-latest' : 'omni-moderation-latest'),
+    proxy_id: config?.proxy_id ?? null, api_keys_text: '', api_key_configured: config?.api_key_configured ?? false,
+    api_key_masked: config?.api_key_masked ?? '', api_key_count: config?.api_key_count ?? 0,
+    api_key_masks: [...(config?.api_key_masks ?? [])], api_key_statuses: [...(config?.api_key_statuses ?? [])],
+    api_keys_mode: 'append', clear_api_key: false, pendingDeletes: [],
+    timeout_ms: config?.timeout_ms ?? 3000, retry_count: config?.retry_count ?? 2,
+    thresholds: riskThresholdsFromConfig(config?.thresholds, engine),
+    category_settings: moderationCategorySettings(engine, config?.category_settings),
+  }
+}
+
+function engineDraftPayload(draft: EngineDraft, engine: ModerationEngine): UpdateModerationEngineConfig {
+  const keys = parseApiKeys(draft.api_keys_text)
+  if (!draft.clear_api_key && draft.api_keys_mode === 'replace' && keys.length === 0) throw new Error('empty replacement keys')
+  return {
+    base_url: draft.base_url, model: draft.model, proxy_id: draft.proxy_id ?? 0,
+    timeout_ms: draft.timeout_ms, retry_count: draft.retry_count,
+    thresholds: Object.fromEntries(Object.keys(moderationThresholdDefaults(engine)).map(k => [k, clampPercent(draft.thresholds[k]) / 100])),
+    category_settings: moderationCategorySettings(engine, draft.category_settings),
+    clear_api_key: draft.clear_api_key, api_keys: keys.length ? keys : undefined,
+    api_keys_mode: draft.api_keys_mode, delete_api_key_hashes: draft.pendingDeletes,
+  }
+}
+
+const pagination = reactive({
+  page: 1,
+  page_size: 20,
+  total: 0,
+  pages: 1,
+})
+
 const filters = reactive({
-  result: 'risky_shadow' as ContentModerationLogView,
+  result: '',
+  group_id: 0,
+  endpoint: '',
   search: '',
   from: '',
   to: '',
-  group_id: 0,
-  endpoint: '',
-  context_class: '',
-  model_profile: '',
-  decision_source: '',
 })
 
-const statusClasses = {
-  healthy: 'bg-emerald-50 text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300',
-  warning: 'bg-amber-50 text-amber-800 dark:bg-amber-900/20 dark:text-amber-300',
-  danger: 'bg-red-50 text-red-800 dark:bg-red-900/20 dark:text-red-300',
-  unknown: 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300',
+const settingsTabs = computed<Array<{ id: SettingsTab; label: string }>>(() => [
+  { id: 'basic', label: t('admin.riskControl.tabs.basic') },
+  { id: 'scope', label: t('admin.riskControl.tabs.scope') },
+  { id: 'runtime', label: t('admin.riskControl.tabs.runtime') },
+  { id: 'response', label: t('admin.riskControl.tabs.response') },
+  { id: 'riskThresholds', label: t('admin.riskControl.tabs.riskThresholds') },
+  { id: 'keywords', label: t('admin.riskControl.tabs.keywords') },
+  { id: 'retention', label: t('admin.riskControl.tabs.retention') },
+])
+
+const modeOptions = computed<SelectOption[]>(() => [
+  { value: 'pre_block', label: t('admin.riskControl.modePreBlock') },
+  { value: 'observe', label: t('admin.riskControl.modeObserve') },
+  { value: 'off', label: t('admin.riskControl.modeOff') },
+])
+
+const keywordBlockingModeOptions = computed<Array<{ value: KeywordBlockingMode; label: string; description: string }>>(() => [
+  {
+    value: 'keyword_and_api',
+    label: t('admin.riskControl.keywordModeKeywordAndApi'),
+    description: t('admin.riskControl.keywordModeKeywordAndApiDesc'),
+  },
+  {
+    value: 'keyword_only',
+    label: t('admin.riskControl.keywordModeKeywordOnly'),
+    description: t('admin.riskControl.keywordModeKeywordOnlyDesc'),
+  },
+  {
+    value: 'api_only',
+    label: t('admin.riskControl.keywordModeApiOnly'),
+    description: t('admin.riskControl.keywordModeApiOnlyDesc'),
+  },
+])
+
+const modelFilterOptions = computed<Array<{ value: ContentModerationModelFilterType; label: string; description: string }>>(() => [
+  {
+    value: 'all',
+    label: t('admin.riskControl.modelFilterAll'),
+    description: t('admin.riskControl.modelFilterAllDesc'),
+  },
+  {
+    value: 'include',
+    label: t('admin.riskControl.modelFilterInclude'),
+    description: t('admin.riskControl.modelFilterIncludeDesc'),
+  },
+  {
+    value: 'exclude',
+    label: t('admin.riskControl.modelFilterExclude'),
+    description: t('admin.riskControl.modelFilterExcludeDesc'),
+  },
+])
+
+type KeywordNoticeView = {
+  title: string
+  description: string
+  icon: 'infoCircle' | 'exclamationTriangle'
+  toneClass: string
+  iconClass: string
+  titleClass: string
 }
 
-const policyCategories = [
-  'cyber',
-  'accountAbuse',
-  'deepfakeDoxThreat',
-  'selfHarm',
-  'weapons',
-  'sexualContent',
-  'fraudFinancialCrime',
-  'controlledSubstances',
-  'humanExploitation',
-  'terrorismExtremism',
-  'illegalGambling',
-  'forgeryCounterfeit',
-  'corruptionTaxEvasion',
-  'hateHarassment',
-]
-
-const logColumns = ['time', 'user', 'request', 'decision', 'modelResult', 'channelAttempts', 'latency', 'input']
-
-const recordTabs = computed<Array<{ value: ContentModerationLogView; label: string }>>(() => [
-  { value: 'risky_shadow', label: t('admin.riskControl.recordTabs.riskyShadow') },
-  { value: 'violation_blocked', label: t('admin.riskControl.recordTabs.violationBlocked') },
-  { value: 'restricted', label: t('admin.riskControl.recordTabs.restricted') },
-  { value: 'review_unavailable', label: t('admin.riskControl.recordTabs.reviewUnavailable') },
-  { value: 'evidence_capacity_exceeded', label: t('admin.riskControl.recordTabs.evidenceCapacityExceeded') },
-  { value: 'cyber_policy', label: t('admin.riskControl.recordTabs.cyberPolicy') },
-  { value: 'usage_policy', label: t('admin.riskControl.recordTabs.usagePolicy') },
-])
-
-const stageOptions = computed(() => [
-  {
-    value: 'shadow' as const,
-    label: t('admin.riskControl.stageShadow'),
-    activeClass: 'bg-amber-100 text-amber-800 shadow-sm dark:bg-amber-900/30 dark:text-amber-300',
+const keywordNoticeTones = {
+  info: {
+    icon: 'infoCircle' as const,
+    toneClass: 'border-primary-100 bg-primary-50/60 dark:border-primary-900/40 dark:bg-primary-900/10',
+    iconClass: 'mt-0.5 flex-shrink-0 text-primary-500 dark:text-primary-300',
+    titleClass: 'text-primary-700 dark:text-primary-200',
   },
-  {
-    value: 'enforce' as const,
-    label: t('admin.riskControl.stageEnforce'),
-    activeClass: 'bg-red-100 text-red-800 shadow-sm dark:bg-red-900/30 dark:text-red-300',
+  warning: {
+    icon: 'exclamationTriangle' as const,
+    toneClass: 'border-amber-200 bg-amber-50 dark:border-amber-900/40 dark:bg-amber-900/20',
+    iconClass: 'mt-0.5 flex-shrink-0 text-amber-500 dark:text-amber-300',
+    titleClass: 'text-amber-700 dark:text-amber-200',
   },
-])
+}
 
-const layerRows = computed(() => [
-  {
-    id: 'layer1' as const,
-    label: t('admin.riskControl.layer1Title'),
-    meta: t('admin.riskControl.layer1Meta'),
-    stage: configForm.first_layer_stage,
-  },
-  {
-    id: 'layer2' as const,
-    label: t('admin.riskControl.layer2Title'),
-    meta: t('admin.riskControl.layer2Meta'),
-    stage: configForm.second_layer_stage,
-  },
-])
-
-const managedProviderRows = computed(() =>
-  OPENAI_COMPATIBLE_PROVIDER_PRESETS.map((provider) => ({
-    ...provider,
-    label: t(`admin.riskControl.managedProviders.${provider.labelKey}`),
-  }))
-)
-
-const enabledChannelCount = computed(() => configForm.deepseek_channels.filter((channel) => channel.enabled).length)
-const reachableChannelCount = computed(
-  () => configForm.deepseek_channels.filter((channel) => channel.enabled && isChannelReachable(channel)).length
-)
-const reachableProviderCount = computed(
-  () =>
-    new Set(
-      configForm.deepseek_channels
-        .filter((channel) => channel.enabled && isChannelReachable(channel))
-        .map((channel) => normalizeReviewerProvider(channel.provider))
-    ).size
-)
-const restrictionConsensusReady = computed(
-  () => configForm.remote_reviewers_enabled && reachableProviderCount.value >= restrictedConsensusRequired
-)
-
-const secondLayerEnforceReady = computed(() => {
-  if (status.value?.second_layer_enforce_ready !== undefined) {
-    return status.value.second_layer_enforce_ready
+const keywordNotice = computed<KeywordNoticeView>(() => {
+  const strategy = configForm.keyword_blocking_mode
+  if (strategy === 'api_only') {
+    return {
+      ...keywordNoticeTones.info,
+      title: t('admin.riskControl.keywordModeApiOnlyNotice'),
+      description: t('admin.riskControl.keywordModeApiOnlyDesc'),
+    }
   }
-  if (!configForm.remote_reviewers_enabled) return false
-  return configForm.remote_reviewers_enabled && reachableProviderCount.value >= remotePoolMinimumProviders
+  if (configForm.mode !== 'pre_block') {
+    return {
+      ...keywordNoticeTones.warning,
+      title: t('admin.riskControl.blockedKeywordsModeWarning', { mode: modeLabel(configForm.mode) }),
+      description: t('admin.riskControl.blockedKeywordsDescription'),
+    }
+  }
+  if (strategy === 'keyword_only') {
+    return {
+      ...keywordNoticeTones.info,
+      title: t('admin.riskControl.keywordModeKeywordOnlyNotice'),
+      description: t('admin.riskControl.keywordModeKeywordOnlyDesc'),
+    }
+  }
+  return {
+    ...keywordNoticeTones.info,
+    title: t('admin.riskControl.blockedKeywordsPreBlockHint'),
+    description: t('admin.riskControl.blockedKeywordsDescription'),
+  }
 })
 
-const enforceGateText = computed(() => {
-  if (secondLayerEnforceReady.value) return t('admin.riskControl.enforceGateReady')
-  return status.value?.second_layer_enforce_reason || t('admin.riskControl.enforceGateBlocked')
+const resultOptions = computed<SelectOption[]>(() => [
+  { value: '', label: t('admin.riskControl.result.all') },
+  { value: 'hit', label: t('admin.riskControl.result.hit') },
+  { value: 'blocked', label: t('admin.riskControl.result.blocked') },
+  { value: 'pass', label: t('admin.riskControl.result.pass') },
+  { value: 'error', label: t('admin.riskControl.result.error') },
+])
+
+const endpointOptions = computed<SelectOption[]>(() => [
+  { value: '', label: t('admin.riskControl.filters.allEndpoints') },
+  { value: '/v1/messages', label: '/v1/messages' },
+  { value: '/v1/responses', label: '/v1/responses' },
+  { value: '/v1/chat/completions', label: '/v1/chat/completions' },
+  { value: '/v1beta/models', label: '/v1beta/models' },
+  { value: '/v1/images/generations', label: '/v1/images/generations' },
+  { value: '/v1/images/edits', label: '/v1/images/edits' },
+])
+
+const groupFilterOptions = computed<SelectOption[]>(() => [
+  { value: 0, label: t('admin.riskControl.filters.allGroups') },
+  ...groups.value.map((group) => ({
+    value: group.id,
+    label: `${group.name} (${group.platform})`,
+  })),
+])
+
+const selectedGroupCount = computed(() => String(configForm.group_ids.length))
+
+const modelFilterModelCount = computed(() => configForm.model_filter_models.length)
+
+const modelFilterSummary = computed(() => {
+  if (configForm.model_filter_type === 'include') {
+    return t('admin.riskControl.modelFilterIncludeSummary', { count: modelFilterModelCount.value })
+  }
+  if (configForm.model_filter_type === 'exclude') {
+    return t('admin.riskControl.modelFilterExcludeSummary', { count: modelFilterModelCount.value })
+  }
+  return t('admin.riskControl.modelFilterAllSummary')
 })
 
-const layer1Keywords = computed(() => parseLineList(configForm.layer1_keywords_text))
-const layer2Keywords = computed(() => parseLineList(configForm.layer2_keywords_text))
+const modelFilterPreviewModels = computed(() => configForm.model_filter_models.slice(0, 6))
+
+const hiddenModelFilterModelCount = computed(() => Math.max(0, configForm.model_filter_models.length - modelFilterPreviewModels.value.length))
+
+const filteredGroups = computed(() => {
+  const keyword = groupSearch.value.trim().toLowerCase()
+  if (!keyword) return groups.value
+  return groups.value.filter((group) => {
+    return group.name.toLowerCase().includes(keyword) || String(group.platform).toLowerCase().includes(keyword)
+  })
+})
+
+const inputApiKeyCount = computed(() => parseApiKeys(configForm.api_keys_text).length)
+
+const blockedKeywordList = computed(() => parseBlockedKeywords(configForm.blocked_keywords_text))
+
+const blockedKeywordCount = computed(() => blockedKeywordList.value.length)
+
+const pendingDeletedApiKeyCount = computed(() => pendingDeleteApiKeyHashes.value.length)
+
+const effectiveStoredApiKeyCount = computed(() => Math.max(0, configForm.api_key_count - pendingDeletedApiKeyCount.value))
+
+const apiKeysPlaceholder = computed(() => (
+  configForm.api_keys_mode === 'replace'
+    ? t('admin.riskControl.apiKeysPlaceholderReplace')
+    : t('admin.riskControl.apiKeysPlaceholder')
+))
+
+const apiKeysModeHint = computed(() => (
+  configForm.api_keys_mode === 'replace'
+    ? t('admin.riskControl.apiKeysModeReplaceHint')
+    : t('admin.riskControl.apiKeysModeAppendHint')
+))
+
+const hasModerationAuditInput = computed(() => {
+  return moderationTestPrompt.value.trim() !== '' || moderationTestImages.value.length > 0
+})
+
+const isFlaggedHashInputValid = computed(() => /^[a-fA-F0-9]{64}$/.test(flaggedHashInput.value.trim()))
+
+const storedApiKeyTestButtonText = computed(() => {
+  if (apiKeyTesting.value) return t('admin.riskControl.testingApiKeys')
+  if (hasModerationAuditInput.value) return t('admin.riskControl.testContentWithStoredApiKey')
+  return t('admin.riskControl.testStoredApiKeys')
+})
+
+const savedApiKeyRows = computed<ContentModerationAPIKeyStatus[]>(() => {
+  const rows = (status.value?.engine ?? 'openai') === configForm.engine && status.value?.api_key_statuses?.length
+    ? status.value.api_key_statuses
+    : configForm.api_key_statuses
+  return Array.isArray(rows) ? rows : []
+})
+
+const apiKeyRows = computed<ContentModerationAPIKeyStatus[]>(() => [
+  ...savedApiKeyRows.value,
+  ...testedApiKeyStatuses.value,
+])
+
+const visibleApiKeyRows = computed<ContentModerationAPIKeyStatus[]>(() => {
+  if (apiKeyRowsExpanded.value) return apiKeyRows.value
+  return apiKeyRows.value.slice(0, maxVisibleApiKeyRows)
+})
+
+const hiddenApiKeyRowCount = computed<number>(() => Math.max(0, apiKeyRows.value.length - visibleApiKeyRows.value.length))
+
+const canToggleApiKeyRows = computed<boolean>(() => apiKeyRows.value.length > maxVisibleApiKeyRows)
+
+const activeSavedApiKeyRows = computed<ContentModerationAPIKeyStatus[]>(() => (
+  savedApiKeyRows.value.filter((row) => !isStoredApiKeyPendingDelete(row))
+))
+
+const apiKeyHealthBadges = computed<Array<{ status: ContentModerationAPIKeyStatus['status']; count: number }>>(() => {
+  const counts: Record<ContentModerationAPIKeyStatus['status'], number> = {
+    ok: 0,
+    error: 0,
+    frozen: 0,
+    unknown: 0,
+  }
+  for (const row of activeSavedApiKeyRows.value) {
+    counts[row.status] = (counts[row.status] ?? 0) + 1
+  }
+  if (activeSavedApiKeyRows.value.length === 0 && effectiveStoredApiKeyCount.value > 0) {
+    counts.unknown = effectiveStoredApiKeyCount.value
+  }
+  return (['ok', 'frozen', 'error', 'unknown'] as Array<ContentModerationAPIKeyStatus['status']>)
+    .map((item) => ({ status: item, count: counts[item] }))
+    .filter((item) => item.count > 0)
+})
+
+const apiKeyHealthSummary = computed(() => {
+  if (!configForm.api_key_configured) return ''
+  if (apiKeyHealthBadges.value.length === 0) return t('admin.riskControl.apiKeyStatusUnknown')
+  return apiKeyHealthBadges.value
+    .map((badge) => `${apiKeyStatusLabel(badge.status)} ${badge.count}`)
+    .join(' · ')
+})
 
 const overviewItems = computed<OverviewItem[]>(() => [
   {
-    key: 'runtime',
+    key: 'status',
     label: t('admin.riskControl.overview.status'),
     value: configForm.enabled ? t('admin.riskControl.overview.enabled') : t('admin.riskControl.overview.disabled'),
-    meta: t('admin.riskControl.overview.reviewed', { count: status.value?.pre_block_checked ?? 0 }),
+    meta: modeLabel(configForm.mode),
     icon: 'shield',
     iconClass: configForm.enabled
-      ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'
+      ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/20 dark:text-emerald-300'
       : 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400',
+    badge: runtimeBadgeText.value,
+    badgeClass: runtimeBadgeClass.value,
   },
   {
-    key: 'remote-reviewers',
-    label: t('admin.riskControl.onlineReviewersTitle'),
-    value: configForm.remote_reviewers_enabled
-      ? t('admin.riskControl.overview.enabled')
-      : t('admin.riskControl.overview.disabled'),
-    meta: t('admin.riskControl.channelHealthSummary', {
-      reachable: reachableChannelCount.value,
-      enabled: enabledChannelCount.value,
-    }),
-    icon: 'cloud',
-    iconClass: 'bg-sky-50 text-sky-700 dark:bg-sky-900/20 dark:text-sky-300',
+    key: 'api-key',
+    label: t('admin.riskControl.overview.apiKey'),
+    value: configForm.api_key_configured ? t('admin.riskControl.apiKeyCount', { count: configForm.api_key_count }) : t('admin.riskControl.notConfigured'),
+    meta: configForm.api_key_configured ? apiKeyHealthSummary.value || configForm.model || '-' : configForm.model || '-',
+    icon: 'key',
+    iconClass: 'bg-sky-50 text-sky-600 dark:bg-sky-900/20 dark:text-sky-300',
   },
   {
-    key: 'failover',
-    label: t('admin.riskControl.overview.failover'),
-    value: String(status.value?.remote_failover_count ?? status.value?.deepseek_failover_count ?? 0),
-    meta: t('admin.riskControl.overview.unavailable', {
-      count: status.value?.remote_unavailable_count ?? status.value?.deepseek_unavailable_count ?? 0,
-      enforced: status.value?.review_unavailable_enforced_count ?? 0,
-      degraded: status.value?.review_unavailable_degraded_count ?? 0,
-    }),
-    icon: 'swap',
-    iconClass: 'bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300',
-  },
-  {
-    key: 'second-layer-cache',
-    label: t('admin.riskControl.overview.secondLayerCache'),
-    value: t('admin.riskControl.overview.cacheHits', {
-      count: status.value?.second_layer_cache_hits ?? 0,
-    }),
-    meta: t('admin.riskControl.overview.cacheActivity', {
-      misses: status.value?.second_layer_cache_misses ?? 0,
-      writes: status.value?.second_layer_cache_writes ?? 0,
-      errors: status.value?.second_layer_cache_errors ?? 0,
-    }),
-    icon: 'database',
-    iconClass:
-      (status.value?.second_layer_cache_errors ?? 0) > 0
-        ? 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300'
-        : 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/20 dark:text-indigo-300',
-    cacheMetrics: {
-      hits: status.value?.second_layer_cache_hits ?? 0,
-      misses: status.value?.second_layer_cache_misses ?? 0,
-      writes: status.value?.second_layer_cache_writes ?? 0,
-      errors: status.value?.second_layer_cache_errors ?? 0,
-    },
+    key: 'scope',
+    label: t('admin.riskControl.overview.groupScope'),
+    value: configForm.all_groups ? t('admin.riskControl.allGroups') : selectedGroupCount.value,
+    meta: modelFilterSummary.value,
+    icon: 'users',
+    iconClass: 'bg-violet-50 text-violet-600 dark:bg-violet-900/20 dark:text-violet-300',
   },
   {
     key: 'logs',
     label: t('admin.riskControl.overview.logs'),
-    value: String(pagination.total),
+    value: formatNumber(pagination.total),
     meta: t('admin.riskControl.overview.currentFilter'),
     icon: 'document',
-    iconClass: 'bg-violet-50 text-violet-700 dark:bg-violet-900/20 dark:text-violet-300',
+    iconClass: 'bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-300',
   },
 ])
 
-const selectedLogMeta = computed(() => {
-  const row = selectedLog.value
-  if (!row) return []
-  return [
-    { label: t('admin.riskControl.auditRequestID'), value: row.request_id || '-' },
-    { label: t('admin.riskControl.auditDecisionSource'), value: row.decision_source || '-' },
-    {
-      label: t('admin.riskControl.table.modelResult'),
-      value: `${row.deepseek_category || row.highest_category || '-'} / ${confidenceText(row)}`,
-    },
-    { label: t('admin.riskControl.reviewOutcome'), value: resultLabel(row) },
-    { label: t('admin.riskControl.reviewConsensus'), value: decisionMeta(row) || '-' },
-  ]
+const moderationScoreRows = computed(() => {
+  const result = moderationTestResult.value
+  if (!result) return []
+  return buildModerationScoreRows(result.category_scores || {}, result.thresholds || {}, result.engine_meta?.engine ?? configForm.engine, result.category_settings)
 })
 
-const reviewerProviderOptions = [
-  { value: 'deepseek', label: 'DeepSeek', model: 'deepseek-v4-flash', baseURL: 'https://api.deepseek.com' },
+const logScoreRows = computed(() => {
+  const row = inputDetailRow.value
+  if (!row) return []
+  return buildModerationScoreRows(row.category_scores || {}, row.threshold_snapshot || {}, row.engine_meta?.engine ?? 'openai', row.engine_meta?.category_settings)
+})
+
+const riskThresholdRows = computed<RiskThresholdRow[]>(() => (
+  Object.entries(moderationThresholdDefaults(configForm.engine)).map(([category, defaultValue]) => ({
+    category,
+    value: configForm.thresholds[category] ?? defaultValue,
+    defaultValue,
+  }))
+))
+
+const inputDetailText = computed(() => {
+  if (!inputDetailRow.value) return '-'
+  // Upstream error text is never a substitute for the user's visible input.
+  return inputDetailRow.value.input_excerpt || (inputDetailRow.value.action === 'cyber_policy' ? t('admin.riskControl.evidence.noInputSummary') : '-')
+})
+
+const queueUsagePercent = computed(() => `${Math.min(100, Math.max(0, status.value?.queue_usage_percent ?? 0)).toFixed(1)}%`)
+
+const queueUsageStyle = computed(() => ({
+  width: queueUsagePercent.value,
+}))
+
+const runtimeMode = computed<ModerationMode>(() => status.value?.mode ?? configForm.mode)
+
+const showPreBlockRuntimeCard = computed(() => runtimeMode.value === 'pre_block')
+
+const showWorkerRuntimeCard = computed(() => runtimeMode.value === 'observe')
+
+const preBlockMetricItems = computed(() => [
   {
-    value: 'alibaba_qwen',
-    label: 'Qwen',
-    model: 'qwen3.7-flash',
-    baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    key: 'active',
+    label: t('admin.riskControl.preBlockActive'),
+    value: formatNumber(status.value?.pre_block_active ?? 0),
+    meta: t('admin.riskControl.preBlockActiveHint'),
+    class: 'bg-sky-50 dark:bg-sky-900/10',
+    valueClass: 'text-sky-700 dark:text-sky-300',
   },
   {
-    value: 'zhipu_glm',
-    label: 'GLM',
-    model: 'glm-4.7-flashx',
-    baseURL: 'https://open.bigmodel.cn/api/paas/v4',
+    key: 'checked',
+    label: t('admin.riskControl.preBlockChecked'),
+    value: formatNumber(status.value?.pre_block_checked ?? 0),
+    meta: t('admin.riskControl.preBlockCheckedHint'),
+    class: 'bg-gray-50 dark:bg-dark-700/50',
+    valueClass: 'text-gray-900 dark:text-white',
   },
-  { value: 'mimo', label: 'MiMo', model: 'mimo-v2.5', baseURL: 'https://api.xiaomimimo.com/v1' },
-] as const
+  {
+    key: 'allowed',
+    label: t('admin.riskControl.preBlockAllowed'),
+    value: formatNumber(status.value?.pre_block_allowed ?? 0),
+    meta: t('admin.riskControl.preBlockAllowedHint'),
+    class: 'bg-emerald-50 dark:bg-emerald-900/10',
+    valueClass: 'text-emerald-700 dark:text-emerald-300',
+  },
+  {
+    key: 'blocked',
+    label: t('admin.riskControl.preBlockBlocked'),
+    value: formatNumber(status.value?.pre_block_blocked ?? 0),
+    meta: t('admin.riskControl.preBlockBlockedHint'),
+    class: 'bg-rose-50 dark:bg-rose-900/10',
+    valueClass: 'text-rose-700 dark:text-rose-300',
+  },
+  {
+    key: 'errors',
+    label: t('admin.riskControl.preBlockErrors'),
+    value: formatNumber(status.value?.pre_block_errors ?? 0),
+    meta: t('admin.riskControl.preBlockErrorsHint'),
+    class: 'bg-amber-50 dark:bg-amber-900/10',
+    valueClass: 'text-amber-700 dark:text-amber-300',
+  },
+  {
+    key: 'latency',
+    label: t('admin.riskControl.preBlockAvgLatency'),
+    value: `${formatNumber(status.value?.pre_block_avg_latency_ms ?? 0)} ms`,
+    meta: t('admin.riskControl.preBlockAvgLatencyHint'),
+    class: 'bg-violet-50 dark:bg-violet-900/10',
+    valueClass: 'text-violet-700 dark:text-violet-300',
+  },
+])
 
-function normalizeReviewerProvider(provider?: string): string {
-  const raw = (provider || '').trim().toLowerCase()
-  if (raw === 'qwen' || raw === 'alibaba-qwen') return 'alibaba_qwen'
-  if (raw === 'glm' || raw === 'zhipu-glm') return 'zhipu_glm'
-  if (raw === 'mi-mo') return 'mimo'
-  return raw || 'deepseek'
+const preBlockAPIKeyLoads = computed<ContentModerationAPIKeyLoad[]>(() => (
+  [...(status.value?.pre_block_api_key_loads ?? [])].sort((a, b) => a.index - b.index)
+))
+
+const preBlockAPIKeyMaxTotal = computed(() => Math.max(1, ...preBlockAPIKeyLoads.value.map((item) => item.total || 0)))
+
+const preBlockAPIKeyLoadSummaryText = computed(() => t('admin.riskControl.preBlockAPIKeyLoadSummary', {
+  active: formatNumber(status.value?.pre_block_api_key_active ?? 0),
+  available: formatNumber(status.value?.pre_block_api_key_available_count ?? 0),
+  total: formatNumber(status.value?.pre_block_api_key_total_calls ?? 0),
+  workerActive: formatNumber(status.value?.active_workers ?? 0),
+  workerTotal: formatNumber(status.value?.worker_count ?? configForm.worker_count),
+}))
+
+function preBlockAPIKeyLoadWidth(total: number): string {
+  return `${Math.min(100, Math.max(0, (total / preBlockAPIKeyMaxTotal.value) * 100)).toFixed(1)}%`
 }
 
-function reviewerProviderLabel(provider?: string): string {
-  const normalized = normalizeReviewerProvider(provider)
-  return reviewerProviderOptions.find((option) => option.value === normalized)?.label || normalized
-}
+const workerSlots = computed(() => {
+  const total = Math.max(0, status.value?.worker_count ?? configForm.worker_count)
+  const active = Math.max(0, status.value?.active_workers ?? 0)
+  const enabled = Boolean(status.value?.risk_control_enabled && status.value?.enabled && status.value?.mode !== 'off')
+  return Array.from({ length: total }, (_, index) => ({
+    id: index + 1,
+    state: (!enabled ? 'disabled' : index < active ? 'active' : 'idle') as WorkerSlotState,
+    label: !enabled
+      ? t('admin.riskControl.workerDisabled')
+      : index < active
+        ? t('admin.riskControl.workerActive')
+        : t('admin.riskControl.workerIdle'),
+  }))
+})
 
-function reviewerProviderPreset(provider?: string) {
-  return reviewerProviderOptions.find((option) => option.value === normalizeReviewerProvider(provider)) || reviewerProviderOptions[0]
-}
+const runtimeBadgeText = computed(() => {
+  if (!status.value?.risk_control_enabled) return t('admin.riskControl.riskSwitchOff')
+  if (!configForm.enabled || configForm.mode === 'off') return t('admin.riskControl.overview.disabled')
+  return t('admin.riskControl.overview.enabled')
+})
 
-function defaultChannel(provider = 'deepseek', index = 0): EditableDeepSeekChannel {
-  const preset = reviewerProviderPreset(provider)
-  return {
-    id: `${provider}-primary`,
-    name: preset.label,
-    provider: preset.value,
-    base_url: preset.baseURL,
-    model: preset.model,
-    enabled: true,
-    order: index,
-    timeout_ms: 3000,
-    api_key_configured: false,
-    api_key_masked: '',
-    health_status: 'unknown',
-    breaker_status: 'unknown',
-    api_key: '',
-    clear_api_key: false,
+const runtimeBadgeClass = computed(() => {
+  if (!status.value?.risk_control_enabled || !configForm.enabled || configForm.mode === 'off') {
+    return 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
   }
-}
-
-function editableChannel(channel: DeepSeekModerationChannel, index: number): EditableDeepSeekChannel {
-  const provider = normalizeReviewerProvider(channel.provider)
-  const preset = reviewerProviderPreset(provider)
-  return {
-    ...channel,
-    provider,
-    order: Number.isFinite(channel.order) ? channel.order : index,
-    model: channel.model || preset.model,
-    base_url: channel.base_url || preset.baseURL,
-    timeout_ms: channel.timeout_ms || 3000,
-    api_key_configured: Boolean(channel.api_key_configured),
-    api_key_masked: channel.api_key_masked || '',
-    api_key: '',
-    clear_api_key: false,
-  }
-}
+  return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'
+})
 
 function applyConfig(config: ContentModerationConfig) {
-  configForm.enabled = config.enabled ?? true
-  configForm.remote_reviewers_enabled = config.remote_reviewers_enabled ?? config.deepseek_enabled ?? true
-  configForm.deepseek_enabled = config.deepseek_enabled ?? configForm.remote_reviewers_enabled
-  configForm.remote_consensus_required = remotePoolMinimumProviders
-  configForm.remote_unavailable_policy =
-    config.remote_unavailable_policy === 'risk_tiered' ? 'risk_tiered' : 'fail_closed'
-  configForm.deepseek_total_timeout_ms = config.deepseek_total_timeout_ms ?? 10000
-  configForm.deepseek_threshold = config.deepseek_threshold ?? 0.8
-  configForm.policy_version = config.policy_version || config.keyword_policy_version || ''
-  const channels = config.remote_reviewers ?? config.deepseek_channels ?? reviewerProviderOptions.map((provider, index) => defaultChannel(provider.value, index))
-  configForm.deepseek_channels = [...channels]
-    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
-    .map(editableChannel)
-  for (const id of Object.keys(savedChannelDigests)) delete savedChannelDigests[id]
-  for (const channel of configForm.deepseek_channels) {
-    savedChannelDigests[channel.id] = channelDigest(channel)
-  }
-  configForm.all_groups = config.all_groups ?? true
-  configForm.group_ids = [...(config.group_ids ?? [])]
-  configForm.record_non_hits = config.record_non_hits ?? false
-  configForm.block_status = config.block_status ?? 403
+  savedEngine.value = config.engine ?? 'openai'
+  configForm.engine = savedEngine.value
+  configForm.enabled = config.enabled
+  configForm.mode = config.mode
+  configForm.base_url = config.base_url || 'https://api.openai.com'
+  configForm.model = config.model || 'omni-moderation-latest'
+  configForm.proxy_id = config.proxy_id || null
+  configForm.api_keys_text = ''
+  configForm.api_key_configured = config.api_key_configured
+  configForm.api_key_masked = config.api_key_masked || ''
+  configForm.api_key_count = config.api_key_count || 0
+  configForm.api_key_masks = Array.isArray(config.api_key_masks) ? [...config.api_key_masks] : []
+  configForm.api_key_statuses = Array.isArray(config.api_key_statuses) ? [...config.api_key_statuses] : []
+  configForm.api_keys_mode = 'append'
+  configForm.clear_api_key = false
+  pendingDeleteApiKeyHashes.value = []
+  testedApiKeyStatuses.value = []
+  apiKeyRowsExpanded.value = false
+  configForm.timeout_ms = config.timeout_ms || 3000
+  configForm.retry_count = config.retry_count ?? 2
+  configForm.sample_rate = config.sample_rate ?? 100
+  configForm.upstream_account_scope = config.upstream_account_scope ?? 'all'
+  configForm.upstream_account_ids = [...(config.upstream_account_ids ?? [])]
+  savedUpstreamScope.value = { scope: configForm.upstream_account_scope, ids: [...configForm.upstream_account_ids] }
+  configForm.all_groups = config.all_groups
+  configForm.group_ids = Array.isArray(config.group_ids) ? [...config.group_ids] : []
+  configForm.record_non_hits = config.record_non_hits
+  configForm.worker_count = config.worker_count || 4
+  configForm.queue_size = config.queue_size || 32768
+  configForm.block_status = config.block_status || 403
   configForm.block_message = config.block_message || defaultBlockMessage()
   configForm.email_on_hit = config.email_on_hit ?? true
   configForm.auto_ban_enabled = config.auto_ban_enabled ?? true
   configForm.cyber_policy_exclude_from_ban_count = config.cyber_policy_exclude_from_ban_count ?? false
-  configForm.ban_threshold = config.ban_threshold ?? 10
-  configForm.violation_window_hours = config.violation_window_hours ?? 720
-  configForm.hit_retention_days = config.hit_retention_days ?? 180
-  configForm.non_hit_retention_days = config.non_hit_retention_days ?? 3
-  configForm.model_filter_type = config.model_filter?.type ?? 'all'
-  configForm.model_filter_models_text = (config.model_filter?.models ?? []).join('\n')
-  configForm.first_layer_stage = config.first_layer_stage === 'enforce' ? 'enforce' : 'shadow'
-  configForm.second_layer_stage = config.second_layer_stage === 'enforce' ? 'enforce' : 'shadow'
-  configForm.layer1_keywords_text = (config.layer1_keywords ?? []).join('\n')
-  configForm.layer2_keywords_text = (config.layer2_keywords ?? []).join('\n')
+  configForm.ban_threshold = config.ban_threshold || 10
+  configForm.violation_window_hours = config.violation_window_hours || 720
+  configForm.hit_retention_days = config.hit_retention_days || 180
+  configForm.non_hit_retention_days = Math.min(Math.max(config.non_hit_retention_days || 3, 1), 3)
+  configForm.pre_hash_check_enabled = config.pre_hash_check_enabled ?? false
+  configForm.thresholds = riskThresholdsFromConfig(config.thresholds)
+  configForm.blocked_keywords_text = Array.isArray(config.blocked_keywords) ? config.blocked_keywords.join('\n') : ''
+  configForm.keyword_blocking_mode = normalizeKeywordBlockingMode(config.keyword_blocking_mode)
+  const modelFilter = normalizeModelFilter(config.model_filter)
+  configForm.model_filter_type = modelFilter.type
+  configForm.model_filter_models = modelFilter.models
+  engineDrafts.value = {
+    openai: engineDraftFromConfig(config.engine_configs?.openai ?? (savedEngine.value === 'openai' ? config : undefined), 'openai'),
+    typesafe: engineDraftFromConfig(config.engine_configs?.typesafe ?? (savedEngine.value === 'typesafe' ? config : undefined), 'typesafe'),
+  }
+  const { pendingDeletes, ...fields } = structuredClone(toRaw(engineDrafts.value[configForm.engine]!))
+  Object.assign(configForm, fields)
+  pendingDeleteApiKeyHashes.value = [...pendingDeletes]
 }
 
-async function loadInitial() {
+async function saveKeyURL(hash: string, baseURL: string, expected: string) {
+  const updated = await adminAPI.riskControl.updateConfig({ engine_configs: { typesafe: {
+    key_url_updates: [{ key_hash: hash, base_url: baseURL, expected_base_url: expected }],
+  } } })
+  const persisted = await adminAPI.riskControl.getConfig()
+  const profile = persisted.engine_configs?.typesafe ?? (persisted.engine === 'typesafe' ? persisted : undefined)
+  const saved = profile?.api_key_statuses.find(row => row.key_hash === hash)
+  const writtenProfile = updated.engine_configs?.typesafe ?? (updated.engine === 'typesafe' ? updated : undefined)
+  const written = writtenProfile?.api_key_statuses.find(row => row.key_hash === hash)
+  if (!saved?.base_url || saved.base_url !== written?.base_url) throw new Error(t('admin.riskControl.keyUrlReadbackFailed'))
+  const merge = (rows: ContentModerationAPIKeyStatus[]) => rows.map(row => row.key_hash === hash ? { ...row, base_url: saved.base_url } : row)
+  if (configForm.engine === 'typesafe') configForm.api_key_statuses = merge(configForm.api_key_statuses)
+  if (engineDrafts.value.typesafe) engineDrafts.value.typesafe.api_key_statuses = merge(engineDrafts.value.typesafe.api_key_statuses)
+  if (status.value?.engine === 'typesafe') status.value.api_key_statuses = merge(status.value.api_key_statuses)
+}
+
+async function loadAll() {
   loading.value = true
-  configLoadError.value = false
-  configLoaded.value = false
   try {
-    const [config, availableGroups] = await Promise.all([
+    const [config, groupItems, runtimeStatus, proxyItems] = await Promise.all([
       adminAPI.riskControl.getConfig(),
-      adminAPI.groups.getAll().catch(() => [] as AdminGroup[]),
+      adminAPI.groups.getAll(),
+      adminAPI.riskControl.getStatus(),
+      // 代理列表加载失败不阻塞风控页面（仅影响下拉可选项）
+      adminAPI.proxies.getAll().catch(() => [] as Proxy[]),
     ])
     applyConfig(config)
-    configLoaded.value = true
-    groups.value = availableGroups
-    await Promise.all([loadStatus(true), loadLogs()])
-  } catch (error: unknown) {
-    configLoadError.value = true
-    appStore.showError(extractApiErrorMessage(error, t('admin.riskControl.loadFailed')))
+    groups.value = groupItems
+    status.value = runtimeStatus
+    proxies.value = proxyItems
+    if ((runtimeStatus.engine ?? 'openai') === configForm.engine && Array.isArray(runtimeStatus.api_key_statuses)) {
+      configForm.api_key_statuses = [...runtimeStatus.api_key_statuses]
+      prunePendingDeleteAPIKeyHashes()
+    }
+    await loadLogs()
+  } catch (err: unknown) {
+    appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.loadFailed')))
   } finally {
     loading.value = false
   }
 }
 
-async function refreshAll() {
-  if (refreshing.value || !configLoaded.value) return
-  refreshing.value = true
-  try {
-    const config = await adminAPI.riskControl.getConfig()
-    applyConfig(config)
-    await Promise.all([loadStatus(false), loadLogs()])
-  } catch (error: unknown) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.riskControl.loadFailed')))
-  } finally {
-    refreshing.value = false
-  }
-}
-
-async function loadStatus(silent: boolean) {
-  if (statusLoading.value) return
+async function loadStatus(silent = true) {
   statusLoading.value = true
   try {
-    status.value = await adminAPI.riskControl.getStatus()
-    statusLoadError.value = false
-  } catch (error: unknown) {
-    statusLoadError.value = true
-    status.value = null
-    if (!silent) appStore.showError(extractApiErrorMessage(error, t('admin.riskControl.statusFailed')))
+    const runtimeStatus = await adminAPI.riskControl.getStatus()
+    status.value = runtimeStatus
+    if ((runtimeStatus.engine ?? 'openai') === configForm.engine && Array.isArray(runtimeStatus.api_key_statuses)) {
+      configForm.api_key_statuses = [...runtimeStatus.api_key_statuses]
+      prunePendingDeleteAPIKeyHashes()
+    }
+  } catch (err: unknown) {
+    if (!silent) {
+      appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.statusFailed')))
+    }
   } finally {
     statusLoading.value = false
   }
 }
 
-async function loadLogs() {
-  const requestID = ++logRequestSequence
-  logsLoading.value = true
-  logs.value = []
-  try {
-    const result = await adminAPI.riskControl.listLogs({
-      page: pagination.page,
-      page_size: pagination.page_size,
-      result: filters.result,
-      search: filters.search || undefined,
-      from: normalizeLocalDateTime(filters.from),
-      to: normalizeLocalDateTime(filters.to),
-      group_id: filters.group_id > 0 ? filters.group_id : undefined,
-      endpoint: filters.endpoint || undefined,
-      context_class: filters.context_class || undefined,
-      model_profile: filters.model_profile || undefined,
-      decision_source: filters.decision_source || undefined,
-    })
-    if (requestID !== logRequestSequence) return
-    logs.value = result.items
-    pagination.total = result.total
-    pagination.page = result.page
-    pagination.page_size = result.page_size
-    pagination.pages = result.pages
-  } catch (error: unknown) {
-    if (requestID === logRequestSequence) {
-      pagination.total = 0
-      appStore.showError(extractApiErrorMessage(error, t('admin.riskControl.logsFailed')))
-    }
-  } finally {
-    if (requestID === logRequestSequence) logsLoading.value = false
-  }
-}
-
 async function saveConfig() {
-  if (saving.value || !validateConfig()) return
+  if (saving.value || upstreamSelecting.value) return
   saving.value = true
   try {
+    const modelFilterPayload = buildModelFilterPayload()
+    if (modelFilterPayload.type !== 'all' && modelFilterPayload.models.length === 0) {
+      appStore.showError(t('admin.riskControl.modelFilterModelsRequired'))
+      return
+    }
     const payload: UpdateContentModerationConfig = {
+      engine: configForm.engine,
       enabled: configForm.enabled,
-      mode: 'pre_block',
-      deepseek_enabled: configForm.deepseek_enabled,
-      remote_reviewers_enabled: configForm.remote_reviewers_enabled,
-      remote_consensus_required: remotePoolMinimumProviders,
-      remote_unavailable_policy: configForm.remote_unavailable_policy,
-      deepseek_total_timeout_ms: clampInteger(configForm.deepseek_total_timeout_ms, 100, 120000, 10000),
-      deepseek_threshold: 0.8,
-      deepseek_channels: configForm.deepseek_channels.map((channel, index) => ({
-        id: channel.id.trim(),
-        name: channel.name.trim(),
-        provider: normalizeReviewerProvider(channel.provider),
-        base_url: channel.base_url.trim().replace(/\/$/, ''),
-        model: channel.model.trim() || reviewerProviderPreset(channel.provider).model,
-        enabled: channel.enabled,
-        order: index,
-        timeout_ms: clampInteger(channel.timeout_ms, 100, 30000, 3000),
-        api_key: channel.api_key.trim() || undefined,
-        clear_api_key: channel.clear_api_key || undefined,
-      })),
-      remote_reviewers: configForm.deepseek_channels.map((channel, index) => ({
-        id: channel.id.trim(),
-        name: channel.name.trim(),
-        provider: normalizeReviewerProvider(channel.provider),
-        base_url: channel.base_url.trim().replace(/\/$/, ''),
-        model: channel.model.trim() || reviewerProviderPreset(channel.provider).model,
-        enabled: channel.enabled,
-        order: index,
-        timeout_ms: clampInteger(channel.timeout_ms, 100, 30000, 3000),
-        api_key: channel.api_key.trim() || undefined,
-        clear_api_key: channel.clear_api_key || undefined,
-      })),
-      first_layer_stage: configForm.first_layer_stage,
-      second_layer_enabled: configForm.remote_reviewers_enabled,
-      second_layer_stage: configForm.second_layer_stage,
-      layer1_keywords: layer1Keywords.value,
-      layer2_keywords: layer2Keywords.value,
+      mode: configForm.mode,
+      base_url: configForm.base_url,
+      model: configForm.model,
+      // 后端语义：0 清除代理（直连），>0 指定代理
+      proxy_id: configForm.proxy_id ?? 0,
+      timeout_ms: Number(configForm.timeout_ms) || 3000,
+      retry_count: Number(configForm.retry_count) || 0,
+      sample_rate: Number(configForm.sample_rate) || 0,
+      upstream_account_scope: configForm.upstream_account_scope,
+      upstream_account_ids: configForm.upstream_account_scope === 'all' ? [] : [...configForm.upstream_account_ids],
       all_groups: configForm.all_groups,
       group_ids: configForm.all_groups ? [] : [...configForm.group_ids],
       record_non_hits: configForm.record_non_hits,
-      block_status: clampInteger(configForm.block_status, 400, 599, 403),
-      block_message: configForm.block_message.trim() || defaultBlockMessage(),
+      clear_api_key: configForm.clear_api_key,
+      worker_count: Number(configForm.worker_count) || 4,
+      queue_size: Number(configForm.queue_size) || 32768,
+      block_status: Number(configForm.block_status) || 403,
+      block_message: configForm.block_message || defaultBlockMessage(),
       email_on_hit: configForm.email_on_hit,
       auto_ban_enabled: configForm.auto_ban_enabled,
       cyber_policy_exclude_from_ban_count: configForm.cyber_policy_exclude_from_ban_count,
-      ban_threshold: clampInteger(configForm.ban_threshold, 1, 1000, 10),
-      violation_window_hours: clampInteger(configForm.violation_window_hours, 1, 8760, 720),
-      hit_retention_days: clampInteger(configForm.hit_retention_days, 1, 3650, 180),
-      non_hit_retention_days: clampInteger(configForm.non_hit_retention_days, 1, 3, 3),
-      model_filter: {
-        type: configForm.model_filter_type,
-        models: configForm.model_filter_type === 'all' ? [] : parseLineList(configForm.model_filter_models_text),
-      },
+      ban_threshold: Number(configForm.ban_threshold) || 10,
+      violation_window_hours: Number(configForm.violation_window_hours) || 720,
+      hit_retention_days: Number(configForm.hit_retention_days) || 180,
+      non_hit_retention_days: Math.min(Math.max(Number(configForm.non_hit_retention_days) || 3, 1), 3),
+      pre_hash_check_enabled: configForm.pre_hash_check_enabled,
+      thresholds: buildRiskThresholdPayload(),
+      category_settings: moderationCategorySettings(configForm.engine, configForm.category_settings),
+      blocked_keywords: blockedKeywordList.value,
+      keyword_blocking_mode: configForm.keyword_blocking_mode,
+      model_filter: modelFilterPayload,
     }
+    const keys = parseApiKeys(configForm.api_keys_text)
+    if (!payload.clear_api_key && configForm.api_keys_mode === 'replace' && keys.length === 0) {
+      appStore.showError(t('admin.riskControl.apiKeysReplaceNoInput'))
+      return
+    }
+    if (keys.length > 0) {
+      payload.api_keys = keys
+      payload.api_keys_mode = configForm.api_keys_mode
+      payload.clear_api_key = false
+    }
+    if (!payload.clear_api_key && configForm.api_keys_mode !== 'replace' && pendingDeleteApiKeyHashes.value.length > 0) {
+      payload.delete_api_key_hashes = [...pendingDeleteApiKeyHashes.value]
+    }
+
+    engineDrafts.value[configForm.engine] = captureEngineDraft()
+    payload.engine_configs = Object.fromEntries(Object.entries(engineDrafts.value).map(([engine, draft]) => [engine, engineDraftPayload(draft, engine as ModerationEngine)]))
     const updated = await adminAPI.riskControl.updateConfig(payload)
     applyConfig(updated)
-    await Promise.all([loadStatus(true), loadLogs()])
+    settingsOpen.value = false
     appStore.showSuccess(t('admin.riskControl.saved'))
-  } catch (error: unknown) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.riskControl.saveFailed')))
+    await Promise.all([loadStatus(true), loadLogs()])
+  } catch (err: unknown) {
+    appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.saveFailed')))
   } finally {
     saving.value = false
   }
 }
 
-function validateConfig(): boolean {
-  if (configForm.remote_reviewers_enabled && enabledChannelCount.value === 0) {
-    appStore.showError(t('admin.riskControl.enabledChannelRequired'))
-    return false
-  }
-  const ids = new Set<string>()
-  for (const channel of configForm.deepseek_channels) {
-    const id = channel.id.trim()
-    if (!isValidChannelID(id) || !channel.name.trim() || !channel.model.trim() || !isAllowedBaseURL(channel.base_url)) {
-      appStore.showError(t('admin.riskControl.invalidChannel'))
-      return false
-    }
-    if (ids.has(id)) {
-      appStore.showError(t('admin.riskControl.duplicateChannelID'))
-      return false
-    }
-    ids.add(id)
-  }
-  if (configForm.model_filter_type !== 'all' && parseLineList(configForm.model_filter_models_text).length === 0) {
-    appStore.showError(t('admin.riskControl.modelFilterModelsRequired'))
-    return false
-  }
-  return true
-}
-
-function addChannel() {
-  const index = configForm.deepseek_channels.length
-  configForm.deepseek_channels.push({
-    ...defaultChannel('deepseek', index),
-    id: `reviewer-channel-${Date.now()}`,
-    name: t('admin.riskControl.newChannelName', { number: index + 1 }),
-    order: index,
-    enabled: false,
-  })
-}
-
-function setReviewerProvider(channel: EditableDeepSeekChannel, provider: string) {
-  const normalized = normalizeReviewerProvider(provider)
-  const preset = reviewerProviderPreset(normalized)
-  channel.provider = normalized
-  channel.base_url = preset.baseURL
-  channel.model = preset.model
-}
-
-function removeChannel(index: number) {
-  const channel = configForm.deepseek_channels[index]
-  if (!channel) return
-  if (channel.api_key_configured && !window.confirm(t('admin.riskControl.removeChannelConfirm'))) return
-  configForm.deepseek_channels.splice(index, 1)
-  normalizeChannelOrder()
-}
-
-function moveChannel(index: number, direction: -1 | 1) {
-  const target = index + direction
-  if (target < 0 || target >= configForm.deepseek_channels.length) return
-  const [channel] = configForm.deepseek_channels.splice(index, 1)
-  configForm.deepseek_channels.splice(target, 0, channel)
-  normalizeChannelOrder()
-}
-
-function normalizeChannelOrder() {
-  configForm.deepseek_channels.forEach((channel, index) => {
-    channel.order = index
-  })
-}
-
-function isModelFilterSelected(model: string): boolean {
-  return parseLineList(configForm.model_filter_models_text).includes(model)
-}
-
-function toggleModelFilterModel(model: string) {
-  const models = parseLineList(configForm.model_filter_models_text)
-  const index = models.indexOf(model)
-  if (index >= 0) models.splice(index, 1)
-  else models.push(model)
-  configForm.model_filter_models_text = models.join('\n')
-}
-
-function toggleClearChannelKey(channel: EditableDeepSeekChannel) {
-  channel.clear_api_key = !channel.clear_api_key
-  if (channel.clear_api_key) channel.api_key = ''
-}
-
-function canTestChannel(channel: EditableDeepSeekChannel): boolean {
-  return channel.api_key_configured && isChannelPersisted(channel)
-}
-
-async function testChannel(channel: EditableDeepSeekChannel) {
-  if (!canTestChannel(channel) || testingChannelID.value !== null) return
-  testingChannelID.value = channel.id
+async function loadLogs() {
+  logsLoading.value = true
   try {
-    channelTestResults[channel.id] = await adminAPI.riskControl.testAPIAvailability(channel.id)
-    await loadStatus(true)
-    appStore.showSuccess(t('admin.riskControl.channelTestComplete'))
-  } catch (error: unknown) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.riskControl.channelTestFailed')))
+    const params = {
+      page: pagination.page,
+      page_size: pagination.page_size,
+      result: filters.result || undefined,
+      group_id: filters.group_id || undefined,
+      endpoint: filters.endpoint || undefined,
+      search: filters.search || undefined,
+      from: normalizeDateTimeLocal(filters.from),
+      to: normalizeDateTimeLocal(filters.to),
+    }
+    const result = await adminAPI.riskControl.listLogs(params)
+    logs.value = result.items
+    pagination.total = result.total
+    pagination.page = result.page
+    pagination.page_size = result.page_size
+    pagination.pages = result.pages
+  } catch (err: unknown) {
+    appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.logsFailed')))
   } finally {
-    testingChannelID.value = null
+    logsLoading.value = false
   }
 }
 
-function setLayerStage(layer: LayerID, stage: ContentModerationLayerStage) {
-  if (layer === 'layer1') configForm.first_layer_stage = stage
-  else configForm.second_layer_stage = stage
+function canUnbanRow(row: ContentModerationLog): boolean {
+  return Boolean(row.user_id)
 }
 
-function selectLogView(view: ContentModerationLogView) {
-  if (filters.result === view) return
-  filters.result = view
-  reloadLogs()
+function evidenceStatusLabel(state?: string): string {
+  const known = ['saved', 'pending', 'expired', 'deleted', 'storage_failed', 'queue_full', 'interrupted', 'disabled', 'encryption_unavailable', 'encryption_failed', 'capture_busy', 'capture_failed', 'request_exceeds_parse_limit', 'input_unavailable_or_invalid', 'no_visible_input', 'structured_input_exceeds_limit', 'unavailable']
+  if (!state) return t('admin.riskControl.evidence.status.historical_unavailable')
+  return t(`admin.riskControl.evidence.status.${known.includes(state) ? state : 'unavailable'}`)
 }
 
-function reloadLogs() {
+function inputSummaryText(row: ContentModerationLog): string {
+  // Never present upstream rejection/error text as the user's input summary.
+  return row.input_excerpt || (row.action === 'cyber_policy' ? t('admin.riskControl.evidence.noInputSummary') : '-')
+}
+
+function openInputDetail(row: ContentModerationLog) {
+  inputDetailRow.value = row
+}
+
+function closeInputDetail() {
+  inputDetailRow.value = null
+}
+
+const recoveryUserID = ref<number | null>(null)
+function unbanUser(row: ContentModerationLog) { recoveryUserID.value = row.user_id ?? null }
+
+async function deleteFlaggedHash() {
+  if (!isFlaggedHashInputValid.value || hashActionLoading.value) return
+  hashActionLoading.value = true
+  try {
+    const result = await adminAPI.riskControl.deleteFlaggedHash(flaggedHashInput.value)
+    flaggedHashInput.value = ''
+    await loadStatus(true)
+    appStore.showSuccess(result.deleted ? t('admin.riskControl.flaggedHashDeleted') : t('admin.riskControl.flaggedHashNotFound'))
+  } catch (err: unknown) {
+    appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.flaggedHashDeleteFailed')))
+  } finally {
+    hashActionLoading.value = false
+  }
+}
+
+async function clearFlaggedHashes() {
+  if (hashActionLoading.value) return
+  const confirmed = window.confirm(t('admin.riskControl.clearFlaggedHashesConfirm'))
+  if (!confirmed) return
+  hashActionLoading.value = true
+  try {
+    const result = await adminAPI.riskControl.clearFlaggedHashes()
+    await loadStatus(true)
+    appStore.showSuccess(t('admin.riskControl.flaggedHashesCleared', { count: result.deleted }))
+  } catch (err: unknown) {
+    appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.flaggedHashesClearFailed')))
+  } finally {
+    hashActionLoading.value = false
+  }
+}
+
+function closeSettings() { if (!saving.value) settingsOpen.value = false }
+
+function openSettings() {
+  if (saving.value) return
+  configForm.upstream_account_scope = savedUpstreamScope.value.scope
+  configForm.upstream_account_ids = [...savedUpstreamScope.value.ids]
+  activeSettingsTab.value = 'basic'
+  settingsOpen.value = true
+}
+
+function reloadLogsFromFirstPage() {
   pagination.page = 1
   void loadLogs()
 }
 
-function changePage(page: number) {
+function onPageChange(page: number) {
   pagination.page = page
   void loadLogs()
 }
 
-function changePageSize(pageSize: number) {
+function onPageSizeChange(pageSize: number) {
   pagination.page = 1
   pagination.page_size = pageSize
   void loadLogs()
 }
 
-function openLog(row: ContentModerationLog) {
-  selectedLog.value = row
-  originalLog.value = null
-  sourceLogLoading.value = false
-  sourceLogError.value = false
-}
-
-function closeLogDetail() {
-  selectedLog.value = null
-  originalLog.value = null
-  archivePreview.value = null
-  archiveActionLoading.value = false
-  unbanActionLoading.value = false
-  sourceLogLoading.value = false
-  sourceLogError.value = false
-}
-
-async function requestDeleteFlaggedHash() {
-  const inputHash = flaggedHashInput.value.trim().toLowerCase()
-  if (!/^[a-f0-9]{64}$/.test(inputHash) || hashActionLoading.value) return
-  hashActionLoading.value = true
-  try {
-    const result = await adminAPI.riskControl.deleteFlaggedHash(inputHash)
-    flaggedHashInput.value = ''
-    appStore.showSuccess(
-      result.deleted ? t('admin.riskControl.flaggedHashDeleted') : t('admin.riskControl.flaggedHashNotFound')
-    )
-    await loadStatus(true)
-  } catch (error: unknown) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.riskControl.flaggedHashDeleteFailed')))
-  } finally {
-    hashActionLoading.value = false
+function toggleClearApiKey() {
+  configForm.clear_api_key = !configForm.clear_api_key
+  if (configForm.clear_api_key) {
+    configForm.api_keys_text = ''
+    configForm.api_keys_mode = 'append'
+    testedApiKeyStatuses.value = []
+    pendingDeleteApiKeyHashes.value = []
   }
 }
 
-async function requestClearFlaggedHashes() {
-  if (hashActionLoading.value || !window.confirm(t('admin.riskControl.clearFlaggedHashesConfirm'))) return
-  hashActionLoading.value = true
-  try {
-    const result = await adminAPI.riskControl.clearFlaggedHashes()
-    appStore.showSuccess(t('admin.riskControl.flaggedHashesCleared', { count: result.deleted }))
-    await loadStatus(true)
-  } catch (error: unknown) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.riskControl.flaggedHashesClearFailed')))
-  } finally {
-    hashActionLoading.value = false
+function setAPIKeysMode(mode: APIKeysWriteMode) {
+  configForm.api_keys_mode = mode
+  if (mode === 'replace') {
+    pendingDeleteApiKeyHashes.value = []
   }
 }
 
-async function previewSelectedArchive() {
-  const log = selectedLog.value
-  if (!log || archiveActionLoading.value) return
-  archiveActionLoading.value = true
-  try {
-    archivePreview.value = await adminAPI.riskControl.previewArchive(log.id)
-  } catch (error: unknown) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.riskControl.archivePreviewFailed')))
-  } finally {
-    archiveActionLoading.value = false
+function setModelFilterType(type: ContentModerationModelFilterType) {
+  configForm.model_filter_type = type
+  if (type === 'all') {
+    configForm.model_filter_models = []
   }
 }
 
-async function downloadSelectedArchive() {
-  const log = selectedLog.value
-  if (!log || archiveActionLoading.value) return
-  archiveActionLoading.value = true
-  try {
-    const blob = await adminAPI.riskControl.downloadArchive(log.id)
-    const href = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = href
-    link.download = `content-moderation-${log.id}.json`
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-    URL.revokeObjectURL(href)
-  } catch (error: unknown) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.riskControl.archiveDownloadFailed')))
-  } finally {
-    archiveActionLoading.value = false
-  }
-}
-
-async function deleteSelectedArchive() {
-  const log = selectedLog.value
-  if (!log || archiveActionLoading.value || !window.confirm(t('admin.riskControl.archiveDeleteConfirm'))) return
-  archiveActionLoading.value = true
-  try {
-    const result = await adminAPI.riskControl.deleteArchive(log.id)
-    if (result.deleted) {
-      log.archive_status = 'deleted'
-      log.archive_deleted_at = new Date().toISOString()
-      archivePreview.value = null
-      appStore.showSuccess(t('admin.riskControl.archiveDeleted'))
-      await loadLogs()
-    }
-  } catch (error: unknown) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.riskControl.archiveDeleteFailed')))
-  } finally {
-    archiveActionLoading.value = false
-  }
-}
-
-async function requestUnbanSelectedUser() {
-  const log = selectedLog.value
-  if (!log?.user_id || unbanActionLoading.value) return
-  unbanActionLoading.value = true
-  try {
-    await adminAPI.riskControl.unbanUser(log.user_id)
-    log.user_status = 'active'
-    appStore.showSuccess(t('admin.riskControl.unbanSuccess'))
-    await loadLogs()
-  } catch (error: unknown) {
-    appStore.showError(extractApiErrorMessage(error, t('admin.riskControl.unbanFailed')))
-  } finally {
-    unbanActionLoading.value = false
-  }
-}
-
-async function openReplaySource() {
-  const replay = selectedLog.value
-  const sourceID = replay?.source_log_id
-  if (!replay || !sourceID || sourceID === replay.id || sourceLogLoading.value) return
-
-  sourceLogError.value = false
-  const inPage = logs.value.find((item) => item.id === sourceID)
-  if (inPage) {
-    originalLog.value = inPage
+async function testApiKeys(useInputKeys: boolean) {
+  const keys = useInputKeys ? parseApiKeys(configForm.api_keys_text) : []
+  if (useInputKeys && keys.length === 0) {
+    appStore.showError(t('admin.riskControl.apiKeyTestNoInput'))
     return
   }
-
-  sourceLogLoading.value = true
+  apiKeyTesting.value = true
   try {
-    const original = await adminAPI.riskControl.getLog(sourceID)
-    // Do not replace a newer selection if the request completed after the
-    // administrator opened another record.
-    if (selectedLog.value?.id === replay.id) originalLog.value = original
-  } catch (error: unknown) {
-    if (selectedLog.value?.id === replay.id) {
-      sourceLogError.value = true
-      appStore.showError(extractApiErrorMessage(error, t('admin.riskControl.replaySourceUnavailable')))
-    }
-  } finally {
-    sourceLogLoading.value = false
-  }
-}
-
-function evidenceSegments(window: ContentModerationEvidenceWindow): EvidenceTextSegment[] {
-  const characters = Array.from(window.text || '')
-  if (characters.length === 0) return []
-
-  const spans = (window.matches || [])
-    .map((match) => ({
-      match,
-      start: Number.isFinite(match.start) ? Math.trunc(match.start) : -1,
-      end: Number.isFinite(match.end) ? Math.trunc(match.end) : -1,
-    }))
-    .filter((span) => span.start >= 0 && span.start < characters.length && span.end > span.start)
-    .sort((left, right) => left.start - right.start || right.end - left.end)
-
-  const segments: EvidenceTextSegment[] = []
-  let cursor = 0
-  for (const span of spans) {
-    const start = Math.max(cursor, Math.min(characters.length, span.start))
-    const end = Math.max(start, Math.min(characters.length, span.end))
-    if (start > cursor) {
-      segments.push({ text: characters.slice(cursor, start).join(''), matched: false, matches: [] })
-    }
-    if (end <= cursor) continue
-    segments.push({
-      text: characters.slice(start, end).join(''),
-      matched: true,
-      matches: [span.match],
+    const result = await adminAPI.riskControl.testAPIKeys({
+      engine: configForm.engine,
+      thresholds: buildRiskThresholdPayload(),
+      category_settings: moderationCategorySettings(configForm.engine, configForm.category_settings),
+      api_keys: keys,
+      base_url: configForm.base_url,
+      model: configForm.model,
+      timeout_ms: Number(configForm.timeout_ms) || 3000,
+      // 与保存语义一致：0 强制直连，>0 指定代理，确保测试与实际审计走同一条链路
+      proxy_id: configForm.proxy_id ?? 0,
+      prompt: moderationTestPrompt.value,
+      images: moderationTestImages.value,
     })
-    cursor = end
-  }
-  if (cursor < characters.length) {
-    segments.push({ text: characters.slice(cursor).join(''), matched: false, matches: [] })
-  }
-  return segments.length > 0
-    ? segments
-    : [{ text: characters.join(''), matched: false, matches: [] }]
-}
-
-function evidenceMatchTitle(matches: ContentModerationEvidenceMatch[]): string {
-  return matches
-    .map((match) => `${match.keyword} · ${match.tier}${match.rule_id ? ` · ${match.rule_id}` : ''}`)
-    .join('\n')
-}
-
-function channelKeyStatus(channel: EditableDeepSeekChannel): string {
-  if (channel.clear_api_key) return t('admin.riskControl.channelKeyWillClear')
-  if (channel.api_key.trim()) return t('admin.riskControl.channelKeyWillReplace')
-  if (channel.api_key_configured)
-    return t('admin.riskControl.channelKeyStored', { masked: channel.api_key_masked || '***' })
-  return t('admin.riskControl.channelKeyMissing')
-}
-
-function isChannelReachable(channel: EditableDeepSeekChannel): boolean {
-  if (!isChannelPersisted(channel)) return false
-  return channel.health_status === 'reachable' || channel.health_status === 'healthy' || channel.health_status === 'valid'
-}
-
-function channelStatusLabel(channel: EditableDeepSeekChannel): string {
-  if (!channel.enabled) return t('admin.riskControl.channelDisabled')
-  if (!isChannelPersisted(channel)) return t('admin.riskControl.channelNeedsSave')
-  if (isBreakerUnavailable(channel.breaker_status)) return t('admin.riskControl.channelCircuitOpen')
-  if (isChannelReachable(channel)) return t('admin.riskControl.channelReachable')
-  return t('admin.riskControl.channelNeedsTest')
-}
-
-function channelStatusClass(channel: EditableDeepSeekChannel): string {
-  if (!channel.enabled) return statusClasses.unknown
-  if (!isChannelPersisted(channel)) return statusClasses.warning
-  if (isBreakerUnavailable(channel.breaker_status)) return statusClasses.danger
-  if (isChannelReachable(channel)) return statusClasses.healthy
-  return statusClasses.warning
-}
-
-function channelHeartbeat(channel: EditableDeepSeekChannel): ContentModerationChannelHeartbeat | undefined {
-  const live = heartbeatByChannelID.value.get(channel.id)
-  if (live) return live
-  if (!channel.heartbeat_status && !channel.last_heartbeat_at && !channel.heartbeat_error) return undefined
-  return {
-    channel_id: channel.id,
-    provider: normalizeReviewerProvider(channel.provider),
-    status: channel.heartbeat_status || 'untested',
-    checked_at: channel.last_heartbeat_at,
-    latency_ms: channel.heartbeat_latency_ms,
-    http_status: channel.heartbeat_http_status,
-    error: channel.heartbeat_error,
+    moderationTestResult.value = result.audit_result ?? null
+    if (useInputKeys) {
+      testedApiKeyStatuses.value = result.items.map((item) => ({ ...item, configured: false }))
+    } else {
+      mergeConfiguredAPIKeyStatuses(result.items)
+      testedApiKeyStatuses.value = []
+      await loadStatus(true)
+    }
+    if (result.items.length === 0 || result.items.some(item => item.status === 'error' || item.status === 'frozen')) {
+      appStore.showError(t('admin.riskControl.apiKeyTestFailed'))
+    } else {
+      appStore.showSuccess(t('admin.riskControl.apiKeyTestDone', { count: result.items.length }))
+    }
+  } catch (err: unknown) {
+    appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.apiKeyTestFailed')))
+  } finally {
+    apiKeyTesting.value = false
   }
 }
 
-function heartbeatStatus(channel: EditableDeepSeekChannel): string {
-  return channelHeartbeat(channel)?.status || 'untested'
+function mergeConfiguredAPIKeyStatuses(items: ContentModerationAPIKeyStatus[]) {
+  if (!hasModerationAuditInput.value || configForm.api_key_statuses.length === 0) {
+    configForm.api_key_statuses = items
+    return
+  }
+  const updates = new Map(items.map((item) => [item.key_hash, item]))
+  configForm.api_key_statuses = configForm.api_key_statuses.map((item) => updates.get(item.key_hash) ?? item)
 }
 
-function heartbeatStatusLabel(channel: EditableDeepSeekChannel): string {
-  const status = heartbeatStatus(channel)
-  if (status === 'reachable') return t('admin.riskControl.heartbeatReachable')
-  if (status === 'unreachable') return t('admin.riskControl.heartbeatUnreachable')
-  if (status === 'disabled') return t('admin.riskControl.heartbeatDisabled')
-  return t('admin.riskControl.heartbeatUntested')
+function toggleDeleteStoredApiKey(row: ContentModerationAPIKeyStatus) {
+  if (!row.configured || !row.key_hash) return
+  const index = pendingDeleteApiKeyHashes.value.indexOf(row.key_hash)
+  if (index >= 0) {
+    pendingDeleteApiKeyHashes.value.splice(index, 1)
+    return
+  }
+  pendingDeleteApiKeyHashes.value.push(row.key_hash)
 }
 
-function heartbeatStatusClass(channel: EditableDeepSeekChannel): string {
-  const status = heartbeatStatus(channel)
-  if (status === 'reachable') return statusClasses.healthy
-  if (status === 'unreachable') return statusClasses.warning
-  if (status === 'disabled') return statusClasses.unknown
-  return statusClasses.unknown
+function isStoredApiKeyPendingDelete(row: ContentModerationAPIKeyStatus): boolean {
+  return row.configured && row.key_hash !== '' && pendingDeleteApiKeyHashes.value.includes(row.key_hash)
 }
 
-function heartbeatCheckedAt(channel: EditableDeepSeekChannel): string | undefined {
-  return channelHeartbeat(channel)?.checked_at
+function prunePendingDeleteAPIKeyHashes() {
+  const currentHashes = new Set(savedApiKeyRows.value.map((row) => row.key_hash).filter(Boolean))
+  pendingDeleteApiKeyHashes.value = pendingDeleteApiKeyHashes.value.filter((hash) => currentHashes.has(hash))
 }
 
-function heartbeatLatency(channel: EditableDeepSeekChannel): number | undefined {
-  const value = channelHeartbeat(channel)?.latency_ms
-  return value === undefined || value === null || value <= 0 ? undefined : value
+function clearModerationTestInput() {
+  moderationTestPrompt.value = ''
+  moderationTestImages.value = []
+  moderationTestResult.value = null
 }
 
-function heartbeatHTTPStatus(channel: EditableDeepSeekChannel): number | undefined {
-  const value = channelHeartbeat(channel)?.http_status
-  return value === undefined || value === null || value <= 0 ? undefined : value
+function removeModerationTestImage(index: number) {
+  moderationTestImages.value.splice(index, 1)
 }
 
-function heartbeatError(channel: EditableDeepSeekChannel): string | undefined {
-  return channelHeartbeat(channel)?.error || undefined
+async function handleModerationImageUpload(event: Event) {
+  const input = event.target as HTMLInputElement
+  await addModerationTestFiles(input.files)
+  input.value = ''
 }
 
-function channelDigest(channel: EditableDeepSeekChannel): string {
-  return JSON.stringify({
-    id: channel.id.trim(),
-    base_url: channel.base_url.trim().replace(/\/$/, ''),
-    model: channel.model.trim(),
-    timeout_ms: Number(channel.timeout_ms),
+async function handleModerationImageDrop(event: DragEvent) {
+  await addModerationTestFiles(event.dataTransfer?.files ?? null)
+}
+
+async function handleModerationImagePaste(event: ClipboardEvent) {
+  const files = Array.from(event.clipboardData?.files ?? []).filter((file) => file.type.startsWith('image/'))
+  if (files.length === 0) return
+  event.preventDefault()
+  await addModerationTestFiles(files)
+}
+
+async function addModerationTestFiles(files: FileList | File[] | null) {
+  if (!files) return
+  const items = Array.from(files).filter((file) => file.type.startsWith('image/'))
+  for (const file of items) {
+    if (moderationTestImages.value.length >= maxModerationTestImages) {
+      appStore.showError(t('admin.riskControl.auditTestImageLimit', { count: maxModerationTestImages }))
+      return
+    }
+    if (file.size > maxModerationTestImageSize) {
+      appStore.showError(t('admin.riskControl.auditTestImageTooLarge'))
+      continue
+    }
+    try {
+      moderationTestImages.value.push(await fileToDataURL(file))
+    } catch {
+      appStore.showError(t('admin.riskControl.auditTestImageReadFailed'))
+    }
+  }
+}
+
+function fileToDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(file)
   })
 }
 
-function isBreakerUnavailable(state?: string): boolean {
-  return state === 'open' || state === 'disabled' || state === 'auth_disabled' || state === 'cooldown'
-}
-
-function isChannelPersisted(channel: EditableDeepSeekChannel): boolean {
-  return (
-    channel.api_key.trim() === '' &&
-    !channel.clear_api_key &&
-    savedChannelDigests[channel.id] === channelDigest(channel)
-  )
-}
-
-function breakerLabel(channel: EditableDeepSeekChannel): string {
-  const state = channel.breaker_status || 'unknown'
-  const until = channel.cooldown_until ? ` / ${formatDateTime(channel.cooldown_until)}` : ''
-  return `${t(`admin.riskControl.breakerStates.${state}`)}${until}`
-}
-
-function channelTestResultText(result: TestDeepSeekChannelResponse): string {
-  const verdict = result.verdict
-    ? result.verdict === 'violation'
-      ? t('admin.riskControl.apiTestVerdictViolation')
-      : result.verdict === 'restricted'
-        ? t('admin.riskControl.apiTestVerdictRestricted')
-        : t('admin.riskControl.apiTestVerdictSafe')
-    : '-'
-  return t(result.reachable ? 'admin.riskControl.apiTestReachable' : 'admin.riskControl.apiTestUnreachable', {
-    latency: result.latency_ms,
-    status: result.http_status || '-',
-    provider: result.provider || '-',
-    model: result.model || '-',
-    verdict,
-    category: result.category || '-',
-    error: result.error || '-',
-  })
-}
-
-function normalizedAuditValue(value?: string): string {
-  return (value || '').trim().toLowerCase()
-}
-
-function successfulAttemptVerdict(attempt: NonNullable<ContentModerationLog['review_attempts']>[number]): string {
-  const verdict = normalizedAuditValue(attempt.verdict)
-  return verdict === 'safe' || verdict === 'restricted' || verdict === 'violation' ? verdict : ''
-}
-
-function attemptProviderID(attempt: NonNullable<ContentModerationLog['review_attempts']>[number]): string {
-  return normalizedAuditValue(attempt.provider || attempt.reviewer)
-}
-
-function restrictedVoteStats(row: ContentModerationLog) {
-  const allProviders = new Set<string>()
-  const providersByChunk = new Map<number, Set<string>>()
-
-  for (const attempt of row.review_attempts ?? []) {
-    if (successfulAttemptVerdict(attempt) !== 'restricted') continue
-    const provider = attemptProviderID(attempt)
-    if (!provider) continue
-    allProviders.add(provider)
-    if (!Number.isInteger(attempt.chunk_index)) continue
-    const chunkIndex = attempt.chunk_index as number
-    const providers = providersByChunk.get(chunkIndex) ?? new Set<string>()
-    providers.add(provider)
-    providersByChunk.set(chunkIndex, providers)
+function toggleGroup(groupID: number) {
+  const index = configForm.group_ids.indexOf(groupID)
+  if (index >= 0) {
+    configForm.group_ids.splice(index, 1)
+  } else {
+    configForm.group_ids.push(groupID)
   }
-
-  const maxChunkVotes = Math.max(0, ...[...providersByChunk.values()].map((providers) => providers.size))
-  const explicitVotes = Number.isInteger(row.remote_votes) && (row.remote_votes ?? 0) >= 0 ? row.remote_votes : undefined
-  return { explicitVotes, maxChunkVotes, observedProviders: allProviders.size }
 }
 
-function hasChunkReviewDisagreement(row: ContentModerationLog): boolean {
-  const votes = (row.review_attempts ?? [])
-    .map((attempt) => ({
-      chunkIndex: attempt.chunk_index,
-      provider: attemptProviderID(attempt),
-      verdict: successfulAttemptVerdict(attempt),
-    }))
-    .filter(
-      (vote): vote is { chunkIndex: number; provider: string; verdict: string } =>
-        Number.isInteger(vote.chunkIndex) && Boolean(vote.provider) && Boolean(vote.verdict)
-    )
-
-  return votes.some((vote, index) =>
-    votes.slice(index + 1).some(
-      (candidate) =>
-        candidate.chunkIndex === vote.chunkIndex &&
-        candidate.provider !== vote.provider &&
-        ((candidate.verdict === 'safe' && vote.verdict === 'restricted') ||
-          (candidate.verdict === 'restricted' && vote.verdict === 'safe'))
-    )
-  )
+function isGroupSelected(groupID: number): boolean {
+  return configForm.group_ids.includes(groupID)
 }
 
-function hasReviewDisagreement(row: ContentModerationLog): boolean {
-  const outcome = normalizedAuditValue(row.review_outcome)
-  const consensus = normalizedAuditValue(row.consensus_status)
-  return (
-    Boolean(row.reviewer_disagreement) ||
-    outcome === 'disagreement' ||
-    outcome === 'disagreement_restricted' ||
-    consensus.includes('disagreement') ||
-    consensus.includes('mismatch') ||
-    hasChunkReviewDisagreement(row)
-  )
+function modeLabel(mode: ModerationMode): string {
+  const found = modeOptions.value.find((option) => option.value === mode)
+  return found?.label ?? mode
 }
 
-function isRestrictionRecord(row: ContentModerationLog): boolean {
-  const outcome = normalizedAuditValue(row.review_outcome)
-  return row.action === 'restricted_block' || outcome === 'policy_restricted'
-}
-
-function auditDecisionState(row: ContentModerationLog): AuditDecisionState {
-  const outcome = normalizedAuditValue(row.review_outcome)
-  const consensus = normalizedAuditValue(row.consensus_status)
-
-  if (row.action === 'evidence_capacity_exceeded' || outcome === 'evidence_capacity_exceeded') {
-    return 'evidence_capacity'
+function modeDescription(mode: ModerationMode): string {
+  const descriptions: Record<ModerationMode, string> = {
+    pre_block: t('admin.riskControl.modePreBlockDesc'),
+    observe: t('admin.riskControl.modeObserveDesc'),
+    off: t('admin.riskControl.modeOffDesc'),
   }
-  if (hasReviewDisagreement(row)) return 'review_disagreement'
-  if (
-    row.action === 'review_unavailable' ||
-    outcome === 'unavailable' ||
-    consensus === 'unavailable' ||
-    consensus === 'consensus_unavailable' ||
-    Boolean(row.error)
-  ) {
-    return 'review_unavailable'
-  }
-  if (row.evidence_truncated) return 'evidence_truncated'
-  if (!isRestrictionRecord(row)) return 'default'
-
-  const votes = restrictedVoteStats(row)
-  const confirmationVotes = votes.explicitVotes ?? votes.maxChunkVotes
-  const explicitlyConfirmed = consensus === 'confirmed_restricted'
-  const confirmationStatusAllows = explicitlyConfirmed || (!consensus && outcome === 'policy_restricted')
-  if (confirmationVotes >= restrictedConsensusRequired && confirmationStatusAllows) {
-    return 'restricted_confirmed'
-  }
-  if (
-    consensus === 'single_restricted' ||
-    votes.explicitVotes === 1 ||
-    (votes.explicitVotes === undefined && votes.observedProviders === 1)
-  ) {
-    return 'restricted_single_vote'
-  }
-  return 'restricted_unconfirmed'
+  return descriptions[mode] ?? ''
 }
 
 function resultLabel(row: ContentModerationLog): string {
-  switch (auditDecisionState(row)) {
-    case 'evidence_capacity':
-      return t('admin.riskControl.result.evidenceCapacityUndetermined')
-    case 'evidence_truncated':
-      return t('admin.riskControl.result.evidenceTruncatedUndetermined')
-    case 'review_disagreement':
-      return t('admin.riskControl.result.disagreementUndetermined')
-    case 'review_unavailable':
-      return t('admin.riskControl.result.unavailableUndetermined')
-    case 'restricted_confirmed':
-      return t('admin.riskControl.result.restrictedConfirmed')
-    case 'restricted_single_vote':
-      return t('admin.riskControl.result.singleVoteUndetermined')
-    case 'restricted_unconfirmed':
-      return t('admin.riskControl.result.restrictedUnconfirmed')
-  }
-  if (row.action === 'degraded_allow') return t('admin.riskControl.result.degradedAllow')
-  if (row.review_outcome === 'safe') return t('admin.riskControl.result.pass')
-  if (row.review_outcome === 'risky' || row.review_outcome === 'confirmed_violation') {
-    return t('admin.riskControl.result.blocked')
-  }
-  if (row.action?.includes('shadow')) return t('admin.riskControl.result.shadow')
-  if (row.action?.includes('block') || row.flagged) return t('admin.riskControl.result.blocked')
+  if (row.action === 'cyber_policy') return t('admin.riskControl.action.cyberPolicy')
+  if (row.action === 'keyword_block') return t('admin.riskControl.action.keywordBlock')
+  if (row.action === 'block') return t('admin.riskControl.action.block')
+  if (row.action === 'error' || row.error) return t('admin.riskControl.action.error')
+  if (row.flagged) return t('admin.riskControl.result.hit')
   return t('admin.riskControl.result.pass')
 }
 
-function resultClass(row: ContentModerationLog): string {
-  if (auditDecisionState(row) !== 'default') return statusClasses.warning
-  if (row.action === 'degraded_allow') return statusClasses.warning
-  if (row.action?.includes('shadow')) return statusClasses.warning
-  if (row.action?.includes('block') || row.flagged) return statusClasses.danger
-  return statusClasses.healthy
+function resultBadgeClass(row: ContentModerationLog): string {
+  if (row.action === 'block' || row.action === 'keyword_block' || row.action === 'cyber_policy') return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+  if (row.action === 'error' || row.error) return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+  if (row.flagged) return 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-300'
+  return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
 }
 
-function decisionMeta(row: ContentModerationLog): string {
-  const state = auditDecisionState(row)
-  if (state === 'restricted_confirmed') {
-    const votes = restrictedVoteStats(row)
-    return t('admin.riskControl.confirmedVoteCount', {
-      count: votes.explicitVotes ?? votes.maxChunkVotes,
-    })
+function workerSlotClass(state: WorkerSlotState): string {
+  if (state === 'active') {
+    return 'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900/60 dark:bg-sky-900/20 dark:text-sky-300'
   }
-  if (state === 'restricted_single_vote') return t('admin.riskControl.singleVoteDetail')
-  if (state === 'restricted_unconfirmed') return t('admin.riskControl.consensusUnknownDetail')
-  if (
-    state === 'evidence_capacity' ||
-    state === 'evidence_truncated' ||
-    state === 'review_disagreement' ||
-    state === 'review_unavailable'
-  ) {
-    return t('admin.riskControl.undeterminedNonViolation')
+  if (state === 'idle') {
+    return 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-900/20 dark:text-emerald-300'
   }
-  return ''
+  return 'border-gray-100 bg-white text-gray-400 dark:border-dark-700 dark:bg-dark-800 dark:text-gray-500'
 }
 
-function contextLabel(value: string): string {
-  const key = `admin.riskControl.context.${value}`
-  const translated = t(key)
-  return translated === key ? value : translated
-}
-
-function confidenceText(row: ContentModerationLog): string {
-  const value = row.deepseek_confidence ?? row.highest_score
-  return value === undefined ? '-' : percent(value)
-}
-
-function firstAttemptName(row: ContentModerationLog): string {
-  const first = row.review_attempts?.[0]
-  return first?.channel_name || first?.channel_id || first?.reviewer || row.provider || '-'
-}
-
-function attemptSummary(row: ContentModerationLog): string {
-  const attempts = row.review_attempts ?? []
-  if (attempts.length === 0) return '-'
-  return t('admin.riskControl.attemptCount', { count: attempts.length })
-}
-
-function parseLineList(value: string): string[] {
-  return value
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter((item, index, values) => item.length > 0 && values.indexOf(item) === index)
-}
-
-function isValidChannelID(value: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)
-}
-
-function isAllowedBaseURL(value: string): boolean {
-  try {
-    const parsed = new URL(value)
-    if (parsed.username || parsed.password || parsed.search || parsed.hash) return false
-    if (parsed.protocol === 'https:') return true
-    if (parsed.protocol !== 'http:') return false
-    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '')
-    return host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host)
-  } catch {
-    return false
-  }
-}
-
-function clampInteger(value: number, min: number, max: number, fallback: number): number {
-  if (!Number.isFinite(value)) return fallback
-  return Math.max(min, Math.min(max, Math.trunc(value)))
+function workerDotClass(state: WorkerSlotState): string {
+  if (state === 'active') return 'bg-sky-500'
+  if (state === 'idle') return 'bg-emerald-500'
+  return 'bg-gray-300 dark:bg-dark-500'
 }
 
 function percent(value: number): string {
   if (!Number.isFinite(value)) return '-'
-  return `${(value * 100).toFixed(0)}%`
+  return `${(value * 100).toFixed(1)}%`
 }
 
-function latencyText(value?: number | null): string {
-  return value === undefined || value === null ? '-' : `${value} ms`
+function percentWidth(value: number): string {
+  if (!Number.isFinite(value)) return '0%'
+  return `${Math.min(100, Math.max(0, value * 100)).toFixed(1)}%`
+}
+
+function latencyText(value: number | null): string {
+  if (value === null || value === undefined) return '-'
+  return `${value} ms`
+}
+
+function apiKeyRowKey(row: ContentModerationAPIKeyStatus, index: number): string {
+  return `${row.configured ? 'saved' : 'test'}-${row.key_hash || index}`
+}
+
+function apiKeyStatusLabel(statusValue: ContentModerationAPIKeyStatus['status']): string {
+  const labels: Record<ContentModerationAPIKeyStatus['status'], string> = {
+    ok: t('admin.riskControl.apiKeyStatusOk'),
+    error: t('admin.riskControl.apiKeyStatusError'),
+    frozen: t('admin.riskControl.apiKeyStatusFrozen'),
+    unknown: t('admin.riskControl.apiKeyStatusUnknown'),
+  }
+  return labels[statusValue] ?? labels.unknown
+}
+
+function apiKeyStatusBadgeClass(statusValue: ContentModerationAPIKeyStatus['status']): string {
+  const classes: Record<ContentModerationAPIKeyStatus['status'], string> = {
+    ok: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300',
+    error: 'bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300',
+    frozen: 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300',
+    unknown: 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300',
+  }
+  return classes[statusValue] ?? classes.unknown
+}
+
+function apiKeyStatusDotClass(statusValue: ContentModerationAPIKeyStatus['status']): string {
+  const classes: Record<ContentModerationAPIKeyStatus['status'], string> = {
+    ok: 'bg-emerald-500',
+    error: 'bg-amber-500',
+    frozen: 'bg-red-500',
+    unknown: 'bg-gray-400',
+  }
+  return classes[statusValue] ?? classes.unknown
+}
+
+function apiKeyStatusMeta(row: ContentModerationAPIKeyStatus): string {
+  const parts: string[] = []
+  parts.push(t('admin.riskControl.apiKeyFailureCount', { count: row.failure_count || 0 }))
+  if (row.last_latency_ms > 0) {
+    parts.push(t('admin.riskControl.apiKeyLatency', { ms: row.last_latency_ms }))
+  }
+  if (row.last_http_status > 0) {
+    parts.push(t('admin.riskControl.apiKeyHTTPStatus', { status: row.last_http_status }))
+  }
+  if (row.frozen_until) {
+    parts.push(t('admin.riskControl.apiKeyFrozenUntil', { time: formatDateTime(row.frozen_until) }))
+  } else if (row.last_checked_at) {
+    parts.push(t('admin.riskControl.apiKeyLastChecked', { time: formatDateTime(row.last_checked_at) }))
+  } else {
+    parts.push(t('admin.riskControl.apiKeyNotTested'))
+  }
+  return parts.join(' / ')
+}
+
+function parseApiKeys(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter((item, index, arr) => item && arr.indexOf(item) === index)
+}
+
+function normalizeKeywordBlockingMode(value: unknown): KeywordBlockingMode {
+  if (value === 'keyword_only' || value === 'api_only' || value === 'keyword_and_api') {
+    return value
+  }
+  return 'keyword_and_api'
+}
+
+function normalizeModelFilter(value: unknown): ContentModerationModelFilter {
+  if (!value || typeof value !== 'object') {
+    return { type: 'all', models: [] }
+  }
+  const raw = value as Partial<ContentModerationModelFilter>
+  const type = normalizeModelFilterType(raw.type)
+  const models = type === 'all' ? [] : normalizeModelNames(raw.models)
+  return { type, models }
+}
+
+function normalizeModelFilterType(value: unknown): ContentModerationModelFilterType {
+  if (value === 'include' || value === 'exclude' || value === 'all') {
+    return value
+  }
+  return 'all'
+}
+
+function normalizeModelNames(models: unknown): string[] {
+  if (!Array.isArray(models)) return []
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const item of models) {
+    const model = String(item ?? '').trim()
+    if (!model) continue
+    const key = model.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(model)
+  }
+  return out
+}
+
+function buildModelFilterPayload(): ContentModerationModelFilter {
+  const type = normalizeModelFilterType(configForm.model_filter_type)
+  if (type === 'all') {
+    return { type: 'all', models: [] }
+  }
+  return {
+    type,
+    models: normalizeModelNames(configForm.model_filter_models),
+  }
+}
+
+function riskThresholdsFromConfig(thresholds: Record<string, number> | null | undefined, engine: ModerationEngine = configForm.engine): Record<string, number> {
+  const out = moderationThresholdDefaults(engine)
+  for (const category of Object.keys(out)) {
+    const value = thresholds?.[category]
+    if (Number.isFinite(value)) {
+      out[category] = clampPercent(Number(value) * 100)
+    }
+  }
+  return out
+}
+
+function buildRiskThresholdPayload(): Record<string, number> {
+  const payload: Record<string, number> = {}
+  for (const category of Object.keys(moderationThresholdDefaults(configForm.engine))) {
+    payload[category] = Number((clampPercent(configForm.thresholds[category]) / 100).toFixed(4))
+  }
+  return payload
+}
+
+function resetRiskThresholds() {
+  configForm.thresholds = moderationThresholdDefaults(configForm.engine)
+}
+
+function clampPercent(value: unknown): number {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) {
+    return 0
+  }
+  return Math.min(100, Math.max(0, numeric))
+}
+
+function formatThresholdPercent(value: number): string {
+  return `${clampPercent(value).toFixed(1)}%`
+}
+
+function parseBlockedKeywords(value: string): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const line of value.split(/\r?\n/)) {
+    const kw = line.trim()
+    if (!kw) continue
+    const key = kw.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(kw)
+  }
+  return out
+}
+
+function violationCountText(row: ContentModerationLog): string {
+  if (!row.flagged) return '-'
+  if (row.violation_count === 0) return t('admin.riskControl.violationNotCounted')
+  return t('admin.riskControl.violationCount', { count: row.violation_count || 1 })
+}
+
+function normalizeDateTimeLocal(value: string): string | undefined {
+  if (!value) return undefined
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return undefined
+  return date.toISOString()
 }
 
 function formatDateTime(value: string): string {
-  return formatDateTimeValue(value)
+  return formatDateTimeValue(value) || '-'
 }
 
-function dateOrDash(value?: string): string {
-  return value ? formatDateTime(value) : '-'
-}
-
-function normalizeLocalDateTime(value: string): string | undefined {
-  if (!value) return undefined
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
+function formatNumber(value: number): string {
+  return new Intl.NumberFormat().format(value)
 }
 
 onMounted(() => {
-  void loadInitial()
-  refreshTimer = window.setInterval(() => {
+  void loadAll()
+  statusTimer = window.setInterval(() => {
     void loadStatus(true)
-  }, 60000)
+  }, 15000)
 })
 
 onUnmounted(() => {
-  if (refreshTimer !== null) window.clearInterval(refreshTimer)
+  if (statusTimer !== null) {
+    window.clearInterval(statusTimer)
+    statusTimer = null
+  }
 })
 </script>

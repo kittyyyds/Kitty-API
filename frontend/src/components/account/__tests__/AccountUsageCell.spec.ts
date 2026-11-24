@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import AccountUsageCell from '../AccountUsageCell.vue'
-import type { Account, AccountUsageInfo } from '@/types'
+import type { Account } from '@/types'
 
 const { getUsage } = vi.hoisted(() => ({
   getUsage: vi.fn()
@@ -29,7 +29,7 @@ function makeAccount(overrides: Partial<Account>): Account {
   return {
     id: 1,
     name: 'account',
-    platform: 'anthropic',
+    platform: 'antigravity',
     type: 'oauth',
     proxy_id: null,
     concurrency: 1,
@@ -113,68 +113,6 @@ const cnUsageCellStubs = {
 }
 
 describe('AccountUsageCell', () => {
-  it.each([
-    ['anthropic', 'oauth'], ['anthropic', 'setup-token']
-  ] as const)('refreshes %s %s snapshots without forcing upstream reads and reuses the new cache', async (platform, type) => {
-    const account = makeAccount({ id: 98200 + (type === 'oauth' ? 1 : 2), platform, type, extra: {} })
-    getUsage.mockResolvedValue({ five_hour: { utilization: 21 }, seven_day: { utilization: 31 } })
-    const wrapper = mount(AccountUsageCell, { props: { account } })
-    await flushPromises()
-    expect(getUsage).toHaveBeenCalledTimes(1)
-    getUsage.mockResolvedValue({ five_hour: { utilization: 44 }, seven_day: { utilization: 54 } })
-    const next = { ...account, last_used_at: null, extra: { passive_usage_7d_utilization: 0.54 } }
-    await wrapper.setProps({ account: next })
-    await flushPromises()
-    expect(getUsage).toHaveBeenCalledTimes(2)
-    expect(getUsage).toHaveBeenLastCalledWith(account.id, 'passive', false)
-    expect(wrapper.text()).toContain('54')
-    await wrapper.setProps({ account: { ...next, updated_at: 'unrelated', current_concurrency: 3 } })
-    await flushPromises()
-    expect(getUsage).toHaveBeenCalledTimes(2)
-    wrapper.unmount()
-  })
-
-  it.each(['anthropic'] as const)('asks the desktop batch manager to refresh %s without force', async (platform) => {
-    const account = makeAccount({ id: 98301, platform, extra: {} })
-    const requestBatchedUsage = vi.fn()
-    const wrapper = mount(AccountUsageCell, { props: { account, requestBatchedUsage } })
-    await flushPromises()
-    requestBatchedUsage.mockClear()
-    await wrapper.setProps({ account: { ...account, last_used_at: '2026-11-16T10:00:00Z' } })
-    expect(requestBatchedUsage).toHaveBeenCalledTimes(1)
-    expect(requestBatchedUsage).toHaveBeenCalledWith(expect.objectContaining({ id: account.id }), { source: 'passive' })
-    expect(getUsage).not.toHaveBeenCalled()
-    wrapper.unmount()
-  })
-
-  it.each(['anthropic'] as const)('defers mobile %s snapshot refresh until visible', async (platform) => {
-    vi.mocked(window.matchMedia).mockReturnValue({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() } as unknown as MediaQueryList)
-    let notify: IntersectionObserverCallback = () => {}
-    vi.stubGlobal('IntersectionObserver', class {
-      constructor(callback: IntersectionObserverCallback) { notify = callback }
-      observe() {}
-      disconnect() {}
-    })
-    const account = makeAccount({ id: 98401, platform, extra: {} })
-    getUsage.mockResolvedValue({ five_hour: { utilization: 44 } })
-    const wrapper = mount(AccountUsageCell, { props: { account } })
-    try {
-      await flushPromises()
-      await wrapper.setProps({ account: { ...account, last_used_at: '2026-11-16T10:00:00Z' } })
-      expect(getUsage).not.toHaveBeenCalled()
-      notify([{ isIntersecting: true }] as IntersectionObserverEntry[], {} as IntersectionObserver)
-      await flushPromises()
-      expect(getUsage).toHaveBeenCalledTimes(1)
-      expect(getUsage).toHaveBeenLastCalledWith(account.id, 'passive', false)
-      await wrapper.setProps({ account: { ...account, last_used_at: '2026-11-16T10:01:00Z' } })
-      await flushPromises()
-      expect(getUsage).toHaveBeenCalledTimes(2)
-    } finally {
-      wrapper.unmount()
-      vi.unstubAllGlobals()
-    }
-  })
-
   beforeEach(() => {
     getUsage.mockReset()
     Object.defineProperty(window, 'matchMedia', {
@@ -192,97 +130,23 @@ describe('AccountUsageCell', () => {
     })
   })
 
-  it.each(['oauth', 'setup-token', 'apikey'] as const)('renders Tibo HTTP verdict for OpenAI %s accounts', async (type) => {
-    getUsage.mockResolvedValue({})
+  it('keeps cached Claude quota visible while a replacement batch is loading', async () => {
+    const requestBatchedUsage = vi.fn()
     const wrapper = mount(AccountUsageCell, {
-      props: {
-        account: makeAccount({
-          id: type === 'oauth' ? 9701 : type === 'setup-token' ? 9702 : 9704,
-          platform: 'openai',
-          type,
-          codex_turn_tickets: [
-            { model: 'gpt-6-astra', tibo_routes: [{ route: 'http', verdict: 'healthy', probes_hour: 0, flips_hour: 0 }] },
-            { model: 'gpt-5.6-sol', tibo_routes: [{ route: 'http', verdict: 'degraded', probes_hour: 0, flips_hour: 0 }] },
-            { model: 'custom-model' },
-          ],
-        }),
-      },
-      global: { stubs: {
-        OpenAIQuotaResetCell: { template: '<div data-test="quota-reset" />' },
-        UsageProgressBar: true,
-        AccountQuotaInfo: true,
-      } },
+      props: { account: makeAccount({ id: 98101, platform: 'anthropic', type: 'oauth' }), requestBatchedUsage,
+        batchedUsage: { five_hour: { utilization: 21 } }, batchedUsageLoading: false },
+      global: { stubs: { UsageProgressBar: { props: ['utilization'], template: '<div data-test="quota">{{ utilization }}</div>' }, AccountQuotaInfo: true } }
     })
     await flushPromises()
-    expect(wrapper.text()).toContain('astra')
-    expect(wrapper.findAll('[data-testid="tibo-dot"]')).toHaveLength(48)
-    expect(wrapper.text()).not.toContain('admin.accounts.openai.codexTiboRouteVerdict.healthy')
-    expect(wrapper.text()).not.toContain('admin.accounts.openai.codexTiboRouteVerdict.degraded')
-    expect(wrapper.text()).not.toContain('codexTurnTicket')
-    if (type === 'setup-token' || type === 'apikey') {
-      expect(getUsage).not.toHaveBeenCalled()
-      expect(wrapper.find('[data-test="quota-reset"]').exists()).toBe(false)
-    }
-    await wrapper.setProps({ account: { ...wrapper.props('account'), codex_turn_tickets: [] } })
-    expect(wrapper.find('[data-testid="tibo-routes"]').exists()).toBe(false)
-    wrapper.unmount()
-  })
-
-  it('updates 24 Tibo dots for a paused OAuth account without enabling it', async () => {
-    getUsage.mockResolvedValue({})
-    const account = makeAccount({
-      platform: 'openai', type: 'oauth', schedulable: false,
-      codex_turn_tickets: [{ model: 'gpt-6-astra', tibo_routes: [{
-        route: 'http', verdict: 'healthy', probes_hour: 1, flips_hour: 0,
-        recent_samples: [{ verdict: 'healthy', at: '2026-11-02T10:00:00Z' }],
-      }] }],
-    })
-    const wrapper = mount(AccountUsageCell, {
-      props: { account },
-      global: { stubs: { OpenAIQuotaResetCell: true, UsageProgressBar: true } },
-    })
-    await flushPromises()
-    expect(wrapper.findAll('[data-testid="tibo-dot"]')).toHaveLength(24)
-    expect(wrapper.findAll('[data-testid="tibo-dot"]')[23].classes()).toContain('bg-emerald-500')
-    await wrapper.setProps({ account: {
-      ...account,
-      codex_turn_tickets: [{ model: 'gpt-6-astra', tibo_routes: [{
-        route: 'http', verdict: 'degraded', probes_hour: 2, flips_hour: 1,
-        recent_samples: [
-          { verdict: 'healthy', at: '2026-11-02T10:00:00Z' },
-          { verdict: 'degraded', at: '2026-11-02T10:10:00Z' },
-        ],
-      }] }],
-    } })
-    const dots = wrapper.findAll('[data-testid="tibo-dot"]')
-    expect(dots).toHaveLength(24)
-    expect(dots[22].classes()).toContain('bg-emerald-500')
-    expect(dots[23].classes()).toContain('bg-red-500')
-    expect(dots[23].attributes('title')).toContain('2026-11-02T10:10:00Z')
-    expect(wrapper.props('account').schedulable).toBe(false)
-    wrapper.unmount()
-  })
-
-  it('does not render Cookie WS recovery chips', async () => {
-    getUsage.mockResolvedValue({})
-    const value = makeAccount({
-      id: 9703, platform: 'openai', type: 'oauth',
-      codex_turn_tickets: [{
-        model: 'gpt-6-astra', ready: false, remaining_seconds: 0, blocked: false,
-        tibo_routes: [{ route: 'http', verdict: 'degraded', probes_hour: 0, flips_hour: 0 }]
-      }]
-    })
-    const wrapper = mount(AccountUsageCell, {
-      props: { account: value },
-      global: { stubs: { OpenAIQuotaResetCell: true, UsageProgressBar: true } }
-    })
-    await flushPromises()
-    expect(wrapper.find('[data-testid="cookie-ws-summary"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="cookie-ws-route"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('astra')
-    expect(wrapper.text()).not.toContain('admin.accounts.openai.codexTiboRouteVerdict.degraded')
-    expect(wrapper.text()).not.toContain('codexTurnTicket')
-    expect(wrapper.find('[data-testid="cookie-ws-slot-0"]').exists()).toBe(false)
+    const quota = wrapper.get('[data-test="quota"]').element
+    await wrapper.setProps({ batchedUsageLoading: true })
+    expect(wrapper.get('[data-test="quota"]').text()).toBe('21')
+    expect(wrapper.get('[data-test="quota"]').element).toBe(quota)
+    expect(wrapper.find('.animate-pulse').exists()).toBe(false)
+    expect(wrapper.attributes('aria-busy')).toBe('true')
+    await wrapper.setProps({ batchedUsage: { five_hour: { utilization: 44 } }, batchedUsageLoading: false })
+    expect(wrapper.get('[data-test="quota"]').text()).toBe('44')
+    expect(wrapper.get('[data-test="quota"]').element).toBe(quota)
     wrapper.unmount()
   })
 
@@ -319,6 +183,7 @@ describe('AccountUsageCell', () => {
             template: '<button data-test="embedded-ollama" @click="$emit(\'updated\', { ...account.ollama_cloud_usage, auto_refresh_enabled: false })">{{ account.ollama_cloud_usage.snapshot.data.five_hour.used_percent }}</button>'
           },
           UsageProgressBar: true,
+          AccountQuotaInfo: true
         }
       }
     })
@@ -347,7 +212,7 @@ describe('AccountUsageCell', () => {
           })
         },
         global: {
-          stubs: { ...cnUsageCellStubs, UsageProgressBar: true }
+          stubs: { ...cnUsageCellStubs, UsageProgressBar: true, AccountQuotaInfo: true }
         }
       })
 
@@ -381,6 +246,7 @@ describe('AccountUsageCell', () => {
             template: '<button data-test="embedded-ollama" @click="$emit(\'updated\', { ...account.ollama_cloud_usage, auto_refresh_enabled: false })" />'
           },
           UsageProgressBar: true,
+          AccountQuotaInfo: true
         }
       }
     })
@@ -407,7 +273,7 @@ describe('AccountUsageCell', () => {
         })
       },
       global: {
-        stubs: { ...cnUsageCellStubs, UsageProgressBar: true }
+        stubs: { ...cnUsageCellStubs, UsageProgressBar: true, AccountQuotaInfo: true }
       }
     })
 
@@ -417,7 +283,6 @@ describe('AccountUsageCell', () => {
     expect(wrapper.find('[data-test="cn-balance-cell"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="embedded-ollama"]').exists()).toBe(false)
   })
-
 
   it.each(['opencode_go', 'kimi', 'zhipu', 'deepseek', 'minimax'] as const)(
     '%s 平台 OpenCode Go eligible 时只渲染 OpenCode 用量单元格并跳过 CN 子单元格',
@@ -562,6 +427,185 @@ describe('AccountUsageCell', () => {
     expect(wrapper.text()).not.toContain('-')
   })
 
+  it('Antigravity 图片用量会聚合新旧 image 模型', async () => {
+    getUsage.mockResolvedValue({
+      antigravity_quota: {
+        'gemini-2.5-flash-image': {
+          utilization: 45,
+          reset_time: '2026-03-01T11:00:00Z'
+        },
+        'gemini-3.1-flash-image': {
+          utilization: 20,
+          reset_time: '2026-03-01T10:00:00Z'
+        },
+        'gemini-3-pro-image': {
+          utilization: 70,
+          reset_time: '2026-03-01T09:00:00Z'
+        }
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 1001,
+          platform: 'antigravity',
+          type: 'oauth',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('admin.accounts.usageWindow.gemini3Image|70|2026-03-01T09:00:00Z')
+  })
+
+  it('Antigravity shows the 5-hour and weekly window of each quota group when the summary is present', async () => {
+    getUsage.mockResolvedValue({
+      antigravity_quota: {
+        'gemini-3-flash': { utilization: 99, reset_time: '2026-11-11T15:52:48Z' }
+      },
+      antigravity_quota_groups: [
+        {
+          key: 'gemini',
+          name: 'Gemini Models',
+          windows: [
+            { window: '5h', utilization: 60, resets_at: '2026-11-04T20:52:48Z' },
+            { window: 'weekly', utilization: 25, resets_at: '2026-11-11T15:52:48Z' }
+          ]
+        },
+        {
+          key: '3p',
+          name: 'Claude and GPT models',
+          windows: [
+            { window: '5h', utilization: 0, resets_at: null },
+            { window: 'weekly', utilization: 10, resets_at: '2026-11-11T15:52:48Z' }
+          ]
+        },
+        {
+          key: 'gemini-argon-wtu',
+          name: 'Gemini 4 Argon',
+          windows: [{ window: 'weekly', utilization: 20, resets_at: '2026-11-11T17:11:15Z' }]
+        }
+      ]
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 1003, platform: 'antigravity', type: 'oauth', extra: {} })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    const bars = wrapper.findAll('.usage-bar').map((bar) => bar.text())
+    expect(bars).toEqual([
+      'admin.accounts.usageWindow.antigravityGemini5h|60|2026-11-04T20:52:48Z',
+      'admin.accounts.usageWindow.antigravityGeminiWeekly|25|2026-11-11T15:52:48Z',
+      'admin.accounts.usageWindow.antigravityOther5h|0|',
+      'admin.accounts.usageWindow.antigravityOtherWeekly|10|2026-11-11T15:52:48Z',
+      // Pro plans' separate Argon quota is its own row, not a second Claude/GPT week.
+      'admin.accounts.usageWindow.antigravityArgonWeekly|20|2026-11-11T17:11:15Z'
+    ])
+    // The per-model figure (one tighter window per model) is not shown next to the real windows.
+    expect(wrapper.text()).not.toContain('gemini3Flash')
+  })
+
+  it('Antigravity query button refreshes past the server cache', async () => {
+    const first = {
+      antigravity_quota_groups: [
+        { key: '3p', name: 'Claude and GPT models', windows: [{ window: 'weekly', utilization: 100, resets_at: '2026-11-12T03:39:37Z' }] }
+      ]
+    }
+    const upgraded = {
+      antigravity_quota_groups: [
+        { key: '3p', name: 'Claude and GPT models', windows: [{ window: 'weekly', utilization: 0, resets_at: '2026-11-14T21:22:49Z' }] }
+      ]
+    }
+    getUsage.mockResolvedValueOnce(first).mockResolvedValueOnce(upgraded)
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 1006, platform: 'antigravity', type: 'oauth', extra: {} })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+    await flushPromises()
+    expect(wrapper.find('.usage-bar').text()).toContain('|100|')
+
+    const button = wrapper.find('[data-testid="antigravity-active-query"]')
+    expect(button.exists()).toBe(true)
+    expect(button.text()).toContain('admin.accounts.usageWindow.activeQuery')
+    await button.trigger('click')
+    await flushPromises()
+
+    // An active query that bypasses the cache (an upgrade or reset shows at once).
+    expect(getUsage).toHaveBeenLastCalledWith(1006, 'active', true)
+    expect(wrapper.find('.usage-bar').text()).toContain('|0|2026-11-14T21:22:49Z')
+  })
+
+  it('Antigravity 会显示 AI Credits 余额信息', async () => {
+    getUsage.mockResolvedValue({
+      ai_credits: [
+        {
+          credit_type: 'GOOGLE_ONE_AI',
+          amount: 25,
+          minimum_balance: 5
+        }
+      ]
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 1002,
+          platform: 'antigravity',
+          type: 'oauth',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: true,
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('admin.accounts.aiCreditsBalance')
+    expect(wrapper.text()).toContain('25')
+  })
+
+
   it('OpenAI OAuth 快照已过期时首屏会重新请求 usage', async () => {
     getUsage.mockResolvedValue({
       five_hour: {
@@ -611,13 +655,14 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization', 'resetsAt', 'windowStats', 'color'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ windowStats?.tokens }}</div>'
           },
+          AccountQuotaInfo: true
         }
       }
     })
 
     await flushPromises()
 
-    expect(getUsage).toHaveBeenCalledWith(2000, 'passive', false)
+    expect(getUsage).toHaveBeenCalledWith(2000)
     expect(wrapper.text()).toContain('5h|15|300')
     expect(wrapper.text()).toContain('7d|77|300')
   })
@@ -671,83 +716,17 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization', 'resetsAt', 'windowStats', 'color'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ windowStats?.tokens }}</div>'
           },
+          AccountQuotaInfo: true
         }
       }
     })
 
     await flushPromises()
 
-    expect(getUsage).toHaveBeenCalledWith(2001, 'passive', false)
+    expect(getUsage).toHaveBeenCalledWith(2001)
     // 单一数据源：始终使用 /usage API 返回值，忽略 codex 快照
     expect(wrapper.text()).toContain('5h|18|900')
     expect(wrapper.text()).toContain('7d|36|900')
-  })
-
-  it.each(['oauth', 'setup-token'] as const)('Claude %s 分别估算 5h 和 7d，不混用模型专属窗口费用', async (type) => {
-    getUsage.mockResolvedValue({
-      five_hour: {
-        utilization: 25, resets_at: null, remaining_seconds: 0,
-        window_stats: { requests: 1, tokens: 100, cost: 2, user_cost: 20 }
-      },
-      seven_day: {
-        utilization: 40, resets_at: null, remaining_seconds: 0,
-        window_stats: { requests: 2, tokens: 200, cost: 12, user_cost: 120 }
-      },
-      seven_day_sonnet: { utilization: 50, resets_at: null, remaining_seconds: 0 },
-      seven_day_fable: { utilization: 60, resets_at: null, remaining_seconds: 0 }
-    })
-    const wrapper = mount(AccountUsageCell, {
-      props: { account: makeAccount({ id: type === 'oauth' ? 6761 : 6762, platform: 'anthropic', type }) },
-      global: {
-        stubs: {
-          UsageProgressBar: {
-            props: ['label', 'windowStats', 'estimatedTotalCost'],
-            template: '<div>{{ label }}|{{ windowStats?.cost ?? "none" }}|{{ estimatedTotalCost ?? "none" }}</div>'
-          },
-          ClaudeResetCreditsCell: true
-        }
-      }
-    })
-    await flushPromises()
-    expect(wrapper.text()).toContain('5h|2|8')
-    expect(wrapper.text()).toContain('7d|12|30')
-    expect(wrapper.text()).toContain('7d S|none|none')
-    expect(wrapper.text()).toContain('7d F|none|none')
-    wrapper.unmount()
-  })
-
-  it.each([
-    { utilization: 0, cost: 12 },
-    { utilization: -1, cost: 12 },
-    { utilization: Number.NaN, cost: 12 },
-    { utilization: Number.POSITIVE_INFINITY, cost: 12 },
-    { utilization: 40, cost: 0 },
-    { utilization: 40, cost: -1 },
-    { utilization: 40, cost: Number.POSITIVE_INFINITY },
-    { utilization: 40, cost: undefined },
-    { utilization: undefined, cost: 12 }
-  ])('Claude 缺少有效费用或使用率时隐藏估算 (%o)', async ({ utilization, cost }) => {
-    const window = {
-      utilization, resets_at: null, remaining_seconds: 0,
-      window_stats: { requests: 1, tokens: 100, cost }
-    }
-    getUsage.mockResolvedValue({ five_hour: window, seven_day: window })
-    const wrapper = mount(AccountUsageCell, {
-      props: { account: makeAccount({ id: 6763, platform: 'anthropic', type: 'setup-token' }) },
-      global: {
-        stubs: {
-          UsageProgressBar: {
-            props: ['label', 'estimatedTotalCost'],
-            template: '<div>{{ label }}|{{ estimatedTotalCost ?? "none" }}</div>'
-          },
-          ClaudeResetCreditsCell: true
-        }
-      }
-    })
-    await flushPromises()
-    expect(wrapper.text()).toContain('5h|none')
-    expect(wrapper.text()).toContain('7d|none')
-    wrapper.unmount()
   })
 
   it('仅为 OpenAI OAuth 7d 窗口计算预计总费用', async () => {
@@ -879,6 +858,7 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization', 'resetsAt', 'windowStats', 'color'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ windowStats?.tokens }}</div>'
           },
+          AccountQuotaInfo: true
         }
       }
     })
@@ -892,8 +872,7 @@ describe('AccountUsageCell', () => {
 
     // 手动刷新再拉一次
     expect(getUsage).toHaveBeenCalledTimes(2)
-    expect(getUsage).toHaveBeenNthCalledWith(1, 2010, 'passive', false)
-    expect(getUsage).toHaveBeenNthCalledWith(2, 2010, 'active', true)
+    expect(getUsage).toHaveBeenCalledWith(2010)
     // 单一数据源：始终使用 /usage API 值
     expect(wrapper.text()).toContain('5h|18|900')
   })
@@ -941,13 +920,14 @@ describe('AccountUsageCell', () => {
 	        props: ['label', 'utilization', 'resetsAt', 'windowStats', 'color'],
 	        template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ windowStats?.tokens }}</div>'
 	      },
+	      AccountQuotaInfo: true
 	    }
 	  }
 	})
 
 	await flushPromises()
 
-	expect(getUsage).toHaveBeenCalledWith(2002, 'passive', false)
+	expect(getUsage).toHaveBeenCalledWith(2002)
 	expect(wrapper.text()).toContain('5h|0|27700')
 	expect(wrapper.text()).toContain('7d|0|27700')
   })
@@ -1001,6 +981,7 @@ describe('AccountUsageCell', () => {
 	        props: ['label', 'utilization', 'resetsAt', 'windowStats', 'color'],
 	        template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ windowStats?.tokens }}</div>'
 	      },
+	      AccountQuotaInfo: true
 	    }
 	  }
 	})
@@ -1021,7 +1002,6 @@ describe('AccountUsageCell', () => {
 
 	await flushPromises()
 	expect(getUsage).toHaveBeenCalledTimes(2)
-	expect(getUsage).toHaveBeenLastCalledWith(2003, 'passive', false)
 	expect(wrapper.text()).toContain('5h|0|200')
   })
 
@@ -1046,6 +1026,7 @@ describe('AccountUsageCell', () => {
       global: {
         stubs: {
           UsageProgressBar: true,
+          AccountQuotaInfo: true,
           OpenAIQuotaResetCell: {
             props: ['account'],
             emits: ['account-updated'],
@@ -1115,18 +1096,19 @@ describe('AccountUsageCell', () => {
 	        props: ['label', 'utilization', 'resetsAt', 'windowStats', 'color'],
 	        template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ windowStats?.tokens }}</div>'
 	      },
+	      AccountQuotaInfo: true
 	    }
 	  }
 	})
 
 	await flushPromises()
 
-  expect(getUsage).toHaveBeenCalledWith(2004, 'passive', false)
+  expect(getUsage).toHaveBeenCalledWith(2004)
   expect(wrapper.text()).toContain('5h|100|106540000')
   expect(wrapper.text()).toContain('7d|100|106540000')
   })
 
-  it('Key 账号会展示 today stats 徽章并带 A/U 提示', async () => {
+  it('Key 账号的用量窗口不重复展示今日和总计统计', async () => {
 		const wrapper = mount(AccountUsageCell, {
 		  props: {
 		    account: makeAccount({
@@ -1145,20 +1127,18 @@ describe('AccountUsageCell', () => {
 		  global: {
 		    stubs: {
 		      UsageProgressBar: true,
+		      AccountQuotaInfo: true
 		    }
 		  }
 		})
 
 		await flushPromises()
 
-		expect(wrapper.text()).toContain('1.0M req')
-		expect(wrapper.text()).toContain('1.0B')
-		expect(wrapper.text()).toContain('A $12.35')
-		expect(wrapper.text()).toContain('U $6.79')
+		expect(wrapper.text().trim()).toBe('-')
 
 		const badges = wrapper.findAll('span[title]')
-		expect(badges.some(node => node.attributes('title') === 'usage.accountBilled')).toBe(true)
-		expect(badges.some(node => node.attributes('title') === 'usage.userBilled')).toBe(true)
+		expect(badges.some(node => node.attributes('title') === 'usage.accountBilled')).toBe(false)
+		expect(badges.some(node => node.attributes('title') === 'usage.userBilled')).toBe(false)
   })
 
   it('Grok OAuth compact UI drops local chips and header quota bars', async () => {
@@ -1188,6 +1168,7 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization', 'resetsAt', 'color'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}</div>'
           },
+          AccountQuotaInfo: true
         }
       }
     })
@@ -1222,6 +1203,7 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}</div>'
           },
+          AccountQuotaInfo: true
         }
       }
     })
@@ -1260,6 +1242,7 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization', 'resetsAt', 'remainingCapacity'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}|{{ remainingCapacity }}</div>'
           },
+          AccountQuotaInfo: true,
         }
       }
     })
@@ -1306,6 +1289,7 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}</div>'
           },
+          AccountQuotaInfo: true,
         }
       }
     })
@@ -1353,6 +1337,7 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization', 'title'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ title }}</div>'
           },
+          AccountQuotaInfo: true,
         }
       }
     })
@@ -1395,6 +1380,7 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}</div>'
           },
+          AccountQuotaInfo: true,
         }
       }
     })
@@ -1435,6 +1421,7 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}</div>'
           },
+          AccountQuotaInfo: true
         }
       }
     })
@@ -1471,6 +1458,7 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}</div>'
           },
+          AccountQuotaInfo: true
         }
       }
     })
@@ -1502,6 +1490,7 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}</div>'
           },
+          AccountQuotaInfo: true,
         }
       }
     })
@@ -1540,6 +1529,7 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization', 'windowStats'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ windowStats?.tokens }}</div>'
           },
+          AccountQuotaInfo: true
         }
       }
     })
@@ -1598,6 +1588,7 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization', 'windowStats'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ windowStats?.tokens }}</div>'
           },
+          AccountQuotaInfo: true
         }
       }
     })
@@ -1650,6 +1641,7 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization', 'windowStats'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ windowStats?.tokens }}</div>'
           },
+          AccountQuotaInfo: true
         }
       }
     })
@@ -1679,6 +1671,7 @@ describe('AccountUsageCell', () => {
       global: {
         stubs: {
           UsageProgressBar: true,
+          AccountQuotaInfo: true
         }
       }
     })
@@ -1708,6 +1701,7 @@ describe('AccountUsageCell', () => {
       global: {
         stubs: {
           UsageProgressBar: true,
+          AccountQuotaInfo: true
         }
       }
     })
@@ -1734,6 +1728,7 @@ describe('AccountUsageCell', () => {
       global: {
         stubs: {
           UsageProgressBar: true,
+          AccountQuotaInfo: true
         }
       }
     })
@@ -1744,7 +1739,7 @@ describe('AccountUsageCell', () => {
     expect(prepaidOnly.text()).not.toContain('8.00/0')
   })
 
-  it('Key 账号在 today stats loading 时显示骨架屏', async () => {
+  it('Key 账号不在用量窗口重复显示本地统计的加载状态', async () => {
 		const wrapper = mount(AccountUsageCell, {
 		  props: {
 		    account: makeAccount({
@@ -1758,13 +1753,15 @@ describe('AccountUsageCell', () => {
 		  global: {
 		    stubs: {
 		      UsageProgressBar: true,
+		      AccountQuotaInfo: true
 		    }
 		  }
 		})
 
 		await flushPromises()
 
-		expect(wrapper.findAll('.animate-pulse').length).toBeGreaterThan(0)
+		expect(wrapper.findAll('.animate-pulse')).toHaveLength(0)
+		expect(wrapper.text().trim()).toBe('-')
   })
 
   it('Key 账号在无 today stats 且无配额时显示兜底短横线', async () => {
@@ -1784,6 +1781,7 @@ describe('AccountUsageCell', () => {
 		  global: {
 		    stubs: {
 		      UsageProgressBar: true,
+		      AccountQuotaInfo: true
 		    }
 		  }
 		})
@@ -1793,14 +1791,57 @@ describe('AccountUsageCell', () => {
 		expect(wrapper.text().trim()).toBe('-')
   })
 
-  it('service_account 账号不设上限时不显示配额进度条', async () => {
+  it('Vertex 账号会在 Gemini 用量窗口里展示 today stats 徽章', async () => {
+		const wrapper = mount(AccountUsageCell, {
+		  props: {
+		    account: makeAccount({
+		      id: 4001,
+		      platform: 'gemini',
+		      type: 'service_account',
+          credentials: {
+            tier_id: 'vertex',
+            project_id: 'vertex-proj',
+            client_email: 'svc@vertex-proj.iam.gserviceaccount.com',
+            location: 'global'
+          },
+		      extra: {}
+		    }),
+		    todayStats: {
+		      requests: 0,
+		      tokens: 0,
+		      cost: 0,
+		      standard_cost: 0,
+		      user_cost: 0
+		    }
+		  },
+		  global: {
+		    stubs: {
+		      UsageProgressBar: true,
+		      AccountQuotaInfo: true
+		    }
+		  }
+		})
+
+		await flushPromises()
+
+		expect(wrapper.text()).toContain('0 req')
+		expect(wrapper.text()).toContain('0')
+		expect(wrapper.text()).toContain('A $0.00')
+		expect(wrapper.text()).toContain('U $0.00')
+		expect(wrapper.text()).toContain('vertex')
+		expect(wrapper.text()).not.toContain('admin.accounts.gemini.quotaPolicy.title')
+		expect(wrapper.text()).not.toContain('admin.accounts.gemini.rateLimit.unlimited')
+		expect(getUsage).not.toHaveBeenCalled()
+  })
+
+  it('Vertex 账号不设上限时不显示配额进度条', async () => {
     const wrapper = mount(AccountUsageCell, {
       props: {
         account: makeAccount({
           id: 4011,
-          platform: 'anthropic',
+          platform: 'gemini',
           type: 'service_account',
-          credentials: {},
+          credentials: { tier_id: 'vertex', project_id: 'vertex-proj', location: 'global' },
           extra: {}
         }),
         todayStats: {
@@ -1826,14 +1867,14 @@ describe('AccountUsageCell', () => {
     expect(getUsage).not.toHaveBeenCalled()
   })
 
-  it('service_account 账号设置了配额上限时显示配额进度条', async () => {
+  it('Vertex 账号设置了配额上限时显示配额进度条', async () => {
     const wrapper = mount(AccountUsageCell, {
       props: {
         account: makeAccount({
           id: 4012,
-          platform: 'anthropic',
+          platform: 'gemini',
           type: 'service_account',
-          credentials: {},
+          credentials: { tier_id: 'vertex', project_id: 'vertex-proj', location: 'global' },
           extra: { quota_daily_start: new Date().toISOString() },
           quota_used: 123.456,
           quota_limit: 500,
@@ -1856,6 +1897,97 @@ describe('AccountUsageCell', () => {
     const bars = wrapper.findAll('usage-progress-bar-stub')
     expect(bars.map((bar) => bar.attributes('label'))).toEqual(['1d', 'total'])
     expect(getUsage).not.toHaveBeenCalled()
+  })
+
+  it('Gemini 第三方上游 API Key 只展示额度，不重复显示本地统计或 Gemini 徽章', async () => {
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 4002,
+          platform: 'gemini',
+          type: 'apikey',
+          credentials: {
+            base_url: 'https://relay.example.com/gemini',
+            api_key: 'sk-relay',
+            tier_id: 'aistudio_free'
+          },
+          extra: {},
+          quota_daily_limit: 10,
+          quota_daily_used: 2.5
+        }),
+        todayStats: {
+          requests: 123,
+          tokens: 2300000,
+          cost: 1.79,
+          standard_cost: 1.79,
+          user_cost: 0
+        }
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: true,
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).not.toContain('api key')
+    expect(text).not.toContain('ai studio')
+    expect(text).not.toContain('free')
+    expect(text).not.toContain('relay.example.com')
+    expect(wrapper.find('account-quota-info-stub').exists()).toBe(false)
+    expect(text).not.toContain('123 req')
+    expect(text).not.toContain('A $1.79')
+    expect(text).not.toContain('U $0.00')
+    const bars = wrapper.findAll('usage-progress-bar-stub')
+    expect(bars.map((bar) => bar.attributes('label'))).toEqual(['1d'])
+    expect(text).not.toContain('admin.accounts.gemini.quotaPolicy.title')
+    expect(text).not.toContain('admin.accounts.gemini.quotaPolicy.simulatedNote')
+    expect(text).not.toContain('admin.accounts.gemini.rateLimit.unlimited')
+    expect(getUsage).not.toHaveBeenCalled()
+  })
+
+  it('Gemini 官方 API Key 保留 AI Studio 等级与模拟配额', async () => {
+    getUsage.mockResolvedValue({
+      gemini_pro_daily: {
+        utilization: 20,
+        resets_at: '2026-10-11T07:00:00Z',
+        remaining_seconds: 3600
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 4003,
+          platform: 'gemini',
+          type: 'apikey',
+          credentials: {
+            base_url: 'https://generativelanguage.googleapis.com',
+            api_key: 'AIza-official',
+            tier_id: 'aistudio_paid'
+          },
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: true,
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('ai studio paid')
+    expect(text).toContain('admin.accounts.gemini.quotaPolicy.title')
+    expect(text).toContain('admin.accounts.gemini.quotaPolicy.simulatedNote')
+    expect(getUsage).toHaveBeenCalledWith(4003)
   })
 
   it('Anthropic OAuth 会渲染 7d F (Fable) 进度条，且 7d S 逻辑保留', async () => {
@@ -1898,6 +2030,7 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization', 'resetsAt', 'color'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}</div>'
           },
+          AccountQuotaInfo: true,
         }
       }
     })
@@ -1940,6 +2073,7 @@ describe('AccountUsageCell', () => {
             props: ['label', 'utilization', 'resetsAt', 'color'],
             template: '<div class="usage-bar">{{ label }}|{{ utilization }}</div>'
           },
+          AccountQuotaInfo: true,
         }
       }
     })

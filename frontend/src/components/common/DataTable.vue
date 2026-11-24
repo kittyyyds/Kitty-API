@@ -1,5 +1,5 @@
 <template>
-  <div v-if="!isDesktopViewport" class="space-y-3">
+  <div v-if="showCards" :class="layout === 'cards' ? 'grid grid-cols-1 items-start gap-4 overflow-y-auto p-1 lg:grid-cols-2 2xl:grid-cols-3' : mobileCardGrid ? 'grid min-w-0 grid-cols-1 items-start gap-3 sm:grid-cols-2' : 'space-y-3'" data-testid="data-table-cards">
     <template v-if="loading">
       <div v-for="i in 5" :key="i" class="rounded-lg border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900">
         <div class="space-y-3">
@@ -15,7 +15,7 @@
     </template>
 
     <template v-else-if="!data || data.length === 0">
-      <div class="rounded-lg border border-gray-200 bg-white p-12 text-center dark:border-dark-700 dark:bg-dark-900">
+      <div class="col-span-full rounded-lg border border-gray-200 bg-white p-12 text-center dark:border-dark-700 dark:bg-dark-900">
         <slot name="empty">
           <div class="flex flex-col items-center">
             <Icon
@@ -32,7 +32,35 @@
     </template>
 
     <template v-else>
-      <div v-if="selectable" class="flex items-center justify-end gap-2 px-1">
+      <div
+        v-if="serverSideSort && sortableColumns.length > 0"
+        class="col-span-full flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-dark-700 dark:bg-dark-900"
+        data-test="mobile-sort-controls"
+      >
+        <label class="shrink-0 text-xs font-medium text-gray-500 dark:text-dark-400" :for="mobileSortId">
+          {{ t('common.sort') }}
+        </label>
+        <select
+          :id="mobileSortId"
+          class="min-w-0 flex-1 rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-700 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-200"
+          :value="sortKey"
+          @change="handleMobileSortKey(($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="column in sortableColumns" :key="column.key" :value="column.key">
+            {{ column.label }}
+          </option>
+        </select>
+        <button
+          type="button"
+          class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100 dark:border-dark-600 dark:text-gray-300 dark:hover:bg-dark-700"
+          :aria-label="sortOrder === 'asc' ? t('common.sortDescending') : t('common.sortAscending')"
+          :title="sortOrder === 'asc' ? t('common.sortDescending') : t('common.sortAscending')"
+          @click="handleMobileSortOrder"
+        >
+          <span aria-hidden="true">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
+        </button>
+      </div>
+      <div v-if="selectable" class="col-span-full flex items-center justify-end gap-2 px-1">
         <label class="flex items-center gap-2 text-sm font-medium text-gray-600 dark:text-gray-300">
           <input
             type="checkbox"
@@ -48,13 +76,14 @@
       <div
         v-for="(row, index) in sortedData"
         :key="resolveRowKey(row, index)"
-        class="rounded-lg border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900"
-        :class="{
+        class="min-w-0"
+        :class="[ $slots['mobile-card'] ? 'data-mobile-card' : 'rounded-lg border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900', {
           'cursor-pointer': clickableRows,
           'border-primary-300 bg-primary-50/40 dark:border-primary-700 dark:bg-primary-900/10': selectable && isRowSelected(row, index)
-        }"
+        }]"
         @click="clickableRows && emit('rowClick', row)"
       >
+        <slot name="mobile-card" :row="row" :index="index" :columns="columns" :render-cell="(key: string) => renderMobileCell(row, key)">
         <div class="space-y-3">
           <div v-if="selectable" class="flex justify-end">
             <input
@@ -86,6 +115,7 @@
             <slot name="cell-actions" :row="row" :value="row['actions']" :expanded="actionsExpanded"></slot>
           </div>
         </div>
+        </slot>
       </div>
     </template>
   </div>
@@ -123,14 +153,16 @@
             scope="col"
             :aria-sort="column.sortable ? getColumnAriaSort(column.key) : undefined"
             :class="[
-              'sticky-header-cell py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-dark-400',
+              'sticky-header-cell relative py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-dark-400',
               getAdaptivePaddingClass(),
               { 'cursor-pointer hover:bg-gray-100 dark:hover:bg-dark-700': column.sortable },
               getStickyColumnClass(column, index),
               column.class
             ]"
+            :style="columnWidths[column.key] ? { width: `${columnWidths[column.key]}px`, minWidth: `${columnWidths[column.key]}px` } : undefined"
             @click="column.sortable && handleSort(column.key)"
           >
+            <span v-if="resizableColumns" class="absolute inset-y-0 right-0 z-10 w-2 cursor-col-resize" @click.stop @mousedown.prevent="startColumnResize($event, column.key)" />
             <div :class="['flex items-center space-x-1', getHeaderContentAlignmentClass(column)]">
               <slot
                 :name="`header-${column.key}`"
@@ -240,6 +272,7 @@
                 getStickyColumnClass(column, colIndex),
                 column.class
               ]"
+              :style="columnWidths[column.key] ? { width: `${columnWidths[column.key]}px`, minWidth: `${columnWidths[column.key]}px` } : undefined"
             >
               <slot :name="`cell-${column.key}`"
                     :row="item.row"
@@ -263,13 +296,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch, nextTick, useSlots } from 'vue'
 import { useVirtualizer, observeElementRect as observeElementRectDefault } from '@tanstack/vue-virtual'
 import { useI18n } from 'vue-i18n'
 import type { Column } from './types'
 import Icon from '@/components/icons/Icon.vue'
 
 const { t } = useI18n()
+const slots = useSlots()
 
 const desktopViewportQuery = '(min-width: 768px)'
 const isDesktopViewport = ref(
@@ -430,6 +464,9 @@ onUnmounted(() => {
 })
 
 interface Props {
+  layout?: 'responsive' | 'cards'
+  /** Optional two-column mobile layout. Desktop table and other callers are unchanged. */
+  mobileCardGrid?: boolean
   columns: Column[]
   data: any[]
   loading?: boolean
@@ -469,11 +506,15 @@ interface Props {
   selectable?: boolean
   /** Selected row keys. Keys outside the current data page are preserved. */
   selectedKeys?: Array<string | number>
+  /** Enable desktop column resizing. */
+  resizableColumns?: boolean
   /** Accessible label for a row selection checkbox. */
   selectionLabel?: string | ((row: any) => string)
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  layout: 'responsive',
+  mobileCardGrid: false,
   loading: false,
   stickyFirstColumn: true,
   stickyActionsColumn: true,
@@ -482,11 +523,40 @@ const props = withDefaults(defineProps<Props>(), {
   serverSideSort: false,
   selectable: false,
   selectedKeys: () => []
+  ,resizableColumns: false
 })
 
 const sortKey = ref<string>('')
 const sortOrder = ref<'asc' | 'desc'>('asc')
 const actionsExpanded = ref(false)
+const columnWidths = ref<Record<string, number>>({})
+let resizing: { key: string; startX: number; startWidth: number } | null = null
+const startColumnResize = (event: MouseEvent, key: string) => {
+  const th = (event.currentTarget as HTMLElement).parentElement
+  if (!th) return
+  resizing = { key, startX: event.clientX, startWidth: th.getBoundingClientRect().width }
+  window.addEventListener('mousemove', onColumnResize)
+  window.addEventListener('mouseup', stopColumnResize, { once: true })
+}
+const onColumnResize = (event: MouseEvent) => {
+  if (!resizing) return
+  columnWidths.value[resizing.key] = Math.max(72, Math.round(resizing.startWidth + event.clientX - resizing.startX))
+}
+const stopColumnResize = () => {
+  resizing = null
+  window.removeEventListener('mousemove', onColumnResize)
+}
+
+// Let a dedicated mobile layout reuse the exact cells and handlers from the table.
+// Only visible columns can be rendered; a hidden field never bypasses the user's layout.
+const renderMobileCell = (row: any, key: string) => {
+  const column = props.columns.find(item => item.key === key)
+  if (!column) return null
+  const slot = slots[`cell-${key}`]
+  return slot
+    ? slot({ row, value: row[key], expanded: actionsExpanded.value })
+    : column.formatter ? column.formatter(row[key], row) : String(row[key] ?? '')
+}
 
 type PersistedSortState = {
   key: string
@@ -634,16 +704,20 @@ const resolveStableRowKey = (row: any): string | number | undefined => {
 
 const resolveRowKey = (row: any, index: number) => resolveStableRowKey(row) ?? index
 
+const showCards = computed(() => props.layout === 'cards' || !isDesktopViewport.value)
+
 const dataColumns = computed(() => props.columns.filter((column) => column.key !== 'actions'))
+const sortableColumns = computed(() => props.columns.filter((column) => column.sortable))
+const mobileSortId = 'mobile-sort'
 const columnsSignature = computed(() =>
   props.columns.map((column) => `${column.key}:${column.sortable ? '1' : '0'}`).join('|')
 )
 
 watch(
-  isDesktopViewport,
-  async (isDesktop) => {
+  showCards,
+  async (cards) => {
     detachDesktopTableTracking()
-    if (!isDesktop) return
+    if (cards) return
     await nextTick()
     attachDesktopTableTracking()
   },
@@ -684,6 +758,16 @@ const handleSort = (key: string) => {
     sortKey.value = key
     sortOrder.value = newOrder
   }
+}
+
+const handleMobileSortKey = (key: string) => {
+  if (key && key !== sortKey.value) {
+    handleSort(key)
+  }
+}
+
+const handleMobileSortOrder = () => {
+  if (sortKey.value) handleSort(sortKey.value)
 }
 
 const sortedData = computed(() => {
@@ -754,7 +838,7 @@ const toggleAllVisible = (checked: boolean) => {
 // 是否启用虚拟化:仅桌面端且行数超过阈值时开启。小列表全量渲染,彻底绕开虚拟器的
 // 估算/测量/滚动补偿链路,消除可变行高导致的滚动抖动。
 const shouldVirtualize = computed(() =>
-  isDesktopViewport.value && (sortedData.value?.length ?? 0) > (props.virtualizeThreshold ?? 100)
+  !showCards.value && (sortedData.value?.length ?? 0) > (props.virtualizeThreshold ?? 100)
 )
 
 const rowVirtualizer = useVirtualizer(computed(() => ({

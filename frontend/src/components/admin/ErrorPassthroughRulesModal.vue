@@ -488,6 +488,12 @@ const matchModeOptions = computed(() => [
 
 const platformOptions = CONCRETE_PLATFORM_OPTIONS
 
+// Load rules when dialog opens
+watch(() => props.show, (newVal) => {
+  if (newVal) {
+    loadRules()
+  }
+})
 
 const loadRules = async () => {
   loading.value = true
@@ -637,11 +643,4 @@ const confirmDelete = async () => {
     console.error('Error deleting rule:', error)
   }
 }
-
-// Register after the helpers above: the first lazy mount already has show=true.
-watch(() => props.show, (newVal) => {
-  if (newVal) {
-    loadRules()
-  }
-}, { immediate: true })
 </script>

@@ -7,13 +7,14 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Toast, ToastType, PublicSettings } from '@/types'
 import { i18n } from '@/i18n'
+import { localizeClientErrorMessage } from '@/utils/clientErrorMessage'
 import {
   checkUpdates as checkUpdatesAPI,
   type VersionInfo,
   type ReleaseInfo
 } from '@/api/admin/system'
 import { getPublicSettings as fetchPublicSettingsAPI } from '@/api/auth'
-import { resolveApiEndpoint } from '@/utils/apiEndpoint'
+import { resolveBrandLogoUrl } from '@/utils/branding'
 
 export const useAppStore = defineStore('app', () => {
   // ==================== State ====================
@@ -27,13 +28,11 @@ export const useAppStore = defineStore('app', () => {
   // Public settings cache state
   const publicSettingsLoaded = ref<boolean>(false)
   const publicSettingsLoading = ref<boolean>(false)
-  const siteName = ref<string>('Sub2API')
+  const siteName = ref<string>('Kitty奇妙屋')
   const siteLogo = ref<string>('')
-  const brandLogoUrl = computed(() => siteLogo.value || '')
   const siteVersion = ref<string>('')
   const contactInfo = ref<string>('')
   const apiBaseUrl = ref<string>('')
-  const apiBaseUrlFollowHost = ref<boolean>(false)
   const docUrl = ref<string>('')
   const cachedPublicSettings = ref<PublicSettings | null>(null)
   let publicSettingsRequest: Promise<PublicSettings | null> | null = null
@@ -41,12 +40,17 @@ export const useAppStore = defineStore('app', () => {
   // Version cache state
   const versionLoaded = ref<boolean>(false)
   const versionLoading = ref<boolean>(false)
+  const versionWarning = ref<string>('')
+  const versionCheckStatus = ref<'unknown' | 'verified' | 'stale' | 'failed'>('unknown')
+  let versionCheckedAt = 0
+  const versionCacheTTL = 60_000
   const currentVersion = ref<string>('')
   const latestVersion = ref<string>('')
   const hasUpdate = ref<boolean>(false)
+  const sourceUpdateEnabled = ref<boolean>(false)
+  const hostUpdateManaged = ref<boolean>(false)
   const buildType = ref<string>('source')
   const releaseInfo = ref<ReleaseInfo | null>(null)
-  const currentReleaseURL = ref<string>('')
 
   // Auto-incrementing ID for toasts
   let toastIdCounter = 0
@@ -55,17 +59,7 @@ export const useAppStore = defineStore('app', () => {
 
   const hasActiveToasts = computed(() => toasts.value.length > 0)
   const backendModeEnabled = computed(() => cachedPublicSettings.value?.backend_mode_enabled ?? false)
-  /**
-   * API endpoint to show users. Follows the current browser origin when the
-   * admin enabled `api_base_url_follow_host` (multi-domain deployments), so a
-   * single `api_base_url` no longer pins every domain to one host.
-   */
-  const displayApiEndpoint = computed(() =>
-    resolveApiEndpoint({
-      configured: apiBaseUrl.value,
-      followHost: apiBaseUrlFollowHost.value,
-    }),
-  )
+  const brandLogoUrl = computed(() => resolveBrandLogoUrl(siteLogo.value))
 
   const loadingCount = ref<number>(0)
 
@@ -158,7 +152,11 @@ export const useAppStore = defineStore('app', () => {
    * @param duration - Auto-dismiss duration in ms (default: 5000)
    */
   function showError(message: string, duration: number = 5000): string {
-    return showToast('error', message, duration)
+    const translatedKey = i18n.global.t(message)
+    const localized = translatedKey !== message
+      ? translatedKey
+      : localizeClientErrorMessage(message)
+    return showToast('error', localized, duration)
   }
 
   /**
@@ -257,15 +255,17 @@ export const useAppStore = defineStore('app', () => {
    */
   async function fetchVersion(force = false): Promise<VersionInfo | null> {
     // Return cached data if available and not forcing refresh
-    if (versionLoaded.value && !force) {
+    if (versionLoaded.value && !force && Date.now() - versionCheckedAt < versionCacheTTL) {
       return {
         current_version: currentVersion.value,
         latest_version: latestVersion.value,
         has_update: hasUpdate.value,
+        source_update_enabled: sourceUpdateEnabled.value,
+        host_update_managed: hostUpdateManaged.value,
         build_type: buildType.value,
         release_info: releaseInfo.value || undefined,
-        current_release_url: currentReleaseURL.value || undefined,
-        cached: true
+        cached: true,
+        warning: versionWarning.value || undefined
       }
     }
 
@@ -280,12 +280,22 @@ export const useAppStore = defineStore('app', () => {
       currentVersion.value = data.current_version
       latestVersion.value = data.latest_version
       hasUpdate.value = data.has_update
+      sourceUpdateEnabled.value = data.source_update_enabled === true
+      hostUpdateManaged.value = data.host_update_managed === true
       buildType.value = data.build_type || 'source'
       releaseInfo.value = data.release_info || null
-      currentReleaseURL.value = data.current_release_url || ''
+      versionWarning.value = data.warning || ''
+      versionCheckStatus.value = data.warning ? (data.release_info ? 'stale' : 'failed') : 'verified'
+      versionCheckedAt = Date.now()
       versionLoaded.value = true
       return data
     } catch (error) {
+      // A network failure cannot establish that the installed version is latest.
+      // Keep the last known release but mark it as stale until a successful check.
+      versionCheckStatus.value = releaseInfo.value ? 'stale' : 'failed'
+      versionWarning.value = localizeClientErrorMessage(error instanceof Error ? error.message : '') || i18n.global.t('version.checkFailed')
+      versionCheckedAt = Date.now()
+      versionLoaded.value = true
       console.error('Failed to fetch version:', error)
       return null
     } finally {
@@ -298,7 +308,14 @@ export const useAppStore = defineStore('app', () => {
    */
   function clearVersionCache(): void {
     versionLoaded.value = false
+    versionWarning.value = ''
+    versionCheckedAt = 0
     hasUpdate.value = false
+    sourceUpdateEnabled.value = false
+    hostUpdateManaged.value = false
+    versionCheckStatus.value = 'unknown'
+    versionWarning.value = ''
+    versionCheckedAt = 0
   }
 
   // ==================== Public Settings Management ====================
@@ -311,12 +328,11 @@ export const useAppStore = defineStore('app', () => {
       window.__APP_CONFIG__ = { ...config }
     }
     cachedPublicSettings.value = config
-    siteName.value = config.site_name || 'Sub2API'
+    siteName.value = config.site_name || 'Kitty奇妙屋'
     siteLogo.value = config.site_logo || ''
     siteVersion.value = config.version || ''
     contactInfo.value = config.contact_info || ''
     apiBaseUrl.value = config.api_base_url || ''
-    apiBaseUrlFollowHost.value = config.api_base_url_follow_host === true
     docUrl.value = config.doc_url || ''
     publicSettingsLoaded.value = true
   }
@@ -348,6 +364,7 @@ export const useAppStore = defineStore('app', () => {
         email_verify_enabled: false,
         force_email_on_third_party_signup: false,
         registration_email_suffix_whitelist: [],
+        promo_code_enabled: true,
         password_reset_enabled: false,
         invitation_code_enabled: false,
         turnstile_enabled: false,
@@ -360,7 +377,6 @@ export const useAppStore = defineStore('app', () => {
         site_logo: siteLogo.value,
         site_subtitle: '',
         api_base_url: apiBaseUrl.value,
-        api_base_url_follow_host: apiBaseUrlFollowHost.value,
         contact_info: contactInfo.value,
         doc_url: docUrl.value,
         home_content: '',
@@ -386,6 +402,7 @@ export const useAppStore = defineStore('app', () => {
         balance_low_notify_enabled: false,
         account_quota_notify_enabled: false,
         balance_low_notify_threshold: 0,
+        channel_quality_public_enabled: true,
         channel_monitor_enabled: true,
         channel_monitor_default_interval_seconds: 60,
         available_channels_enabled: false,
@@ -394,10 +411,14 @@ export const useAppStore = defineStore('app', () => {
         model_plaza_enabled: false,
         model_plaza_require_auth: false,
         plugin_management_enabled: false,
-        risk_control_enabled: false,
+        support_ticket_enabled: false,
         service_quota_enabled: false,
         affiliate_enabled: false,
         allow_user_view_error_requests: false,
+        usage_show_long_context_badge: true,
+        usage_show_cache_rate: true,
+        usage_show_cache_rate_to_users: false,
+        usage_show_upstream_response_model_to_users: false,
       })
     }
 
@@ -470,20 +491,21 @@ export const useAppStore = defineStore('app', () => {
     siteVersion,
     contactInfo,
     apiBaseUrl,
-    apiBaseUrlFollowHost,
-    displayApiEndpoint,
     docUrl,
     cachedPublicSettings,
 
     // Version state
     versionLoaded,
     versionLoading,
+    versionWarning,
+    versionCheckStatus,
     currentVersion,
     latestVersion,
     hasUpdate,
+    sourceUpdateEnabled,
+    hostUpdateManaged,
     buildType,
     releaseInfo,
-    currentReleaseURL,
 
     // Computed
     hasActiveToasts,

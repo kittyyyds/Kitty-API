@@ -70,11 +70,25 @@ export default {
   "revokeConfirm": "永久撤销“{name}”后无法恢复，是否继续？",
   "deleteConfirm": "确定删除“{name}”的密钥记录？删除只是从列表移除，历史操作记录仍会继续保留。",
   "legacy": "旧版全权密钥兼容区（建议迁移到受限密钥）",
+  "fullAccessLabel": "全权访问（兼容旧版管理员 Key）",
+  "fullAccessWarning": "开启后，此密钥可访问全部管理资源、读取敏感数据并修改账户和财务配置；未来新增的管理接口也将允许访问。分组、平台、账户类型和操作规则不再限制此密钥。仅限管理员登录会话及二次验证的接口仍遵循原要求。",
+  "rulesSuspended": "资源规则已暂停，关闭全权访问后恢复；有效期、IP 限制、限流和审计继续生效。",
+  "fullAccessConfirmTitle": "确认开启全权访问",
+  "fullAccessPhrase": "开启全权访问",
+  "fullAccessPhraseHint": "请输入“{phrase}”以确认：",
   "unknownPermission": "未知权限（{id}）",
   "permissions": {
     "accounts_didentity_dread": {
-      "label": "读取账号邮箱、套餐及创建时间（不含令牌）",
-      "category": "账号"
+      "label": "读取账户邮箱、套餐及创建时间（不含令牌）",
+      "category": "账户"
+    },
+    "accounts_dusage_dread": {
+      "label": "读取及主动刷新授权账户额度与快照",
+      "category": "账户"
+    },
+    "accounts_dstats_dread": {
+      "label": "读取账户用量与费用统计",
+      "category": "账户"
     },
     "openai_dquota_dread": {
       "label": "查询 OpenAI 上游额度与重置次数",
@@ -94,18 +108,18 @@ export default {
     },
     "accounts_doptions_dwrite": {
       "label": "写入 OpenAI OAuth 身份与连接选项",
-      "category": "账号"
+      "category": "账户"
     },
     "accounts_drate_dwrite": {
-      "label": "设置账号计费倍率",
-      "category": "账号"
+      "label": "设置账户计费倍率",
+      "category": "账户"
     },
     "groups_dlist_dread": {
       "label": "读取所选分组基本信息（名称、平台、状态）",
       "category": "分组"
     },
     "groups_dcapacity_dread": {
-      "label": "读取所选分组容量（整个分组，不按账号类型过滤）",
+      "label": "读取所选分组容量（整个分组，不按账户类型过滤）",
       "category": "分组"
     },
     "openai_dtokens_drefresh": {
@@ -113,52 +127,52 @@ export default {
       "category": "OAuth"
     },
     "accounts_dread": {
-      "label": "查看账号（脱敏）",
-      "category": "账号"
+      "label": "查看账户（脱敏）",
+      "category": "账户"
     },
     "accounts_dcreate": {
-      "label": "创建账号",
-      "category": "账号"
+      "label": "创建账户",
+      "category": "账户"
     },
     "accounts_dupdate": {
       "label": "编辑名称与备注",
-      "category": "账号"
+      "category": "账户"
     },
     "accounts_dcredentials": {
       "label": "写入凭证（不包含读取）",
-      "category": "账号"
+      "category": "账户"
     },
     "accounts_dmodels_dwrite": {
-      "label": "编辑账号白名单模型 ID 与映射",
-      "category": "账号"
+      "label": "编辑账户白名单模型 ID 与映射",
+      "category": "账户"
     },
     "accounts_dnetwork": {
       "label": "修改接入地址、代理与连接选项",
-      "category": "账号"
+      "category": "账户"
     },
     "accounts_dstatus": {
       "label": "启用、停用与调度开关",
-      "category": "账号"
+      "category": "账户"
     },
     "accounts_dschedule": {
       "label": "修改并发、优先级与有效期",
-      "category": "账号"
+      "category": "账户"
     },
     "accounts_drefresh": {
       "label": "刷新 OAuth 凭证",
-      "category": "账号"
+      "category": "账户"
     },
     "accounts_drecover": {
-      "label": "清除账号错误与限流状态",
-      "category": "账号"
+      "label": "清除账户错误与限流状态",
+      "category": "账户"
     },
     "accounts_ddelete": {
-      "label": "删除账号（影响共享分组）",
-      "category": "账号"
+      "label": "删除账户（影响共享分组）",
+      "category": "账户"
     },
     "accounts_dgroups": {
       "label": "调整授权分组关联",
-      "category": "账号"
+      "category": "账户"
     },
     "groups_dmodels_dread": {
       "label": "读取所选分组模型白名单与候选 ID",
@@ -267,6 +281,18 @@ export default {
     "announcements_ddelete": {
       "label": "删除公告",
       "category": "内容"
+    },
+    "promo_dread": {
+      "label": "读取优惠码及使用记录",
+      "category": "财务"
+    },
+    "promo_dwrite": {
+      "label": "创建与修改优惠码权益",
+      "category": "财务"
+    },
+    "promo_ddelete": {
+      "label": "删除优惠码",
+      "category": "财务"
     },
     "ops_dread": {
       "label": "读取全站运维指标",

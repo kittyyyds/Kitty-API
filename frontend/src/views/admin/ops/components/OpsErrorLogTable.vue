@@ -108,8 +108,8 @@
 
         <template #cell-status="{ row }">
           <div class="flex items-center gap-1.5">
-            <span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium" :class="getStatusClass(displayStatus(row))">
-              {{ displayStatus(row) }}
+            <span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium" :class="getStatusClass(row.status_code)">
+              {{ row.status_code }}
             </span>
             <span
               v-if="row.severity"
@@ -123,6 +123,9 @@
         </template>
 
         <template #cell-message="{ row }">
+          <span v-if="balanceErrorSource(row)" class="block text-sm font-medium text-amber-700 dark:text-amber-300" data-testid="balance-source">
+            {{ t(`admin.ops.balanceError.${balanceErrorSource(row)}`) }}
+          </span>
           <span
             v-if="row.message"
             class="block max-w-[280px] truncate text-sm text-gray-600 dark:text-gray-400"
@@ -180,6 +183,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { balanceErrorSource } from '../utils/balanceError'
 import { useI18n } from 'vue-i18n'
 import DataTable from '@/components/common/DataTable.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -190,7 +194,7 @@ import type { OpsErrorLog } from '@/api/admin/ops'
 import type { Column } from '@/components/common/types'
 import { getSeverityClass, formatDateTime } from '../utils/opsFormatters'
 import { mapErrorCategory } from '@/utils/errorCategory'
-import { finalRequestStatusCode, mapErrorSortKey, statusCodeBadgeClass } from '@/utils/errorBadges'
+import { mapErrorSortKey, statusCodeBadgeClass } from '@/utils/errorBadges'
 
 const { t } = useI18n()
 
@@ -297,8 +301,6 @@ interface Props {
   visibleColumnKeys?: string[]
   /** 运维弹窗优先展示时间和响应内容 */
   summaryFirst?: boolean
-  /** Request-error views opt into the stored request outcome. */
-  useFinalRequestStatus?: boolean
   /** 嵌入统一卡片内使用：去掉自身卡片外观 */
   flat?: boolean
 }
@@ -317,10 +319,6 @@ const emit = defineEmits<Emits>()
 
 function onSort(key: string, order: 'asc' | 'desc') {
   emit('sort', mapErrorSortKey(key), order)
-}
-
-function displayStatus(row: OpsErrorLog): number {
-  return props.useFinalRequestStatus ? finalRequestStatusCode(row) : row.status_code
 }
 
 const getStatusClass = statusCodeBadgeClass

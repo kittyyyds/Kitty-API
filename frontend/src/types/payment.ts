@@ -19,9 +19,10 @@ export type OrderStatus =
   | 'REFUNDED'
   | 'REFUND_FAILED'
 
-export type PaymentType = 'alipay' | 'wxpay' | 'alipay_direct' | 'wxpay_direct' | 'stripe' | 'easypay' | 'airwallex'
+export type PaymentType = 'alipay' | 'wxpay' | 'alipay_direct' | 'wxpay_direct' | 'stripe' | 'easypay' | 'airwallex' | 'dujiaopay' | 'paypal'
 
 export type OrderType = 'balance' | 'subscription'
+export type SubscriptionRenewalMode = 'restart' | 'extend'
 
 // ==================== Configuration ====================
 
@@ -62,7 +63,7 @@ export interface MethodLimit {
 /** Response from /payment/limits API */
 export interface MethodLimitsResponse {
   methods: Record<string, MethodLimit>
-  global_min: number  // effective recharge floor across app and method limits; 0 = no minimum
+  global_min: number  // widest min across all methods; 0 = no minimum
   global_max: number  // widest max across all methods; 0 = no maximum
 }
 
@@ -90,11 +91,29 @@ export interface CheckoutInfoResponse {
   alipay_force_qrcode?: boolean
   /** When true, official Alipay mobile orders use precreate plus an Alipay app deep link */
   alipay_mobile_precreate_deep_link?: boolean
+  recharge_bonus_rules: RechargeBonusRule[]
+  recharge_bonus_summary: RechargeBonusSummary
+}
+
+export interface RechargeBonusRule {
+  id: number
+  recharge_amount: number
+  bonus_amount: number
+  validity_days: number
+  starts_at?: string
+  ends_at?: string
+}
+
+export interface RechargeBonusSummary {
+  available_amount: number
+  next_expires_at?: string
+  active_grants: number
 }
 
 // ==================== Orders ====================
 
 export interface PaymentOrder {
+  coupon?: { id: number; name: string; discount_amount: number; bonus_amount: number; review_required: boolean }
   id: number
   user_id: number
   amount: number
@@ -117,6 +136,7 @@ export interface PaymentOrder {
   refund_requested_by?: number
   refund_request_reason?: string
   plan_id?: number
+  renewal_mode?: SubscriptionRenewalMode
   provider_instance_id?: string
 }
 
@@ -135,6 +155,7 @@ export interface SubscriptionPlan {
   daily_limit_usd?: number | null
   weekly_limit_usd?: number | null
   monthly_limit_usd?: number | null
+  supported_model_scopes?: string[]
   name: string
   description: string
   price: number
@@ -180,10 +201,12 @@ export interface ProviderInstance {
 // ==================== Request / Response ====================
 
 export interface CreateOrderRequest {
+  coupon_id?: number
   amount: number
   payment_type: string
   order_type: string
   plan_id?: number
+  renewal_mode?: SubscriptionRenewalMode
   return_url?: string
   payment_source?: string
   openid?: string

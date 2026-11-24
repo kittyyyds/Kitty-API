@@ -41,7 +41,8 @@ vi.mock('vue-router', () => ({
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
-    t: (key: string) => key,
+    t: (key: string) => key === 'auth.errors.REGISTRATION_IP_LIMIT' ? '当前 IP 已注册过两个账号，如需更多账号请联系客服。' : key,
+    te: (key: string) => key === 'auth.errors.REGISTRATION_IP_LIMIT',
   }),
 }))
 
@@ -123,6 +124,19 @@ describe('OAuthCallbackView', () => {
     expect(showErrorMock).toHaveBeenCalledWith('oauth failed')
     expect(wrapper.text()).not.toContain('oauth failed')
     expect(wrapper.find('.bg-red-50').exists()).toBe(false)
+  })
+
+  it('shows a translated reason and the back-to-login panel when the provider sign-in failed', async () => {
+    routeState.path = '/auth/oauth/callback'
+    locationState.current.hash = '#error=REGISTRATION_IP_LIMIT&error_message=this+IP+address+has+already+registered+two+accounts'
+
+    const wrapper = mount(OAuthCallbackView)
+    await Promise.resolve()
+
+    expect(showErrorMock).toHaveBeenCalledWith('当前 IP 已注册过两个账号，如需更多账号请联系客服。')
+    expect(wrapper.text()).toContain('auth.oauth.invalidCallbackTitle')
+    expect(wrapper.text()).toContain('auth.backToLogin')
+    expect(wrapper.text()).not.toContain('auth.oauth.callbackTitle')
   })
 
   it('does not render manual copy fields for direct email oauth callback visits', async () => {

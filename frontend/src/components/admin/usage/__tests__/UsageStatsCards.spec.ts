@@ -13,6 +13,7 @@ const messages: Record<string, string> = {
   'usage.cacheBreakdown': 'Cache Token Breakdown',
   'usage.cacheCreationTokensLabel': 'Cache Creation',
   'usage.cacheReadTokensLabel': 'Cache Read',
+  'usage.cacheHitRate': 'Cache hit rate',
   'usage.totalCost': 'Total Cost',
   'usage.accountCost': 'Cost',
   'usage.standardCost': 'Standard',
@@ -30,6 +31,7 @@ vi.mock('vue-i18n', async () => {
 })
 
 const stats = {
+  cache_hit_rate: 22 / 134,
   total_requests: 1,
   total_input_tokens: 100,
   total_output_tokens: 50,
@@ -44,6 +46,18 @@ const stats = {
 }
 
 describe('UsageStatsCards', () => {
+  it('keeps total consumption, standard cost and account cost distinct', () => {
+    const wrapper = mount(UsageStatsCards, {
+      props: { stats: { ...stats, total_actual_cost: 3, total_cost: 12, total_account_cost: 5 } },
+      global: { stubs: { Icon: true } },
+    })
+    const costCard = wrapper.get('.is-cost')
+    expect(costCard.get('.usage-summary-value').text()).toBe('$3.0000')
+    expect(costCard.text()).toContain('Standard $12.0000')
+    expect(costCard.text()).toContain('Cost $5.0000')
+    wrapper.unmount()
+  })
+
   it('shows cache token breakdown values', () => {
     const wrapper = mount(UsageStatsCards, {
       props: {
@@ -57,15 +71,16 @@ describe('UsageStatsCards', () => {
     })
 
     const text = wrapper.text()
-    expect(text).toContain('Cache: 34')
-    expect(text).toContain('Cache Token Breakdown')
+    expect(text).toContain('Cache 34')
+    expect(wrapper.get('ul').attributes('aria-label')).toBe('Cache Token Breakdown')
     expect(text).toContain('Cache Creation')
     expect(text).toContain('12')
     expect(text).toContain('Cache Read')
     expect(text).toContain('22')
+    expect(text).toContain('Cache hit rate: 16.4%')
   })
 
-  it('keeps the cache tooltip out of the layout while it is hidden', () => {
+  it('shows every token component without requiring hover', () => {
     const wrapper = mount(UsageStatsCards, {
       props: {
         stats,
@@ -77,13 +92,18 @@ describe('UsageStatsCards', () => {
       },
     })
 
-    const tooltip = wrapper.findAll('span').find((el) => el.classes().includes('group-hover:block'))
-
-    expect(tooltip).toBeDefined()
-    // `opacity-0` hides the tooltip visually but keeps it in the layout, so its
-    // fixed width still widens the document and causes horizontal scrolling on
-    // narrow screens. `hidden` (display: none) takes it out of the flow.
-    expect(tooltip?.classes()).toContain('hidden')
-    expect(tooltip?.classes()).not.toContain('opacity-0')
+    expect(wrapper.get('[role="img"]').attributes('aria-label')).toContain('Cache Creation 12')
+    expect(wrapper.findAll('li').map(item => item.text())).toEqual(['In100', 'Out50', 'Cache Creation12', 'Cache Read22'])
   })
 })
+
+ it.each([[null, '-'], [undefined, '-'], [0, '0.0%'], [0.8, '80.0%']] as const)(
+  'uses eligible rate %s without recomputing from total traffic', (rate, expected) => {
+    const wrapper = mount(UsageStatsCards, {
+      props: { stats: { ...stats, total_input_tokens: 1000000, cache_hit_rate: rate } },
+      global: { stubs: { Icon: true } },
+    })
+    expect(wrapper.get('[data-testid="total-cache-hit-rate"]').text()).toBe('Cache hit rate: ' + expected)
+    expect(wrapper.get('ul').text()).toContain('In1.00M')
+  },
+)

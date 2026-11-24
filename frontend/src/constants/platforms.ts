@@ -15,6 +15,7 @@ export type PlatformOption<T extends string = string> = {
  * changes. Reactive so that tests replacing the catalog see the update.
  */
 export const CONCRETE_PLATFORM_OPTIONS: PlatformOption<AccountPlatform>[] = reactive([])
+
 /** Platforms that can own a group. */
 export const GROUP_PLATFORM_OPTIONS: PlatformOption<GroupPlatform>[] = reactive([])
 

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { defineComponent, h } from "vue";
+import { defineComponent, h, reactive } from "vue";
 import { flushPromises, mount } from "@vue/test-utils";
 
 import enCommon from "@/i18n/locales/en/common";
@@ -7,6 +7,26 @@ import enSettings from "@/i18n/locales/en/admin/settings";
 import zhCommon from "@/i18n/locales/zh/common";
 import zhSettings from "@/i18n/locales/zh/admin/settings";
 import SettingsView from "../SettingsView.vue";
+import { useRoute, useRouter } from "vue-router";
+
+vi.mock("vue-router", async () => {
+  const actual = await vi.importActual<typeof import("vue-router")>("vue-router");
+  return {
+    ...actual,
+    useRoute: vi.fn(),
+    useRouter: vi.fn(),
+  };
+});
+
+beforeEach(() => {
+  const route = reactive({ query: {} as Record<string, string> });
+  vi.mocked(useRoute).mockReturnValue(route as unknown as ReturnType<typeof useRoute>);
+  vi.mocked(useRouter).mockReturnValue({
+    replace: vi.fn(async ({ query }: { query: Record<string, string> }) => {
+      route.query = query;
+    }),
+  } as unknown as ReturnType<typeof useRouter>);
+});
 
 const {
   getSettings,
@@ -20,6 +40,8 @@ const {
   getPanelRateLimitSettings,
   updatePanelRateLimitSettings,
   getStreamTimeoutSettings,
+  getOpenAIResponseHeaderTimeoutSettings,
+  updateOpenAIResponseHeaderTimeoutSettings,
   getRectifierSettings,
   getBetaPolicySettings,
   getUpstreamBillingProbeSettings,
@@ -54,6 +76,8 @@ const {
   }),
   updatePanelRateLimitSettings: vi.fn().mockImplementation(async (payload) => payload),
   getStreamTimeoutSettings: vi.fn(),
+  getOpenAIResponseHeaderTimeoutSettings: vi.fn(),
+  updateOpenAIResponseHeaderTimeoutSettings: vi.fn(),
   getRectifierSettings: vi.fn(),
   getBetaPolicySettings: vi.fn(),
   getUpstreamBillingProbeSettings: vi.fn().mockResolvedValue({
@@ -81,6 +105,8 @@ const {
 
 const localeRef = vi.hoisted(() => ({ value: "zh-CN" }));
 
+vi.mock("@/stores/auth", () => ({ useAuthStore: () => ({ isAdmin: true, isSuperAdmin: true }) }));
+
 vi.mock("@/api", () => ({
   adminAPI: {
     settings: {
@@ -95,8 +121,19 @@ vi.mock("@/api", () => ({
       getPanelRateLimitSettings,
       updatePanelRateLimitSettings,
       getStreamTimeoutSettings,
+      getOpenAIResponseHeaderTimeoutSettings,
+      updateOpenAIResponseHeaderTimeoutSettings,
       getRectifierSettings,
       getBetaPolicySettings,
+      getCodexPreOutputRetrySettings: vi.fn().mockResolvedValue({
+        enabled: false,
+        max_retries: 3,
+        retry_interval_ms: 1000,
+        max_retry_window_seconds: 30,
+        keywords: ["servers are currently overloaded"],
+      }),
+      updateCodexPreOutputRetrySettings: vi.fn().mockImplementation(async (payload) => payload),
+      getRegistrationEmailBlacklist: vi.fn().mockResolvedValue({ emails: [], max: 20000 }),
     },
     accounts: {
       getUpstreamBillingProbeSettings,
@@ -119,8 +156,11 @@ vi.mock("@/api", () => ({
   },
 }));
 
+const settingsMenuState = reactive({ cachedPublicSettings: {} as { openai_codex_ticket_enabled?: boolean } });
+
 vi.mock("@/stores", () => ({
   useAppStore: () => ({
+    get cachedPublicSettings() { return settingsMenuState.cachedPublicSettings; },
     showError,
     showSuccess,
     showWarning: vi.fn(),
@@ -217,7 +257,7 @@ vi.mock("vue-i18n", async () => {
     "admin.settings.openaiExperimentalScheduler.queueWeight": "排队",
     "admin.settings.openaiExperimentalScheduler.errorRateWeight": "错误率",
     "admin.settings.openaiExperimentalScheduler.ttftWeight": "首包延迟",
-    "admin.settings.openaiExperimentalScheduler.resetWeight": "7 天额度重置",
+    "admin.settings.openaiExperimentalScheduler.resetWeight": "重置窗口",
     "admin.settings.openaiExperimentalScheduler.quotaHeadroomWeight": "额度余量",
     "admin.settings.openaiExperimentalScheduler.upstreamCostWeight": "计费倍率",
     "admin.settings.openaiExperimentalScheduler.previousResponseWeight": "previous_response 粘性",
@@ -367,8 +407,10 @@ const ImageUploadStub = defineComponent({
 
 const baseSettingsResponse = {
   registration_enabled: true,
+  login_rate_limit_enabled: true,
   email_verify_enabled: false,
   registration_email_suffix_whitelist: [],
+  promo_code_enabled: true,
   invitation_code_enabled: false,
   password_reset_enabled: false,
   totp_enabled: false,
@@ -377,6 +419,7 @@ const baseSettingsResponse = {
   passkey_configured: true,
   passkey_rp_id: "sub3.nebula-spaces.com",
   passkey_rp_origins: ["https://sub3.nebula-spaces.com"],
+  mainland_web_block_enabled: false,
   default_balance: 0,
   default_concurrency: 1,
   default_subscriptions: [],
@@ -388,6 +431,7 @@ const baseSettingsResponse = {
   doc_url: "",
   home_content: "",
   compact_home_enabled: false,
+
   hide_ccs_import_button: false,
   table_default_page_size: 20,
   table_page_size_options: [10, 20, 50, 100],
@@ -451,8 +495,13 @@ const baseSettingsResponse = {
   enable_model_fallback: false,
   fallback_model_anthropic: "",
   fallback_model_openai: "",
+  fallback_model_gemini: "",
+  fallback_model_antigravity: "",
   grok_default_text_model: "grok-4.5",
   grok_cross_client_model_map_enabled: false,
+  grok_video_source_url_enabled: false,
+  enable_identity_patch: false,
+  identity_patch_prompt: "",
   ops_monitoring_enabled: false,
   ops_realtime_monitoring_enabled: false,
   ops_query_mode_default: "auto",
@@ -470,9 +519,10 @@ const baseSettingsResponse = {
   enable_anthropic_cache_ttl_1h_injection: false,
   rewrite_message_cache_control: false,
   enable_client_dateline_normalization: true,
+  antigravity_user_agent_version: "",
   openai_codex_user_agent: "",
   payment_enabled: true,
-  payment_min_amount: 10,
+  payment_min_amount: 1,
   payment_max_amount: 10000,
   payment_daily_limit: 50000,
   payment_order_timeout_minutes: 30,
@@ -521,7 +571,7 @@ const baseSettingsResponse = {
   openai_advanced_scheduler_effective_weight_queue: "0.7",
   openai_advanced_scheduler_effective_weight_error_rate: "0.8",
   openai_advanced_scheduler_effective_weight_ttft: "0.5",
-  openai_advanced_scheduler_effective_weight_reset: "3",
+  openai_advanced_scheduler_effective_weight_reset: "0",
   openai_advanced_scheduler_effective_weight_quota_headroom: "0",
   openai_advanced_scheduler_effective_weight_upstream_cost: "0",
   openai_advanced_scheduler_effective_weight_previous_response: "5",
@@ -536,7 +586,8 @@ const baseSettingsResponse = {
   default_platform_quotas: {
     anthropic:   { daily: null, weekly: null, monthly: null },
     openai:      { daily: null, weekly: 12.5, monthly: null },
-    grok:        { daily: null, weekly: null, monthly: 200 },
+    gemini:      { daily: null, weekly: null, monthly: 200 },
+    antigravity: { daily: null, weekly: null, monthly: null },
   },
 };
 
@@ -556,6 +607,9 @@ function mountView() {
         ProxySelector: true,
         ImageUpload: ImageUploadStub,
         BackupSettings: true,
+        CodexTicketSettings: true,
+        CodexTicketFeatureSettings: { template: '<section data-testid="codex-ticket-feature-settings" />' },
+        OpenAIVMSettings: { template: '<section data-testid="openai-vm-settings-stub"><form data-testid="vm-settings-form"><button type="submit">Save Bridge</button></form></section>' },
       },
     },
   });
@@ -616,7 +670,7 @@ describe("admin SettingsView email domain quota copy", () => {
 
     const zhQuotaHint = zhSettings.settings.registration.emailDomainQuotaHint;
     const enQuotaHint = enSettings.settings.registration.emailDomainQuotaHint;
-    expect(zhQuotaHint).toContain("其他可注册主域名各限注册一个用户");
+    expect(zhQuotaHint).toContain("其他可注册主域名各限注册一个账户");
     expect(zhQuotaHint).toContain("关闭时非白名单域名直接拒绝");
     expect(enQuotaHint).toContain("one account");
     expect(enQuotaHint).toContain("When disabled");
@@ -625,6 +679,7 @@ describe("admin SettingsView email domain quota copy", () => {
 
 describe("admin SettingsView payment visible method controls", () => {
   beforeEach(() => {
+    settingsMenuState.cachedPublicSettings = {};
     getSettings.mockReset();
     updateSettings.mockReset();
     getWebSearchEmulationConfig.mockReset();
@@ -633,6 +688,8 @@ describe("admin SettingsView payment visible method controls", () => {
     getOverloadCooldownSettings.mockReset();
     getRateLimit429CooldownSettings.mockReset();
     updateRateLimit429CooldownSettings.mockReset();
+    getOpenAIResponseHeaderTimeoutSettings.mockReset();
+    updateOpenAIResponseHeaderTimeoutSettings.mockReset();
     getStreamTimeoutSettings.mockReset();
     getRectifierSettings.mockReset();
     getBetaPolicySettings.mockReset();
@@ -717,6 +774,54 @@ describe("admin SettingsView payment visible method controls", () => {
     adminSettingsFetch.mockResolvedValue(undefined);
   });
 
+
+  it("opens global Bridge settings from its URL outside the shared settings form", async () => {
+    useRoute().query.tab = "openai-vm";
+    const wrapper = mountView();
+    await flushPromises();
+
+    expect(wrapper.get('#settings-tab-openai-vm').attributes('aria-selected')).toBe('true');
+    const panel = wrapper.get('[data-testid="openai-vm-settings-stub"]');
+    expect(panel.element.closest('form')).toBeNull();
+    expect(wrapper.get<HTMLFormElement>('form').element.style.display).toBe('none');
+    await panel.get('form').trigger('submit');
+    expect(updateSettings).not.toHaveBeenCalled();
+
+    await wrapper.get('#settings-tab-general').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[data-testid="openai-vm-settings-stub"]').exists()).toBe(false);
+    expect(wrapper.get<HTMLFormElement>('form').element.style.display).not.toBe('none');
+    expect(useRoute().query.tab).toBe('general');
+    wrapper.unmount();
+  });
+
+  it("opens Bridge settings from its tab and follows URL changes", async () => {
+    useRoute().query.keep = 'preserved';
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="openai-vm-settings-stub"]').exists()).toBe(false);
+
+    await wrapper.get('#settings-tab-openai-vm').trigger('click');
+    await flushPromises();
+    expect(useRoute().query).toEqual({ tab: 'openai-vm', keep: 'preserved' });
+    expect(wrapper.get('[data-testid="openai-vm-settings-stub"]').isVisible()).toBe(true);
+
+    await useRouter().replace({ query: { tab: 'gateway' } });
+    await flushPromises();
+    expect(wrapper.get('#settings-tab-gateway').attributes('aria-selected')).toBe('true');
+    expect(wrapper.find('[data-testid="openai-vm-settings-stub"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("uses the general settings tab for an unknown URL tab", async () => {
+    useRoute().query.tab = "invalid-tab";
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.get('#settings-tab-general').attributes('aria-selected')).toBe('true');
+    expect(wrapper.find('[data-testid="openai-vm-settings-stub"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("loads and saves the open button visibility for each custom menu", async () => {
     const menuItems = [
       { id: "docs", label: "Docs", url: "https://example.com/docs", icon_svg: "", visibility: "user", sort_order: 0 },
@@ -742,6 +847,60 @@ describe("admin SettingsView payment visible method controls", () => {
     wrapper.unmount();
   });
 
+  it("preserves and saves endpoint descriptions and recommendations", async () => {
+    const endpoints = [
+      { name: "Global", endpoint: "https://global.example", description: "International route", recommended: true },
+      { name: "Backup", endpoint: "https://backup.example", description: "Backup route" },
+    ];
+    getSettings.mockResolvedValue({
+      ...baseSettingsResponse,
+      api_base_url_description: "Regional route",
+      custom_endpoints: endpoints,
+    });
+    const wrapper = mountView();
+    await flushPromises();
+
+    const description = wrapper.get<HTMLInputElement>('[data-testid="api-base-url-description"]');
+    expect(description.element.value).toBe("Regional route");
+    const toggles = wrapper.findAll<HTMLInputElement>('[data-testid="custom-endpoint-recommended"]');
+    expect(toggles.map(toggle => toggle.element.checked)).toEqual([true, false]);
+    await description.setValue("Regional default");
+    await toggles[0].setValue(false);
+    await toggles[1].setValue(true);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledWith(expect.objectContaining({
+      api_base_url_description: "Regional default",
+      custom_endpoints: [
+        { ...endpoints[0], recommended: false },
+        { ...endpoints[1], recommended: true },
+      ],
+    }));
+    wrapper.unmount();
+  });
+
+  it("saves localized custom menu names with a legacy fallback", async () => {
+    getSettings.mockResolvedValue({ ...baseSettingsResponse, custom_menu_items: [] });
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="custom-menu-add"]').trigger("click");
+    await wrapper.get('[data-testid="custom-menu-label-zh"]').setValue("充值中心");
+    await wrapper.get('[data-testid="custom-menu-label-en"]').setValue("Recharge Center");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings.mock.calls[0]?.[0].custom_menu_items).toEqual([
+      expect.objectContaining({
+        label: "充值中心",
+        label_zh: "充值中心",
+        label_en: "Recharge Center",
+      }),
+    ]);
+    wrapper.unmount();
+  });
+
   it("submits the compact home page toggle", async () => {
     const wrapper = mountView();
     await flushPromises();
@@ -756,6 +915,58 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(updateSettings).toHaveBeenCalledWith(
       expect.objectContaining({ compact_home_enabled: true }),
     );
+  });
+
+  it("loads, disables, enables and saves the OpenAI header timeout with server readback", async () => {
+    getOpenAIResponseHeaderTimeoutSettings.mockResolvedValueOnce({ enabled: false, seconds: 45 });
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    expect(wrapper.find('[data-testid="openai-header-timeout-seconds"]').exists()).toBe(false);
+    await wrapper.get('[data-testid="openai-header-timeout-enabled"]').setValue(true);
+    await wrapper.get('[data-testid="openai-header-timeout-seconds"]').setValue('60');
+    updateOpenAIResponseHeaderTimeoutSettings.mockResolvedValueOnce({ enabled: true, seconds: 61 });
+    await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
+    await flushPromises();
+    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: true, seconds: 60 });
+    expect((wrapper.get('[data-testid="openai-header-timeout-seconds"]').element as HTMLInputElement).value).toBe('61');
+    expect(showSuccess).toHaveBeenCalledWith('admin.settings.openaiResponseHeaderTimeout.saved');
+    await wrapper.get('[data-testid="openai-header-timeout-enabled"]').setValue(false);
+    await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
+    await flushPromises();
+    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: false, seconds: 61 });
+  });
+
+  it("keeps the edited timeout after a save error and allows retry", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    await wrapper.get('[data-testid="openai-header-timeout-seconds"]').setValue('42');
+    updateOpenAIResponseHeaderTimeoutSettings.mockRejectedValueOnce(new Error('synthetic save failure'));
+    await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
+    await flushPromises();
+    expect(showError).toHaveBeenCalledWith('error');
+    expect((wrapper.get('[data-testid="openai-header-timeout-seconds"]').element as HTMLInputElement).value).toBe('42');
+    expect(wrapper.get('[data-testid="openai-header-timeout-save"]').attributes('disabled')).toBeUndefined();
+    await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
+    await flushPromises();
+    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: true, seconds: 42 });
+  });
+
+  it("requires a successful reload after a timeout settings load failure", async () => {
+    getOpenAIResponseHeaderTimeoutSettings.mockRejectedValueOnce(new Error('synthetic load failure'));
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    const card = wrapper.get('#settings-section-openai-response-header-timeout').element.closest('.card')!;
+    expect(card.textContent).toContain('admin.settings.openaiResponseHeaderTimeout.loadFailed');
+    expect(wrapper.find('[data-testid="openai-header-timeout-save"]').exists()).toBe(false);
+    const retry = card.querySelector('button')!;
+    retry.click();
+    await flushPromises();
+    expect(getOpenAIResponseHeaderTimeoutSettings).toHaveBeenCalledTimes(2);
+    expect(wrapper.find('[data-testid="openai-header-timeout-save"]').exists()).toBe(true);
+    expect(updateOpenAIResponseHeaderTimeoutSettings).not.toHaveBeenCalled();
   });
 
   it("renders panel rate limit card and saves settings", async () => {
@@ -804,6 +1015,82 @@ describe("admin SettingsView payment visible method controls", () => {
 
     expect(wrapper.text()).not.toContain("可见方式");
     expect(wrapper.text()).not.toContain("支付来源");
+  });
+
+  it("loads and saves the registration IP limit independently of login protection", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      registration_ip_limit_enabled: false,
+      login_rate_limit_enabled: true,
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await openSecurityTab(wrapper);
+    const toggle = wrapper.get('[data-testid="registration-ip-limit-toggle"]');
+    expect((toggle.element as HTMLInputElement).checked).toBe(false);
+    await toggle.setValue(true);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ registration_ip_limit_enabled: true, login_rate_limit_enabled: true }),
+    );
+    await toggle.setValue(false);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ registration_ip_limit_enabled: false, login_rate_limit_enabled: true }),
+    );
+  });
+
+  it.each([undefined, false, true])("loads and saves the email alias block switch from %s", async (enabled) => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      registration_email_alias_block_enabled: enabled,
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await openSecurityTab(wrapper);
+    const toggle = wrapper.get<HTMLInputElement>('[data-testid="registration-email-alias-block-toggle"]');
+    const initial = enabled ?? true;
+    expect(toggle.element.checked).toBe(initial);
+    await toggle.setValue(!initial);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ registration_email_alias_block_enabled: !initial }),
+    );
+    await toggle.setValue(initial);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ registration_email_alias_block_enabled: initial }),
+    );
+  });
+
+  it("loads and saves the login rate limit switch in security settings", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      login_rate_limit_enabled: false,
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await openSecurityTab(wrapper);
+
+    const toggle = wrapper.get('[data-testid="login-rate-limit-toggle"]');
+    expect((toggle.element as HTMLInputElement).checked).toBe(false);
+    await toggle.setValue(true);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ login_rate_limit_enabled: true }),
+    );
+
+    await toggle.setValue(false);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ login_rate_limit_enabled: false }),
+    );
   });
 
   it("shows valid passkey RP configuration and persists the sign-in toggle", async () => {
@@ -997,6 +1284,55 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(status.text()).toContain("webauthn.rp_id");
     expect(status.text()).toContain("webauthn.rp_origins");
     expect(status.text()).toContain("然后重启服务");
+  });
+
+  it.each([false, true])("loads, saves, and reloads mainland web restriction from %s", async (enabled) => {
+    let saved = { ...baseSettingsResponse, mainland_web_block_enabled: enabled };
+    getSettings.mockImplementation(async () => ({ ...saved }));
+    updateSettings.mockImplementation(async (payload) => {
+      saved = { ...saved, ...payload };
+      return { ...saved };
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await openSecurityTab(wrapper);
+
+    const toggle = wrapper.get<HTMLInputElement>('[data-testid="mainland-web-block-toggle"]');
+    expect(toggle.element.checked).toBe(enabled);
+    expect(toggle.attributes("disabled")).toBeUndefined();
+    const section = wrapper.get('[data-testid="mainland-web-block-settings"]');
+    expect(section.text()).toContain("admin.settings.security.mainlandWebBlockHint");
+    expect(section.text()).toContain("admin.settings.security.mainlandWebBlockProxyHint");
+
+    await toggle.setValue(!enabled);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ mainland_web_block_enabled: !enabled }),
+    );
+    expect(toggle.element.checked).toBe(!enabled);
+    wrapper.unmount();
+
+    const reloaded = mountView();
+    await flushPromises();
+    await openSecurityTab(reloaded);
+    expect(reloaded.get<HTMLInputElement>('[data-testid="mainland-web-block-toggle"]').element.checked).toBe(!enabled);
+    reloaded.unmount();
+  });
+
+  it("defaults mainland web restriction to off for older settings responses", async () => {
+    const { mainland_web_block_enabled: _omitted, ...olderSettings } = baseSettingsResponse;
+    getSettings.mockResolvedValueOnce(olderSettings);
+    const wrapper = mountView();
+    await flushPromises();
+    await openSecurityTab(wrapper);
+    expect(wrapper.get<HTMLInputElement>('[data-testid="mainland-web-block-toggle"]').element.checked).toBe(false);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ mainland_web_block_enabled: false }),
+    );
+    wrapper.unmount();
   });
 
   it("loads, edits, validates, and saves forwarded client-IP headers", async () => {
@@ -1288,6 +1624,26 @@ describe("admin SettingsView payment visible method controls", () => {
     ]);
   });
 
+  it("submits Antigravity user agent version gateway setting", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      antigravity_user_agent_version: "1.23.2",
+    });
+
+    const wrapper = mountView();
+
+    await flushPromises();
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        antigravity_user_agent_version: "1.23.2",
+      }),
+    );
+  });
+
   it("updates provider enablement immediately and reloads providers", async () => {
     const provider = {
       id: 7,
@@ -1338,6 +1694,8 @@ describe("admin SettingsView payment visible method controls", () => {
           ProxySelector: true,
           ImageUpload: ImageUploadStub,
           BackupSettings: true,
+        CodexTicketSettings: true,
+        CodexTicketFeatureSettings: { template: '<section data-testid="codex-ticket-feature-settings" />' },
         },
       },
     });
@@ -1428,8 +1786,30 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(updateUpstreamBillingProbeSettings).toHaveBeenCalledWith({
       enabled: true,
       interval_minutes: 60,
+      rate_change_notify_enabled: false,
+      rate_change_notify_email: "",
     });
     expect(showSuccess).toHaveBeenCalledWith("上游倍率自动探测设置已保存");
+  });
+
+  it("keeps configured reminder and probe interval unchanged when loading or saving", async () => {
+    getUpstreamBillingProbeSettings.mockResolvedValueOnce({
+      enabled: true, interval_minutes: 83, rate_change_notify_enabled: true,
+      rate_change_notify_email: "notice@example.com", rate_change_notify_epoch: "epoch-existing",
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    const card = wrapper.get('[data-testid="upstream-billing-probe-settings"]');
+    expect((card.get('[data-testid="upstream-rate-notify-enabled"]').element as HTMLInputElement).checked).toBe(true);
+    expect((card.get('[data-testid="upstream-rate-notify-email"]').element as HTMLInputElement).value).toBe("notice@example.com");
+    expect(updateUpstreamBillingProbeSettings).not.toHaveBeenCalled();
+    await card.get('[data-testid="upstream-billing-probe-save"]').trigger("click");
+    await flushPromises();
+    expect(updateUpstreamBillingProbeSettings).toHaveBeenCalledWith({
+      enabled: true, interval_minutes: 83, rate_change_notify_enabled: true,
+      rate_change_notify_email: "notice@example.com", rate_change_notify_epoch: "epoch-existing",
+    });
   });
 
   it("loads and saves configurable Grok cross-client model mapping", async () => {
@@ -1458,6 +1838,76 @@ describe("admin SettingsView payment visible method controls", () => {
     const payload = updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
     expect(payload.grok_default_text_model).toBe("grok-custom-text");
     expect(payload.grok_cross_client_model_map_enabled).toBe(false);
+  });
+
+  it("loads, trims, saves and clears the unified upstream error message", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      upstream_error_message: "服务繁忙，请稍后重试。",
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    const message = wrapper.get('[data-testid="upstream-error-message"]');
+    expect((message.element as HTMLTextAreaElement).value).toBe("服务繁忙，请稍后重试。");
+    await message.setValue("  本次请求未能完成，请稍后重试。  ");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings.mock.calls.at(-1)?.[0].upstream_error_message).toBe("本次请求未能完成，请稍后重试。");
+    await message.setValue("   ");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings.mock.calls.at(-1)?.[0].upstream_error_message).toBe("");
+    wrapper.unmount();
+  });
+
+  it("rejects unified upstream error messages longer than 500 characters", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    await wrapper.get('[data-testid="upstream-error-message"]').setValue("错".repeat(501));
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(showError).toHaveBeenCalledWith("admin.settings.upstreamErrorMessage.invalid");
+    wrapper.unmount();
+  });
+
+  it("loads and saves multiline upstream error message matching rules", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      upstream_error_retry: { enabled: true, max_retries: 2, delay_ms: 500, errors: "503\ncurrently overloaded" },
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    const rules = wrapper.get('[data-testid="upstream-error-retry-errors"]');
+    expect((rules.element as HTMLTextAreaElement).value).toBe("503\ncurrently overloaded");
+    await rules.setValue("503\nOur servers are currently overloaded\n服务繁忙");
+    await wrapper.get('[data-testid="upstream-error-retry-max"]').setValue(4);
+    await wrapper.get('[data-testid="upstream-error-retry-delay"]').setValue(1000);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings.mock.calls.at(-1)?.[0].upstream_error_retry).toEqual({
+      enabled: true, max_retries: 4, delay_ms: 1000, errors: "503\nOur servers are currently overloaded\n服务繁忙",
+    });
+    wrapper.unmount();
+  });
+
+  it("rejects enabled retries without rules and accepts saving disabled retries", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    await wrapper.get('[data-testid="upstream-error-retry-toggle"]').setValue(true);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(showError).toHaveBeenCalled();
+    await wrapper.get('[data-testid="upstream-error-retry-toggle"]').setValue(false);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings.mock.calls.at(-1)?.[0].upstream_error_retry.enabled).toBe(false);
+    wrapper.unmount();
   });
 
   it("loads and saves the OpenAI Responses first-token metric mode", async () => {
@@ -1664,8 +2114,10 @@ describe("admin SettingsView payment visible method controls", () => {
         },
       },
       setup(props) {
-        receivedProviders = props.providers as Array<Record<string, unknown>>;
-        return () => h("div", { class: "provider-list-capture" });
+        return () => {
+          receivedProviders = props.providers as Array<Record<string, unknown>>;
+          return h("div", { class: "provider-list-capture" });
+        };
       },
     });
 
@@ -1684,6 +2136,8 @@ describe("admin SettingsView payment visible method controls", () => {
           ProxySelector: true,
           ImageUpload: ImageUploadStub,
           BackupSettings: true,
+        CodexTicketSettings: true,
+        CodexTicketFeatureSettings: { template: '<section data-testid="codex-ticket-feature-settings" />' },
         },
       },
     });
@@ -1709,6 +2163,8 @@ describe("admin SettingsView wechat connect controls", () => {
     getOverloadCooldownSettings.mockReset();
     getRateLimit429CooldownSettings.mockReset();
     updateRateLimit429CooldownSettings.mockReset();
+    getOpenAIResponseHeaderTimeoutSettings.mockReset();
+    updateOpenAIResponseHeaderTimeoutSettings.mockReset();
     getStreamTimeoutSettings.mockReset();
     getRectifierSettings.mockReset();
     getBetaPolicySettings.mockReset();
@@ -1943,7 +2399,6 @@ describe("admin SettingsView wechat connect controls", () => {
       }),
     );
   });
-
 });
 
 describe("admin SettingsView platform quota matrix", () => {
@@ -1956,6 +2411,8 @@ describe("admin SettingsView platform quota matrix", () => {
     getOverloadCooldownSettings.mockReset();
     getRateLimit429CooldownSettings.mockReset();
     updateRateLimit429CooldownSettings.mockReset();
+    getOpenAIResponseHeaderTimeoutSettings.mockReset();
+    updateOpenAIResponseHeaderTimeoutSettings.mockReset();
     getStreamTimeoutSettings.mockReset();
     getRectifierSettings.mockReset();
     getBetaPolicySettings.mockReset();
@@ -2001,10 +2458,12 @@ describe("admin SettingsView platform quota matrix", () => {
     // 表格行的平台字段：font-mono 渲染纯英文 platform key
     expect(html).toContain("anthropic");
     expect(html).toContain("openai");
-    expect(html).toContain("grok");
+    expect(html).toContain("gemini");
+    expect(html).toContain("antigravity");
+    expect(html).toContain("typesafe");
   });
 
-  it("保存时 updateSettings payload 应包含嵌套 default_platform_quotas 对象（含全 3 平台）", async () => {
+  it("保存时 updateSettings payload 应包含嵌套 default_platform_quotas 对象（含全 6 平台）", async () => {
     const wrapper = mountView();
     await flushPromises();
     await openUsersTab(wrapper);
@@ -2020,7 +2479,7 @@ describe("admin SettingsView platform quota matrix", () => {
     // 应携带嵌套对象，而非扁平字段
     expect(payload).toHaveProperty("default_platform_quotas");
     const quotas = payload["default_platform_quotas"] as Record<string, unknown>;
-    const platforms = ["anthropic", "openai", "grok"];
+    const platforms = ["anthropic", "openai", "gemini", "antigravity", "grok", "typesafe"];
     for (const p of platforms) {
       expect(quotas).toHaveProperty(p);
       const pq = quotas[p] as Record<string, unknown>;
@@ -2034,13 +2493,13 @@ describe("admin SettingsView platform quota matrix", () => {
     expect(payload).not.toHaveProperty("default_platform_quota_openai_weekly");
   });
 
-  it("加载后 form.default_platform_quotas 含全 3 平台，从嵌套 JSON 正确读取数值", async () => {
+  it("加载后 form.default_platform_quotas 含全 6 平台，从嵌套 JSON 正确读取数值", async () => {
     getSettings.mockResolvedValueOnce({
       ...baseSettingsResponse,
       default_platform_quotas: {
         anthropic: { daily: 5, weekly: null, monthly: null },
         openai:    { daily: null, weekly: 12.5, monthly: null },
-        // grok 缺失 → 应被归一化为全 null
+        // gemini / antigravity 缺失 → 应被归一化为全 null
       },
     });
 
@@ -2057,7 +2516,9 @@ describe("admin SettingsView platform quota matrix", () => {
     expect(quotas["anthropic"]?.["daily"]).toBe(5);
     expect(quotas["openai"]?.["weekly"]).toBe(12.5);
     // 缺失平台应补全为 null
-    expect(quotas["grok"]).toEqual({ daily: null, weekly: null, monthly: null });
+    expect(quotas["gemini"]).toEqual({ daily: null, weekly: null, monthly: null });
+    expect(quotas["antigravity"]).toEqual({ daily: null, weekly: null, monthly: null });
+    expect(quotas["typesafe"]).toEqual({ daily: null, weekly: null, monthly: null });
   });
 
   it("空输入（v-model.number 产出 \"\"）在提交时清洗为 null 而非空字符串", async () => {
@@ -2067,7 +2528,8 @@ describe("admin SettingsView platform quota matrix", () => {
       default_platform_quotas: {
         anthropic: { daily: 10, weekly: null, monthly: null },
         openai:    { daily: null, weekly: null, monthly: null },
-        grok:      { daily: null, weekly: null, monthly: null },
+        gemini:    { daily: null, weekly: null, monthly: null },
+        antigravity: { daily: null, weekly: null, monthly: null },
       },
     });
 

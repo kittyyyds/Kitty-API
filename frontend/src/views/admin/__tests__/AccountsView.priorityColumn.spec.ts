@@ -7,12 +7,14 @@ const { listAccounts } = vi.hoisted(() => ({
   listAccounts: vi.fn()
 }))
 
+vi.mock('@/api/admin/channelQuality', () => ({ channelQualityAPI: { scores: async () => ({}) } }))
+
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       list: listAccounts,
       listWithEtag: vi.fn(),
-      getBatchTodayStatsWithEtag: vi.fn().mockResolvedValue({ notModified: false, etag: null, data: { stats: {} } }),
+      getBatchTodayStats: vi.fn().mockResolvedValue({ stats: {} }),
       getUpstreamBillingProbeSettings: vi.fn().mockResolvedValue({ enabled: true, interval_minutes: 30 }),
       delete: vi.fn(),
       batchClearError: vi.fn(),
@@ -72,6 +74,7 @@ function mountView() {
         ReAuthAccountModal: true,
         AccountTestModal: true,
         AccountStatsModal: true,
+        ScheduledTestsPanel: true,
         SyncFromCrsModal: true,
         TempUnschedStatusModal: true,
         ErrorPassthroughRulesModal: true,
@@ -100,7 +103,7 @@ describe('admin AccountsView priority column preferences', () => {
       items: [],
       total: 0,
       page: 1,
-      page_size: 50,
+      page_size: 20,
       pages: 0
     })
   })
@@ -116,7 +119,7 @@ describe('admin AccountsView priority column preferences', () => {
 
     expect(listAccounts).toHaveBeenLastCalledWith(
       1,
-      50,
+      20,
       expect.objectContaining({ sort_by: 'priority', sort_order: 'desc' }),
       expect.objectContaining({ signal: expect.any(AbortSignal) })
     )

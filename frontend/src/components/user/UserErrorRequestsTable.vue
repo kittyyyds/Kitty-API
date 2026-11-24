@@ -39,8 +39,8 @@
         </template>
 
         <template #cell-status="{ row }">
-          <span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium" :class="statusClass(finalRequestStatusCode(row))">
-            {{ finalRequestStatusCode(row) || '-' }}
+          <span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium" :class="statusClass(row.status_code)">
+            {{ row.status_code || '-' }}
           </span>
         </template>
 
@@ -131,7 +131,6 @@ import IpGeoCell from '@/components/common/IpGeoCell.vue'
 import IpGeoBatchToolbar from '@/components/common/IpGeoBatchToolbar.vue'
 import { formatDateTime } from '@/utils/format'
 import {
-  finalRequestStatusCode,
   mapErrorSortKey,
   numericRequestTypeKind,
   requestTypeBadgeClass,

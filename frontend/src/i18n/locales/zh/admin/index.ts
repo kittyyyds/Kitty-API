@@ -1,6 +1,7 @@
 import upstream from './upstream'
 import providerImport from './providerImport'
 import operations from './operations'
+import moderationUsers from './moderationUsers'
 import groupCacheTest from './groupCacheTest'
 import overview from './overview'
 import channels from './channels'
@@ -10,11 +11,15 @@ import ops from './ops'
 import settings from './settings'
 import audit from './audit'
 import plugins from './plugins'
+import promptAudit from './promptAudit'
+import safetyPromptAudit from './safetyPromptAudit'
+import riskControl from './riskControl'
 
 export default {
   ...upstream,
   ...providerImport,
   ...operations,
+  ...moderationUsers,
   ...groupCacheTest,
   ...overview,
   ...channels,
@@ -24,4 +29,7 @@ export default {
   ...settings,
   ...audit,
   ...plugins,
+  ...promptAudit,
+  ...safetyPromptAudit,
+  ...riskControl,
 }

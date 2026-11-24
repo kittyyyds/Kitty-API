@@ -380,16 +380,8 @@ const eventDisplayMeta: Record<string, EventDisplayMeta> = {
     timing: "上游账号的用量达到配置的额度告警阈值时发送给管理员通知邮箱。",
     categoryLabel: "管理告警",
   },
-  "content_moderation.violation_notice": {
-    label: "内容审计违规提醒",
-    timing: "用户请求命中内容审计或风控规则、但尚未被禁用时发送。",
-    categoryLabel: "风控",
-  },
-  "content_moderation.account_disabled": {
-    label: "内容审计禁用用户",
-    timing: "内容审计违规次数达到封禁阈值并自动禁用用户时发送。",
-    categoryLabel: "风控",
-  },
+
+
   "ops.alert": {
     label: "运维告警",
     timing: "运维监控规则触发告警并满足邮件通知配置时发送给运维收件人。",
@@ -443,16 +435,8 @@ const eventDisplayMetaEn: Record<string, EventDisplayMeta> = {
     timing: "Sent to admin notification emails when an upstream account reaches the configured quota alert threshold.",
     categoryLabel: "Admin",
   },
-  "content_moderation.violation_notice": {
-    label: "Risk Control Violation Notice",
-    timing: "Sent when a user request triggers content moderation or risk-control rules but the account is not disabled yet.",
-    categoryLabel: "Risk Control",
-  },
-  "content_moderation.account_disabled": {
-    label: "Risk Control Account Disabled",
-    timing: "Sent when content moderation reaches the ban threshold and automatically disables the user account.",
-    categoryLabel: "Risk Control",
-  },
+
+
   "ops.alert": {
     label: "Ops Alert",
     timing: "Sent to ops recipients when an ops monitoring rule fires and email notification settings allow it.",
@@ -505,7 +489,6 @@ function formatCategory(category: string): string {
     subscription: { zh: "订阅", en: "Subscription" },
     billing: { zh: "计费", en: "Billing" },
     admin: { zh: "管理告警", en: "Admin" },
-    risk_control: { zh: "风控", en: "Risk Control" },
     ops: { zh: "运维", en: "Ops" },
   };
   const item = labels[normalized];

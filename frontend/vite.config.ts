@@ -42,6 +42,10 @@ function injectBranding(html: string, config: { site_name?: string; site_logo?: 
       /<link\s+rel=["']icon["'][^>]*>/i,
       `<link rel="icon" href="${escapeHtml(siteLogo)}" />`,
     )
+    brandedHtml = brandedHtml.replace(
+      /<link\s+rel=["']apple-touch-icon["'][^>]*>/i,
+      `<link rel="apple-touch-icon" href="${escapeHtml(siteLogo)}" />`,
+    )
   }
   return brandedHtml
 }
@@ -80,6 +84,11 @@ function injectPublicSettings(backendUrl: string): Plugin {
 export default defineConfig(({ mode }) => {
   // 加载环境变量
   const env = loadEnv(mode, process.cwd(), '')
+  // Fail at build startup if a deployment has a misspelled site selector.
+  const site = env.VITE_KITTY_SITE?.trim() || 'custom'
+  if (site !== 'kittyapi' && site !== 'kittyyyds' && site !== 'custom') {
+    throw new Error(`Invalid VITE_KITTY_SITE "${site}"; expected custom, kittyapi or kittyyyds`)
+  }
   const backendUrl = env.VITE_DEV_PROXY_TARGET || 'http://localhost:8080'
   const devPort = Number(env.VITE_DEV_PORT || 3000)
 
@@ -120,12 +129,8 @@ export default defineConfig(({ mode }) => {
               return 'vendor-vue'
             }
 
-            // Excel is only used on export; never bundle it with everyday UI helpers.
-            if (id.includes('/xlsx/')) {
-              return 'vendor-xlsx'
-            }
-
-            if (id.includes('/@vueuse/')) {
+            // UI 工具库（较大，单独分离）
+            if (id.includes('/@vueuse/') || id.includes('/xlsx/')) {
               return 'vendor-ui'
             }
 

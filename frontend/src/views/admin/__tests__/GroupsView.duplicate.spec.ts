@@ -1,4 +1,4 @@
-import { defineComponent } from 'vue'
+import { defineComponent, h } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -89,8 +89,11 @@ const sourceGroup: AdminGroup = {
   weekly_limit_usd: null,
   monthly_limit_usd: null,
   allow_image_generation: false,
+  allow_batch_image_generation: false,
   image_rate_independent: false,
   image_rate_multiplier: 1,
+  batch_image_discount_multiplier: 0.5,
+  batch_image_hold_multiplier: 0.6,
   image_price_1k: null,
   image_price_2k: null,
   image_price_4k: null,
@@ -116,6 +119,8 @@ const sourceGroup: AdminGroup = {
   updated_at: '2026-07-16T00:00:00Z',
   model_routing: null,
   model_routing_enabled: false,
+  mcp_xml_inject: true,
+  supported_model_scopes: [],
   account_count: 1,
   active_account_count: 1,
   rate_limited_account_count: 0,
@@ -164,6 +169,7 @@ function mountView() {
         GroupCapacityBadge: true,
         GroupRateMultipliersModal: true,
         GroupRPMOverridesModal: true,
+        GroupSmartWSFields: defineComponent({ setup(_, { expose }) { expose({ loading: false, validate: () => true, save: async () => true }); return () => h('div') } }),
         VueDraggable: true
       }
     }
@@ -210,6 +216,32 @@ describe('GroupsView duplicate action', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('edits video group prices in the dedicated form and saves exact per-video/per-second rates', async () => {
+    const group = { ...sourceGroup, platform: 'video', model_pricing: [
+      { platform: 'video', models: ['custom-video'], billing_mode: 'per_request', per_request_price: 1.3, intervals: [] },
+      { platform: 'video', models: ['特价/官方h3-2k'], billing_mode: 'video', per_request_price: 0.25, intervals: [] },
+    ] }
+    listGroups.mockResolvedValue({ items: [group], total: 1, page: 1, page_size: 20, pages: 1 })
+    updateGroup.mockResolvedValue(group)
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === 'common.edit')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="video-group-pricing"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="group-rate-multipliers"]').exists()).toBe(false)
+    expect(wrapper.find('[data-tour="group-form-multiplier"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="edit-grok-video-model-prices"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid="video-pricing-row"]')).toHaveLength(2)
+    await wrapper.findAll('[data-testid="video-pricing-price"]')[0].setValue('1.8')
+    await wrapper.get('#edit-group-form').trigger('submit')
+    await flushPromises()
+    expect(updateGroup).toHaveBeenCalledWith(42, expect.objectContaining({ model_pricing: [
+      expect.objectContaining({ platform: 'video', models: ['custom-video'], billing_mode: 'per_request', per_request_price: 1.8 }),
+      expect.objectContaining({ platform: 'video', models: ['特价/官方h3-2k'], billing_mode: 'video', per_request_price: 0.25 }),
+    ] }))
+    wrapper.unmount()
   })
 
   it('duplicates the selected group, reports success, and refreshes the list', async () => {

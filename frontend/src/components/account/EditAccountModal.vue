@@ -11,6 +11,9 @@
       @submit.prevent="handleSubmit"
       class="space-y-5"
     >
+      <div v-if="account.retired_reason" class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800/40 dark:bg-amber-900/20 dark:text-amber-200" data-testid="retired-bps-credential">
+        {{ t('admin.accounts.retiredBPSCredential') }}
+      </div>
       <div>
         <div class="mb-1 flex flex-wrap items-center justify-between gap-2">
           <label class="input-label mb-0">{{ t('common.name') }}</label>
@@ -40,19 +43,20 @@
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
 
+
+
+
+
+
+
+
       <!-- API Key fields (only for apikey type) -->
-      <KittyOAuthModelSync
-          :account="account"
-          :active="show"
-          :disabled="submitting"
-          @busy="kittyOAuthSyncBusy = $event"
-          @finished="kittyOAuthSyncedId = $event"
-        />
-        <div v-if="account.type === 'apikey'" class="space-y-4">
-        <OpenAICompatibleProviderPresetSelector
-          v-if="account.platform === 'openai'"
-          :model-value="openAICompatibleProviderSelection"
-          @update:model-value="selectOpenAICompatibleProvider"
+      <div v-if="account.type === 'apikey'" class="space-y-4">
+        <GrokMediaProviderSelect
+          v-if="account.platform === 'grok' || account.platform === 'video'"
+          :video-platform="account.platform === 'video'"
+          v-model="editGrokMediaProvider"
+          @use-suanli-url="editBaseUrl = 'https://suanliai.top'"
         />
         <div v-if="!isCNApiKeyAccount || editApiProtocol !== 'adaptive'">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
@@ -60,14 +64,18 @@
             v-model="editBaseUrl"
             type="text"
             class="input"
-            data-testid="api-key-base-url"
-            :disabled="isOpenAICompatibleProviderManaged"
             :placeholder="
-              account.platform === 'openai'
+              account.platform === 'video'
+                ? 'https://video.example.com'
+                : account.platform === 'openai'
                 ? 'https://api.openai.com'
-                : account.platform === 'grok'
-                  ? 'https://api.x.ai/v1'
-                  : 'https://api.anthropic.com'
+                : account.platform === 'gemini'
+                  ? 'https://generativelanguage.googleapis.com'
+                  : account.platform === 'antigravity'
+                    ? 'https://cloudcode-pa.googleapis.com'
+                    : account.platform === 'grok'
+                      ? 'https://api.x.ai/v1'
+                      : 'https://api.anthropic.com'
             "
           />
           <p v-if="baseUrlHint" class="input-hint">{{ baseUrlHint }}</p>
@@ -260,18 +268,25 @@
             data-lpignore="true"
             data-bwignore="true"
             :placeholder="
-              account.platform === 'openai'
+              account.platform === 'video'
+                ? 'API Key'
+                : account.platform === 'openai'
                 ? 'sk-proj-...'
-                : account.platform === 'grok'
-                  ? 'xai-...'
-                  : 'sk-ant-...'
+                : account.platform === 'gemini'
+                  ? 'AQ.Ab...'
+                  : account.platform === 'antigravity'
+                    ? 'sk-...'
+                    : account.platform === 'grok'
+                      ? 'xai-...'
+                      : 'sk-ant-...'
             "
           />
           <p class="input-hint">{{ t('admin.accounts.leaveEmptyToKeep') }}</p>
         </div>
 
-        <!-- Model Restriction Section -->
+        <!-- Model Restriction Section (不适用于 Antigravity) -->
         <div
+          v-if="account.platform !== 'antigravity'"
           class="border-t border-gray-200 pt-4 dark:border-dark-600"
           :data-testid="account.platform === 'grok' ? 'grok-model-settings' : undefined"
         >
@@ -297,17 +312,16 @@
               <button
                 type="button"
                 @click="modelRestrictionMode = 'whitelist'"
-                :disabled="isOpenAICompatibleProviderManaged"
                 :aria-pressed="account.platform === 'grok' ? modelRestrictionMode === 'whitelist' : undefined"
                 :class="account.platform === 'grok'
                   ? [
-                      'rounded-lg px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60',
+                      'rounded-lg px-3 py-2 text-sm',
                       modelRestrictionMode === 'whitelist'
                         ? 'bg-white text-cyan-700 shadow-sm dark:bg-dark-800 dark:text-cyan-300'
                         : 'text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100'
                     ]
                   : [
-                      'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all disabled:cursor-not-allowed disabled:opacity-60',
+                      'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
                       modelRestrictionMode === 'whitelist'
                         ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
                         : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
@@ -332,17 +346,16 @@
               <button
                 type="button"
                 @click="modelRestrictionMode = 'mapping'"
-                :disabled="isOpenAICompatibleProviderManaged"
                 :aria-pressed="account.platform === 'grok' ? modelRestrictionMode === 'mapping' : undefined"
                 :class="account.platform === 'grok'
                   ? [
-                      'rounded-lg px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60',
+                      'rounded-lg px-3 py-2 text-sm',
                       modelRestrictionMode === 'mapping'
                         ? 'bg-white text-purple-700 shadow-sm dark:bg-dark-800 dark:text-purple-300'
                         : 'text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100'
                     ]
                   : [
-                      'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all disabled:cursor-not-allowed disabled:opacity-60',
+                      'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
                       modelRestrictionMode === 'mapping'
                         ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
                         : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
@@ -380,6 +393,8 @@
 
             <ModelWhitelistSelector
               ref="grokApiKeyWhitelistRef"
+              :sync-credentials="editSyncCredentials"
+              :sync-blocked-reason="editSyncBlockedReason"
               v-show="modelRestrictionMode === 'whitelist'"
               v-model="allowedModels"
               :model-mappings="modelMappings"
@@ -445,7 +460,6 @@
                   type="text"
                   :aria-label="account.platform === 'grok' ? t('admin.accounts.grokModelDiagnostics.mappingFromAria', { index: index + 1 }) : undefined"
                   :class="account.platform === 'grok' ? 'input min-w-0 w-full font-mono text-xs' : 'input flex-1'"
-                  :disabled="isOpenAICompatibleProviderManaged"
                   :placeholder="t('admin.accounts.requestModel')"
                 />
                 <Icon
@@ -474,11 +488,9 @@
                   type="text"
                   :aria-label="account.platform === 'grok' ? t('admin.accounts.grokModelDiagnostics.mappingTargetAria', { index: index + 1 }) : undefined"
                   :class="account.platform === 'grok' ? 'input min-w-0 w-full font-mono text-xs' : 'input flex-1'"
-                  :disabled="isOpenAICompatibleProviderManaged"
                   :placeholder="t('admin.accounts.actualModel')"
                 />
                 <button
-                  v-if="!isOpenAICompatibleProviderManaged"
                   type="button"
                   @click="removeModelMapping(index)"
                   :aria-label="account.platform === 'grok' ? t('admin.accounts.grokModelDiagnostics.removeMappingAria', { index: index + 1 }) : undefined"
@@ -500,7 +512,6 @@
             </div>
 
             <button
-              v-if="!isOpenAICompatibleProviderManaged"
               type="button"
               @click="addModelMapping"
               :data-testid="account.platform === 'grok' ? 'grok-model-mapping-add' : undefined"
@@ -525,7 +536,7 @@
             </button>
 
               <!-- Quick Add Buttons -->
-              <div v-if="!isOpenAICompatibleProviderManaged" class="flex flex-wrap gap-2">
+              <div class="flex flex-wrap gap-2">
                 <button
                   v-for="preset in presetMappings"
                   :key="preset.label"
@@ -600,6 +611,48 @@
             />
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.poolModeRetryStatusCodesHint', { default: DEFAULT_POOL_MODE_RETRY_STATUS_CODES.join(', ') }) }}
+            </p>
+          </div>
+        </div>
+
+        <!-- Gemini 显式缓存上游开关：仅自定义地址的 Gemini API Key 账号 -->
+        <div
+          v-if="account.platform === 'gemini' && !isOfficialGeminiBaseUrl(editBaseUrl)"
+          class="border-t border-gray-200 pt-4 dark:border-dark-600"
+          data-testid="explicit-cache-upstream-section"
+        >
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <label class="input-label mb-0">{{ t('admin.accounts.explicitCacheUpstream') }}</label>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.explicitCacheUpstreamHint') }}
+              </p>
+            </div>
+            <Toggle
+              v-model="explicitCacheUpstreamEnabled"
+              data-testid="explicit-cache-upstream-toggle"
+              :aria-label="t('admin.accounts.explicitCacheUpstream')"
+            />
+          </div>
+          <div v-if="explicitCacheUpstreamEnabled" class="mt-3 rounded-lg bg-blue-50 p-3 dark:bg-blue-900/20">
+            <p class="text-xs text-blue-700 dark:text-blue-400">
+              <Icon name="exclamationCircle" size="sm" class="mr-1 inline" :stroke-width="2" />
+              {{ t('admin.accounts.explicitCacheUpstreamInfo') }}
+            </p>
+          </div>
+          <div v-if="explicitCacheUpstreamEnabled" class="mt-3">
+            <label class="input-label">{{ t('admin.accounts.explicitCacheUpstreamMaxTTL') }}</label>
+            <input
+              v-model="explicitCacheUpstreamMaxTTL"
+              data-testid="explicit-cache-upstream-max-ttl"
+              type="number"
+              min="1"
+              step="1"
+              class="input"
+              placeholder="86400"
+            />
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.explicitCacheUpstreamMaxTTLHint') }}
             </p>
           </div>
         </div>
@@ -857,9 +910,9 @@
         </div>
       </div>
 
-      <!-- Grok OAuth Model Mapping (OAuth 类型没有 apikey 容器，需要独立的模型映射区域) -->
+      <!-- OpenAI/Grok OAuth Model Mapping (OAuth 类型没有 apikey 容器，需要独立的模型映射区域) -->
       <div
-        v-if="account.platform === 'grok' && account.type === 'oauth'"
+        v-if="(account.platform === 'openai' || account.platform === 'grok') && account.type === 'oauth'"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
         :data-testid="account.platform === 'grok' ? 'grok-model-settings' : undefined"
       >
@@ -1074,7 +1127,7 @@
             v-model="editBaseUrl"
             type="text"
             class="input"
-            placeholder="https://api.anthropic.com"
+            placeholder="https://cloudcode-pa.googleapis.com"
           />
           <p class="input-hint">{{ t('admin.accounts.upstream.baseUrlHint') }}</p>
         </div>
@@ -1091,9 +1144,31 @@
       </div>
 
       <!-- Vertex Service Account -->
-      <div v-if="account.platform === 'anthropic' && account.type === 'service_account'" class="space-y-4">
+      <div v-if="(account.platform === 'gemini' || account.platform === 'anthropic') && account.type === 'service_account'" class="space-y-4">
+        <div v-if="isVertexAPIKeyMode">
+          <label class="input-label">API Key</label>
+          <input
+            v-model="editVertexApiKey"
+            type="password"
+            class="input font-mono"
+            data-testid="edit-vertex-api-key-input"
+            :placeholder="t('admin.accounts.leaveEmptyToKeep')"
+          />
+          <p class="input-hint">{{ t('admin.accounts.vertexApiKeyHint') }}</p>
+        </div>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
+          <div v-if="isVertexAPIKeyMode">
+            <label class="input-label">Project ID</label>
+            <input
+              v-model="editVertexProjectId"
+              type="text"
+              class="input font-mono"
+              data-testid="edit-vertex-api-key-project-id-input"
+              :placeholder="t('admin.accounts.vertexApiKeyProjectIdPlaceholder')"
+            />
+            <p class="input-hint">{{ t('admin.accounts.vertexApiKeyProjectIdHint') }}</p>
+          </div>
+          <div v-else>
             <label class="input-label">Project ID</label>
             <input
               v-model="editVertexProjectId"
@@ -1104,7 +1179,7 @@
             />
             <p class="input-hint">{{ t('admin.accounts.vertexSaJsonEditHint') }}</p>
           </div>
-          <div>
+          <div v-if="!isVertexAPIKeyMode || editVertexProjectId.trim()">
             <label class="input-label">Location</label>
             <select
               v-model="editVertexLocation"
@@ -1411,7 +1486,12 @@
 
           <!-- Whitelist Mode -->
           <div v-if="modelRestrictionMode === 'whitelist'">
-            <ModelWhitelistSelector v-model="allowedModels" :model-mappings="modelMappings" platform="anthropic" />
+            <ModelWhitelistSelector
+              v-model="allowedModels"
+              :model-mappings="modelMappings"
+              platform="anthropic"
+              :account-id="account?.id"
+            />
             <p class="text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
               <span v-if="allowedModels.length === 0 && modelMappings.length === 0">{{ t('admin.accounts.supportsAllModels') }}</span>
@@ -1507,6 +1587,122 @@
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.poolModeRetryStatusCodesHint', { default: DEFAULT_POOL_MODE_RETRY_STATUS_CODES.join(', ') }) }}
             </p>
+          </div>
+        </div>
+      </div>
+
+      <div
+        v-if="account.platform === 'antigravity' && account.type === 'oauth'"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <label class="input-label">{{ t('admin.accounts.antigravityProjectIdLabel') }}</label>
+        <input
+          v-model="antigravityProjectId"
+          data-testid="antigravity-project-id-input"
+          type="text"
+          class="input font-mono"
+          :placeholder="t('admin.accounts.antigravityProjectIdPlaceholder')"
+        />
+        <p class="input-hint">{{ t('admin.accounts.antigravityProjectIdHint') }}</p>
+      </div>
+
+      <!-- Antigravity model restriction (applies to all antigravity types) -->
+      <!-- Antigravity 只支持模型映射模式，不支持白名单模式 -->
+      <div v-if="account.platform === 'antigravity'" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+
+        <!-- Mapping Mode Only (no toggle for Antigravity) -->
+        <div>
+          <div class="mb-3 rounded-lg bg-purple-50 p-3 dark:bg-purple-900/20">
+            <p class="text-xs text-purple-700 dark:text-purple-400">{{ t('admin.accounts.mapRequestModels') }}</p>
+          </div>
+
+          <div class="mb-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              @click="syncAntigravityUpstreamModels"
+              :disabled="isSyncingAntigravityUpstream || !account?.id"
+              class="rounded-lg border border-emerald-200 px-3 py-1.5 text-sm text-emerald-600 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-900/30"
+            >
+              {{ isSyncingAntigravityUpstream ? t('admin.accounts.syncUpstreamModelsLoading') : t('admin.accounts.syncUpstreamModels') }}
+            </button>
+          </div>
+
+          <div v-if="antigravityModelMappings.length > 0" class="mb-3 space-y-2">
+            <div
+              v-for="(mapping, index) in antigravityModelMappings"
+              :key="getAntigravityModelMappingKey(mapping)"
+              class="space-y-1"
+            >
+              <div class="flex items-center gap-2">
+                <input
+                  v-model="mapping.from"
+                  type="text"
+                  :class="[
+                    'input flex-1',
+                    !isValidWildcardPattern(mapping.from) ? 'border-red-500 dark:border-red-500' : '',
+                    mapping.to.includes('*') ? '' : ''
+                  ]"
+                  :placeholder="t('admin.accounts.requestModel')"
+                />
+                <svg class="h-4 w-4 flex-shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                </svg>
+                <input
+                  v-model="mapping.to"
+                  type="text"
+                  :class="[
+                    'input flex-1',
+                    mapping.to.includes('*') ? 'border-red-500 dark:border-red-500' : ''
+                  ]"
+                  :placeholder="t('admin.accounts.actualModel')"
+                />
+                <button
+                  type="button"
+                  @click="removeAntigravityModelMapping(index)"
+                  class="rounded-lg p-2 text-red-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20"
+                >
+                  <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                    />
+                  </svg>
+                </button>
+              </div>
+              <!-- 校验错误提示 -->
+              <p v-if="!isValidWildcardPattern(mapping.from)" class="text-xs text-red-500">
+                {{ t('admin.accounts.wildcardOnlyAtEnd') }}
+              </p>
+              <p v-if="mapping.to.includes('*')" class="text-xs text-red-500">
+                {{ t('admin.accounts.targetNoWildcard') }}
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            @click="addAntigravityModelMapping"
+            class="mb-3 w-full rounded-lg border-2 border-dashed border-gray-300 px-4 py-2 text-gray-600 transition-colors hover:border-gray-400 hover:text-gray-700 dark:border-dark-500 dark:text-gray-400 dark:hover:border-dark-400 dark:hover:text-gray-300"
+          >
+            <svg class="mr-1 inline h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+            {{ t('admin.accounts.addMapping') }}
+          </button>
+
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-for="preset in antigravityPresetMappings"
+              :key="preset.label"
+              type="button"
+              @click="addAntigravityPresetMapping(preset.from, preset.to)"
+              :class="['rounded-lg px-3 py-1 text-xs transition-colors', preset.color]"
+            >
+              + {{ preset.label }}
+            </button>
           </div>
         </div>
       </div>
@@ -1731,9 +1927,9 @@
         </div>
       </div>
 
-      <!-- Intercept Warmup Requests (Anthropic) -->
+      <!-- Intercept Warmup Requests (Anthropic/Antigravity) -->
       <div
-        v-if="account?.platform === 'anthropic'"
+        v-if="(account?.platform === 'anthropic' || account?.platform === 'antigravity')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -1763,15 +1959,17 @@
         </div>
       </div>
 
-      <div>
+      <div v-if="!isSparkShadow">
         <div class="mb-1 flex items-center gap-2">
           <label class="input-label mb-0">{{ t('admin.accounts.proxy') }}</label>
           <ProxyAdBanner />
         </div>
-        <ProxySelector v-model="form.proxy_id" :proxies="proxies" />
+        <ProxySelector v-model="form.proxy_ids" :proxies="proxies" multiple />
+        <p class="input-hint">{{ t('admin.accounts.proxyPoolHint') }}</p>
       </div>
 
       <UpstreamRequestIdHeaderField
+
         v-model="upstreamRequestIdHeader"
         :platform="account.platform"
         :type="account.type"
@@ -1779,15 +1977,9 @@
 
       <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <div>
-          <label for="edit-account-concurrency" class="input-label">{{ t('admin.accounts.concurrency') }}</label>
-          <input
-            id="edit-account-concurrency"
-            v-model.number="form.concurrency"
-            type="number"
-            min="1"
-            required
-            class="input"
-          />
+          <label class="input-label">{{ t('admin.accounts.concurrency') }}</label>
+          <input v-model.number="form.concurrency" type="number" min="1" class="input"
+            @input="form.concurrency = Math.max(1, form.concurrency || 1)" />
         </div>
         <div>
           <label class="input-label">{{ t('admin.accounts.loadFactor') }}</label>
@@ -1813,6 +2005,7 @@
             v-model.number="form.rate_multiplier"
             type="number"
             min="0"
+            max="100"
             step="0.001"
             class="input disabled:cursor-not-allowed disabled:opacity-60"
             data-testid="account-rate-multiplier"
@@ -1827,8 +2020,9 @@
               )
             }}
           </p>
+          <p v-if="isNewAPIUpstream" class="input-hint mt-3">{{ t('admin.accounts.upstreamBilling.newAPI.groupRatioHint') }}</p>
           <div
-            v-if="account?.type === 'apikey'"
+            v-if="account?.type === 'apikey' && !isModelPriceProbe && !isNewAPIUpstream"
             class="mt-3 flex items-center justify-between gap-3"
           >
             <div class="min-w-0">
@@ -1836,7 +2030,7 @@
                 {{ t('admin.accounts.upstreamBilling.syncRate') }}
               </p>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                {{ t('admin.accounts.upstreamBilling.syncRateHint') }}
+                {{ t(account?.extra?.upstream_billing_probe?.data?.billing_mode === 'multi_group' ? 'admin.accounts.upstreamBilling.multiGroupSyncPaused' : 'admin.accounts.upstreamBilling.syncRateHint') }}
               </p>
             </div>
             <Toggle
@@ -1846,6 +2040,33 @@
               @update:model-value="handleUpstreamBillingRateSyncChange"
             />
           </div>
+        </div>
+        <div>
+          <label class="input-label" for="account-cost-multiplier">{{ t('admin.accounts.costMultiplier') }}</label>
+          <input
+            id="account-cost-multiplier"
+            v-model.number="costMultiplier"
+            type="number"
+            min="0"
+            max="1000000"
+            step="0.001"
+            required
+            class="input"
+            data-testid="account-cost-multiplier"
+          />
+          <p class="input-hint">{{ t(isModelPriceProbe ? 'admin.accounts.upstreamBilling.video.costMultiplierHint' : 'admin.accounts.costMultiplierHint') }}</p>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.accounts.groupBillingRateMultiplier') }}</label>
+          <input
+            v-model.number="form.group_rate_multiplier"
+            type="number"
+            min="0"
+            step="0.01"
+            class="input"
+            data-testid="account-group-rate-multiplier"
+          />
+          <p class="input-hint">{{ t('admin.accounts.groupBillingRateMultiplierHint') }}</p>
         </div>
       </div>
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
@@ -1909,6 +2130,16 @@
           </span>
         </label>
       </div>
+
+      <ExtraImageModelsField
+        v-if="account?.platform === 'openai' && account?.type === 'apikey'"
+        v-model:models="extraImageModels"
+        v-model:prefixes="extraImageModelPrefixes"
+      />
+      <label v-if="account?.platform === 'openai' && openaiPassthroughEnabled" class="flex items-start gap-3 rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+        <input v-model="openaiPassthroughModelFilterEnabled" type="checkbox" data-testid="openai-passthrough-model-filter" class="mt-0.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+        <span><span class="text-sm font-medium">{{ t('admin.accounts.openai.passthroughModelFilter') }}</span><span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.openai.passthroughModelFilterDesc') }}</span></span>
+      </label>
 
       <!-- OpenAI Codex namespace 工具摊平（兼容开关，仅 OAuth） -->
       <div
@@ -2017,26 +2248,9 @@
             </p>
           </div>
           <div class="w-52">
-            <Select
-              v-model="openaiResponsesWebSocketV2Mode"
-              data-testid="edit-openai-ws-mode-select"
-              :options="openAIWSModeOptions"
-              :disabled="isOpenAICompatibleProviderManaged"
-            />
+            <Select v-model="openaiResponsesWebSocketV2Mode" data-testid="edit-openai-ws-mode-select" :options="openAIWSModeOptions" />
           </div>
         </div>
-      </div>
-
-      <!-- OpenAI 请求时区：手动覆盖优先，留空按账号出口 IP 自动确定 -->
-      <div
-        v-if="account?.platform === 'openai'"
-        class="border-t border-gray-200 pt-4 dark:border-dark-600"
-      >
-        <OpenAIRequestTimezoneField
-          v-model="openaiRequestTimezone"
-          :proxy-timezone="selectedProxyTimezone"
-          :disabled="isOpenAICompatibleProviderManaged"
-        />
       </div>
 
       <!-- OpenAI APIKey Responses API support mode -->
@@ -2055,7 +2269,7 @@
             <Select
               v-model="openAIResponsesMode"
               :options="openAIResponsesModeOptions"
-              :disabled="!openAITextGenerationCapabilityEnabled || isOpenAICompatibleProviderManaged"
+              :disabled="!openAITextGenerationCapabilityEnabled"
               data-testid="openai-responses-mode-select"
             />
           </div>
@@ -2079,17 +2293,13 @@
             <label
               v-for="option in openAIEndpointCapabilityOptions"
               :key="option.value"
-              :class="[
-                'flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-dark-600',
-                isOpenAICompatibleProviderManaged ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
-              ]"
+              class="flex cursor-pointer items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-dark-600"
             >
               <input
                 type="checkbox"
                 class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500"
                 :data-testid="`openai-endpoint-capability-${option.value}`"
                 :checked="openAIEndpointCapabilities.includes(option.value)"
-                :disabled="isOpenAICompatibleProviderManaged"
                 @change="toggleOpenAIEndpointCapability(option.value, $event)"
               />
               <span class="text-gray-700 dark:text-gray-200">{{ option.label }}</span>
@@ -2143,15 +2353,15 @@
         class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div>
-          <label class="input-label mb-0">{{ t('admin.accounts.upstreamBilling.autoProbe') }}</label>
+          <label class="input-label mb-0">{{ t(isModelPriceProbe ? 'admin.accounts.upstreamBilling.video.autoProbe' : 'admin.accounts.upstreamBilling.autoProbe') }}</label>
           <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            {{ t('admin.accounts.upstreamBilling.autoProbeHint') }}
+            {{ t(isModelPriceProbe ? 'admin.accounts.upstreamBilling.video.autoProbeHint' : 'admin.accounts.upstreamBilling.autoProbeHint') }}
           </p>
         </div>
         <Toggle
           :model-value="upstreamBillingAutoProbeEnabled"
           data-testid="upstream-billing-auto-probe"
-          :aria-label="t('admin.accounts.upstreamBilling.autoProbe')"
+          :aria-label="t(isModelPriceProbe ? 'admin.accounts.upstreamBilling.video.autoProbe' : 'admin.accounts.upstreamBilling.autoProbe')"
           @update:model-value="handleUpstreamBillingAutoProbeChange"
         />
       </div>
@@ -2420,7 +2630,7 @@
 
       <!-- OpenAI API 长上下文计费开关 -->
       <div
-        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token' || account?.type === 'apikey')"
+        v-if="account?.platform === 'openai' && !isSparkShadow && !hideAccountLongContextBilling && (account?.type === 'oauth' || account?.type === 'setup-token' || account?.type === 'apikey')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between gap-4">
@@ -2506,10 +2716,9 @@
         </div>
       </div>
 
-
-      <!-- Tibo HTTP 线路（OpenAI OAuth / setup-token / API Key） -->
+      <!-- Tibo 探测（gpt-6-astra 是否降智；OpenAI OAuth / setup-token / API Key） -->
       <div
-        v-if="codexTiboRoutes.length"
+        v-if="tiboRoutes.length"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
         data-testid="tibo-routes"
       >
@@ -2518,15 +2727,22 @@
           {{ t('admin.accounts.openai.codexTiboRouteDesc') }}
         </p>
         <div class="mt-3 space-y-1.5">
-          <div v-for="route in codexTiboRoutes" :key="`${route.model}:${route.route}`">
+          <div v-for="route in tiboRoutes" :key="route.route">
             <TiboRouteSpark
-              :model="route.model"
+              model="gpt-6-astra"
               :verdict="route.verdict"
               :samples="route.recent_samples"
               :compact="false"
             />
-            <p v-if="route.checked_at" class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-              {{ t('admin.accounts.openai.codexTiboRouteCheckedAt', { time: formatDateTime(new Date(route.checked_at)) }) }}
+            <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+              {{ t(`admin.accounts.openai.codexTiboRouteVerdict.${route.verdict}`) }}
+              <template v-if="route.checked_at">
+                · {{ t('admin.accounts.openai.codexTiboRouteCheckedAt', { time: formatDateTime(new Date(route.checked_at)) }) }}
+              </template>
+              <template v-if="route.next_probe_at">
+                · {{ t('admin.accounts.openai.codexTiboRouteNextProbeAt', { time: formatDateTime(new Date(route.next_probe_at)) }) }}
+              </template>
+              · {{ t('admin.accounts.openai.codexTiboRouteHourly', { probes: route.probes_hour, flips: route.flips_hour }) }}
             </p>
           </div>
         </div>
@@ -2548,37 +2764,11 @@
             <Select v-model="codexFingerprintMode" data-testid="edit-codex-fingerprint-mode-select" :options="codexFingerprintModeOptions" />
           </div>
         </div>
-        <div class="mt-4 flex items-center justify-between gap-4">
-          <div class="min-w-0">
-            <label class="input-label mb-0">{{ t('admin.accounts.openai.codexFingerprintConvergence') }}</label>
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              {{ t('admin.accounts.openai.codexFingerprintConvergenceDesc') }}
-            </p>
-          </div>
-          <button
-            type="button"
-            data-testid="edit-codex-fingerprint-convergence-toggle"
-            role="switch"
-            :aria-checked="codexFingerprintConvergence"
-            @click="codexFingerprintConvergence = !codexFingerprintConvergence"
-            :class="[
-              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
-              codexFingerprintConvergence ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
-            ]"
-          >
-            <span
-              :class="[
-                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
-                codexFingerprintConvergence ? 'translate-x-5' : 'translate-x-0'
-              ]"
-            />
-          </button>
-        </div>
       </div>
 
-      <!-- OpenAI 订阅档位手动覆盖（Plus/Pro/Free），仅 OAuth 账号 -->
+      <!-- OpenAI 订阅档位手动覆盖（Plus/Pro/Free），仅 OAuth 非影子账号 -->
       <div
-        v-if="account?.platform === 'openai' && account?.type === 'oauth'"
+        v-if="account?.platform === 'openai' && account?.type === 'oauth' && !isSparkShadow"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between gap-4">
@@ -2619,7 +2809,7 @@
             {{ formatDateTime(new Date(String(account.extra.openai_compact_checked_at))) }}
           </span>
         </div>
-        <div v-if="account.type !== 'oauth'">
+        <div>
           <label class="input-label">{{ t('admin.accounts.openai.compactModelMapping') }}</label>
           <p class="input-hint">{{ t('admin.accounts.openai.compactModelMappingDesc') }}</p>
           <div v-if="openAICompactModelMappings.length > 0" class="mb-3 space-y-2">
@@ -2759,7 +2949,7 @@
       </div>
 
       <div
-        v-if="account?.platform === 'openai' && account?.type === 'oauth'"
+        v-if="account?.platform === 'openai' && account?.type === 'oauth' && !isSparkShadow"
         class="space-y-4 border-t border-gray-200 pt-4 dark:border-dark-600"
         data-testid="auto-reset-credit-settings"
       >
@@ -2773,10 +2963,7 @@
           <button
             type="button"
             data-testid="auto-reset-credit-enabled"
-            role="switch"
-            :aria-checked="autoResetCreditEnabled"
-            :aria-label="t('admin.accounts.autoResetCredit.title')"
-            @click="autoResetCreditEnabled = !autoResetCreditEnabled"
+            @click="autoResetCreditEnabled ? (autoResetCreditEnabled = false) : (showAutoResetCreditConfirm = true)"
             :class="[
               'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
               autoResetCreditEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
@@ -2792,9 +2979,8 @@
         </div>
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
-            <label for="auto-reset-credit-5h" class="input-label">{{ t('admin.accounts.autoResetCredit.threshold5h') }}</label>
+            <label class="input-label">{{ t('admin.accounts.autoResetCredit.threshold5h') }}</label>
             <input
-              id="auto-reset-credit-5h"
               v-model.number="autoResetCredit5hThreshold"
               type="number"
               min="0.1"
@@ -2806,9 +2992,8 @@
             />
           </div>
           <div>
-            <label for="auto-reset-credit-7d" class="input-label">{{ t('admin.accounts.autoResetCredit.threshold7d') }}</label>
+            <label class="input-label">{{ t('admin.accounts.autoResetCredit.threshold7d') }}</label>
             <input
-              id="auto-reset-credit-7d"
               v-model.number="autoResetCredit7dThreshold"
               type="number"
               min="0.1"
@@ -3202,11 +3387,68 @@
           </div>
         </div>
       </div>
-
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div>
           <label class="input-label">{{ t('common.status') }}</label>
-          <Select v-model="form.status" :options="statusOptions" />
+          <Select v-model="form.status" :options="statusOptions" data-testid="account-status" />
+        </div>
+
+        <!-- Mixed Scheduling (only for antigravity accounts, read-only in edit mode) -->
+        <div v-if="account?.platform === 'antigravity'" class="flex items-center gap-2">
+          <label class="flex cursor-not-allowed items-center gap-2 opacity-60">
+            <input
+              type="checkbox"
+              v-model="mixedScheduling"
+              disabled
+              class="h-4 w-4 cursor-not-allowed rounded border-gray-300 text-primary-500 focus:ring-primary-500 dark:border-dark-500"
+            />
+            <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+              {{ t('admin.accounts.mixedScheduling') }}
+            </span>
+          </label>
+          <div class="group relative">
+            <span
+              class="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full bg-gray-200 text-xs text-gray-500 hover:bg-gray-300 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500"
+            >
+              ?
+            </span>
+            <!-- Tooltip（向下显示避免被弹窗裁剪） -->
+            <div
+              class="pointer-events-none absolute left-0 top-full z-[100] mt-1.5 w-72 rounded bg-gray-900 px-3 py-2 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 dark:bg-gray-700"
+            >
+              {{ t('admin.accounts.mixedSchedulingTooltip') }}
+              <div
+                class="absolute bottom-full left-3 border-4 border-transparent border-b-gray-900 dark:border-b-gray-700"
+              ></div>
+            </div>
+          </div>
+        </div>
+        <div v-if="account?.platform === 'antigravity'" class="mt-3 flex items-center gap-2">
+          <label class="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              v-model="allowOverages"
+              class="h-4 w-4 rounded border-gray-300 text-primary-500 focus:ring-primary-500 dark:border-dark-500"
+            />
+            <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+              {{ t('admin.accounts.allowOverages') }}
+            </span>
+          </label>
+          <div class="group relative">
+            <span
+              class="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full bg-gray-200 text-xs text-gray-500 hover:bg-gray-300 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500"
+            >
+              ?
+            </span>
+            <div
+              class="pointer-events-none absolute left-0 top-full z-[100] mt-1.5 w-72 rounded bg-gray-900 px-3 py-2 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 dark:bg-gray-700"
+            >
+              {{ t('admin.accounts.allowOveragesTooltip') }}
+              <div
+                class="absolute bottom-full left-3 border-4 border-transparent border-b-gray-900 dark:border-b-gray-700"
+              ></div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -3215,7 +3457,15 @@
         v-model="form.group_ids"
         :groups="selectableGroups"
         :platform="account?.platform"
+        :mixed-scheduling="mixedScheduling"
         data-tour="account-form-groups"
+      />
+
+      <AccountGroupModelLimits
+        v-model="groupAllowedModels"
+        :groups="groupsForModelLimits"
+        :platform="account?.platform"
+        :account-id="account?.id"
       />
 
     </form>
@@ -3258,6 +3508,14 @@
     </template>
   </BaseDialog>
 
+  <ConfirmDialog
+    :show="showAutoResetCreditConfirm"
+    :title="t('admin.accounts.autoResetSafety.confirmTitle')"
+    :message="t('admin.accounts.autoResetSafety.confirmMessage', { threshold5h: autoResetCredit5hThreshold, threshold7d: autoResetCredit7dThreshold })"
+    :confirm-text="t('common.confirm')" :cancel-text="t('common.cancel')" danger
+    @confirm="autoResetCreditEnabled = true; showAutoResetCreditConfirm = false"
+    @cancel="showAutoResetCreditConfirm = false"
+  />
   <!-- Mixed Channel Warning Dialog -->
   <ConfirmDialog
     :show="showMixedChannelWarning"
@@ -3272,6 +3530,14 @@
 </template>
 
 <script setup lang="ts">
+import ExtraImageModelsField from '@/components/account/ExtraImageModelsField.vue'
+import { parseExtraImageModels, readExtraImageModels } from '@/utils/extraImageModels'
+import { usesImagePriceProbe } from '@/utils/modelPriceProbe'
+import { DEFAULT_ACCOUNT_COST_MULTIPLIER, isValidAccountCostMultiplier, readAccountCostMultiplier } from '@/utils/accountCost'
+import AccountGroupModelLimits from '@/components/account/AccountGroupModelLimits.vue'
+import { buildGroupAllowedModelsPayload, groupAllowedModelsFromAccount, type GroupAllowedModels } from '@/components/account/groupAllowedModels'
+import GrokMediaProviderSelect from '@/components/account/GrokMediaProviderSelect.vue'
+import { applyGrokMediaProvider, readGrokMediaProvider, type GrokMediaProvider } from '@/components/account/grokMediaProvider'
 import { ref, reactive, computed, watch, nextTick, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -3300,7 +3566,14 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
-import OpenAIRequestTimezoneField from '@/components/account/OpenAIRequestTimezoneField.vue'
+import OpenAIImageSizeTiersField from '@/components/account/OpenAIImageSizeTiersField.vue'
+import TiboRouteSpark from '@/components/account/TiboRouteSpark.vue'
+import {
+  OPENAI_IMAGE_SIZE_TIERS,
+  applyOpenAIImageSizeTiersToExtra,
+  readOpenAIImageSizeTiers,
+  type OpenAIImageSizeTier
+} from '@/components/account/openaiImageSizeTiers'
 import Toggle from '@/components/common/Toggle.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
@@ -3311,28 +3584,21 @@ import GrokModelDiagnosticsPanel from '@/components/account/GrokModelDiagnostics
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
+import {
+  applyExplicitCacheUpstreamCredentials,
+  isOfficialGeminiBaseUrl,
+  normalizeExplicitCacheUpstreamMaxTTL
+} from '@/utils/geminiExplicitCache'
 import OpenCodeGoProtocolRulesEditor from '@/components/account/OpenCodeGoProtocolRulesEditor.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import OllamaCloudUsageSettings from '@/components/account/OllamaCloudUsageSettings.vue'
-import TiboRouteSpark from '@/components/account/TiboRouteSpark.vue'
-import OpenAICompatibleProviderPresetSelector from '@/components/account/OpenAICompatibleProviderPresetSelector.vue'
 import UpstreamGroupSyncButton from '@/components/account/UpstreamGroupSyncButton.vue'
-import OpenAIImageSizeTiersField from '@/components/account/OpenAIImageSizeTiersField.vue'
-import {
-  applyOpenAIImageSizeTiersToExtra,
-  readOpenAIImageSizeTiers,
-  OPENAI_IMAGE_SIZE_TIERS,
-  type OpenAIImageSizeTier
-} from '@/components/account/openaiImageSizeTiers'
 import {
   applyOpenAICompatibleProviderSelection,
-  buildOpenAICompatibleProviderModelMappings,
-  getOpenAICompatibleProviderPreset,
-  readOpenAICompatibleProviderSelection,
   type OpenAICompatibleProviderSelection
 } from '@/components/account/openAICompatibleProviderPresets'
 import {
-  commonErrorCodes,
+  applyAntigravityProjectID,
   applyHeaderOverride,
   applyInterceptWarmup,
   applyOpenCodeGoProtocolRules,
@@ -3378,6 +3644,7 @@ import { extractApiErrorMessage, extractI18nErrorMessage } from '@/utils/apiErro
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import { supportsAccountQuota } from '@/utils/accountQuota'
 import { getAccountExpiryTimestamp } from '@/components/account/accountExpiry'
+import { allSelectedGroupsEnableLongContextPricing } from '@/components/account/longContextBilling'
 import { VERTEX_LOCATION_OPTIONS } from '@/constants/account'
 import {
   OPENAI_WS_MODE_CTX_POOL,
@@ -3391,8 +3658,10 @@ import {
 } from '@/utils/openaiWsMode'
 import {
   getPresetMappingsByPlatform,
+  commonErrorCodes,
   buildModelMappingObject,
-  splitModelMappingObject
+  splitModelMappingObject,
+  isValidWildcardPattern
 } from '@/composables/useModelWhitelist'
 
 interface Props {
@@ -3411,6 +3680,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const appStore = useAppStore()
 const browserTimeZone = getBrowserTimeZone()
+
 const selectableGroups = computed(() => {
   const groups = new Map<number, Group>(props.groups.map(group => [group.id, group]))
   const assignedIds = new Set(props.account?.group_ids ?? [])
@@ -3422,17 +3692,23 @@ const selectableGroups = computed(() => {
   return Array.from(groups.values())
 })
 
-const codexTiboRoutes = computed(() =>
-  (props.account?.codex_turn_tickets ?? []).flatMap((ticket) =>
-    (ticket.tibo_routes ?? []).map((route) => ({
-      model: ticket.model,
-      route: route.route,
-      verdict: route.verdict,
-      checked_at: route.checked_at,
-      recent_samples: route.recent_samples
-    }))
-  )
-)
+// 各分组内的可用模型限制，按当前勾选的分组顺序展示
+const groupAllowedModels = ref<GroupAllowedModels>({})
+const groupsForModelLimits = computed(() => {
+  const byId = new Map(selectableGroups.value.map(group => [group.id, group]))
+  return form.group_ids.flatMap(id => {
+    const group = byId.get(id)
+    return group ? [{ id: group.id, name: group.name }] : []
+  })
+})
+
+// Spark 影子账号(parent_account_id 非空):代理恒继承母账号,不可独立编辑(外审 B/P1),
+// 故隐藏代理选择器。
+const isSparkShadow = computed(() => props.account?.parent_account_id != null)
+
+const hideAccountLongContextBilling = computed(() => {
+  return allSelectedGroupsEnableLongContextPricing(form.group_ids, props.groups)
+})
 
 const handleOllamaCloudUsageUpdated = (state: OllamaCloudUsageState) => {
   if (props.account) emit('updated', { ...props.account, ollama_cloud_usage: state })
@@ -3524,10 +3800,12 @@ onMounted(() => {
 const baseUrlHint = computed(() => {
   if (!props.account) return t('admin.accounts.baseUrlHint')
   if (props.account.platform === 'openai') return t('admin.accounts.openai.baseUrlHint')
+  if (props.account.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
   if (props.account.platform === 'grok') return ''
   return t('admin.accounts.baseUrlHint')
 })
 
+const antigravityPresetMappings = computed(() => getPresetMappingsByPlatform('antigravity'))
 const bedrockPresets = computed(() => getPresetMappingsByPlatform('bedrock'))
 
 // Model mapping type
@@ -3547,10 +3825,40 @@ interface TempUnschedRuleForm {
 
 // State
 const submitting = ref(false)
-const kittyOAuthSyncBusy = ref(false)
-const kittyOAuthSyncedId = ref<number | null>(null)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
+const editGrokMediaProvider = ref<GrokMediaProvider>('')
+
+// Preview cannot inherit the saved account's transport settings. Require a
+// normal save before syncing such accounts rather than silently connecting direct.
+const editSyncBlockedReason = computed(() => {
+  const account = props.account
+  if (account?.platform !== 'video' || account.type !== 'apikey' || !editApiKey.value.trim()) return undefined
+  if (!editBaseUrl.value.trim()) return t('videoModule.baseUrlRequired')
+  const credentials = account.credentials as Record<string, unknown> | undefined
+  const extra = account.extra as Record<string, unknown> | undefined
+  if (account.proxy_id || form.proxy_id || account.proxy_ids?.length || form.proxy_ids.length || headerOverrideEnabled.value ||
+      credentials?.[HEADER_OVERRIDE_ENABLED_CREDENTIAL_KEY] === true ||
+      tlsFingerprintEnabled.value || account.enable_tls_fingerprint || extra?.enable_tls_fingerprint === true) {
+    return t('admin.accounts.syncUpstreamPreviewSaveConnectionFirst')
+  }
+  return undefined
+})
+
+// Only video editing opts in to unsaved-key preview. Other platform edit flows
+// continue syncing the saved account, and Update remains the persistence action.
+const editSyncCredentials = computed(() => {
+  const account = props.account
+  const apiKey = editApiKey.value.trim()
+  if (account?.platform !== 'video' || account.type !== 'apikey' || !apiKey || editSyncBlockedReason.value) return undefined
+
+  return {
+    platform: account.platform,
+    type: account.type,
+    base_url: editBaseUrl.value.trim(),
+    api_key: apiKey
+  }
+})
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）account_mode / api_protocol 编辑 ──
 // account_mode 决定额度/余额监控路径，api_protocol 决定转发端点与格式；
@@ -3719,6 +4027,12 @@ const editBedrockApiKeyValue = ref('')
 const editVertexProjectId = ref('')
 const editVertexClientEmail = ref('')
 const editVertexLocation = ref('us-central1')
+const editVertexApiKey = ref('')
+const isVertexAPIKeyMode = computed(() =>
+  props.account?.platform === 'gemini' &&
+  props.account?.type === 'service_account' &&
+  (props.account?.credentials as Record<string, unknown>)?.auth_mode === 'apikey'
+)
 const isBedrockAPIKeyMode = computed(() =>
   props.account?.type === 'bedrock' &&
   (props.account?.credentials as Record<string, unknown>)?.auth_mode === 'apikey'
@@ -3732,6 +4046,8 @@ const MAX_POOL_MODE_RETRY_COUNT = 10
 const DEFAULT_POOL_MODE_RETRY_STATUS_CODES = [401, 403, 429]
 const GROK_CLIENT_TOOL_CACHE_EXTRA_KEY = 'grok_client_tool_cache_enabled'
 const poolModeEnabled = ref(false)
+const explicitCacheUpstreamEnabled = ref(false)
+const explicitCacheUpstreamMaxTTL = ref<string | number>('')
 const poolModeRetryCount = ref(DEFAULT_POOL_MODE_RETRY_COUNT)
 const poolModeRetryStatusCodesInput = ref('')
 
@@ -3976,8 +4292,10 @@ const autoPause7dThreshold = ref<number | null>(null)
 const autoPause5hDisabled = ref(false)
 const autoPause7dDisabled = ref(false)
 const autoResetCreditEnabled = ref(false)
+const showAutoResetCreditConfirm = ref(false)
 const autoResetCredit5hThreshold = ref(100)
 const autoResetCredit7dThreshold = ref(100)
+const isModelPriceProbe = computed(() => props.account?.platform === 'video' || usesImagePriceProbe(props.account?.platform, editBaseUrl.value))
 const upstreamGroupSyncEnabled = ref(false)
 function setUpstreamGroupSync(enabled: boolean) {
   upstreamGroupSyncEnabled.value = enabled
@@ -3985,11 +4303,20 @@ function setUpstreamGroupSync(enabled: boolean) {
 }
 const upstreamBillingAutoProbeEnabled = ref(false)
 const upstreamBillingRateSyncEnabled = ref(false)
+const isNewAPIUpstream = computed(() => props.account?.extra?.upstream_billing_provider === 'new_api')
+const mixedScheduling = ref(false) // For antigravity accounts: enable mixed scheduling
+// 上游ID：直接上游声明请求标识的响应头名，留空不记录。
 const upstreamRequestIdHeader = ref('')
 const readUpstreamRequestIdHeader = (extra: unknown): string => {
   const value = (extra as Record<string, unknown> | undefined)?.upstream_request_id_header
   return typeof value === 'string' ? value : ''
 }
+const allowOverages = ref(false) // For antigravity accounts: enable AI Credits overages
+const antigravityProjectId = ref('')
+const antigravityModelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
+const antigravityWhitelistModels = ref<string[]>([])
+const antigravityModelMappings = ref<ModelMapping[]>([])
+const isSyncingAntigravityUpstream = ref(false)
 const tempUnschedEnabled = ref(false)
 const accountSchedulingThresholdOverrideEnabled = ref(false)
 const accountSchedulingThresholdOverrideValue = ref(100)
@@ -4000,6 +4327,7 @@ const supportsAccountSchedulingThresholdOverride = computed(() =>
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const getModelMappingKey = createStableObjectKeyResolver<ModelMapping>('edit-model-mapping')
 const getOpenAICompactModelMappingKey = createStableObjectKeyResolver<ModelMapping>('edit-openai-compact-model-mapping')
+const getAntigravityModelMappingKey = createStableObjectKeyResolver<ModelMapping>('edit-antigravity-model-mapping')
 const getTempUnschedRuleKey = createStableObjectKeyResolver<TempUnschedRuleForm>('edit-temp-unsched-rule')
 
 const showMixedChannelWarning = ref(false)
@@ -4008,7 +4336,7 @@ const mixedChannelWarningDetails = ref<{ groupName: string; currentPlatform: str
 )
 const mixedChannelWarningRawMessage = ref('')
 const mixedChannelWarningAction = ref<(() => Promise<void>) | null>(null)
-const mixedChannelConfirmed = ref(false)
+const antigravityMixedChannelConfirmed = ref(false)
 
 // Quota control state (Anthropic OAuth/SetupToken only)
 const windowCostEnabled = ref(false)
@@ -4052,19 +4380,12 @@ const openAIImagesUrlToB64JsonEnabled = ref(false)
 const openAIImageSizeTiers = ref<OpenAIImageSizeTier[]>([...OPENAI_IMAGE_SIZE_TIERS])
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
 const openAICompatibleProviderSelection = ref<OpenAICompatibleProviderSelection>('custom')
-const isOpenAICompatibleProviderManaged = computed(
-  () =>
-    props.account?.platform === 'openai' &&
-    props.account.type === 'apikey' &&
-    openAICompatibleProviderSelection.value !== 'custom'
-)
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_CTX_POOL)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAppServerEnabled = ref(false)
 type CodexFingerprintMode = 'off' | 'device' | 'session' | 'full'
-const codexFingerprintMode = ref<CodexFingerprintMode>('full')
-const codexFingerprintConvergence = ref(true)
+const codexFingerprintMode = ref<CodexFingerprintMode>('off')
 type CodexImageToolMode = 'inherit' | 'enabled' | 'disabled' | 'block'
 const codexImageToolMode = ref<CodexImageToolMode>('inherit')
 type AnthropicAPIKeyAuthScheme = 'x_api_key' | 'authorization_bearer'
@@ -4096,6 +4417,12 @@ const editWeeklyResetMode = ref<'rolling' | 'fixed' | null>(null)
 const editWeeklyResetDay = ref<number | null>(null)
 const editWeeklyResetHour = ref<number | null>(null)
 const editResetTimezone = ref<string | null>(null)
+// Sent only for OpenAI accounts the gateway probes (never VM accounts) while
+// gateway.openai_tibo_route.enabled is on.
+const tiboRoutes = computed(() =>
+  props.account?.platform === 'openai' ? props.account.openai_tibo_routes ?? [] : []
+)
+
 const codexFingerprintModeOptions = computed(() => [
   { value: 'off' as CodexFingerprintMode, label: t('admin.accounts.openai.codexFingerprintOff') },
   { value: 'device' as CodexFingerprintMode, label: t('admin.accounts.openai.codexFingerprintDevice') },
@@ -4127,14 +4454,6 @@ const openaiResponsesWebSocketV2Mode = computed({
 const openAIWSModeHintKey = computed(() =>
   resolveOpenAIWSModeHintKey(openaiResponsesWebSocketV2Mode.value)
 )
-// openai_request_timezone：账号级 IANA 时区覆盖。空串 = 按账号出口 IP 自动确定。
-const openaiRequestTimezone = ref('')
-const openaiRequestTimezoneInitial = ref('')
-// 当前选中代理探测到的出口时区，用于在弹窗里展示自动解析的来源。
-const selectedProxyTimezone = computed(() => {
-  if (!form.proxy_id) return undefined
-  return props.proxies.find((p) => p.id === form.proxy_id)?.timezone || undefined
-})
 const codexImageToolOptions = computed<Array<{
   value: CodexImageToolMode
   label: string
@@ -4289,20 +4608,6 @@ const applyOpenAIEndpointCapabilities = (credentials: Record<string, unknown>) =
   }
   credentials.openai_capabilities = capabilities
 }
-
-const selectOpenAICompatibleProvider = (selection: OpenAICompatibleProviderSelection) => {
-  openAICompatibleProviderSelection.value = selection
-  const preset = getOpenAICompatibleProviderPreset(selection)
-  if (!preset) return
-
-  editBaseUrl.value = preset.baseUrl
-  modelRestrictionMode.value = 'mapping'
-  allowedModels.value = []
-  modelMappings.value = buildOpenAICompatibleProviderModelMappings(preset)
-  openAIResponsesMode.value = preset.responsesMode
-  openAIEndpointCapabilities.value = [...preset.endpointCapabilities]
-  openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
-}
 const normalizeOpenAIResponsesMode = (mode: unknown): OpenAIResponsesMode => {
   if (mode === 'force_responses' || mode === 'force_chat_completions') {
     return mode
@@ -4392,8 +4697,11 @@ const tempUnschedPresets = computed(() => [
 
 // Computed: default base URL based on platform
 const defaultBaseUrl = computed(() => {
+  if (props.account?.platform === 'video') return ''
   if (props.account?.platform === 'openai') return 'https://api.openai.com'
+  if (props.account?.platform === 'gemini') return 'https://generativelanguage.googleapis.com'
   if (props.account?.platform === 'grok') return 'https://api.x.ai/v1'
+  if (props.account?.platform === 'typesafe') return 'https://api.typesafe.ai'
   // CN 供应商：按当前模式/协议回落到官方预设（清空输入框提交时使用），
   // 不能落到 anthropic 默认值（会被当 CC base 拼出错误端点）。
   if (props.account && isMultiProtocolApiKeyPlatform(props.account.platform)) {
@@ -4409,18 +4717,25 @@ const mixedChannelWarningMessageText = computed(() => {
   return mixedChannelWarningRawMessage.value
 })
 
+const costMultiplier = ref(DEFAULT_ACCOUNT_COST_MULTIPLIER)
+const extraImageModels = ref('')
+const extraImageModelPrefixes = ref('')
+
 const form = reactive({
   name: '',
   notes: '',
   proxy_id: null as number | null,
-  concurrency: 1 as number | '',
+  proxy_ids: [] as number[],
+  concurrency: 1,
   load_factor: null as number | null,
   priority: 1,
   rate_multiplier: 1,
-  status: 'active' as 'active' | 'inactive' | 'error',
+  group_rate_multiplier: 1,
+  status: 'active' as Account['status'],
   group_ids: [] as number[],
   expires_at: null as number | null
 })
+
 
 const handleUpstreamBillingRateSyncChange = (enabled: boolean) => {
   upstreamBillingRateSyncEnabled.value = enabled
@@ -4464,6 +4779,9 @@ const statusOptions = computed(() => {
   if (form.status === 'error') {
     options.push({ value: 'error', label: t('admin.accounts.status.error') })
   }
+  if (props.account?.status === 'quality_paused') {
+    options.push({ value: 'quality_paused', label: t('admin.accounts.status.qualityPaused') })
+  }
   return options
 })
 
@@ -4503,8 +4821,7 @@ const buildModelRestrictionMapping = () =>
   buildModelMappingObject('combined', allowedModels.value, modelMappings.value)
 
 const applyOpenAIModelMappingCredentials = (credentials: Record<string, unknown>) => {
-  if (props.account?.platform === 'openai' && props.account.type === 'oauth') return
-  const shouldApplyModelMapping = !openaiPassthroughEnabled.value
+  const shouldApplyModelMapping = !isOpenAIModelRestrictionDisabled.value
 
   if (shouldApplyModelMapping) {
     const modelMapping = buildModelRestrictionMapping()
@@ -4534,19 +4851,27 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   void nextTick(() => {
     syncingForm.value = false
   })
-  mixedChannelConfirmed.value = false
+  antigravityMixedChannelConfirmed.value = false
   showMixedChannelWarning.value = false
   mixedChannelWarningDetails.value = null
   mixedChannelWarningRawMessage.value = ''
   mixedChannelWarningAction.value = null
   form.name = newAccount.name
+  editGrokMediaProvider.value = (newAccount.platform === 'grok' || newAccount.platform === 'video')
+    ? readGrokMediaProvider(newAccount.credentials as Record<string, unknown> | undefined) : ''
+  costMultiplier.value = readAccountCostMultiplier(newAccount.extra)
+  form.group_rate_multiplier = newAccount.group_rate_multiplier ?? 1
+  groupAllowedModels.value = groupAllowedModelsFromAccount(newAccount)
+  extraImageModels.value = readExtraImageModels(newAccount.extra?.extra_image_models)
+  extraImageModelPrefixes.value = readExtraImageModels(newAccount.extra?.extra_image_model_prefixes)
   form.notes = newAccount.notes || ''
   form.proxy_id = newAccount.proxy_id
+  form.proxy_ids = newAccount.proxy_ids?.length ? [...newAccount.proxy_ids] : (newAccount.proxy_id ? [newAccount.proxy_id] : [])
   form.concurrency = newAccount.concurrency
   form.load_factor = newAccount.load_factor ?? null
   form.priority = newAccount.priority
   form.rate_multiplier = newAccount.rate_multiplier ?? 1
-  form.status = (newAccount.status === 'active' || newAccount.status === 'inactive' || newAccount.status === 'error')
+  form.status = (newAccount.status === 'active' || newAccount.status === 'inactive' || newAccount.status === 'error' || newAccount.status === 'quality_paused')
     ? newAccount.status
     : 'active'
   form.group_ids = newAccount.group_ids || []
@@ -4559,7 +4884,20 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   editVertexProjectId.value = ''
   editVertexClientEmail.value = ''
   editVertexLocation.value = 'us-central1'
+  editVertexApiKey.value = ''
+  antigravityProjectId.value =
+    newAccount.platform === 'antigravity' &&
+    newAccount.type === 'oauth' &&
+    typeof credentials?.antigravity_project_id === 'string'
+      ? credentials.antigravity_project_id.trim()
+      : ''
+
+  // Load mixed scheduling setting (only for antigravity accounts)
+  mixedScheduling.value = false
+  allowOverages.value = false
 	const extra = newAccount.extra as Record<string, unknown> | undefined
+	mixedScheduling.value = extra?.mixed_scheduling === true
+	allowOverages.value = extra?.allow_overages === true
 	upstreamRequestIdHeader.value = readUpstreamRequestIdHeader(extra)
 	openAIImagesUrlToB64JsonEnabled.value = extra?.images_url_to_b64_json === true
   openAIImageSizeTiers.value = readOpenAIImageSizeTiers(extra)
@@ -4567,6 +4905,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 	autoPause7dThreshold.value = typeof extra?.auto_pause_7d_threshold === 'number' ? extra.auto_pause_7d_threshold * 100 : null
 	autoPause5hDisabled.value = extra?.auto_pause_5h_disabled === true
 	autoPause7dDisabled.value = extra?.auto_pause_7d_disabled === true
+	showAutoResetCreditConfirm.value = false
 	autoResetCreditEnabled.value = extra?.auto_reset_credit_enabled === true && extra?.auto_reset_credit_opt_in_version === 1
 	autoResetCredit5hThreshold.value =
 		typeof extra?.auto_reset_credit_5h_threshold === 'number' ? extra.auto_reset_credit_5h_threshold * 100 : 100
@@ -4576,7 +4915,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   upstreamGroupSyncEnabled.value =
     upstreamBillingAutoProbeEnabled.value && extra?.upstream_billing_group_sync_enabled === true
   upstreamBillingRateSyncEnabled.value =
-    upstreamBillingAutoProbeEnabled.value && extra?.upstream_billing_rate_sync_enabled === true
+    !isModelPriceProbe.value && !isNewAPIUpstream.value && upstreamBillingAutoProbeEnabled.value && extra?.upstream_billing_rate_sync_enabled === true
 
   // Load OpenAI passthrough toggle (OpenAI OAuth/SetupToken/API Key)
   openaiPassthroughEnabled.value = false
@@ -4587,20 +4926,16 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   openAICompactMode.value = 'auto'
   openAIResponsesMode.value = 'auto'
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
-  openAICompatibleProviderSelection.value = readOpenAICompatibleProviderSelection(extra)
   openAICompactModelMappings.value = []
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_CTX_POOL
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   codexCLIOnlyEnabled.value = false
   codexCLIOnlyAppServerEnabled.value = false
-  codexFingerprintMode.value = 'full'
-  codexFingerprintConvergence.value = true
+  codexFingerprintMode.value = 'off'
   codexImageToolMode.value = 'inherit'
   anthropicPassthroughEnabled.value = false
   anthropicAPIKeyAuthScheme.value = 'x_api_key'
   webSearchEmulationMode.value = 'default'
-  openaiRequestTimezone.value = ''
-  openaiRequestTimezoneInitial.value = ''
   if (newAccount.platform === 'openai' && (newAccount.type === 'oauth' || newAccount.type === 'setup-token' || newAccount.type === 'apikey')) {
     openaiPassthroughEnabled.value = extra?.openai_passthrough === true || extra?.openai_oauth_passthrough === true
     openaiPassthroughModelFilterEnabled.value = extra?.openai_passthrough_model_filter === true
@@ -4644,21 +4979,18 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       fallbackEnabledKeys: ['responses_websockets_v2_enabled', 'openai_ws_enabled'],
       defaultMode: OPENAI_WS_MODE_OFF
     })
-    openaiRequestTimezone.value = (extra?.openai_request_timezone as string) || ''
-    openaiRequestTimezoneInitial.value = openaiRequestTimezone.value
     if (newAccount.type === 'oauth' || newAccount.type === 'setup-token') {
       codexCLIOnlyEnabled.value = extra?.codex_cli_only === true
       codexCLIOnlyAppServerEnabled.value =
         extra?.codex_cli_only_allow_app_server === true
     }
     if (newAccount.type === 'oauth') {
-      const fpMode = extra?.codex_fingerprint_mode as string | undefined
-      // 缺省/非法值按 full 呈现，与后端 GetCodexFingerprintMode 一致。
+      const storedFPMode = extra?.codex_fingerprint_mode as string | undefined
+      const fpMode = storedFPMode === 'account_device' ? 'device' : storedFPMode
+      // 缺省/非法值按 off 呈现，与后端 GetCodexFingerprintMode 的 opt-in 语义一致（#5610）
       codexFingerprintMode.value = (['off', 'device', 'session', 'full'].includes(fpMode || '')
         ? fpMode as CodexFingerprintMode
-        : 'full')
-      const conv = extra?.codex_experimental_fingerprint_convergence
-      codexFingerprintConvergence.value = conv !== false && conv !== 'false' && conv !== '0' && conv !== 0
+        : 'off')
     }
     const credentials = newAccount.credentials as Record<string, unknown> | undefined
     const compactMappings = credentials?.compact_model_mapping as Record<string, string> | undefined
@@ -4712,6 +5044,38 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     editWeeklyResetHour.value = null
     editResetTimezone.value = null
     resetQuotaNotify()
+  }
+
+  // Load antigravity model mapping (Antigravity 只支持映射模式)
+  if (newAccount.platform === 'antigravity') {
+    const credentials = newAccount.credentials as Record<string, unknown> | undefined
+
+    // Antigravity 始终使用映射模式
+    antigravityModelRestrictionMode.value = 'mapping'
+    antigravityWhitelistModels.value = []
+
+    // 从 model_mapping 读取映射配置
+    const rawAgMapping = credentials?.model_mapping as Record<string, string> | undefined
+    if (rawAgMapping && typeof rawAgMapping === 'object') {
+      const entries = Object.entries(rawAgMapping)
+      // 无论是白名单样式(key===value)还是真正的映射，都统一转换为映射列表
+      antigravityModelMappings.value = entries.map(([from, to]) => ({ from, to }))
+    } else {
+      // 兼容旧数据：从 model_whitelist 读取，转换为映射格式
+      const rawWhitelist = credentials?.model_whitelist
+      if (Array.isArray(rawWhitelist) && rawWhitelist.length > 0) {
+        antigravityModelMappings.value = rawWhitelist
+          .map((v) => String(v).trim())
+          .filter((v) => v.length > 0)
+          .map((m) => ({ from: m, to: m }))
+      } else {
+        antigravityModelMappings.value = []
+      }
+    }
+  } else {
+    antigravityModelRestrictionMode.value = 'mapping'
+    antigravityWhitelistModels.value = []
+    antigravityModelMappings.value = []
   }
 
   // Load quota control settings (Anthropic OAuth/SetupToken only)
@@ -4825,22 +5189,26 @@ const syncFormFromAccount = (newAccount: Account | null) => {
           cloneOpenCodeGoProtocolRules(defaultProviderProtocolRules(newAccount.platform, currentOpenCodeOrCNMode()))
       }
     }
-    const platformDefaultUrl = newAccount.platform === 'openai'
-      ? 'https://api.openai.com'
-      : newAccount.platform === 'grok'
-        ? 'https://api.x.ai/v1'
-        : isMultiProtocolApiKeyPlatform(newAccount.platform)
-          ? defaultCNBaseUrl(newAccount.platform, currentOpenCodeOrCNMode(), editApiProtocol.value)
-          : 'https://api.anthropic.com'
+    const platformDefaultUrl =
+      newAccount.platform === 'openai'
+        ? 'https://api.openai.com'
+        : newAccount.platform === 'gemini'
+          ? 'https://generativelanguage.googleapis.com'
+          : newAccount.platform === 'video'
+            ? ''
+            : newAccount.platform === 'grok'
+            ? 'https://api.x.ai/v1'
+            : newAccount.platform === 'typesafe'
+              ? 'https://api.typesafe.ai'
+            : isMultiProtocolApiKeyPlatform(newAccount.platform)
+              ? defaultCNBaseUrl(newAccount.platform, currentOpenCodeOrCNMode(), editApiProtocol.value)
+              : 'https://api.anthropic.com'
     editBaseUrl.value = isCNApiKeyAccount.value && editApiProtocol.value === 'adaptive'
       ? editAdaptiveBaseUrls.value.chat_completions
       : (credentials.base_url as string) || platformDefaultUrl
 
     // Load model mappings and detect mode
     loadModelRestrictionFromMapping(credentials.model_mapping as Record<string, unknown> | undefined)
-    if (newAccount.platform === 'openai' && isOpenAICompatibleProviderManaged.value) {
-      selectOpenAICompatibleProvider(openAICompatibleProviderSelection.value)
-    }
 
     // Load pool mode
     poolModeEnabled.value = credentials.pool_mode === true
@@ -4848,6 +5216,10 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       Number(credentials.pool_mode_retry_count ?? DEFAULT_POOL_MODE_RETRY_COUNT)
     )
     poolModeRetryStatusCodesInput.value = formatPoolModeRetryStatusCodes(credentials.pool_mode_retry_status_codes)
+
+    explicitCacheUpstreamEnabled.value = credentials.explicit_cache_upstream === true
+    explicitCacheUpstreamMaxTTL.value =
+      normalizeExplicitCacheUpstreamMaxTTL(credentials.explicit_cache_upstream_max_ttl_seconds) ?? ''
 
     // Load custom error codes
     customErrorCodesEnabled.value = credentials.custom_error_codes_enabled === true
@@ -4891,11 +5263,12 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   } else if (newAccount.type === 'upstream' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
     editBaseUrl.value = (credentials.base_url as string) || ''
-  } else if (newAccount.platform === 'anthropic' && newAccount.type === 'service_account' && newAccount.credentials) {
+  } else if ((newAccount.platform === 'gemini' || newAccount.platform === 'anthropic') && newAccount.type === 'service_account' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
     editVertexProjectId.value = (credentials.project_id as string) || ''
     editVertexClientEmail.value = (credentials.client_email as string) || ''
     editVertexLocation.value = (credentials.location as string) || (credentials.vertex_location as string) || 'us-central1'
+    editVertexApiKey.value = ''
 
     // Load model mappings for service_account
     loadModelRestrictionFromMapping(credentials.model_mapping as Record<string, unknown> | undefined)
@@ -4903,9 +5276,13 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     const platformDefaultUrl =
       newAccount.platform === 'openai'
         ? 'https://api.openai.com'
-        : newAccount.platform === 'grok'
-          ? 'https://api.x.ai/v1'
-          : 'https://api.anthropic.com'
+        : newAccount.platform === 'gemini'
+          ? 'https://generativelanguage.googleapis.com'
+          : newAccount.platform === 'video'
+            ? ''
+            : newAccount.platform === 'grok'
+            ? 'https://api.x.ai/v1'
+            : 'https://api.anthropic.com'
     editBaseUrl.value = platformDefaultUrl
 
     // Load model mappings for OpenAI/Grok OAuth accounts
@@ -4920,6 +5297,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     poolModeEnabled.value = false
     poolModeRetryCount.value = DEFAULT_POOL_MODE_RETRY_COUNT
     poolModeRetryStatusCodesInput.value = ''
+    explicitCacheUpstreamEnabled.value = false
+    explicitCacheUpstreamMaxTTL.value = ''
     customErrorCodesEnabled.value = false
     selectedErrorCodes.value = []
   }
@@ -4968,12 +5347,77 @@ const addPresetMapping = (from: string, to: string) => {
   modelMappings.value.push({ from, to })
 }
 
+const addAntigravityModelMapping = () => {
+  antigravityModelMappings.value.push({ from: '', to: '' })
+}
+
 const addOpenAICompactModelMapping = () => {
   openAICompactModelMappings.value.push({ from: '', to: '' })
 }
 
 const removeOpenAICompactModelMapping = (index: number) => {
   openAICompactModelMappings.value.splice(index, 1)
+}
+
+const removeAntigravityModelMapping = (index: number) => {
+  antigravityModelMappings.value.splice(index, 1)
+}
+
+const addAntigravityPresetMapping = (from: string, to: string) => {
+  const exists = antigravityModelMappings.value.some((m) => m.from === from)
+  if (exists) {
+    appStore.showInfo(t('admin.accounts.mappingExists', { model: from }))
+    return
+  }
+  antigravityModelMappings.value.push({ from, to })
+}
+
+const syncAntigravityUpstreamModels = async () => {
+  if (!props.account?.id || isSyncingAntigravityUpstream.value) return
+
+  isSyncingAntigravityUpstream.value = true
+  try {
+    const result = await adminAPI.accounts.syncUpstreamModels(props.account.id)
+    const upstreamModels = result.models.map((model) => model.trim()).filter(Boolean)
+    if (upstreamModels.length === 0) {
+      appStore.showInfo(t('admin.accounts.syncUpstreamModelsEmpty'))
+      return
+    }
+
+    let addedCount = 0
+    for (const model of upstreamModels) {
+      const exists = antigravityModelMappings.value.some((mapping) => mapping.from === model)
+      if (!exists) {
+        antigravityModelMappings.value.push({ from: model, to: model })
+        addedCount += 1
+      }
+    }
+
+    const warnings = result.warnings ?? []
+    const hasPartialMetadata = warnings.some(
+      (warning) => warning.code === 'upstream_model_metadata_partial'
+    )
+    const hasIncompleteMetadata = warnings.some(
+      (warning) => warning.code === 'upstream_model_metadata_incomplete'
+    )
+    if (hasIncompleteMetadata) {
+      appStore.showWarning(t('admin.accounts.syncUpstreamModelsMetadataIncomplete'))
+      return
+    }
+    if (addedCount > 0) {
+      appStore.showSuccess(t('admin.accounts.syncUpstreamModelsSuccess', { count: addedCount, total: upstreamModels.length }))
+    } else {
+      appStore.showInfo(t('admin.accounts.syncUpstreamModelsNoChanges', { count: upstreamModels.length }))
+    }
+    if (hasPartialMetadata) {
+      appStore.showWarning(t('admin.accounts.syncUpstreamModelsMetadataPartial'))
+    }
+  } catch (error) {
+    const message = extractApiErrorMessage(error, t('admin.accounts.syncUpstreamModelsFailed'))
+    appStore.showError(t('admin.accounts.syncUpstreamModelsError', { message }))
+  } finally {
+    isSyncingAntigravityUpstream.value = false
+  }
 }
 
 // Error code toggle helper
@@ -5311,7 +5755,7 @@ function toPositiveNumber(value: unknown) {
   return Math.trunc(num)
 }
 
-const needsMixedChannelCheck = () => props.account?.platform === 'anthropic'
+const needsMixedChannelCheck = () => (props.account?.platform === 'antigravity' || props.account?.platform === 'anthropic')
 
 const buildMixedChannelDetails = (resp?: CheckMixedChannelResponse) => {
   const details = resp?.details
@@ -5344,8 +5788,8 @@ const openMixedChannelDialog = (opts: {
   showMixedChannelWarning.value = true
 }
 
-const withMixedChannelConfirmFlag = (payload: Record<string, unknown>) => {
-  if (needsMixedChannelCheck() && mixedChannelConfirmed.value) {
+const withAntigravityConfirmFlag = (payload: Record<string, unknown>) => {
+  if (needsMixedChannelCheck() && antigravityMixedChannelConfirmed.value) {
     return {
       ...payload,
       confirm_mixed_channel_risk: true
@@ -5356,11 +5800,11 @@ const withMixedChannelConfirmFlag = (payload: Record<string, unknown>) => {
   return cloned
 }
 
-const ensureMixedChannelConfirmed = async (onConfirm: () => Promise<void>): Promise<boolean> => {
+const ensureAntigravityMixedChannelConfirmed = async (onConfirm: () => Promise<void>): Promise<boolean> => {
   if (!needsMixedChannelCheck()) {
     return true
   }
-  if (mixedChannelConfirmed.value) {
+  if (antigravityMixedChannelConfirmed.value) {
     return true
   }
   if (!props.account) {
@@ -5379,7 +5823,7 @@ const ensureMixedChannelConfirmed = async (onConfirm: () => Promise<void>): Prom
     openMixedChannelDialog({
       response: result,
       onConfirm: async () => {
-        mixedChannelConfirmed.value = true
+        antigravityMixedChannelConfirmed.value = true
         await onConfirm()
       }
     })
@@ -5395,7 +5839,7 @@ const parseDateTimeLocal = parseDateTimeLocalInput
 
 // Methods
 const handleClose = () => {
-  mixedChannelConfirmed.value = false
+  antigravityMixedChannelConfirmed.value = false
   clearMixedChannelDialog()
   emit('close')
 }
@@ -5440,8 +5884,21 @@ const persistGrokMediaEligibility = async (accountID: number, updatedAccount: Ac
 const submitUpdateAccount = async (accountID: number, updatePayload: Record<string, unknown>) => {
   submitting.value = true
   try {
-    let updatedAccount = await adminAPI.accounts.update(accountID, withMixedChannelConfirmFlag(updatePayload))
+    let updatedAccount = await adminAPI.accounts.update(accountID, withAntigravityConfirmFlag(updatePayload))
     updatedAccount = await persistGrokMediaEligibility(accountID, updatedAccount)
+    if (isModelPriceProbe.value && props.account?.type === 'apikey' && updatePayload.upstream_billing_probe_enabled === true) {
+      try {
+        const result = await adminAPI.accounts.probeUpstreamBilling(accountID)
+        if (result.snapshot) {
+          updatedAccount = { ...updatedAccount, extra: { ...updatedAccount.extra, upstream_billing_probe: result.snapshot } }
+        }
+        if (result.error || (result.snapshot && result.snapshot.status !== 'ok')) {
+          appStore.showInfo(t('admin.accounts.upstreamBilling.video.savedProbeFailed'))
+        }
+      } catch {
+        appStore.showInfo(t('admin.accounts.upstreamBilling.video.savedProbeFailed'))
+      }
+    }
     appStore.showSuccess(t('admin.accounts.accountUpdated'))
     emit('updated', updatedAccount)
     handleClose()
@@ -5450,7 +5907,7 @@ const submitUpdateAccount = async (accountID: number, updatePayload: Record<stri
       openMixedChannelDialog({
         message: error.message,
         onConfirm: async () => {
-          mixedChannelConfirmed.value = true
+          antigravityMixedChannelConfirmed.value = true
           await submitUpdateAccount(accountID, updatePayload)
         }
       })
@@ -5465,11 +5922,12 @@ const submitUpdateAccount = async (accountID: number, updatePayload: Record<stri
 const handleSubmit = async () => {
   if (!props.account) return
   const accountID = props.account.id
-  if (form.status !== 'active' && form.status !== 'inactive' && form.status !== 'error') {
+
+  if (form.status !== 'active' && form.status !== 'inactive' && form.status !== 'error' && form.status !== 'quality_paused') {
     appStore.showError(t('admin.accounts.pleaseSelectStatus'))
     return
   }
-	if (props.account.platform === 'openai' && props.account.type === 'oauth' && autoResetCreditEnabled.value) {
+	if (autoResetCreditEnabled.value) {
 		const thresholds = [autoResetCredit5hThreshold.value, autoResetCredit7dThreshold.value]
 		if (thresholds.some((value) => !Number.isFinite(value) || value < 0.1 || value > 100)) {
 			appStore.showError(t('admin.accounts.autoResetCredit.thresholdInvalid'))
@@ -5478,11 +5936,18 @@ const handleSubmit = async () => {
 	}
 
   const updatePayload: Record<string, unknown> = { ...form }
+  // Only an explicit status edit may override an automatic quality pause
+  // that happened while this dialog was open.
+  if (form.status === props.account.status) {
+    delete updatePayload.status
+  }
   try {
     // 后端期望 proxy_id: 0 表示清除代理，而不是 null
     if (updatePayload.proxy_id === null) {
       updatePayload.proxy_id = 0
     }
+    updatePayload.proxy_id = form.proxy_ids[0] ?? 0
+    updatePayload.proxy_ids = [...form.proxy_ids]
     if (form.expires_at === null) {
       updatePayload.expires_at = 0
     }
@@ -5492,19 +5957,27 @@ const handleSubmit = async () => {
       updatePayload.load_factor = 0
     }
     updatePayload.auto_pause_on_expired = autoPauseOnExpired.value
+    // 整体覆盖：只带仍勾选的分组，没有列出的分组由后端恢复为不限制
+    updatePayload.group_allowed_models = buildGroupAllowedModelsPayload(form.group_ids, groupAllowedModels.value)
     if (props.account.type === 'apikey') {
       if (form.name === props.account.name) delete updatePayload.name
       if (form.notes === (props.account.notes || '')) delete updatePayload.notes
       updatePayload.upstream_billing_group_sync_enabled = upstreamGroupSyncEnabled.value
       updatePayload.upstream_billing_probe_enabled = upstreamBillingAutoProbeEnabled.value
-      updatePayload.upstream_billing_rate_sync_enabled = upstreamBillingRateSyncEnabled.value
-      if (upstreamBillingRateSyncEnabled.value) {
+      if (props.account.platform !== 'video') {
+        updatePayload.upstream_billing_rate_sync_enabled = !isModelPriceProbe.value && upstreamBillingRateSyncEnabled.value
+      }
+      if (!isModelPriceProbe.value && upstreamBillingRateSyncEnabled.value) {
         delete updatePayload.rate_multiplier
       }
     }
 
     // For apikey type, handle credentials update
     if (props.account.type === 'apikey') {
+      if (props.account.platform === 'video' && !editBaseUrl.value.trim()) {
+        appStore.showError(t('videoModule.baseUrlRequired'))
+        return
+      }
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
       const newBaseUrl = editBaseUrl.value.trim() || defaultBaseUrl.value
       const shouldApplyModelMapping = !isOpenAIModelRestrictionDisabled.value
@@ -5514,6 +5987,7 @@ const handleSubmit = async () => {
         ...currentCredentials,
         base_url: newBaseUrl
       }
+      if (props.account.platform === 'grok' || props.account.platform === 'video') applyGrokMediaProvider(newCredentials, editGrokMediaProvider.value)
 
       // 国产供应商：模式与协议写入凭据（决定额度/余额探测与转发端点/格式）。
       if (isCNApiKeyAccount.value) {
@@ -5599,6 +6073,12 @@ const handleSubmit = async () => {
         delete newCredentials.pool_mode_retry_status_codes
       }
 
+      applyExplicitCacheUpstreamCredentials(
+        newCredentials,
+        props.account.platform === 'gemini' && !isOfficialGeminiBaseUrl(editBaseUrl.value) && explicitCacheUpstreamEnabled.value,
+        explicitCacheUpstreamMaxTTL.value
+      )
+
       // Add custom error codes if enabled
       if (customErrorCodesEnabled.value) {
         newCredentials.custom_error_codes_enabled = true
@@ -5647,38 +6127,64 @@ const handleSubmit = async () => {
       }
 
       updatePayload.credentials = newCredentials
-    } else if (props.account.platform === 'anthropic' && props.account.type === 'service_account') {
+    } else if ((props.account.platform === 'gemini' || props.account.platform === 'anthropic') && props.account.type === 'service_account') {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
       const newCredentials: Record<string, unknown> = { ...currentCredentials }
       const credentialsStatus = props.account.credentials_status
 
-      if (!editVertexProjectId.value.trim()) {
-        appStore.showError(t('admin.accounts.vertexSaJsonMissingProjectId'))
-        return
-      }
-      if (!editVertexClientEmail.value.trim()) {
-        appStore.showError(t('admin.accounts.vertexSaJsonMissingClientEmail'))
-        return
-      }
-      if (!editVertexLocation.value.trim()) {
-        appStore.showError(t('admin.accounts.vertexLocationRequired'))
-        return
-      }
+      if (isVertexAPIKeyMode.value) {
+        // API Key 已脱敏不再随 credentials 返回，存在性读 credentials_status；留空表示保留原 Key。
+        const newApiKey = editVertexApiKey.value.trim()
+        const hasExistingApiKey = credentialsStatus
+          ? Boolean(credentialsStatus.has_api_key)
+          : Boolean(currentCredentials.api_key)
+        if (!newApiKey && !hasExistingApiKey) {
+          appStore.showError(t('admin.accounts.vertexApiKeyRequired'))
+          return
+        }
+        const projectId = editVertexProjectId.value.trim()
+        if (projectId && !editVertexLocation.value.trim()) {
+          appStore.showError(t('admin.accounts.vertexLocationRequired'))
+          return
+        }
+        if (newApiKey) {
+          newCredentials.api_key = newApiKey
+        }
+        if (projectId) {
+          newCredentials.project_id = projectId
+        } else {
+          delete newCredentials.project_id
+        }
+        newCredentials.location = editVertexLocation.value.trim() || 'global'
+      } else {
+        if (!editVertexProjectId.value.trim()) {
+          appStore.showError(t('admin.accounts.vertexSaJsonMissingProjectId'))
+          return
+        }
+        if (!editVertexClientEmail.value.trim()) {
+          appStore.showError(t('admin.accounts.vertexSaJsonMissingClientEmail'))
+          return
+        }
+        if (!editVertexLocation.value.trim()) {
+          appStore.showError(t('admin.accounts.vertexLocationRequired'))
+          return
+        }
 
-      // SA JSON 已脱敏不再随 credentials 返回，存在性优先读 credentials_status。
-      // 若后端尚未升级（无 credentials_status），回退读旧结构 service_account_json / service_account。
-      const hasExistingServiceAccountJson = credentialsStatus
-        ? Boolean(
-            credentialsStatus.has_service_account_json || credentialsStatus.has_service_account
-          )
-        : Boolean(currentCredentials.service_account_json || currentCredentials.service_account)
-      if (!hasExistingServiceAccountJson) {
-        appStore.showError(t('admin.accounts.vertexSaJsonRequired'))
-        return
+        // SA JSON 已脱敏不再随 credentials 返回，存在性优先读 credentials_status。
+        // 若后端尚未升级（无 credentials_status），回退读旧结构 service_account_json / service_account。
+        const hasExistingServiceAccountJson = credentialsStatus
+          ? Boolean(
+              credentialsStatus.has_service_account_json || credentialsStatus.has_service_account
+            )
+          : Boolean(currentCredentials.service_account_json || currentCredentials.service_account)
+        if (!hasExistingServiceAccountJson) {
+          appStore.showError(t('admin.accounts.vertexSaJsonRequired'))
+          return
+        }
+        newCredentials.project_id = editVertexProjectId.value.trim()
+        newCredentials.client_email = editVertexClientEmail.value.trim()
+        newCredentials.location = editVertexLocation.value.trim()
       }
-      newCredentials.project_id = editVertexProjectId.value.trim()
-      newCredentials.client_email = editVertexClientEmail.value.trim()
-      newCredentials.location = editVertexLocation.value.trim()
       newCredentials.tier_id = 'vertex'
 
       // Add model mapping if configured
@@ -5770,9 +6276,10 @@ const handleSubmit = async () => {
 
     // OpenAI/Grok OAuth: persist model mapping to credentials
     if ((props.account.platform === 'openai' || props.account.platform === 'grok') && props.account.type === 'oauth') {
-      const currentCredentials =
-        (updatePayload.credentials as Record<string, unknown>) ||
-        ((props.account.credentials as Record<string, unknown>) || {})
+      const currentCredentials = isSparkShadow.value
+        ? {}
+        : (updatePayload.credentials as Record<string, unknown>) ||
+          ((props.account.credentials as Record<string, unknown>) || {})
       const newCredentials: Record<string, unknown> = { ...currentCredentials }
       if (props.account.platform === 'openai') {
         applyOpenAIModelMappingCredentials(newCredentials)
@@ -5832,11 +6339,56 @@ const handleSubmit = async () => {
     }
 
     // OpenAI: 手动覆盖订阅档位 plan_type（Plus / Pro 20x / Pro 5x / Business Standard / Business Premium / Free）。
-    // setup-token 无订阅调度语义。
-    if (props.account.platform === 'openai' && props.account.type === 'oauth') {
+    // 仅 OAuth 非影子账号：
+    // 影子账号凭据由母账号管理(且后端会 sanitize),setup-token 无订阅调度语义。
+    if (props.account.platform === 'openai' && props.account.type === 'oauth' && !isSparkShadow.value) {
       const currentCredentials = (updatePayload.credentials as Record<string, unknown>) ||
         ((props.account.credentials as Record<string, unknown>) || {})
       updatePayload.credentials = applyPlanType({ ...currentCredentials }, editPlanType.value)
+    }
+
+    // Antigravity: persist model mapping to credentials (applies to all antigravity types)
+    // Antigravity 只支持映射模式
+    if (props.account.platform === 'antigravity') {
+      const currentCredentials = (updatePayload.credentials as Record<string, unknown>) ||
+        ((props.account.credentials as Record<string, unknown>) || {})
+      const newCredentials: Record<string, unknown> = { ...currentCredentials }
+      if (props.account.type === 'oauth') {
+        applyAntigravityProjectID(newCredentials, antigravityProjectId.value, 'edit')
+      }
+
+      // 移除旧字段
+      delete newCredentials.model_whitelist
+      delete newCredentials.model_mapping
+
+      // 只使用映射模式
+      const antigravityModelMapping = buildModelMappingObject(
+        'mapping',
+        [],
+        antigravityModelMappings.value
+      )
+      if (antigravityModelMapping) {
+        newCredentials.model_mapping = antigravityModelMapping
+      }
+
+      updatePayload.credentials = newCredentials
+    }
+
+    // For antigravity accounts, handle mixed_scheduling and allow_overages in extra
+    if (props.account.platform === 'antigravity') {
+      const currentExtra = (props.account.extra as Record<string, unknown>) || {}
+      const newExtra: Record<string, unknown> = { ...currentExtra }
+      if (mixedScheduling.value) {
+        newExtra.mixed_scheduling = true
+      } else {
+        delete newExtra.mixed_scheduling
+      }
+      if (allowOverages.value) {
+        newExtra.allow_overages = true
+      } else {
+        delete newExtra.allow_overages
+      }
+      updatePayload.extra = newExtra
     }
 
     // For Anthropic OAuth/SetupToken accounts, handle quota control settings in extra
@@ -5971,30 +6523,30 @@ const handleSubmit = async () => {
         delete newExtra.openai_passthrough
         delete newExtra.openai_oauth_passthrough
       }
-      delete newExtra.openai_excel_bps
-      delete newExtra.openai_excel_bps_models
-      delete newExtra.openai_excel_bps_cache_creation_as_input
-      delete newExtra.openai_excel_bps_auto_disable_on_403
+      if (openaiPassthroughEnabled.value && openaiPassthroughModelFilterEnabled.value) newExtra.openai_passthrough_model_filter = true
+      else delete newExtra.openai_passthrough_model_filter
       // 缺省即保留 namespace，不写空值，避免 extra 里堆积默认项
       if (props.account.type === 'oauth' && openaiFlattenNamespacesEnabled.value) {
         newExtra.openai_responses_flatten_namespaces = true
       } else {
         delete newExtra.openai_responses_flatten_namespaces
       }
-      newExtra.openai_long_context_billing_enabled = openAILongContextBillingEnabled.value
+      if (isSparkShadow.value) {
+        delete newExtra.openai_long_context_billing_enabled
+      } else {
+        newExtra.openai_long_context_billing_enabled = openAILongContextBillingEnabled.value
+      }
       if (openAICompactMode.value === 'auto') {
         delete newExtra.openai_compact_mode
       } else {
         newExtra.openai_compact_mode = openAICompactMode.value
       }
-      if (props.account.type === 'apikey') {
+		if (props.account.type === 'apikey') {
         if (!openAITextGenerationCapabilityEnabled.value || openAIResponsesMode.value === 'auto') {
           delete newExtra.openai_responses_mode
         } else {
           newExtra.openai_responses_mode = openAIResponsesMode.value
         }
-      }
-      if (props.account.type === 'apikey') {
         if (openAIImagesUrlToB64JsonEnabled.value) {
           newExtra.images_url_to_b64_json = true
         } else {
@@ -6036,7 +6588,7 @@ const handleSubmit = async () => {
       } else {
         delete newExtra.auto_pause_7d_disabled
       }
-      if (props.account.type === 'oauth') {
+      if (props.account.type === 'oauth' && !isSparkShadow.value) {
         newExtra.auto_reset_credit_enabled = autoResetCreditEnabled.value
         for (const [key, value] of [
           ['auto_reset_credit_5h_threshold', autoResetCredit5hThreshold.value],
@@ -6053,7 +6605,7 @@ const handleSubmit = async () => {
       delete newExtra.auto_reset_credit_opt_in_version
       delete newExtra.codex_auto_reset_credit_state
 
-      delete newExtra.codex_image_generation_bridge_enabled
+		delete newExtra.codex_image_generation_bridge_enabled
       switch (codexImageToolMode.value) {
         case 'enabled':
         case 'disabled':
@@ -6087,11 +6639,12 @@ const handleSubmit = async () => {
         }
       }
 
-      // 指纹收敛模式：默认 full + 实验投影开启。off / false 必须显式落键，
-      // 删键会被后端当成缺省全收敛。
       if (props.account.type === 'oauth') {
-        newExtra.codex_fingerprint_mode = codexFingerprintMode.value
-        newExtra.codex_experimental_fingerprint_convergence = codexFingerprintConvergence.value
+        if (codexFingerprintMode.value !== 'off') {
+          newExtra.codex_fingerprint_mode = codexFingerprintMode.value
+        } else {
+          newExtra.codex_fingerprint_mode = 'off'
+        }
       }
 
       updatePayload.extra = newExtra
@@ -6158,20 +6711,6 @@ const handleSubmit = async () => {
       updatePayload.extra = newExtra
     }
 
-    // openai_request_timezone 只在改动时写回 extra：覆盖优先于按出口 IP 自动确定；
-    // 清空即删除该键，回到自动解析。
-    const nextOpenAIRequestTimezone = openaiRequestTimezone.value.trim()
-    if (nextOpenAIRequestTimezone !== openaiRequestTimezoneInitial.value) {
-      const currentExtra = (updatePayload.extra as Record<string, unknown>) || (props.account.extra as Record<string, unknown>) || {}
-      const newExtra: Record<string, unknown> = { ...currentExtra }
-      if (nextOpenAIRequestTimezone) {
-        newExtra.openai_request_timezone = nextOpenAIRequestTimezone
-      } else {
-        delete newExtra.openai_request_timezone
-      }
-      updatePayload.extra = newExtra
-    }
-
     // 上游ID头名只在改动时写回 extra，避免用弹窗打开时的快照覆盖运行态键。
     const nextUpstreamRequestIdHeader = upstreamRequestIdHeader.value.trim()
     if (nextUpstreamRequestIdHeader !== readUpstreamRequestIdHeader(props.account.extra)) {
@@ -6185,7 +6724,31 @@ const handleSubmit = async () => {
       updatePayload.extra = newExtra
     }
 
-    const canContinue = await ensureMixedChannelConfirmed(async () => {
+
+
+    if (!isValidAccountCostMultiplier(costMultiplier.value)) {
+      appStore.showError(t('admin.accounts.costMultiplierInvalid'))
+      return
+    }
+    if (props.account.platform === 'openai' && props.account.type === 'apikey') {
+      updatePayload.extra = {
+        ...(updatePayload.extra || props.account.extra || {}),
+        extra_image_models: parseExtraImageModels(extraImageModels.value),
+        extra_image_model_prefixes: parseExtraImageModels(extraImageModelPrefixes.value)
+      }
+    }
+    const costExtra: Record<string, unknown> = {
+      ...((updatePayload.extra as Record<string, unknown>) || props.account.extra || {})
+    }
+    // An unrelated edit must not restore a cost loaded before a probe updated it.
+    if (costMultiplier.value !== readAccountCostMultiplier(props.account.extra)) {
+      costExtra.cost_multiplier = costMultiplier.value
+    } else {
+      delete costExtra.cost_multiplier
+    }
+    updatePayload.extra = costExtra
+
+    const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {
       await submitUpdateAccount(accountID, updatePayload)
     })
     if (!canContinue) {

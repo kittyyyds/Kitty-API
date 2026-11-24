@@ -42,19 +42,22 @@ describe('OAuth login sections', () => {
     expect(window.location.href).toBe(originalHref)
   })
 
-  it('does not submit promo_code in the LinuxDo OAuth request', async () => {
+  it('includes a trimmed promo code in the LinuxDo OAuth request', async () => {
     const wrapper = mount(LinuxDoOAuthSection, {
       props: {
         affCode: 'AFF456',
+        promoCode: ' PROMO789 '
       }
     })
 
     await wrapper.get('button').trigger('click')
 
-    const payload = wrapper.emitted('start')?.[0]?.[0] as { params?: Record<string, string> }
-    expect(payload.params).toEqual({
-      redirect: '/billing?plan=pro',
+    expect(wrapper.emitted('start')?.[0]?.[0]).toEqual({
+      provider: 'linuxdo',
+      params: {
+        redirect: '/billing?plan=pro',
+        promo_code: 'PROMO789'
+      }
     })
-    expect(payload.params).not.toHaveProperty('promo_code')
   })
 })

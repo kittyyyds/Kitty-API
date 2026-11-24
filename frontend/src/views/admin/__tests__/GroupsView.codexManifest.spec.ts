@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminGroup, CodexModelsManifestConfig } from "@/types";
 import GroupsView from "@/views/admin/GroupsView.vue";
 
+vi.mock("@/stores/auth", () => ({ useAuthStore: () => ({ isAdmin: true, isSuperAdmin: true }) }));
+
 const {
   listGroups,
   getModelAllowlistCandidates,
@@ -49,6 +51,10 @@ vi.mock("@/stores/app", () => ({
   }),
 }));
 
+vi.mock("@/stores/auth", () => ({
+  useAuthStore: () => ({ isAdmin: true }),
+}));
+
 vi.mock("@/stores/onboarding", () => ({
   useOnboardingStore: () => ({
     isCurrentStep: vi.fn(() => false),
@@ -79,7 +85,6 @@ const sourceGroup = {
   monthly_limit_usd: null,
   long_context_pricing_enabled: true,
   force_openai_fast: false,
-  force_openai_ultrafast: false,
   free_openai_fast: false,
   model_pricing: [],
   profit_control_enabled: false,
@@ -221,6 +226,7 @@ const mountView = () =>
         GroupCapacityBadge: true,
         GroupRateMultipliersModal: true,
         GroupRPMOverridesModal: true,
+        GroupSmartWSFields: defineComponent({ setup(_, { expose }) { expose({ loading: false, validate: () => true, save: async () => true }); return () => h("div"); } }),
         ReasoningEffortPolicyFields: true,
         CodexManifestAccountsField: CodexManifestAccountsFieldStub,
         PricingEntryCard: true,

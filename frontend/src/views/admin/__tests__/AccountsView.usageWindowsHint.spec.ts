@@ -6,23 +6,25 @@ import AccountsView from '../AccountsView.vue'
 const {
   listAccounts,
   listWithEtag,
-  getBatchTodayStatsWithEtag,
+  getBatchTodayStats,
   getAllProxies,
   getAllGroups
 } = vi.hoisted(() => ({
   listAccounts: vi.fn(),
   listWithEtag: vi.fn(),
-  getBatchTodayStatsWithEtag: vi.fn(),
+  getBatchTodayStats: vi.fn(),
   getAllProxies: vi.fn(),
   getAllGroups: vi.fn()
 }))
+
+vi.mock('@/api/admin/channelQuality', () => ({ channelQualityAPI: { scores: async () => ({}) } }))
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       list: listAccounts,
       listWithEtag,
-      getBatchTodayStatsWithEtag,
+      getBatchTodayStats,
       getUpstreamBillingProbeSettings: vi.fn().mockResolvedValue({ enabled: true, interval_minutes: 30 }),
       delete: vi.fn(),
       batchClearError: vi.fn(),
@@ -111,6 +113,7 @@ function mountView() {
         ReAuthAccountModal: true,
         AccountTestModal: true,
         AccountStatsModal: true,
+        ScheduledTestsPanel: true,
         SyncFromCrsModal: true,
         TempUnschedStatusModal: true,
         ErrorPassthroughRulesModal: true,
@@ -136,7 +139,7 @@ describe('admin AccountsView usage windows hint', () => {
 
     listAccounts.mockReset()
     listWithEtag.mockReset()
-    getBatchTodayStatsWithEtag.mockReset()
+    getBatchTodayStats.mockReset()
     getAllProxies.mockReset()
     getAllGroups.mockReset()
 
@@ -152,7 +155,7 @@ describe('admin AccountsView usage windows hint', () => {
       etag: null,
       data: null
     })
-    getBatchTodayStatsWithEtag.mockResolvedValue({ notModified: false, etag: null, data: { stats: {} } })
+    getBatchTodayStats.mockResolvedValue({ stats: {} })
     getAllProxies.mockResolvedValue([])
     getAllGroups.mockResolvedValue([])
   })
@@ -210,7 +213,7 @@ describe('admin AccountsView usage windows hint', () => {
       items: [{
         id: 7,
         name: 'precision-account',
-        platform: 'openai',
+        platform: 'gemini',
         type: 'apikey',
         status: 'active',
         schedulable: true,

@@ -7,7 +7,6 @@
         v-model:endDate="localEndDate"
         :exporting="false"
         :show-actions="false"
-        hide-route-degraded
         @change="noop"
       />
 

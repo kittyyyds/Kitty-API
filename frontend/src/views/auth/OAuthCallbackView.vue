@@ -1,8 +1,8 @@
 <template>
   <div class="min-h-screen bg-gray-50 px-4 py-10 dark:bg-dark-900">
-    <div class="mx-auto max-w-2xl">
+    <div class="w-full min-w-0 ">
       <div v-if="isProcessing" class="card p-6 text-center">
-        <div class="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"></div>
+        <div class="w-full min-w-0 h-8 w-8 animate-spin rounded-full border-2 border-primary-500 border-t-transparent"></div>
         <h1 class="mt-4 text-lg font-semibold text-gray-900 dark:text-white">
           {{ t('auth.oauth.callbackTitle') }}
         </h1>
@@ -60,7 +60,7 @@
               v-model="invitationCode"
               type="text"
               class="input w-full"
-              :placeholder="t('auth.registrationGateCodePlaceholder')"
+              :placeholder="t('auth.invitationCodePlaceholder')"
               :disabled="isSubmitting"
               @keyup.enter="handleSubmitRegistration"
             />
@@ -146,6 +146,7 @@
 </template>
 
 <script setup lang="ts">
+import { sanitizeRedirectPath } from '@/utils/authRedirect'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -153,6 +154,7 @@ import { useClipboard } from '@/composables/useClipboard'
 import { useAppStore, useAuthStore } from '@/stores'
 import { apiClient } from '@/api/client'
 import { buildApiUrl } from '@/api/url'
+import { localizeClientErrorMessage } from '@/utils/clientErrorMessage'
 import {
   exchangePendingOAuthCompletion,
   persistOAuthTokenContext,
@@ -166,7 +168,7 @@ import {
 
 const route = useRoute()
 const router = useRouter()
-const { t } = useI18n()
+const { t, te } = useI18n()
 const { copyToClipboard } = useClipboard()
 const appStore = useAppStore()
 const authStore = useAuthStore()
@@ -237,15 +239,6 @@ function readTokenResponse(params: URLSearchParams): OAuthTokenResponse | null {
   const tokenType = params.get('token_type')?.trim() || ''
   if (tokenType) response.token_type = tokenType
   return response
-}
-
-function sanitizeRedirectPath(path: string | null | undefined): string {
-  if (!path) return '/dashboard'
-  if (!path.startsWith('/')) return '/dashboard'
-  if (path.startsWith('//')) return '/dashboard'
-  if (path.includes('://')) return '/dashboard'
-  if (path.includes('\n') || path.includes('\r')) return '/dashboard'
-  return path
 }
 
 function readPendingEmailOAuthProvider(): 'github' | 'google' | null {
@@ -371,7 +364,10 @@ onMounted(async () => {
     params.get('error_description') || params.get('error_message') || ''
 
   if (fragmentError) {
-    appStore.showError(fragmentErrorDescription || fragmentError)
+    // A failed sign-in is not the admin copy-the-code flow: show the panel that leads back to login.
+    invalidCallback.value = true
+    const reasonKey = `auth.errors.${fragmentError}`
+    appStore.showError(te(reasonKey) ? t(reasonKey) : localizeClientErrorMessage(fragmentErrorDescription || fragmentError))
     return
   }
   if (!tokenResponse) {

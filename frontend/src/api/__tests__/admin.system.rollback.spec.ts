@@ -23,12 +23,9 @@ describe('admin system rollback API', () => {
   it('getRollbackVersions fetches the rollback version list', async () => {
     const versions: RollbackVersionInfo[] = [
       {
-        id: 'installed-0.1.146',
         version: '0.1.146',
-        commit: 'abc146',
-        installed_at: '2026-07-07T00:00:00Z',
-        archived_at: '2026-07-08T00:00:00Z',
-        sha256: 'f'.repeat(64)
+        published_at: '2026-07-07T00:00:00Z',
+        html_url: 'https://github.com/Wei-Shaw/sub2api/releases/tag/v0.1.146'
       }
     ]
     get.mockResolvedValue({ data: { versions } })
@@ -39,14 +36,14 @@ describe('admin system rollback API', () => {
     expect(result.versions).toEqual(versions)
   })
 
-  it('rollback posts the local history ID in the request body', async () => {
+  it('rollback posts the target version in the request body', async () => {
     post.mockResolvedValue({ data: { message: 'ok', need_restart: true } })
 
-    const result = await rollback('installed-0.1.146')
+    const result = await rollback('0.1.146')
 
     expect(post).toHaveBeenCalledWith(
       '/admin/system/rollback',
-      { id: 'installed-0.1.146' },
+      { version: '0.1.146' },
       { timeout: 15 * 60 * 1000 }
     )
     expect(result.need_restart).toBe(true)

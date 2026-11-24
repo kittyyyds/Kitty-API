@@ -8,9 +8,12 @@ const i18nT = (key: string, params?: Record<string, unknown>) => {
     'channelMonitorV2.matrix.dimension': '维度',
     'channelMonitorV2.metrics.successRate': '成功率',
     'channelMonitorV2.metrics.ttft': '首 Token',
+    'channelMonitorV2.metrics.outputTps': '输出 TPS',
+    'channelMonitorV2.metrics.outputTpsValue': '输出 TPS {value}',
     'channelMonitorV2.metrics.tps': '每秒 Token',
     'channelMonitorV2.metrics.cacheRate': '缓存率',
     'channelMonitorV2.matrix.scoreLine': '评分 {score}',
+    'channelMonitorV2.matrix.unknownLegend': '无流量 / 样本不足',
     'channelMonitorV2.metrics.successRateValue': '成功率 {value}',
     'channelMonitorV2.metrics.errorRateValue': '错误率 {value}',
     'channelMonitorV2.metrics.rpmValue': 'RPM {value}',
@@ -27,7 +30,6 @@ const i18nT = (key: string, params?: Record<string, unknown>) => {
     'channelMonitorV2.matrix.healthyLegend': '健康',
     'channelMonitorV2.matrix.warningLegend': '警告',
     'channelMonitorV2.matrix.criticalLegend': '异常',
-    'channelMonitorV2.matrix.unknownLegend': '未知',
   }
   const template = map[key] || key
   return template.replace(/\{(\w+)\}/g, (_, name) => String(params?.[name] ?? ''))
@@ -82,6 +84,41 @@ function metrics(requestCount: number): MonitorMetric {
 }
 
 describe('RelayPulseMatrix', () => {
+  it.each([true, false])('hides sparse failure rates in summaries and tooltips (throughput=%s)', async (showThroughput) => {
+    const sparseHealth: MonitorHealth = {
+      ...health, overall: 'unknown', error_rate: 'unknown', ttft: 'unknown', cache: 'unknown',
+      score: null, error_rate_score: null, ttft_score: null, cache_score: null,
+    }
+    const failed: MonitorMetric = {
+      ...metrics(1), request_count: 0, success_requests: 0, error_requests: 0,
+      error_rate: 1, rpm: showThroughput ? 1 / 90 : 0, tpm: 0,
+      ttft: { sample_count: 0, p50_ms: null, p95_ms: null, avg_ms: null },
+    }
+    const row = {
+      platform: 'grok', group_id: 7, group_name: 'Grok-Heavy', metrics: failed, health: sparseHealth,
+      buckets: [{ bucket_start: '2026-08-01T00:00:00Z', metrics: failed, health: sparseHealth }],
+    }
+    const wrapper = mount(RelayPulseMatrix, { props: {
+      rows: [row], healthMode: 'overall', showThroughput,
+      coverage: { requested_start: '2026-08-01T00:00:00Z', requested_end: '2026-08-01T00:01:00Z',
+        coverage_start: '2026-08-01T00:00:00Z', data_through: '2026-08-01T00:01:00Z',
+        computed_at: '2026-08-01T00:01:00Z', aggregation_lag_seconds: 0, coverage_complete: true, bucket_seconds: 60 },
+    } })
+    expect(wrapper.find('.summary-value').text()).toBe('-')
+    expect(wrapper.find('.summary-value').attributes('title')).toContain('样本不足')
+    const cell = wrapper.find('.pulse-cell')
+    expect(cell.text()).toContain('成功率 -')
+    expect(cell.text()).toContain('错误率 -')
+    expect(cell.attributes('title')).toContain('样本不足')
+    expect(cell.attributes('aria-label')).toContain('错误率 -')
+    expect(cell.text()).not.toContain('错误率 100')
+    // Once the backend has enough requests, the same all-failed rate is valid.
+    const critical = { ...sparseHealth, overall: 'critical' as const, error_rate: 'critical' as const, score: 0, error_rate_score: 0 }
+    await wrapper.setProps({ rows: [{ ...row, health: critical, buckets: [{ ...row.buckets[0], health: critical }] }] })
+    expect(wrapper.find('.summary-value').text()).toBe('0.00%')
+    expect(wrapper.find('.pulse-cell').text()).toContain('错误率 100.0%')
+  })
+
   it('shows privacy-safe hover tooltips and multi-band colors without click modal', async () => {
     const wrapper = mount(RelayPulseMatrix, {
       props: {
@@ -140,51 +177,24 @@ describe('RelayPulseMatrix', () => {
     await cells[0].trigger('click')
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
   })
-
-  it('appends group rate multipliers to matrix row labels', () => {
-    const wrapper = mount(RelayPulseMatrix, {
-      props: {
-        rows: [{
-          platform: 'deepseek',
-          group_id: 84,
-          group_name: 'DeepSeek',
-          rate_multiplier: 1,
-          model: 'deepseek-chat',
-          metrics: metrics(10),
-          health,
-          buckets: [],
-        }, {
-          platform: 'anthropic',
-          group_id: 41,
-          group_name: 'Kiro2Claude',
-          rate_multiplier: 0.5,
-          peak_rate_enabled: true,
-          peak_rate_multiplier: 0.8,
-          model: 'claude-sonnet-4-5',
-          metrics: metrics(4),
-          health,
-          buckets: [],
-        }],
-        coverage: {
-          requested_start: '2026-08-01T00:00:00Z',
-          requested_end: '2026-08-01T00:03:00Z',
-          coverage_start: '2026-08-01T00:00:00Z',
-          data_through: '2026-08-01T00:03:00Z',
-          computed_at: '2026-08-01T00:03:00Z',
-          aggregation_lag_seconds: 0,
-          coverage_complete: true,
-          bucket_seconds: 60,
-        },
-        healthMode: 'overall',
-      },
-    })
-    const labels = wrapper.findAll('.dimension-cell').map((cell) => cell.text())
-    expect(labels[0]).toContain('DeepSeek ×1')
-    expect(labels[1]).toContain('Kiro2Claude ×0.5 (peak ×0.8)')
-  })
 })
 
 describe('RelayPulseMatrix axis range', () => {
+  it('shows measured output TPS independently of hidden throughput and leaves missing speed unknown', async () => {
+    const row = { platform: 'openai', metrics: { ...metrics(0), output_tps: 37.5 }, health, buckets: [] }
+    const wrapper = mount(RelayPulseMatrix, { props: {
+      rows: [row], healthMode: 'overall', showThroughput: false,
+      coverage: { requested_start: '2026-08-01T00:00:00Z', requested_end: '2026-08-01T00:01:00Z',
+        coverage_start: '2026-08-01T00:00:00Z', data_through: '2026-08-01T00:01:00Z', computed_at: '2026-08-01T00:01:00Z',
+        aggregation_lag_seconds: 0, coverage_complete: true, bucket_seconds: 60 },
+    } })
+    expect(wrapper.get('[data-output-tps]').text()).toBe('37.5')
+    expect(wrapper.get('.matrix-header').text()).toContain('每秒 Token')
+    await wrapper.setProps({ rows: [{ ...row, metrics: { ...row.metrics, output_tps: null, tpm: 6000 } }] })
+    expect(wrapper.get('[data-output-tps]').text()).toBe('—')
+    wrapper.unmount()
+  })
+
   it('uses selected requested range for the X axis even with partial coverage', () => {
     const wrapper = mount(RelayPulseMatrix, {
       props: {

@@ -6,6 +6,7 @@
     @close="emit('close')"
   >
     <div class="space-y-4">
+      <p v-if="!apiKey" class="text-sm text-amber-700 dark:text-amber-300">{{ t('keys.guideSecretHint') }}</p>
       <!-- No Group Assigned Warning -->
       <div v-if="!platform" class="flex items-start gap-3 p-4 rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800">
         <svg class="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
@@ -21,6 +22,11 @@
         </div>
       </div>
 
+      <div v-else-if="platform === 'video'" class="space-y-3" data-testid="video-key-instructions">
+        <p class="text-sm text-gray-600 dark:text-gray-300">{{ t('videoModule.keyHint') }}</p>
+        <a href="/canvas/canvas" target="_blank" rel="noopener noreferrer" class="btn btn-primary" @click="emit('close')">无限画布 · 生图与视频</a>
+        <p class="text-xs text-gray-500">POST /v1/videos/generations · GET /v1/videos/{id} · GET /v1/videos/{id}/content</p>
+      </div>
       <!-- Platform-specific content -->
       <template v-else>
         <!-- Description -->
@@ -367,6 +373,12 @@ const defaultClientTab = computed(() => {
       return 'codex-ws'
     case 'grok':
       return 'grok'
+    case 'gemini':
+      return 'gemini'
+    case 'antigravity':
+      return 'claude'
+    case 'typesafe':
+      return 'systemone'
     default:
       return 'claude'
   }
@@ -441,6 +453,25 @@ const TerminalIcon = {
   }
 }
 
+// Sparkle icon for Gemini
+const SparkleIcon = {
+  render() {
+    return h('svg', {
+      fill: 'none',
+      stroke: 'currentColor',
+      viewBox: '0 0 24 24',
+      'stroke-width': '1.5',
+      class: 'w-4 h-4'
+    }, [
+      h('path', {
+        'stroke-linecap': 'round',
+        'stroke-linejoin': 'round',
+        d: 'M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z'
+      })
+    ])
+  }
+}
+
 const clientTabs = computed((): TabConfig[] => {
   if (!props.platform) return []
   if (props.claudeCodeOnly) {
@@ -458,12 +489,29 @@ const clientTabs = computed((): TabConfig[] => {
       tabs.push({ id: 'opencode', label: t('keys.useKeyModal.cliTabs.opencode'), icon: TerminalIcon })
       return tabs
     }
+    case 'gemini':
+      return [
+        { id: 'gemini', label: t('keys.useKeyModal.cliTabs.geminiCli'), icon: SparkleIcon },
+        { id: 'codex', label: t('keys.useKeyModal.cliTabs.codexCli'), icon: TerminalIcon },
+        { id: 'opencode', label: t('keys.useKeyModal.cliTabs.opencode'), icon: TerminalIcon }
+      ]
+    case 'antigravity':
+      return [
+        { id: 'claude', label: t('keys.useKeyModal.cliTabs.claudeCode'), icon: TerminalIcon },
+        { id: 'gemini', label: t('keys.useKeyModal.cliTabs.geminiCli'), icon: SparkleIcon },
+        { id: 'codex', label: t('keys.useKeyModal.cliTabs.codexCli'), icon: TerminalIcon },
+        { id: 'opencode', label: t('keys.useKeyModal.cliTabs.opencode'), icon: TerminalIcon }
+      ]
     case 'grok':
       return [
         { id: 'grok', label: t('keys.useKeyModal.cliTabs.grokCli'), icon: TerminalIcon },
         { id: 'claude', label: t('keys.useKeyModal.cliTabs.claudeCode'), icon: TerminalIcon },
         { id: 'codex', label: t('keys.useKeyModal.cliTabs.codexCli'), icon: TerminalIcon },
         { id: 'opencode', label: t('keys.useKeyModal.cliTabs.opencode'), icon: TerminalIcon }
+      ]
+    case 'typesafe':
+      return [
+        { id: 'systemone', label: t('keys.useKeyModal.cliTabs.systemOne'), icon: TerminalIcon }
       ]
     case 'deepseek':
     case 'minimax':
@@ -525,6 +573,10 @@ const platformDescription = computed(() => {
         return t('keys.useKeyModal.description')
       }
       return t('keys.useKeyModal.openai.description')
+    case 'gemini':
+      return t('keys.useKeyModal.gemini.description')
+    case 'antigravity':
+      return t('keys.useKeyModal.antigravity.description')
     case 'grok':
       if (activeClientTab.value === 'claude') {
         return t('keys.useKeyModal.grok.claudeDescription')
@@ -545,6 +597,8 @@ const platformDescription = computed(() => {
       return activeClientTab.value === 'codex'
         ? t('keys.useKeyModal.composite.codexDescription')
         : t('keys.useKeyModal.composite.description')
+    case 'typesafe':
+      return t('keys.useKeyModal.typesafe.description')
     default:
       return t('keys.useKeyModal.description')
   }
@@ -567,6 +621,12 @@ const platformNote = computed(() => {
       return activeTab.value === 'windows'
         ? t('keys.useKeyModal.openai.noteWindows')
         : t('keys.useKeyModal.openai.note')
+    case 'gemini':
+      return t('keys.useKeyModal.gemini.note')
+    case 'antigravity':
+      return activeClientTab.value === 'claude'
+        ? t('keys.useKeyModal.antigravity.claudeNote')
+        : t('keys.useKeyModal.antigravity.geminiNote')
     case 'grok':
       if (activeClientTab.value === 'claude') {
         return t('keys.useKeyModal.grok.claudeNote')
@@ -596,6 +656,8 @@ const platformNote = computed(() => {
       return activeClientTab.value === 'codex'
         ? t('keys.useKeyModal.composite.codexNote')
         : t('keys.useKeyModal.note')
+    case 'typesafe':
+      return t('keys.useKeyModal.typesafe.note')
     default:
       return t('keys.useKeyModal.note')
   }
@@ -673,10 +735,28 @@ function selectCodexCatalogModel(preferredModel: string): string {
   return codexCatalogModelSlugs.value[0] || preferredModel
 }
 
+
+const escapeHtml = (value: string) => value
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;')
+
+const wrapToken = (className: string, value: string) =>
+  `<span class="${className}">${escapeHtml(value)}</span>`
+
+const keyword = (value: string) => wrapToken('text-emerald-300', value)
+const variable = (value: string) => wrapToken('text-sky-200', value)
+const operator = (value: string) => wrapToken('text-slate-400', value)
+const string = (value: string) => wrapToken('text-amber-200', value)
+const comment = (value: string) => wrapToken('text-slate-500', value)
+
+// Syntax highlighting helpers
 // Generate file configs based on platform and active tab
 const currentFiles = computed((): FileConfig[] => {
   const baseUrl = props.baseUrl || window.location.origin
-  const apiKey = props.apiKey
+  const apiKey = props.apiKey || "YOUR_API_KEY"
   if (codexNeedsModelChoice.value && !codexCatalogModelSlugs.value.includes(codexModelChoice.value)) return []
   const baseRoot = baseUrl.replace(/\/v1\/?$/, '').replace(/\/+$/, '')
   const ensureV1 = (value: string) => {
@@ -684,6 +764,15 @@ const currentFiles = computed((): FileConfig[] => {
     return trimmed.endsWith('/v1') ? trimmed : `${trimmed}/v1`
   }
   const apiBase = ensureV1(baseRoot)
+  const antigravityBase = ensureV1(`${baseRoot}/antigravity`)
+  const antigravityGeminiBase = (() => {
+    const trimmed = `${baseRoot}/antigravity`.replace(/\/+$/, '')
+    return trimmed.endsWith('/v1beta') ? trimmed : `${trimmed}/v1beta`
+  })()
+  const geminiBase = (() => {
+    const trimmed = baseRoot.replace(/\/+$/, '')
+    return trimmed.endsWith('/v1beta') ? trimmed : `${trimmed}/v1beta`
+  })()
 
   if (activeClientTab.value === 'opencode') {
     switch (props.platform) {
@@ -691,6 +780,13 @@ const currentFiles = computed((): FileConfig[] => {
         return [generateOpenCodeConfig('anthropic', apiBase, apiKey)]
       case 'openai':
         return [generateOpenCodeConfig('openai', apiBase, apiKey)]
+      case 'gemini':
+        return [generateOpenCodeConfig('gemini', geminiBase, apiKey)]
+      case 'antigravity':
+        return [
+          generateOpenCodeConfig('antigravity-claude', antigravityBase, apiKey, 'opencode.json (Claude)'),
+          generateOpenCodeConfig('antigravity-gemini', antigravityGeminiBase, apiKey, 'opencode.json (Gemini)')
+        ]
       case 'grok':
         return [generateOpenCodeConfig('grok', apiBase, apiKey)]
       default:
@@ -699,6 +795,8 @@ const currentFiles = computed((): FileConfig[] => {
   }
 
   switch (props.platform) {
+    case 'typesafe':
+      return [generateSystemOneCurl(baseRoot, apiKey)]
     case 'openai':
       if (activeClientTab.value === 'claude') {
         // Anthropic clients append /v1/messages themselves.
@@ -709,6 +807,19 @@ const currentFiles = computed((): FileConfig[] => {
       }
       // Codex appends /responses directly and does not add /v1.
       return generateOpenAIFiles(apiBase, apiKey)
+    case 'gemini':
+      if (activeClientTab.value === 'codex') {
+        return generateRoutedCodexFiles(apiBase, apiKey, 'gemini')
+      }
+      return [generateGeminiCliContent(baseUrl, apiKey)]
+    case 'antigravity':
+      if (activeClientTab.value === 'codex') {
+        return generateRoutedCodexFiles(apiBase, apiKey, 'antigravity')
+      }
+      if (activeClientTab.value === 'gemini') {
+        return [generateGeminiCliContent(`${baseUrl}/antigravity`, apiKey)]
+      }
+      return generateAnthropicFiles(`${baseUrl}/antigravity`, apiKey)
     case 'grok':
       if (activeClientTab.value === 'claude') {
         return generateGrokClaudeFiles(baseRoot, apiKey)
@@ -739,6 +850,46 @@ const currentFiles = computed((): FileConfig[] => {
       return generateAnthropicFiles(baseUrl, apiKey)
   }
 })
+
+function generateSystemOneCurl(baseUrl: string, apiKey: string): FileConfig {
+  const endpoint = `${baseUrl}/v1/systemone`
+  const payload = `{
+  "model": "jev-latest",
+  "state": "Text to evaluate",
+  "questions": {
+    "safety": {
+      "type": "noul",
+      "instructions": "Evaluate whether the text is unsafe"
+    }
+  }
+}`
+  if (activeTab.value === 'powershell') {
+    return {
+      path: 'PowerShell',
+      content: `$headers = @{ Authorization = "Bearer ${apiKey}" }
+$body = @'
+${payload}
+'@
+Invoke-RestMethod -Method Post -Uri "${endpoint}" -Headers $headers -ContentType "application/json" -Body $body`
+    }
+  }
+  if (activeTab.value === 'cmd') {
+    return {
+      path: 'Command Prompt',
+      content: `curl -X POST "${endpoint}" ^
+  -H "Authorization: Bearer ${apiKey}" ^
+  -H "Content-Type: application/json" ^
+  --data "{\"model\":\"jev-latest\",\"state\":\"Text to evaluate\",\"questions\":{\"safety\":{\"type\":\"noul\",\"instructions\":\"Evaluate whether the text is unsafe\"}}}"`
+    }
+  }
+  return {
+    path: 'Terminal',
+    content: `curl -X POST "${endpoint}" \\
+  -H "Authorization: Bearer ${apiKey}" \\
+  -H "Content-Type: application/json" \\
+  --data '${payload}'`
+  }
+}
 
 function generateAnthropicFiles(baseUrl: string, apiKey: string): FileConfig[] {
   let path: string
@@ -845,6 +996,51 @@ function generateGrokClaudeFiles(baseUrl: string, apiKey: string): FileConfig[] 
       hint: t('keys.useKeyModal.claudeSettingsHint')
     }
   ]
+}
+
+function generateGeminiCliContent(baseUrl: string, apiKey: string): FileConfig {
+  const model = 'gemini-2.0-flash'
+  const modelComment = t('keys.useKeyModal.gemini.modelComment')
+  let path: string
+  let content: string
+  let highlighted: string
+
+  switch (activeTab.value) {
+    case 'unix':
+      path = 'Terminal'
+      content = `export GOOGLE_GEMINI_BASE_URL="${baseUrl}"
+export GEMINI_API_KEY="${apiKey}"
+export GEMINI_MODEL="${model}"  # ${modelComment}`
+      highlighted = `${keyword('export')} ${variable('GOOGLE_GEMINI_BASE_URL')}${operator('=')}${string(`"${baseUrl}"`)}
+${keyword('export')} ${variable('GEMINI_API_KEY')}${operator('=')}${string(`"${apiKey}"`)}
+${keyword('export')} ${variable('GEMINI_MODEL')}${operator('=')}${string(`"${model}"`)}  ${comment(`# ${modelComment}`)}`
+      break
+    case 'cmd':
+      path = 'Command Prompt'
+      content = `set GOOGLE_GEMINI_BASE_URL=${baseUrl}
+set GEMINI_API_KEY=${apiKey}
+set GEMINI_MODEL=${model}`
+      highlighted = `${keyword('set')} ${variable('GOOGLE_GEMINI_BASE_URL')}${operator('=')}${string(baseUrl)}
+${keyword('set')} ${variable('GEMINI_API_KEY')}${operator('=')}${string(apiKey)}
+${keyword('set')} ${variable('GEMINI_MODEL')}${operator('=')}${string(model)}
+${comment(`REM ${modelComment}`)}`
+      break
+    case 'powershell':
+      path = 'PowerShell'
+      content = `$env:GOOGLE_GEMINI_BASE_URL="${baseUrl}"
+$env:GEMINI_API_KEY="${apiKey}"
+$env:GEMINI_MODEL="${model}"  # ${modelComment}`
+      highlighted = `${keyword('$env:')}${variable('GOOGLE_GEMINI_BASE_URL')}${operator('=')}${string(`"${baseUrl}"`)}
+${keyword('$env:')}${variable('GEMINI_API_KEY')}${operator('=')}${string(`"${apiKey}"`)}
+${keyword('$env:')}${variable('GEMINI_MODEL')}${operator('=')}${string(`"${model}"`)}  ${comment(`# ${modelComment}`)}`
+      break
+    default:
+      path = 'Terminal'
+      content = ''
+      highlighted = ''
+  }
+
+  return { path, content, highlighted }
 }
 
 function generateOpenAIFiles(baseUrl: string, apiKey: string): FileConfig[] {
@@ -972,10 +1168,10 @@ cli_chat_proxy_base_url = "${baseUrl}"      # CLI chat-proxy base (env: GROK_CLI
 [auth]
 preferred_method = "api_key"
 
-[model."grok-4.6"]
-model = "grok-4.6"                          # id sent to the API
-name = "Grok 4.6"                           # shown in /model picker
-description = "Grok 4.6 via Sub2API (Responses)"
+[model."grok-4.5"]
+model = "grok-4.5"                          # id sent to the API
+name = "Grok 4.5"                           # shown in /model picker
+description = "Grok 4.5 via Sub2API (Responses)"
 # base_url inherits from [endpoints].models_base_url; override only if needed:
 # base_url = "${baseUrl}"
 env_key = "XAI_API_KEY"                     # or: api_key = "${apiKey}"  (not recommended)
@@ -986,15 +1182,6 @@ context_window = 500000                     # drives auto-compaction timing
 # top_p = 0.95
 # max_completion_tokens = 8192
 # Server-side (backend) web_search tools — only if your gateway exposes them:
-supports_backend_search = true
-
-[model."grok-4.5"]
-model = "grok-4.5"
-name = "Grok 4.5"
-description = "Grok 4.5 via Sub2API (Responses)"
-env_key = "XAI_API_KEY"
-api_backend = "responses"
-context_window = 500000
 supports_backend_search = true
 
 [model."grok-build-0.1"]
@@ -1026,7 +1213,7 @@ supports_backend_search = true
 
 # Optional short alias for /model grok:
 # [model."grok"]
-# model = "grok-4.6"
+# model = "grok-4.5"
 # name = "Grok"
 # env_key = "XAI_API_KEY"
 # api_backend = "responses"
@@ -1034,10 +1221,10 @@ supports_backend_search = true
 # supports_backend_search = true
 
 [models]
-# xAI recommends grok-build* for coding/agent sessions; use grok-4.6 for general chat.
-default = "grok-4.6"
-web_search = "grok-4.6"                     # client-side web_search tool model (must exist as [model.*])
-image_description = "grok-4.6"              # vision/describe-image helper model
+# xAI recommends grok-build* for coding/agent sessions; use grok-4.5 for general chat.
+default = "grok-4.5"
+web_search = "grok-4.5"                     # client-side web_search tool model (must exist as [model.*])
+image_description = "grok-4.5"              # vision/describe-image helper model
 # Optional environment-wide sampling defaults (per-model values win):
 # temperature = 0.7
 # top_p = 0.95
@@ -1098,7 +1285,7 @@ function generateGrokCodexFiles(baseUrl: string, apiKey: string): FileConfig[] {
 # Docs: Codex config reference (model_providers.*, wire_api = "responses")
 #
 # Text models only. Image/video: grok-imagine-image / grok-imagine-video on media endpoints.
-# Switch model: grok-4.6 | grok-4.5 | grok-4.3 | grok-build-0.1 | grok-4.20-multi-agent-0309 (text / web_search)
+# Switch model: grok-4.5 | grok-4.3 | grok-build-0.1 | grok-4.20-multi-agent-0309 (text / web_search)
 
 model_provider = "sub2api"
 model = "${model}"
@@ -1146,6 +1333,8 @@ function generateRoutedCodexFiles(
   const preferredModels: Partial<Record<GroupPlatform, string>> = {
     openai: DEFAULT_CODEX_EXPORT_MODEL,
     anthropic: 'claude-sonnet-4-6',
+    gemini: 'gemini-2.5-pro',
+    antigravity: 'claude-sonnet-4-6',
     grok: 'grok-4.5',
     kimi: 'kimi-k2.5',
     zhipu: 'glm-4.7',
@@ -1157,14 +1346,18 @@ function generateRoutedCodexFiles(
   const preferredModel = preferredModels[platform] || ''
   const model = selectCodexCatalogModel(preferredModel)
   const labels: Record<GroupPlatform, string> = {
+    video: 'Video',
     anthropic: 'Anthropic',
     openai: 'OpenAI',
+    gemini: 'Gemini',
+    antigravity: 'Antigravity',
     grok: 'Grok',
     kimi: 'Kimi',
     zhipu: 'Zhipu',
     deepseek: 'DeepSeek',
     minimax: 'MiniMax',
     opencode_go: 'OpenCode',
+    typesafe: 'TypeSafe / Jev',
     command_code: 'Command Code',
     cline: 'Cline',
     composite: 'Composite'
@@ -1461,6 +1654,22 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
         xhigh: {}
       }
     },
+    'gpt-5.3-codex-spark': {
+      name: 'GPT-5.3 Codex Spark',
+      limit: {
+        context: 128000,
+        output: 32000
+      },
+      options: {
+        store: false
+      },
+      variants: {
+        low: {},
+        medium: {},
+        high: {},
+        xhigh: {}
+      }
+    },
     'codex-mini-latest': {
       name: 'Codex Mini',
       limit: {
@@ -1477,12 +1686,313 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
       }
     }
   }
-
-  const grokModels = {
-    'grok-4.6': {
-      name: 'Grok 4.6',
-      limit: { context: 500000, output: 64000 }
+  const geminiModels = {
+    'gemini-2.0-flash': {
+      name: 'Gemini 2.0 Flash',
+      limit: {
+        context: 1048576,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      }
     },
+    'gemini-2.5-flash': {
+      name: 'Gemini 2.5 Flash',
+      limit: {
+        context: 1048576,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      }
+    },
+    'gemini-2.5-pro': {
+      name: 'Gemini 2.5 Pro',
+      limit: {
+        context: 2097152,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      },
+      options: {
+        thinking: {
+          budgetTokens: 24576,
+          type: 'enabled'
+        }
+      }
+    },
+    'gemini-3.5-flash': {
+      name: 'Gemini 3.5 Flash',
+      limit: {
+        context: 1048576,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      }
+    },
+    'gemini-3-flash-preview': {
+      name: 'Gemini 3 Flash Preview',
+      limit: {
+        context: 1048576,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      }
+    },
+    'gemini-3-pro-preview': {
+      name: 'Gemini 3 Pro Preview',
+      limit: {
+        context: 1048576,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      },
+      options: {
+        thinking: {
+          budgetTokens: 24576,
+          type: 'enabled'
+        }
+      }
+    },
+    'gemini-3.1-pro-preview': {
+      name: 'Gemini 3.1 Pro Preview',
+      limit: {
+        context: 1048576,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      },
+      options: {
+        thinking: {
+          budgetTokens: 24576,
+          type: 'enabled'
+        }
+      }
+    }
+  }
+
+  const antigravityGeminiModels = {
+    'gemini-2.5-flash': {
+      name: 'Gemini 2.5 Flash',
+      limit: {
+        context: 1048576,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      },
+      options: {
+        thinking: {
+          budgetTokens: 24576,
+          type: 'disable'
+        }
+      }
+    },
+    'gemini-2.5-flash-lite': {
+      name: 'Gemini 2.5 Flash Lite',
+      limit: {
+        context: 1048576,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      },
+      options: {
+        thinking: {
+          budgetTokens: 24576,
+          type: 'enabled'
+        }
+      }
+    },
+    'gemini-2.5-flash-thinking': {
+      name: 'Gemini 2.5 Flash (Thinking)',
+      limit: {
+        context: 1048576,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      },
+      options: {
+        thinking: {
+          budgetTokens: 24576,
+          type: 'enabled'
+        }
+      }
+    },
+    'gemini-3-flash': {
+      name: 'Gemini 3 Flash',
+      limit: {
+        context: 1048576,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      },
+      options: {
+        thinking: {
+          budgetTokens: 24576,
+          type: 'enabled'
+        }
+      }
+    },
+    'gemini-3.1-pro-low': {
+      name: 'Gemini 3.1 Pro Low',
+      limit: {
+        context: 1048576,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      },
+      options: {
+        thinking: {
+          budgetTokens: 24576,
+          type: 'enabled'
+        }
+      }
+    },
+    'gemini-3.1-pro-high': {
+      name: 'Gemini 3.1 Pro High',
+      limit: {
+        context: 1048576,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      },
+      options: {
+        thinking: {
+          budgetTokens: 24576,
+          type: 'enabled'
+        }
+      }
+    },
+    'gemini-2.5-flash-image': {
+      name: 'Gemini 2.5 Flash Image',
+      limit: {
+        context: 1048576,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image'],
+        output: ['image']
+      },
+      options: {
+        thinking: {
+          budgetTokens: 24576,
+          type: 'enabled'
+        }
+      }
+    },
+    'gemini-3.1-flash-image': {
+      name: 'Gemini 3.1 Flash Image',
+      limit: {
+        context: 1048576,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image'],
+        output: ['image']
+      },
+      options: {
+        thinking: {
+          budgetTokens: 24576,
+          type: 'enabled'
+        }
+      }
+    }
+  }
+  const claudeModels = {
+    'claude-fable-5-1': {
+      name: 'Claude Fable 5.1',
+      limit: {
+        context: 1048576,
+        output: 128000
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      },
+      options: {
+        thinking: {
+          type: 'adaptive'
+        }
+      }
+    },
+    'claude-fable-5': {
+      name: 'Claude Fable 5',
+      limit: {
+        context: 1048576,
+        output: 128000
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      },
+      options: {
+        thinking: {
+          type: 'adaptive'
+        }
+      }
+    },
+    'claude-opus-4-6-thinking': {
+      name: 'Claude 4.6 Opus (Thinking)',
+      limit: {
+        context: 200000,
+        output: 128000
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      },
+      options: {
+        thinking: {
+          budgetTokens: 24576,
+          type: 'enabled'
+        }
+      }
+    },
+    'claude-sonnet-4-6': {
+      name: 'Claude 4.6 Sonnet',
+      limit: {
+        context: 200000,
+        output: 64000
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
+      },
+      options: {
+        thinking: {
+          budgetTokens: 24576,
+          type: 'enabled'
+        }
+      }
+    }
+  }
+  // Align context_window with Grok Build official sample (docs.x.ai/build/settings) where known.
+  // Image/video: grok-imagine-image / grok-imagine-video on media endpoints — not this list.
+  const grokModels = {
     'grok-4.5': {
       name: 'Grok 4.5',
       limit: { context: 500000, output: 64000 }
@@ -1505,8 +2015,12 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     }
   }
 
-  if (platform === 'anthropic') {
+  if (platform === 'gemini') {
+    provider[platform].npm = '@ai-sdk/google'
+    provider[platform].models = geminiModels
+  } else if (platform === 'anthropic') {
     provider[platform].npm = '@ai-sdk/anthropic'
+    // Mythos requires an eligible Anthropic account; configuration does not grant access.
     provider[platform].models = {
       'claude-fable-5-2': {
         name: 'Claude Fable 5.2',
@@ -1561,6 +2075,14 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
         }
       }
     }
+  } else if (platform === 'antigravity-claude') {
+    provider[platform].npm = '@ai-sdk/anthropic'
+    provider[platform].name = 'Antigravity (Claude)'
+    provider[platform].models = claudeModels
+  } else if (platform === 'antigravity-gemini') {
+    provider[platform].npm = '@ai-sdk/google'
+    provider[platform].name = 'Antigravity (Gemini)'
+    provider[platform].models = antigravityGeminiModels
   } else if (platform === 'openai') {
     provider[platform].models = openaiModels
   } else if (platform === 'grok') {

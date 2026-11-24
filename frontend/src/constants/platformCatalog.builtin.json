@@ -15,11 +15,31 @@
       "litellm_provider": "openai"
     },
     {
+      "id": "gemini",
+      "display_name": "Gemini",
+      "gateway": "gemini",
+      "cn_provider": false,
+      "litellm_provider": "gemini"
+    },
+    {
+      "id": "antigravity",
+      "display_name": "Antigravity",
+      "gateway": "antigravity",
+      "cn_provider": false,
+      "litellm_provider": "anthropic"
+    },
+    {
       "id": "grok",
       "display_name": "Grok",
       "gateway": "openai",
       "cn_provider": false,
       "litellm_provider": "xai"
+    },
+    {
+      "id": "video",
+      "display_name": "Video",
+      "gateway": "openai",
+      "cn_provider": false
     },
     {
       "id": "kimi",
@@ -206,6 +226,13 @@
       }
     },
     {
+      "id": "typesafe",
+      "display_name": "TypeSafe / Jev",
+      "gateway": "anthropic",
+      "cn_provider": false,
+      "litellm_provider": "typesafe"
+    },
+    {
       "id": "command_code",
       "display_name": "Command Code",
       "gateway": "openai",
@@ -261,13 +288,17 @@
   ],
   "composite_precedence": [
     "anthropic",
+    "gemini",
     "openai",
+    "antigravity",
     "grok",
+    "video",
     "kimi",
     "zhipu",
     "deepseek",
     "minimax",
     "opencode_go",
+    "typesafe",
     "command_code",
     "cline"
   ]

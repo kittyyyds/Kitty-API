@@ -4,57 +4,57 @@ import { defineComponent } from 'vue'
 
 import AccountsView from '../AccountsView.vue'
 import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
-import UsageProgressBar from '@/components/account/UsageProgressBar.vue'
-import { i18n } from '@/i18n'
+import CapacityBadge from '@/components/account/CapacityBadge.vue'
 
 const {
   listAccounts,
   listWithEtag,
   getById,
-  getBatchTodayStatsWithEtag,
-  getBatchUsage,
-  getUsage,
+  getPerformance,
+  getBatchTodayStats,
   getUpstreamBillingProbeSettings,
   getAllProxies,
   getAllGroups,
   refreshCredentials,
-  syncUpstreamGroup,
+  syncUpstreamModels,
   showError,
   showWarning,
-  showSuccess
+  showSuccess,
+  showInfo
 } = vi.hoisted(() => ({
   listAccounts: vi.fn(),
   listWithEtag: vi.fn(),
   getById: vi.fn(),
-  getBatchTodayStatsWithEtag: vi.fn(),
-  getBatchUsage: vi.fn(),
-  getUsage: vi.fn(),
+  getPerformance: vi.fn(),
+  getBatchTodayStats: vi.fn(),
   getUpstreamBillingProbeSettings: vi.fn(),
   getAllProxies: vi.fn(),
   getAllGroups: vi.fn(),
   refreshCredentials: vi.fn(),
-  syncUpstreamGroup: vi.fn(),
+  syncUpstreamModels: vi.fn(),
   showError: vi.fn(),
   showWarning: vi.fn(),
-  showSuccess: vi.fn()
+  showSuccess: vi.fn(),
+  showInfo: vi.fn()
 }))
+
+vi.mock('@/api/admin/channelQuality', () => ({ channelQualityAPI: { scores: async () => ({}) } }))
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       list: listAccounts,
       getById,
+      getPerformance,
       listWithEtag,
-      getBatchTodayStatsWithEtag,
-      getBatchUsage,
-      getUsage,
+      getBatchTodayStats,
       getUpstreamBillingProbeSettings,
       delete: vi.fn(),
       batchClearError: vi.fn(),
       batchRefresh: vi.fn(),
       toggleSchedulable: vi.fn(),
       refreshCredentials,
-      syncUpstreamGroup
+      syncUpstreamModels
     },
     proxies: { getAll: getAllProxies },
     groups: { getAll: getAllGroups }
@@ -62,7 +62,7 @@ vi.mock('@/api/admin', () => ({
 }))
 
 vi.mock('@/stores/app', () => ({
-  useAppStore: () => ({ showError, showWarning, showSuccess, showInfo: vi.fn() })
+  useAppStore: () => ({ showError, showWarning, showSuccess, showInfo })
 }))
 
 vi.mock('@/stores/auth', () => ({
@@ -79,10 +79,9 @@ const DataTableStub = defineComponent({
   template: `
     <div>
       <template v-if="!loading"><div v-for="row in data" :key="row.id" :data-account-name="row.name">
-        <slot name="cell-name" :row="row" :value="row.name" />
+        <slot name="cell-capacity" :row="row" />
         <slot name="cell-groups" :row="row" />
-        <slot name="cell-status" :row="row" />
-        <slot name="cell-usage" :row="row" />
+        <slot name="cell-performance" :row="row" />
         <slot name="cell-actions" :row="row" />
       </div></template>
     </div>
@@ -109,7 +108,7 @@ const AccountStatsModalStub = defineComponent({
   template: '<div data-test="stats-account">{{ show ? account?.name : "" }}</div>'
 })
 
-function mountView(stubActionMenu = true, renderQuota = false) {
+function mountView(stubActionMenu = true) {
   return mount(AccountsView, {
     attachTo: document.body,
     global: {
@@ -117,7 +116,7 @@ function mountView(stubActionMenu = true, renderQuota = false) {
         AppLayout: { template: '<div><slot /></div>' },
         TablePageLayout: { template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>' },
         DataTable: DataTableStub,
-        AccountTableActions: { name: 'AccountTableActions', template: '<div><button data-test="manual-refresh" @click="$emit(\'refresh\')" /><slot name="after" /></div>' },
+        AccountTableActions: { template: `<div><button data-test="manual-refresh" @click="$emit('refresh')">refresh</button><slot name="after" /></div>` },
         AccountTableFilters: true,
         AccountBulkActionsBar: true,
         Pagination: true,
@@ -127,6 +126,7 @@ function mountView(stubActionMenu = true, renderQuota = false) {
         ReAuthAccountModal: true,
         AccountTestModal: AccountTestModalStub,
         AccountStatsModal: AccountStatsModalStub,
+        ScheduledTestsPanel: true,
         SyncFromCrsModal: true,
         TempUnschedStatusModal: true,
         ErrorPassthroughRulesModal: true,
@@ -135,11 +135,10 @@ function mountView(stubActionMenu = true, renderQuota = false) {
         EditAccountModal: EditAccountModalStub,
         BulkEditAccountModal: true,
         PlatformTypeBadge: true,
-        AccountCapacityCell: true,
-        AccountStatusIndicator: !renderQuota,
+        AccountStatusIndicator: true,
         AccountTodayStatsCell: true,
         AccountGroupsCell: AccountGroupsCellStub,
-        AccountUsageCell: !renderQuota,
+        AccountUsageCell: true,
         UpstreamBillingRateCell: true,
         HelpTooltip: true,
         Icon: true,
@@ -174,58 +173,47 @@ const fullAccount = {
 describe('admin AccountsView lite account list', () => {
   beforeEach(() => {
     localStorage.clear()
-    listAccounts.mockReset().mockResolvedValue({ items: [listRow], total: 1, page: 1, page_size: 50, pages: 1 })
+    listAccounts.mockReset().mockResolvedValue({ items: [listRow], total: 1, page: 1, page_size: 20, pages: 1 })
     listWithEtag.mockReset().mockResolvedValue({ notModified: true, etag: 'compact-etag', data: null })
     getById.mockReset().mockResolvedValue(fullAccount)
-    getBatchTodayStatsWithEtag.mockReset().mockResolvedValue({ notModified: false, etag: null, data: { stats: {} } })
-    getBatchUsage.mockReset().mockResolvedValue({ usage: {}, errors: {} })
-    getUsage.mockReset()
+    getPerformance.mockReset().mockResolvedValue({})
+    getBatchTodayStats.mockReset().mockResolvedValue({ stats: {} })
     getUpstreamBillingProbeSettings.mockReset().mockResolvedValue({ enabled: true })
     getAllProxies.mockReset().mockResolvedValue([])
     getAllGroups.mockReset().mockResolvedValue([{ id: 7, name: 'codex', platform: 'openai' }])
     refreshCredentials.mockReset()
-    syncUpstreamGroup.mockReset()
+    syncUpstreamModels.mockReset()
     showError.mockReset()
     showWarning.mockReset()
     showSuccess.mockReset()
+    showInfo.mockReset()
   })
 
   afterEach(() => {
     vi.useRealTimers()
     vi.restoreAllMocks()
-    vi.unstubAllGlobals()
   })
 
-  it('saves upstream group text for just the selected account and its observed version', async () => {
-    const selected = { ...listRow, type: 'apikey', updated_at: '2026-11-24T10:00:00Z' }
-    const other = { ...selected, id: 43, name: 'other upstream' }
-    const saved = { id: selected.id, name: 'upstream group', notes: 'upstream notes', updated_at: '2026-11-24T10:01:00Z' }
-    listAccounts.mockResolvedValueOnce({ items: [selected, other], total: 2, pages: 1 })
-    syncUpstreamGroup.mockResolvedValueOnce({ account: saved, changed: true })
+  it('refreshes performance evidence every 30 seconds independently of unchanged list ETags', async () => {
+    vi.useFakeTimers()
     const wrapper = mountView()
     await flushPromises()
-
-    await wrapper.get('[data-account-name="compact row"] [aria-label="admin.accounts.upstreamBilling.saveGroup"]').trigger('click')
+    expect(getPerformance).toHaveBeenCalledWith([42], expect.any(AbortSignal))
+    getPerformance.mockClear()
+    await vi.advanceTimersByTimeAsync(30_000)
     await flushPromises()
-
-    expect(syncUpstreamGroup.mock.calls).toEqual([[selected.id, selected.updated_at]])
-    expect(getById).not.toHaveBeenCalled()
-    expect(wrapper.getComponent(DataTableStub).props('data')).toEqual([{ ...selected, ...saved }, other])
-    expect(showSuccess).toHaveBeenCalledWith('admin.accounts.upstreamBilling.groupSynced')
+    expect(getPerformance).toHaveBeenCalledTimes(1)
+    expect(getPerformance).toHaveBeenCalledWith([42], expect.any(AbortSignal))
     wrapper.unmount()
   })
 
-  it('requests 50 lite rows on the first page with the standard site default', async () => {
-    vi.stubGlobal('__APP_CONFIG__', {
-      table_default_page_size: 20,
-      table_page_size_options: [10, 20, 50, 100]
-    })
+  it('keeps lite=1 on the initial list request', async () => {
     const wrapper = mountView()
     await flushPromises()
 
     expect(listAccounts).toHaveBeenCalledWith(
       1,
-      50,
+      20,
       expect.objectContaining({ lite: '1' }),
       expect.objectContaining({ signal: expect.any(AbortSignal) })
     )
@@ -290,6 +278,21 @@ describe('admin AccountsView lite account list', () => {
     wrapper.unmount()
   })
 
+  it('syncs upstream models from the account action menu without loading account details', async () => {
+    syncUpstreamModels.mockResolvedValue({ models: ['gpt-5'], warnings: [] })
+    const wrapper = mountView(false)
+    await flushPromises()
+
+    const menu = wrapper.findComponent(AccountActionMenu)
+    menu.vm.$emit('sync-models', listRow)
+    await flushPromises()
+
+    expect(syncUpstreamModels).toHaveBeenCalledWith(listRow.id, { replace: true })
+    expect(getById).not.toHaveBeenCalled()
+    expect(showSuccess).toHaveBeenCalledWith('admin.accounts.syncUpstreamModelsCatalogSuccess')
+    wrapper.unmount()
+  })
+
   it('keeps lite=1 on automatic ETag refreshes', async () => {
     vi.useFakeTimers()
     vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
@@ -302,270 +305,56 @@ describe('admin AccountsView lite account list', () => {
 
     expect(listWithEtag).toHaveBeenCalledWith(
       1,
-      50,
+      20,
       expect.objectContaining({ lite: '1' }),
       expect.objectContaining({ etag: null })
     )
     wrapper.unmount()
   })
 
-  it('refreshes the visible GPT quota windows, 429 state and credits from local data every five minutes', async () => {
-    vi.spyOn(i18n.global, 't').mockImplementation((key) => String(key))
+  it('shows every proxy and refreshes its concurrency when the account total is unchanged', async () => {
     vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-11-20T00:00:00Z'))
     vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
-    const other = { ...listRow, id: 43, platform: 'anthropic', type: 'apikey' }
-    const page = { page: 1, page_size: 50, total: 2, pages: 1 }
-    listAccounts.mockResolvedValue({ ...page, items: [{ ...listRow, extra: {} }, other] })
-    const snapshots = {
-      codex_reset_credit_snapshot: { available_count: 0, credits: [], fetched_at: 100 },
-      codex_credits_snapshot: { credits: { has_credits: true, unlimited: false, balance: '123' }, fetched_at: 100 },
-      codex_usage_updated_at: '2026-11-20T00:04:50Z',
-      codex_usage_observed_at_us: Date.parse('2026-11-20T00:04:50Z') * 1000,
-      codex_5h_used_percent: 23, codex_5h_reset_at: '2026-11-20T04:00:00Z',
-      codex_7d_used_percent: 45, codex_7d_reset_at: '2026-11-24T12:00:00Z'
+    localStorage.setItem('account-auto-refresh', JSON.stringify({ enabled: true, interval_seconds: 5 }))
+    const poolRow = {
+      ...listRow,
+      current_concurrency: 3,
+      proxy_ids: [91, 92],
+      proxy_pool: [
+        { proxy_id: 91, proxy_name: 'proxy-a', current_concurrency: 1, max_concurrency: 2 },
+        { proxy_id: 92, proxy_name: 'proxy-b', current_concurrency: 2, max_concurrency: 2 }
+      ]
     }
-    const rateLimitedUntil = '2026-11-20T00:06:30Z'
+    listAccounts.mockResolvedValueOnce({ items: [poolRow], total: 1, page: 1, page_size: 20, pages: 1 })
     listWithEtag.mockResolvedValueOnce({
-      notModified: false, etag: 'quota-1',
-      data: { ...page, items: [
-        { ...other, name: 'unrelated update' },
-        { ...listRow, name: 'another update', rate_limit_reset_at: rateLimitedUntil, extra: { ...snapshots, unrelated: true } }
-      ] }
+      notModified: false,
+      etag: 'updated-proxy-pool',
+      data: {
+        items: [{
+          ...poolRow,
+          proxy_pool: [
+            { ...poolRow.proxy_pool[0], current_concurrency: 2 },
+            { ...poolRow.proxy_pool[1], current_concurrency: 1 }
+          ]
+        }],
+        total: 1, page: 1, page_size: 20, pages: 1
+      }
     })
-    const wrapper = mountView(true, true)
-    await flushPromises()
-    await vi.advanceTimersByTimeAsync(0)
-    await flushPromises()
-    expect(getBatchUsage.mock.calls).toEqual([[[42], false, 'passive']])
-    getBatchTodayStatsWithEtag.mockClear()
-    getBatchUsage.mockClear().mockResolvedValueOnce({ usage: { 42: {
-      five_hour: { utilization: 23, resets_at: snapshots.codex_5h_reset_at, window_stats: { requests: 3, tokens: 42, cost: 1 } },
-      seven_day: { utilization: 45, resets_at: snapshots.codex_7d_reset_at, window_stats: { requests: 30, tokens: 420, cost: 10 } }
-    } }, errors: {} })
-    expect(wrapper.get('[data-testid="codex-credits"] span').text()).toBe('—')
-    await vi.advanceTimersByTimeAsync(299_999)
-    expect(listWithEtag).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(1)
-    expect(listWithEtag).toHaveBeenCalledTimes(1)
-    expect(wrapper.getComponent(DataTableStub).props('data')).toEqual([{ ...listRow, rate_limit_reset_at: rateLimitedUntil, extra: snapshots }, other])
-    await vi.advanceTimersByTimeAsync(1)
-    expect(getBatchUsage).toHaveBeenCalledTimes(1)
-    expect(getBatchUsage).toHaveBeenCalledWith([42], false, 'passive')
-    const [fiveHour, sevenDay] = wrapper.findAllComponents(UsageProgressBar)
-    expect(fiveHour.props()).toMatchObject({ utilization: 23, resetsAt: snapshots.codex_5h_reset_at, windowStats: { tokens: 42 } })
-    expect(sevenDay.props()).toMatchObject({ utilization: 45, resetsAt: snapshots.codex_7d_reset_at, windowStats: { tokens: 420 } })
-    expect(wrapper.text()).toContain('admin.accounts.status.rateLimited')
-    expect(wrapper.get('[data-testid="reset-credit-count"]').text()).toContain('count0')
-    expect(wrapper.get('[data-testid="codex-credits"] span').text()).toBe('123')
-    await vi.advanceTimersByTimeAsync(300_000)
-    expect(wrapper.text()).not.toContain('admin.accounts.status.rateLimited')
-    expect(getBatchUsage).toHaveBeenCalledTimes(1)
-    expect(listWithEtag).toHaveBeenLastCalledWith(1, 50, expect.objectContaining({ lite: '1' }), expect.objectContaining({ etag: 'quota-1' }))
-    expect(getBatchTodayStatsWithEtag).not.toHaveBeenCalled()
-    expect(listAccounts).toHaveBeenCalledTimes(1)
-    wrapper.unmount()
-  })
+    const wrapper = mountView()
+    try {
+      await flushPromises()
+      const badges = wrapper.findAllComponents(CapacityBadge)
+      expect(badges).toHaveLength(2)
+      expect(badges.map(badge => badge.props('suffix'))).toEqual(['proxy-a', 'proxy-b'])
+      expect(badges.map(badge => badge.props('current'))).toEqual([1, 2])
 
-  it('shows a newly created GPT account’s quota, credits and Tibo result on the import poll', async () => {
-    vi.spyOn(i18n.global, 't').mockImplementation((key) => String(key))
-    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-11-20T00:00:00Z'))
-    const other = { ...listRow, id: 43, platform: 'anthropic', type: 'apikey' }
-    listAccounts.mockResolvedValueOnce({ items: [other], total: 1, pages: 1 })
-    const wrapper = mountView(true, true)
-    await flushPromises()
-    wrapper.getComponent({ name: 'AccountTableActions' }).vm.$emit('create')
-    await flushPromises()
-    const createModal = wrapper.getComponent({ name: 'CreateAccountModal' })
-    const page = { total: 2, pages: 1 }
-    listAccounts.mockResolvedValueOnce({ ...page, items: [listRow, other] })
-    createModal.vm.$emit('created')
-    createModal.vm.$emit('close')
-    await flushPromises()
-    await vi.advanceTimersByTimeAsync(0)
-    getBatchTodayStatsWithEtag.mockClear()
+      await vi.advanceTimersByTimeAsync(6000)
+      await flushPromises()
 
-    const snapshots = {
-      codex_5h_used_percent: 23,
-      codex_usage_updated_at: '2026-11-20T00:00:03Z',
-      codex_reset_credit_snapshot: { available_count: 1, credits: [{ expires_at: '2026-11-27T00:00:00Z' }], fetched_at: 100 },
-      codex_credits_snapshot: { credits: { has_credits: true, unlimited: false, balance: '123' }, fetched_at: 100 }
+      expect(wrapper.findAllComponents(CapacityBadge).map(badge => badge.props('current'))).toEqual([2, 1])
+    } finally {
+      wrapper.unmount()
     }
-    const accountWithQuota = { ...listRow, extra: snapshots }
-    listWithEtag.mockResolvedValueOnce({
-      notModified: false, etag: 'quota', data: { ...page, items: [accountWithQuota, other] }
-    })
-    getBatchUsage.mockResolvedValueOnce({ usage: { 42: { five_hour: { utilization: 23, resets_at: null } } }, errors: {} })
-    await vi.advanceTimersByTimeAsync(5_001)
-    expect(wrapper.getComponent(UsageProgressBar).props('utilization')).toBe(23)
-    expect(wrapper.get('[data-testid="reset-credit-count"] span').text()).toBe('1')
-    expect(wrapper.get('[data-testid="codex-credits"] span').text()).toBe('123')
-    expect(wrapper.find('[data-testid="tibo-routes"]').exists()).toBe(false)
-
-    const accountWithTibo = {
-      ...accountWithQuota,
-      codex_turn_tickets: [{
-        model: 'gpt-6-astra',
-        tibo_routes: [{ route: 'http', verdict: 'healthy', recent_samples: [{ verdict: 'healthy' }] }]
-      }]
-    }
-    listWithEtag.mockResolvedValueOnce({
-      notModified: false, etag: 'tibo', data: { ...page, items: [accountWithTibo, other] }
-    })
-    await vi.advanceTimersByTimeAsync(4_999)
-    expect(listWithEtag).toHaveBeenLastCalledWith(1, 50, expect.objectContaining({ lite: '1' }), expect.objectContaining({ etag: 'quota' }))
-    expect(wrapper.find('[data-testid="tibo-dot"][data-verdict="healthy"]').exists()).toBe(true)
-    expect(getUsage).not.toHaveBeenCalled()
-    expect(getBatchUsage.mock.calls).toEqual([[[42], false, 'passive'], [[42], false, 'passive']])
-    expect(getBatchTodayStatsWithEtag).not.toHaveBeenCalled()
-
-    await vi.advanceTimersByTimeAsync(110_000)
-    listWithEtag.mockClear()
-    await vi.advanceTimersByTimeAsync(5_000)
-    expect(listWithEtag).not.toHaveBeenCalled()
-    wrapper.unmount()
-  })
-
-  it.each([false, true])('preserves newer windows and accepts independent credits with full auto-refresh %s', async (enabled) => {
-    vi.useFakeTimers()
-    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
-    localStorage.setItem('account-auto-refresh', JSON.stringify({ enabled, interval_seconds: 5 }))
-    const interval = enabled ? 6_000 : 300_000
-    const updatedAt = '2026-11-20T01:00:00Z'
-    const observedAt = Date.parse(updatedAt) * 1000 + 50
-    const rateLimitedUntil = '2026-11-20T05:00:00Z'
-    const current = {
-      ...listRow, rate_limit_reset_at: rateLimitedUntil,
-      extra: { codex_usage_updated_at: updatedAt, codex_usage_observed_at_us: observedAt, codex_5h_used_percent: 95 }
-    }
-    const credits = { available_count: 3, fetched_at: 100 }
-    const stale = {
-      ...current, rate_limit_reset_at: null,
-      extra: { ...current.extra, codex_usage_observed_at_us: observedAt - 1, codex_5h_used_percent: 1, codex_reset_credit_snapshot: credits }
-    }
-    listAccounts.mockResolvedValue({ items: [current], total: 1, pages: 1 })
-    listWithEtag.mockResolvedValueOnce({ notModified: false, etag: 'old', data: { items: [stale], total: 1, pages: 1 } })
-    const wrapper = mountView()
-    await flushPromises()
-    await vi.advanceTimersByTimeAsync(interval)
-    expect(wrapper.getComponent(DataTableStub).props('data')).toMatchObject([{
-      rate_limit_reset_at: rateLimitedUntil,
-      extra: { codex_5h_used_percent: 95, codex_usage_observed_at_us: observedAt, codex_reset_credit_snapshot: credits }
-    }])
-    const newOwner = { ...stale, extra: { codex_reset_credit_owner_changed_at_us: observedAt + 1 } }
-    listWithEtag.mockResolvedValueOnce({ notModified: false, etag: 'new-owner', data: { items: [newOwner], total: 1, pages: 1 } })
-    await vi.advanceTimersByTimeAsync(interval)
-    expect(wrapper.getComponent(DataTableStub).props('data')).toEqual([newOwner])
-    wrapper.unmount()
-  })
-
-  it('keeps an explicit upstream query available on an empty row and discards an older list response', async () => {
-    vi.useFakeTimers()
-    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
-    let finish!: (value: unknown) => void
-    let finishBatch!: (value: unknown) => void
-    listWithEtag.mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
-    getBatchUsage.mockReturnValueOnce(new Promise(resolve => { finishBatch = resolve }))
-    const wrapper = mountView(true, true)
-    await flushPromises()
-    await vi.advanceTimersByTimeAsync(300_000)
-    expect(getBatchUsage.mock.calls).toEqual([[[42], false, 'passive']])
-    expect(getUsage).not.toHaveBeenCalled()
-    const signal = listWithEtag.mock.calls[0][3].signal
-    getUsage.mockResolvedValueOnce({ five_hour: { utilization: 48, resets_at: null } })
-    await wrapper.findAll('button').find(button => button.text() === 'admin.accounts.usageWindow.activeQuery')!.trigger('click')
-    await flushPromises()
-    expect(getUsage.mock.calls).toEqual([[42, 'active', true]])
-    expect(signal.aborted).toBe(true)
-    finish({ notModified: false, etag: 'older', data: { items: [{ ...listRow, extra: { codex_5h_used_percent: 1 } }] } })
-    finishBatch({ usage: { 42: { source: 'passive', five_hour: { utilization: 1, resets_at: null } } } })
-    await flushPromises()
-    expect(wrapper.getComponent(UsageProgressBar).props('utilization')).toBe(48)
-    wrapper.unmount()
-  })
-
-  it.each([
-    { type: 'apikey', hiddenColumns: [] },
-    { type: 'oauth', hiddenColumns: ['usage', 'status'] }
-  ])('skips the five-minute poll for $type rows with hidden columns $hiddenColumns', async ({ type, hiddenColumns }) => {
-    vi.useFakeTimers()
-    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
-    localStorage.setItem('account-hidden-columns', JSON.stringify(hiddenColumns))
-    listAccounts.mockResolvedValue({ items: [{ ...listRow, type }], total: 1, pages: 1 })
-    const wrapper = mountView()
-    await flushPromises()
-    await vi.advanceTimersByTimeAsync(300_000)
-    expect(listWithEtag).not.toHaveBeenCalled()
-    wrapper.unmount()
-  })
-
-  it('uses the full list timer once auto-refresh is enabled and resets the partial-list ETag', async () => {
-    vi.useFakeTimers()
-    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
-    localStorage.setItem('account-auto-refresh', JSON.stringify({ enabled: false, interval_seconds: 10 }))
-    const wrapper = mountView()
-    await flushPromises()
-    await vi.advanceTimersByTimeAsync(300_000)
-    expect(listWithEtag).toHaveBeenCalledTimes(1)
-    await wrapper.get('button[title="admin.accounts.autoRefresh"]').trigger('click')
-    await wrapper.findAll('button').find(button => button.text() === 'admin.accounts.enableAutoRefresh')!.trigger('click')
-    document.body.click()
-    const extra = { codex_reset_credit_snapshot: { available_count: 0, fetched_at: 101 } }
-    listWithEtag.mockResolvedValueOnce({ notModified: false, etag: 'full', data: {
-      items: [{ ...listRow, extra }], total: 1, pages: 1
-    } })
-    await vi.advanceTimersByTimeAsync(11_000)
-    expect(listWithEtag).toHaveBeenCalledTimes(2)
-    expect(listWithEtag).toHaveBeenLastCalledWith(1, 50, expect.anything(), expect.objectContaining({ etag: null }))
-    expect(wrapper.getComponent(DataTableStub).props('data')).toMatchObject([{ extra }])
-    await vi.advanceTimersByTimeAsync(288_999)
-    const beforeFiveMinutes = listWithEtag.mock.calls.length
-    await vi.advanceTimersByTimeAsync(1)
-    expect(listWithEtag).toHaveBeenCalledTimes(beforeFiveMinutes)
-    wrapper.unmount()
-  })
-
-  it('keeps the credit poll idle while the tab is hidden or an account editor is open', async () => {
-    vi.useFakeTimers()
-    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
-    const wrapper = mountView()
-    await flushPromises()
-    await vi.advanceTimersByTimeAsync(300_000)
-    hidden.mockReturnValue(false)
-    await wrapper.findAll('button').find(button => button.text().includes('common.edit'))!.trigger('click')
-    await flushPromises()
-    await vi.advanceTimersByTimeAsync(300_000)
-    expect(listWithEtag).not.toHaveBeenCalled()
-    wrapper.getComponent(EditAccountModalStub).vm.$emit('close')
-    await vi.advanceTimersByTimeAsync(300_000)
-    expect(listWithEtag).toHaveBeenCalledTimes(1)
-    wrapper.unmount()
-    await vi.advanceTimersByTimeAsync(300_000)
-    expect(listWithEtag).toHaveBeenCalledTimes(1)
-  })
-
-  it('discards a credit snapshot response after a filter change, even when both lists contain the same row', async () => {
-    vi.useFakeTimers()
-    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
-    let finish!: (value: unknown) => void
-    listWithEtag.mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
-    const wrapper = mountView()
-    await flushPromises()
-    await vi.advanceTimersByTimeAsync(300_000)
-    const signal = listWithEtag.mock.calls[0][3].signal
-    const filters = wrapper.getComponent({ name: 'AccountTableFilters' })
-    filters.vm.$emit('update:filters', { platform: 'openai' })
-    filters.vm.$emit('change')
-    expect(signal.aborted).toBe(true)
-    const snapshot = { available_count: 0, credits: [], fetched_at: 10 }
-    listAccounts.mockResolvedValue({ items: [{ ...listRow, extra: { codex_reset_credit_snapshot: snapshot } }], total: 1, pages: 1 })
-    await vi.advanceTimersByTimeAsync(300)
-    finish({ notModified: false, etag: 'stale', data: { items: [listRow] } })
-    await flushPromises()
-    expect(wrapper.getComponent(DataTableStub).props('data')).toMatchObject([{ extra: { codex_reset_credit_snapshot: snapshot } }])
-    wrapper.unmount()
   })
 
   it('loads the full account by id before opening edit, test, and stats actions', async () => {
@@ -621,7 +410,7 @@ describe('admin AccountsView lite account list', () => {
     await flushPromises()
 
     expect(showError).toHaveBeenCalledWith('detail failed')
-    expect(wrapper.find('[data-test="edit-account"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="edit-account"]').text()).toBe('')
     consoleError.mockRestore()
     wrapper.unmount()
   })

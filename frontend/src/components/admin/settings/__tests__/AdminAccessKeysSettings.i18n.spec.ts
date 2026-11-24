@@ -32,7 +32,7 @@ function setup(locale: 'en' | 'zh' = 'en') {
 
 describe('管理员密钥英文体验', () => {
   it('各自后端目录的每个权限都有准确的中英文标签与分类', () => {
-    expect(catalog.length).toBeGreaterThan(45)
+    expect(catalog.length).toBeGreaterThan(50)
     expect(new Set(catalog.map(permission => permission.id)).size).toBe(catalog.length)
     const expectedKeys = catalog.map(permission => permission.id.replaceAll('_', '_u').replaceAll('.', '_d')).sort()
     for (const messages of [enKeys, zhKeys]) {
@@ -52,14 +52,45 @@ describe('管理员密钥英文体验', () => {
     }
   })
 
-  it('语言切换保留所选权限并翻译列表摘要', async () => {
-    mocks.list.mockResolvedValueOnce({ items: [{ id: 'existing', name: 'Existing key', enabled: true, allowed_ips: [], policy: { rules: [{ permissions: ['accounts.read'], group_ids: [7], account_types: ['oauth'], platforms: ['openai'] }], global_permissions: [] } }], permissions: catalog })
+  it('切换语言清除待确认文字和本次扩权，必须使用当前语言重新确认', async () => {
+    const { wrapper, i18n } = setup('zh')
+    await flushPromises()
+    await wrapper.get('[data-test="create"]').trigger('click')
+    await wrapper.get('[data-test="name"]').setValue('Example key')
+    await wrapper.get('[data-test="full-access"]').setValue(true)
+    await wrapper.get('[data-test="full-access-phrase"]').setValue('开启全权访问')
+    i18n.global.locale.value = 'en'
+    await flushPromises()
+    expect(wrapper.find('[data-test="full-access-phrase"]').exists()).toBe(false)
+    expect(wrapper.get<HTMLInputElement>('[data-test="full-access"]').element.checked).toBe(false)
+    expect(wrapper.text()).not.toMatch(/[\u3400-\u9fff]/u)
+    await wrapper.get('[data-test="full-access"]').setValue(true)
+    expect(wrapper.get<HTMLInputElement>('[data-test="full-access-phrase"]').element.value).toBe('')
+    await wrapper.get('[data-test="full-access-phrase"]').setValue('ENABLE FULL ACCESS')
+    await wrapper.get('[data-test="full-access-confirm"]').trigger('click')
+    expect(wrapper.get<HTMLInputElement>('[data-test="full-access"]').element.checked).toBe(true)
+    i18n.global.locale.value = 'zh'
+    await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('[data-test="full-access"]').element.checked).toBe(false)
+    await wrapper.get('[data-test="full-access"]').setValue(true)
+    await wrapper.get('[data-test="full-access-phrase"]').setValue('ENABLE FULL ACCESS')
+    expect(wrapper.get('[data-test="full-access-confirm"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-test="full-access-phrase"]').setValue('开启全权访问')
+    await wrapper.get('[data-test="full-access-confirm"]').trigger('click')
+    await wrapper.get('[data-test="save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ policy: expect.objectContaining({ full_access: true }), confirm_full_access: true }))
+  })
+
+  it('语言切换保留已有全权权限并翻译列表摘要', async () => {
+    mocks.list.mockResolvedValueOnce({ items: [{ id: 'existing', name: 'Existing key', enabled: true, allowed_ips: [], policy: { full_access: true, rules: [{ permissions: ['accounts.read'], group_ids: [7], account_types: ['oauth'], platforms: ['openai'] }], global_permissions: [] } }], permissions: catalog })
     const { wrapper, i18n } = setup('zh')
     await flushPromises()
     await wrapper.findAll('button').find(button => button.text() === '编辑权限')!.trigger('click')
     i18n.global.locale.value = 'en'
     await flushPromises()
-    expect(wrapper.get<HTMLInputElement>('input[value="accounts.read"]').element.checked).toBe(true)
+    expect(wrapper.get<HTMLInputElement>('[data-test="full-access"]').element.checked).toBe(true)
+    expect(wrapper.text()).toContain('Full access')
     expect(wrapper.text()).toContain('Example group')
     expect(wrapper.text()).not.toMatch(/[\u3400-\u9fff]/u)
   })
@@ -82,10 +113,17 @@ describe('管理员密钥英文体验', () => {
     const creation = wrapper.find('input[value="accounts.create"]')
     await creation.setValue(true)
     expect(wrapper.text()).not.toMatch(/[\u3400-\u9fff]/u)
+    await wrapper.get('[data-test="full-access"]').setValue(true)
+    expect(wrapper.text()).toContain('ENABLE FULL ACCESS')
+    expect(wrapper.text()).not.toMatch(/[\u3400-\u9fff]/u)
+    await wrapper.get('[data-test="full-access-phrase"]').setValue('开启全权访问')
+    expect(wrapper.get('[data-test="full-access-confirm"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-test="full-access-phrase"]').setValue('ENABLE FULL ACCESS')
+    await wrapper.get('[data-test="full-access-confirm"]').trigger('click')
     await wrapper.get('[data-test="name"]').setValue('Example key')
     await wrapper.get('[data-test="save"]').trigger('click')
     await flushPromises()
-    expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ policy: expect.objectContaining({ rules: [expect.objectContaining({ permissions: ['accounts.create'] })] }) }))
+    expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ confirm_full_access: true, policy: expect.objectContaining({ full_access: true }) }))
     expect(wrapper.get('[role="status"]').text()).toBe('Key saved')
   })
 })

@@ -2,31 +2,85 @@
   <AppLayout>
     <TablePageLayout>
       <template #filters>
-        <div class="flex flex-col gap-3">
-          <div class="flex flex-wrap items-center gap-3">
-            <SearchInput
-              v-model="filterSearch"
-              :placeholder="t('keys.searchPlaceholder')"
-              class="w-full sm:w-64"
-              @search="onFilterChange"
-            />
-            <Select
-              :model-value="filterGroupId"
-              class="w-40"
-              :options="groupFilterOptions"
-              @update:model-value="onGroupFilterChange"
-            />
-            <Select
-              :model-value="filterStatus"
-              class="w-40"
-              :options="statusFilterOptions"
-              @update:model-value="onStatusFilterChange"
-            />
+        <UserKeyRiskNotices />
+        <div class="flex w-full flex-col gap-3" data-test="keys-filter-layout">
+          <div class="keys-toolbar flex flex-wrap items-center justify-between gap-3" data-test="keys-toolbar">
+            <div class="flex min-w-0 flex-wrap items-center gap-3" data-test="keys-filter-row">
+              <SearchInput
+                v-model="filterSearch"
+                :placeholder="t('keys.searchPlaceholder')"
+                class="w-full sm:w-64"
+                @search="onFilterChange"
+              />
+              <Select
+                :model-value="filterGroupId"
+                class="w-40"
+                :options="groupFilterOptions"
+                @update:model-value="onGroupFilterChange"
+              />
+              <Select
+                :model-value="filterStatus"
+                class="w-40"
+                :options="statusFilterOptions"
+                @update:model-value="onStatusFilterChange"
+              />
+            </div>
+            <div class="keys-toolbar-actions flex shrink-0 flex-wrap items-center justify-end gap-3" data-test="keys-toolbar-actions">
+              <div class="inline-flex rounded-lg border border-gray-200 p-1 dark:border-dark-600" :aria-label="t('optimizations.view')">
+                <button v-for="mode in (['table', 'cards'] as const)" :key="mode" type="button" class="rounded-md px-3 py-1.5 text-sm" :class="keyView === mode ? 'bg-primary-50 font-medium text-primary-700 dark:bg-primary-900/30 dark:text-primary-300' : 'text-gray-500'" :aria-pressed="keyView === mode" :data-test="`keys-view-${mode}`" @click="keyView = mode">{{ t(`optimizations.${mode}`) }}</button>
+              </div>
+              <button
+                @click="refreshPage"
+                :disabled="loading"
+                class="btn btn-secondary"
+                :title="t('common.refresh')"
+              >
+                <Icon name="refresh" size="md" :class="loading ? 'animate-spin' : ''" />
+              </button>
+              <div class="relative" ref="columnDropdownRef">
+                <button
+                  @click="showColumnDropdown = !showColumnDropdown"
+                  class="btn btn-secondary px-2 md:px-3"
+                  :title="t('keys.columnSettings')"
+                >
+                  <svg class="h-4 w-4 md:mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 4.5v15m6-15v15m-10.875 0h15.75c.621 0 1.125-.504 1.125-1.125V5.625c0-.621-.504-1.125-1.125-1.125H4.125C3.504 4.5 3 5.004 3 5.625v12.75c0 .621.504 1.125 1.125 1.125z" />
+                  </svg>
+                  <span class="hidden md:inline">{{ t('keys.columnSettings') }}</span>
+                </button>
+                <div
+                  v-if="showColumnDropdown"
+                  class="absolute right-0 top-full z-50 mt-1 max-h-80 w-48 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-dark-600 dark:bg-dark-800"
+                >
+                  <button
+                    v-for="col in toggleableColumns"
+                    :key="col.key"
+                    @click="toggleColumn(col.key)"
+                    class="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700"
+                  >
+                    <span>{{ col.label }}</span>
+                    <Icon
+                      v-if="isColumnVisible(col.key)"
+                      name="check"
+                      size="sm"
+                      class="text-primary-500"
+                      :stroke-width="2"
+                    />
+                  </button>
+                </div>
+              </div>
+              <button @click="showCreateModal = true" class="btn btn-primary" data-tour="keys-create-btn">
+                <Icon name="plus" size="md" class="mr-2" />
+                {{ t('keys.createKey') }}
+              </button>
+            </div>
           </div>
           <EndpointPopover
-            v-if="showDefaultEndpoint || (publicSettings?.custom_endpoints?.length ?? 0) > 0"
-            :api-base-url="displayApiEndpoint"
+            class="min-w-0 w-full"
+            data-test="keys-endpoint-row"
+            :api-base-url="publicSettings?.api_base_url || ''"
             :custom-endpoints="publicSettings?.custom_endpoints || []"
+            :default-endpoint-description="publicSettings?.api_base_url_description || t('keys.endpoints.directConnection')"
           />
           <div v-if="selectedIds.length" class="flex flex-wrap items-center gap-3 text-sm">
             <span class="text-gray-600 dark:text-gray-300">
@@ -47,57 +101,9 @@
         </div>
       </template>
 
-      <template #actions>
-        <div class="flex justify-end gap-3">
-          <button
-            @click="loadApiKeys"
-            :disabled="loading"
-            class="btn btn-secondary"
-            :title="t('common.refresh')"
-          >
-            <Icon name="refresh" size="md" :class="loading ? 'animate-spin' : ''" />
-          </button>
-          <div class="relative" ref="columnDropdownRef">
-            <button
-              @click="showColumnDropdown = !showColumnDropdown"
-              class="btn btn-secondary px-2 md:px-3"
-              :title="t('keys.columnSettings')"
-            >
-              <svg class="h-4 w-4 md:mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M9 4.5v15m6-15v15m-10.875 0h15.75c.621 0 1.125-.504 1.125-1.125V5.625c0-.621-.504-1.125-1.125-1.125H4.125C3.504 4.5 3 5.004 3 5.625v12.75c0 .621.504 1.125 1.125 1.125z" />
-              </svg>
-              <span class="hidden md:inline">{{ t('keys.columnSettings') }}</span>
-            </button>
-            <div
-              v-if="showColumnDropdown"
-              class="absolute right-0 top-full z-50 mt-1 max-h-80 w-48 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-dark-600 dark:bg-dark-800"
-            >
-              <button
-                v-for="col in toggleableColumns"
-                :key="col.key"
-                @click="toggleColumn(col.key)"
-                class="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700"
-              >
-                <span>{{ col.label }}</span>
-                <Icon
-                  v-if="isColumnVisible(col.key)"
-                  name="check"
-                  size="sm"
-                  class="text-primary-500"
-                  :stroke-width="2"
-                />
-              </button>
-            </div>
-          </div>
-          <button @click="showCreateModal = true" class="btn btn-primary" data-tour="keys-create-btn">
-            <Icon name="plus" size="md" class="mr-2" />
-            {{ t('keys.createKey') }}
-          </button>
-        </div>
-      </template>
-
       <template #table>
         <DataTable
+          :layout="keyView === 'cards' ? 'cards' : 'responsive'"
           :columns="columns"
           :data="apiKeys"
           :loading="loading"
@@ -115,30 +121,8 @@
             <span class="font-mono text-xs text-gray-500 dark:text-gray-400">#{{ value }}</span>
           </template>
 
-          <template #cell-key="{ value, row }">
-            <div class="flex items-center gap-2">
-              <code class="code text-xs">
-                {{ maskApiKey(value) }}
-              </code>
-              <button
-                @click="copyToClipboard(value, row.id)"
-                class="rounded-lg p-1 transition-colors hover:bg-gray-100 dark:hover:bg-dark-700"
-                :class="
-                  copiedKeyId === row.id
-                    ? 'text-green-500'
-                    : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
-                "
-                :title="copiedKeyId === row.id ? t('keys.copied') : t('keys.copyToClipboard')"
-              >
-                <Icon
-                  v-if="copiedKeyId === row.id"
-                  name="check"
-                  size="sm"
-                  :stroke-width="2"
-                />
-                <Icon v-else name="clipboard" size="sm" />
-              </button>
-            </div>
+          <template #cell-key="{ row }">
+            <code class="code text-xs">{{ row.key_display || maskApiKey(row.key) }}</code>
           </template>
 
           <template #cell-name="{ value, row }">
@@ -155,12 +139,13 @@
           </template>
 
           <template #cell-group="{ row }">
-            <div class="group/dropdown relative">
+            <div class="group/dropdown relative min-w-0 max-w-full">
               <button
                 :ref="(el) => setGroupButtonRef(row.id, el)"
-                @click="openGroupSelector(row)"
-                class="-mx-2 -my-1 flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 transition-all duration-200 hover:bg-gray-100 dark:hover:bg-dark-700"
+                @click="(row.group_ids?.length ?? 0) > 1 ? editKey(row) : openGroupSelector(row)"
+                class="-mx-2 -my-1 flex min-w-0 max-w-full cursor-pointer flex-wrap items-center justify-end gap-2 rounded-lg px-2 py-1 text-left transition-all duration-200 hover:bg-gray-100 md:max-w-none md:flex-nowrap md:justify-start dark:hover:bg-dark-700"
                 :title="t('keys.clickToChangeGroup')"
+                data-test="api-key-group-trigger"
               >
                 <GroupBadge
                   v-if="row.group"
@@ -173,13 +158,15 @@
                   :peak-start="row.group.peak_start"
                   :peak-end="row.group.peak_end"
                   :peak-rate-multiplier="row.group.peak_rate_multiplier"
+                  class="min-w-0 max-w-full flex-wrap md:max-w-none md:flex-nowrap"
                 />
                 <span v-else class="text-sm text-gray-400 dark:text-dark-500">{{
                   t('keys.noGroup')
                 }}</span>
-                <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('keys.selectGroup') }}</span>
+                <span v-if="(row.group_ids?.length ?? 0) > 1" class="shrink-0 text-xs text-primary-600">{{ t('keys.multiGroupCount', { count: row.group_ids.length }) }}</span>
+                <span v-else class="shrink-0 text-xs text-gray-500 dark:text-gray-400">{{ t('keys.selectGroup') }}</span>
                 <svg
-                  class="h-3.5 w-3.5 text-gray-400 opacity-60 transition-opacity group-hover/dropdown:opacity-100"
+                  class="h-3.5 w-3.5 shrink-0 text-gray-400 opacity-60 transition-opacity group-hover/dropdown:opacity-100"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -195,21 +182,67 @@
             </div>
           </template>
 
-          <template #cell-current_concurrency="{ value }">
+          <template #cell-current_concurrency="{ row }">
             <span
+              :title="t('keys.concurrencyCount')"
               :class="[
-                'inline-flex min-w-8 items-center justify-center rounded px-2 py-1 text-sm font-semibold tabular-nums',
-                (value ?? 0) > 0
+                'inline-flex items-center gap-1 rounded-md px-1.5 py-px text-xs font-normal leading-tight tabular-nums',
+                concurrencyRows[row.id]?.concurrencyFull
+                  ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/25 dark:text-amber-300 dark:ring-amber-800'
+                  : (concurrencyRows[row.id]?.current ?? 0) > 0
                   ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-900/25 dark:text-emerald-300 dark:ring-emerald-800'
                   : 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-dark-400'
               ]"
             >
-              {{ value ?? 0 }}
+              <svg
+                class="h-2.5 w-2.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                stroke-width="2"
+                aria-hidden="true"
+              >
+                <path stroke-linecap="round" stroke-linejoin="round" d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2m8-8a4 4 0 100-8 4 4 0 000 8" />
+              </svg>
+              <span class="sr-only">{{ t('keys.concurrencyCount') }}{{ ' ' }}</span>
+              <span class="whitespace-nowrap font-mono">
+                {{ concurrencyRows[row.id]?.current ?? '—' }}
+                <span v-if="concurrencyRows[row.id]?.limit > 0" class="ml-1">/ {{ concurrencyRows[row.id]?.limit }}</span>
+              </span>
+            </span>
+            <div v-if="concurrencyRows[row.id]?.limit > 0" class="mt-1 text-xs tabular-nums text-gray-500 dark:text-dark-400">
+              <template v-if="queuePolicy && concurrencyRows[row.id]?.limit > 0">
+                <span v-if="queuePolicy.max_waiting === 0" class="block">{{ t('keys.queueOff') }}</span>
+                <span v-if="queuePolicy.max_waiting > 0 || (concurrencyRows[row.id]?.waiting ?? 0) > 0"
+                  :class="{ 'text-amber-600 dark:text-amber-400': concurrencyRows[row.id]?.full }">
+                  <span :class="[
+                    'inline-flex items-center gap-1 rounded-md px-1.5 py-px font-normal leading-tight tabular-nums',
+                    concurrencyRows[row.id]?.full
+                      ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/25 dark:text-amber-300 dark:ring-amber-800'
+                      : concurrencyRows[row.id]?.waiting === 0
+                        ? 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-dark-400'
+                        : 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-900/25 dark:text-emerald-300 dark:ring-emerald-800'
+                  ]" :title="t('keys.waitingCount')">
+                    <svg class="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                      <circle cx="12" cy="12" r="9" />
+                      <path stroke-linecap="round" d="M12 7v5l3 2" />
+                    </svg>
+                    <span class="sr-only">{{ t('keys.waitingCount') }}{{ ' ' }}</span>
+                    <span class="whitespace-nowrap font-mono">{{ concurrencyRows[row.id]?.waiting ?? '—' }}<template v-if="queuePolicy.max_waiting > 0"> / {{ queuePolicy.max_waiting }}</template></span>
+                  </span>
+                  <span v-if="concurrencyRows[row.id]?.full"> · {{ t('keys.queueFull') }}</span>
+                </span>
+              </template>
+              <span v-else>{{ t(concurrencyState.status === 'loading' ? 'keys.queuePolicyLoading' : 'keys.queuePolicyUnavailable') }}</span>
+            </div>
+            <span v-if="concurrencyRows[row.id]?.notice" class="mt-1 block text-xs text-gray-500 dark:text-dark-400">
+              {{ concurrencyRows[row.id].notice }}
             </span>
           </template>
 
           <template #cell-usage="{ row }">
-            <div class="text-sm">
+            <span v-if="usageLoading" data-test="usage-pending" class="text-sm text-gray-400">{{ t('common.loading') }}</span>
+            <div v-else class="text-sm">
               <div class="flex items-center gap-1.5">
                 <span class="text-gray-500 dark:text-gray-400">{{ t('keys.today') }}:</span>
                 <span
@@ -401,24 +434,23 @@
 
           <template #cell-actions="{ row }">
             <div class="flex items-center gap-1">
+              
+              <button type="button" @click="keyForTest = row" data-testid="key-self-test"
+                :data-test="`test-key-${row.id}`" :disabled="!canTestKey(row)"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-primary-50 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-primary-900/20 dark:hover:text-primary-400">
+                <Icon name="play" size="sm" />
+                <span class="text-xs">{{ t('keys.test.action') }}</span>
+              </button>
               <!-- Use Key Button -->
-              <button
-                @click="openUseKeyModal(row)"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-green-50 hover:text-green-600 dark:hover:bg-green-900/20 dark:hover:text-green-400"
-              >
-                <Icon name="terminal" size="sm" />
-                <span class="text-xs">{{ t('keys.useKey') }}</span>
+              <button type="button" @click="openUseKeyModal(row)" data-testid="key-guide"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 hover:text-primary-600">
+                <Icon name="book" size="sm" /><span class="text-xs">{{ t('keys.useKey') }}</span>
               </button>
+              <button type="button" @click="selectedKey = row; showRegenerateDialog = true"
+          class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 hover:text-primary-600" :title="t('keys.regenerate')">
+          <Icon name="refresh" size="sm" /><span class="text-xs">{{ t('keys.regenerate') }}</span></button>
               <!-- Import to CC Switch Button -->
-              <button
-                v-if="!publicSettings?.hide_ccs_import_button"
-                :disabled="ccSwitchCatalogLoading"
-                @click="importToCcswitch(row)"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20 dark:hover:text-blue-400"
-              >
-                <Icon name="upload" size="sm" />
-                <span class="text-xs">{{ t('keys.importToCcSwitch') }}</span>
-              </button>
+              
               <!-- Toggle Status Button -->
               <button
                 @click="toggleKeyStatus(row)"
@@ -497,9 +529,9 @@
 
         <fieldset v-if="!showEditModal" data-tour="key-form-provider">
           <legend class="input-label">{{ t('keys.providerLabel') }}</legend>
-          <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <div class="grid grid-cols-3 gap-2">
             <label
-              v-for="provider in createProviderOptions"
+              v-for="provider in createProviderOptions.filter(item => item.value !== 'other')"
               :key="provider.value"
               class="relative min-w-0"
               :class="provider.count === 0 ? 'cursor-not-allowed' : 'cursor-pointer'"
@@ -538,6 +570,12 @@
               </span>
             </label>
           </div>
+          <details v-if="createProviderOptions.some(item => item.value === 'other' && item.count > 0)" class="mt-3" :open="createProvider === 'other'">
+            <summary class="cursor-pointer text-sm text-gray-600 dark:text-gray-300">{{ t('keys.providers.other') }}</summary>
+            <button type="button" class="btn btn-secondary mt-2" :aria-pressed="createProvider === 'other'" data-testid="key-provider-compatible" @click="selectCreateProvider('other')">
+              {{ t('keys.providerHints.other') }}
+            </button>
+          </details>
           <p class="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400" aria-live="polite">
             {{ groups.length === 0 ? t('common.noGroupsAvailable') : t(`keys.providerHints.${createProvider}`) }}
           </p>
@@ -545,51 +583,38 @@
 
         <div>
           <label class="input-label" for="key-form-group">{{ t('keys.groupLabel') }}</label>
-          <Select
+          <ApiKeyGroupPicker
             :key="showEditModal ? 'edit' : createProvider"
-            id="key-form-group"
-            :aria-label="t('keys.groupLabel')"
+            input-id="key-form-group"
+            :accessible-label="t('keys.groupLabel')"
             v-model="formData.group_id"
-            :options="formGroupOptions"
-            :placeholder="t('keys.selectGroup')"
-            :empty-text="t('common.noGroupsAvailable')"
-            :searchable="true"
-            :search-placeholder="t('keys.searchGroup')"
+            :groups="formGroups"
+            :show-platform-tabs="showEditModal"
+            :user-rates="userGroupRates"
             data-tour="key-form-group"
-          >
-            <template #selected="{ option }">
-              <GroupBadge
-                v-if="option"
-                :name="(option as unknown as GroupOption).label"
-                :platform="(option as unknown as GroupOption).platform"
-                :subscription-type="(option as unknown as GroupOption).subscriptionType"
-                :rate-multiplier="(option as unknown as GroupOption).rate"
-                :user-rate-multiplier="(option as unknown as GroupOption).userRate"
-                :peak-rate-enabled="(option as unknown as GroupOption).peakRateEnabled"
-                :peak-start="(option as unknown as GroupOption).peakStart"
-                :peak-end="(option as unknown as GroupOption).peakEnd"
-                :peak-rate-multiplier="(option as unknown as GroupOption).peakRateMultiplier"
-              />
-              <span v-else class="text-gray-400">{{ t('keys.selectGroup') }}</span>
-            </template>
-            <template #option="{ option, selected }">
-              <GroupOptionItem
-                :name="(option as unknown as GroupOption).label"
-                :platform="(option as unknown as GroupOption).platform"
-                :subscription-type="(option as unknown as GroupOption).subscriptionType"
-                :rate-multiplier="(option as unknown as GroupOption).rate"
-                :user-rate-multiplier="(option as unknown as GroupOption).userRate"
-                :peak-rate-enabled="(option as unknown as GroupOption).peakRateEnabled"
-                :peak-start="(option as unknown as GroupOption).peakStart"
-                :peak-end="(option as unknown as GroupOption).peakEnd"
-                :peak-rate-multiplier="(option as unknown as GroupOption).peakRateMultiplier"
-                :description="(option as unknown as GroupOption).description"
-                :selected="selected"
-              />
-            </template>
-          </Select>
+          />
+          <fieldset class="mt-3 space-y-2" data-testid="key-additional-groups">
+            <legend class="input-label">{{ t('keys.additionalGroups') }}</legend>
+            <p class="input-hint">{{ t('keys.multiGroupHint') }}</p>
+            <div class="max-h-48 space-y-2 overflow-y-auto">
+              <label v-for="option in groupOptions.filter(item => item.value !== null && item.value !== formData.group_id)"
+                :key="String(option.value)" class="flex items-center gap-2 text-sm">
+                <input v-model="formData.group_ids" type="checkbox" :value="option.value" :disabled="!formData.group_ids.includes(Number(option.value)) && selectedFormGroupIDs().length >= 20" />
+                <GroupBadge :name="option.label" :platform="option.platform"
+                  :subscription-type="option.subscriptionType" :rate-multiplier="option.rate"
+                  :user-rate-multiplier="option.userRate" />
+              </label>
+            </div>
+          </fieldset>
         </div>
 
+        <details class="key-advanced-settings" :open="showEditModal">
+          <summary class="key-advanced-summary">{{ t('keys.advancedOptions') }}</summary>
+          <div class="space-y-5 pt-5">
+        <div>
+          <label class="input-label">{{ t('keys.fallbackGroupLabel') }}</label>
+          <Select v-model="formData.fallback_group_id" :options="[{ value: null, label: t('keys.noFallbackGroup') }, ...groups.filter(group => group.id !== formData.group_id).map(group => ({ value: group.id, label: group.name }))]" searchable />
+        </div>
         <!-- Custom Key Section (only for create) -->
         <div v-if="!showEditModal" class="space-y-3">
           <div class="flex items-center justify-between">
@@ -678,6 +703,31 @@
           </div>
         </div>
 
+        <div>
+          <label for="key-concurrency-limit" class="input-label">{{ t('keys.concurrencyLimit') }}</label>
+          <input
+            id="key-concurrency-limit"
+            v-model.number="formData.concurrency_limit"
+            type="number"
+            min="0"
+            step="1"
+            placeholder="0"
+            class="input"
+            :class="{ 'border-red-500 dark:border-red-500': concurrencyLimitError }"
+            :aria-invalid="!!concurrencyLimitError"
+            :aria-describedby="concurrencyLimitError ? 'key-concurrency-hint key-queue-policy key-concurrency-error' : 'key-concurrency-hint key-queue-policy'"
+          />
+          <p id="key-concurrency-hint" class="input-hint">{{ t('keys.concurrencyLimitHint') }}</p>
+          <p id="key-queue-policy" class="input-hint">
+            {{ queuePolicyDescription }}
+            <span v-if="queuePolicy && concurrencyState.status === 'stale' && Number(formData.concurrency_limit) > 0"> {{ t('keys.concurrencyStale') }}</span>
+          </p>
+          <p v-if="queuePolicy && queuePolicy.max_waiting > 0 && Number(formData.concurrency_limit) > 0" class="input-hint">{{ t('keys.queueHint') }}</p>
+          <p v-if="concurrencyLimitError" id="key-concurrency-error" class="mt-1 text-sm text-red-500" role="alert">
+            {{ concurrencyLimitError }}
+          </p>
+        </div>
+
         <!-- Quota Limit Section -->
         <div class="space-y-3">
           <label class="input-label">{{ t('keys.quotaLimit') }}</label>
@@ -703,18 +753,6 @@
           -->
 
           <div class="space-y-4">
-            <div>
-              <label class="input-label">{{ t('keys.concurrencyLabel') }}</label>
-              <input
-                v-model.number="formData.concurrency"
-                type="number"
-                min="0"
-                step="1"
-                class="input"
-                data-testid="key-concurrency"
-              />
-              <p class="mt-1 text-xs text-gray-500">{{ t('keys.concurrencyHint') }}</p>
-            </div>
             <div>
               <div class="relative">
                 <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">$</span>
@@ -1002,6 +1040,8 @@
             </div>
           </div>
         </div>
+          </div>
+        </details>
       </form>
       <template #footer>
         <div class="flex justify-end gap-3">
@@ -1092,6 +1132,32 @@
     />
 
     <!-- Use Key Modal -->
+    <TestKeyModal :show="keyForTest !== null" :api-key="keyForTest" @close="keyForTest = null" @tested="loadApiKeys" />
+    <ConfirmDialog
+      :show="showRegenerateDialog"
+      :title="t('keys.regenerate')"
+      :message="t('keys.regenerateConfirm', { name: selectedKey?.name })"
+      :confirm-text="t('keys.regenerate')"
+      :danger="true"
+      @confirm="regenerateKey"
+      @cancel="!regenerating && (showRegenerateDialog = false)"
+    />
+    <BaseDialog :show="!!oneTimeKey" :title="t('keys.secretTitle')" @close="closeOneTimeKey">
+      <div v-if="oneTimeKey" class="space-y-4">
+        <p class="text-sm text-amber-700 dark:text-amber-300">{{ t('keys.secretHint') }}</p>
+        <code class="block break-all rounded-lg bg-gray-100 p-3 dark:bg-dark-700" data-testid="one-time-key">{{ oneTimeKey.key }}</code>
+        <div class="flex flex-wrap gap-2">
+          <button class="btn btn-primary" @click="copyToClipboard(oneTimeKey.key, oneTimeKey.id)">{{ copiedKeyId === oneTimeKey.id ? t('keys.copied') : t('keys.copyToClipboard') }}</button>
+          <button class="btn btn-secondary" @click="openUseKeyModal(oneTimeKey)">{{ t('keys.useKey') }}</button>
+          <button v-if="!publicSettings?.hide_ccs_import_button" class="btn btn-secondary" @click="importToCcswitch(oneTimeKey)">{{ t('keys.importToCcSwitch') }}</button>
+          <button v-if="isCodexQuickConfigPlatform(oneTimeKey.group?.platform)" class="btn btn-secondary" @click="openCodexQuickConfigModal(oneTimeKey)">{{ t('keys.quickConfigure') }}</button>
+          <button class="btn btn-secondary" @click="closeOneTimeKey">{{ t('keys.secretSaved') }}</button>
+        </div>
+      </div>
+    </BaseDialog>
+
+    <TotpStepUpDialog :controller="stepUp" />
+
     <BaseDialog
       :show="!!ccSwitchCatalog"
       :title="t('keys.importToCcSwitch')"
@@ -1113,13 +1179,68 @@
 
     <UseKeyModal
       :show="showUseKeyModal"
-      :api-key="selectedKey?.key || ''"
-      :base-url="displayApiEndpoint"
+      :api-key="selectedKey?.id === oneTimeKey?.id ? oneTimeKey?.key || '' : ''"
+      :base-url="publicSettings?.api_base_url || ''"
       :platform="selectedKey?.group?.platform || null"
       :claude-code-only="selectedKey?.group?.claude_code_only || false"
       :allow-messages-dispatch="selectedKey?.group?.allow_messages_dispatch || false"
       @close="closeUseKeyModal"
     />
+
+    <CodexQuickConfigModal
+      :show="showCodexQuickConfigModal"
+      :api-key="selectedKey?.key || ''"
+      :base-url="publicSettings?.api_base_url || ''"
+      :platform="selectedCodexQuickConfigPlatform"
+      @close="closeCodexQuickConfigModal"
+    />
+
+    <!-- CCS Client Selection Dialog for Antigravity -->
+    <BaseDialog
+      :show="showCcsClientSelect"
+      :title="t('keys.ccsClientSelect.title')"
+      width="narrow"
+      @close="closeCcsClientSelect"
+    >
+      <div class="space-y-4">
+        <p class="text-sm text-gray-600 dark:text-gray-400">
+          {{ t('keys.ccsClientSelect.description') }}
+	        </p>
+	        <div class="grid grid-cols-2 gap-3">
+	          <button
+	            @click="handleCcsClientSelect('claude')"
+	            class="flex flex-col items-center gap-2 p-4 rounded-xl border-2 border-gray-200 dark:border-dark-600 hover:border-primary-500 dark:hover:border-primary-500 hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-all"
+	          >
+	            <Icon name="terminal" size="xl" class="text-gray-600 dark:text-gray-400" />
+	            <span class="font-medium text-gray-900 dark:text-white">{{
+	              t('keys.ccsClientSelect.claudeCode')
+	            }}</span>
+	            <span class="text-xs text-gray-500 dark:text-gray-400">{{
+	              t('keys.ccsClientSelect.claudeCodeDesc')
+	            }}</span>
+	          </button>
+	          <button
+	            @click="handleCcsClientSelect('gemini')"
+	            class="flex flex-col items-center gap-2 p-4 rounded-xl border-2 border-gray-200 dark:border-dark-600 hover:border-primary-500 dark:hover:border-primary-500 hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-all"
+	          >
+	            <Icon name="sparkles" size="xl" class="text-gray-600 dark:text-gray-400" />
+	            <span class="font-medium text-gray-900 dark:text-white">{{
+	              t('keys.ccsClientSelect.geminiCli')
+	            }}</span>
+	            <span class="text-xs text-gray-500 dark:text-gray-400">{{
+	              t('keys.ccsClientSelect.geminiCliDesc')
+	            }}</span>
+	          </button>
+	        </div>
+	      </div>
+      <template #footer>
+        <div class="flex justify-end">
+          <button @click="closeCcsClientSelect" class="btn btn-secondary">
+            {{ t('common.cancel') }}
+          </button>
+        </div>
+      </template>
+    </BaseDialog>
 
     <!-- Group Selector Dropdown (Teleported to body to avoid overflow clipping) -->
     <Teleport to="body">
@@ -1199,12 +1320,17 @@
 	import { useOnboardingStore } from '@/stores/onboarding'
 	import { useClipboard } from '@/composables/useClipboard'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
-import { resolveApiEndpointFromSettings } from '@/utils/apiEndpoint'
 
 const { t } = useI18n()
+const keyView = ref<'table' | 'cards'>('table')
+try { if (localStorage.getItem('kitty.keys.view') === 'cards') keyView.value = 'cards' } catch { /* private mode */ }
+watch(keyView, (value) => { try { localStorage.setItem('kitty.keys.view', value) } catch { /* preference only */ } })
+import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
+import { useStepUp, isStepUpCancelled } from '@/composables/useStepUp'
 import { keysAPI, authAPI, usageAPI, userGroupsAPI } from '@/api'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
+import UserKeyRiskNotices from '@/features/ip-audit/UserKeyRiskNotices.vue'
 import BulkEditKeysModal from '@/components/keys/BulkEditKeysModal.vue'
 	import DataTable from '@/components/common/DataTable.vue'
 	import Pagination from '@/components/common/Pagination.vue'
@@ -1215,10 +1341,13 @@ import BulkEditKeysModal from '@/components/keys/BulkEditKeysModal.vue'
 	import SearchInput from '@/components/common/SearchInput.vue'
 	import Icon from '@/components/icons/Icon.vue'
 	import UseKeyModal from '@/components/keys/UseKeyModal.vue'
+import TestKeyModal from '@/components/keys/TestKeyModal.vue'
+	import CodexQuickConfigModal from '@/components/keys/CodexQuickConfigModal.vue'
 	import EndpointPopover from '@/components/keys/EndpointPopover.vue'
+	import ApiKeyGroupPicker from '@/components/keys/ApiKeyGroupPicker.vue'
 	import GroupBadge from '@/components/common/GroupBadge.vue'
 	import GroupOptionItem from '@/components/common/GroupOptionItem.vue'
-	import type { ApiKey, Group, PublicSettings, SubscriptionType, GroupPlatform, UpdateApiKeyRequest } from '@/types'
+	import type { ApiKey, ApiKeyConcurrencySnapshot, Group, PublicSettings, UpdateApiKeyRequest } from '@/types'
 import type { Column } from '@/components/common/types'
 import type { BatchApiKeyUsageStats } from '@/api/usage'
 import { formatDateTime } from '@/utils/format'
@@ -1234,26 +1363,13 @@ import {
   resolveCcSwitchImportConfig,
   type CcSwitchClientType
 } from '@/utils/ccswitchImport'
+import { isCodexQuickConfigPlatform } from '@/utils/codexQuickConfig'
 
 // Helper to format date for datetime-local input
 const formatDateTimeLocal = (isoDate: string): string => {
   const date = new Date(isoDate)
   const pad = (n: number) => n.toString().padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
-}
-
-interface GroupOption {
-  value: number
-  label: string
-  description: string | null
-  rate: number
-  userRate: number | null
-  peakRateEnabled: boolean
-  peakStart: string
-  peakEnd: string
-  peakRateMultiplier: number
-  subscriptionType: SubscriptionType
-  platform: GroupPlatform
 }
 
 const appStore = useAppStore()
@@ -1265,7 +1381,7 @@ const allColumns = computed<Column[]>(() => [
   { key: 'id', label: t('keys.id'), sortable: true },
   { key: 'key', label: t('keys.apiKey'), sortable: false },
   { key: 'group', label: t('keys.group'), sortable: true },
-  { key: 'current_concurrency', label: t('keys.currentConcurrency'), sortable: true },
+  { key: 'current_concurrency', label: t('keys.concurrencyAndWaiting'), sortable: true },
   { key: 'usage', label: t('keys.usage'), sortable: false },
   { key: 'rate_limit', label: t('keys.rateLimitColumn'), sortable: false },
   { key: 'expires_at', label: t('keys.expiresAt'), sortable: true },
@@ -1379,6 +1495,94 @@ const usageStats = ref<Record<string, BatchApiKeyUsageStats>>({})
 const usageLoading = ref(false)
 const userGroupRates = ref<Record<number, number>>({})
 
+// Policy and counts always belong to one completed refresh, never to editable key data.
+const concurrencyState = ref<{
+  snapshot: ApiKeyConcurrencySnapshot | null
+  status: 'loading' | 'ready' | 'stale' | 'error'
+}>({ snapshot: null, status: 'loading' })
+const queuePolicy = computed(() => concurrencyState.value.snapshot?.queue_policy)
+const concurrencyRows = computed(() => {
+  const counts = new Map(concurrencyState.value.snapshot?.items.map(item => [item.id, item]))
+  return Object.fromEntries(apiKeys.value.map(key => {
+    const count = counts.get(key.id)
+    const current = count?.current_concurrency
+    const waiting = count?.current_waiting
+    const known = typeof current === 'number' && typeof waiting === 'number'
+    const status = concurrencyState.value.status
+    const limit = key.concurrency_limit
+    return [key.id, {
+      limit,
+      current,
+      waiting,
+      concurrencyFull: status === 'ready' && typeof current === 'number' && limit > 0 && current >= limit,
+      full: status === 'ready' && known && limit > 0 &&
+        (queuePolicy.value?.max_waiting ?? 0) > 0 && waiting >= queuePolicy.value!.max_waiting,
+      notice: status === 'stale' && count ? t('keys.concurrencyStale') :
+        !known ? t(status === 'loading' ? 'keys.concurrencyLoading' : 'keys.concurrencyUnavailable') : '',
+    }]
+  }))
+})
+let concurrencyTimer: ReturnType<typeof setTimeout> | null = null
+let concurrencyController: AbortController | null = null
+let concurrencyGeneration = 0
+let concurrencyPageReady = false
+let disposed = false
+
+const stopConcurrencyRefresh = () => {
+  concurrencyGeneration++
+  if (concurrencyTimer) clearTimeout(concurrencyTimer)
+  concurrencyTimer = null
+  concurrencyController?.abort()
+  concurrencyState.value = {
+    ...concurrencyState.value,
+    status: concurrencyState.value.snapshot ? 'stale' : 'loading',
+  }
+}
+
+const refreshConcurrency = async () => {
+  if (disposed || document.hidden || !concurrencyPageReady || concurrencyController) return
+  const controller = new AbortController()
+  concurrencyController = controller
+  const generation = concurrencyGeneration
+  const ids = apiKeys.value.map(key => key.id)
+  try {
+    let snapshot: ApiKeyConcurrencySnapshot | null = null
+    // Configured page sizes can exceed the endpoint's 100-ID limit; read serially.
+    for (let offset = 0; offset < Math.max(ids.length, 1); offset += 100) {
+      const result = await keysAPI.getConcurrency(ids.slice(offset, offset + 100), { signal: controller.signal })
+      if (disposed || controller.signal.aborted || generation !== concurrencyGeneration) return
+      if (snapshot) {
+        if (snapshot.queue_policy.max_waiting !== result.queue_policy.max_waiting ||
+          snapshot.queue_policy.timeout_seconds !== result.queue_policy.timeout_seconds) {
+          throw new Error('API key queue policy changed during the statistics refresh')
+        }
+        snapshot.items.push(...result.items)
+      } else {
+        snapshot = { queue_policy: result.queue_policy, items: [...result.items] }
+      }
+    }
+    concurrencyState.value = { snapshot, status: 'ready' }
+  } catch {
+    if (!controller.signal.aborted && generation === concurrencyGeneration && !disposed) {
+      concurrencyState.value = {
+        ...concurrencyState.value,
+        status: concurrencyState.value.snapshot ? 'stale' : 'error',
+      }
+    }
+  } finally {
+    concurrencyController = null
+    if (!disposed && !document.hidden && concurrencyPageReady) {
+      if (generation !== concurrencyGeneration) void refreshConcurrency()
+      else concurrencyTimer = setTimeout(refreshConcurrency, 5000)
+    }
+  }
+}
+
+const handleConcurrencyVisibility = () => {
+  stopConcurrencyRefresh()
+  if (!document.hidden) void refreshConcurrency()
+}
+
 const pagination = ref({
   page: 1,
   page_size: getPersistedPageSize(),
@@ -1395,31 +1599,60 @@ const filterSearch = ref('')
 const filterStatus = ref('')
 const filterGroupId = ref<string | number>('')
 
+const stepUp = useStepUp();
+const oneTimeKey = ref<ApiKey | null>(null);
+const showRegenerateDialog = ref(false);
+const regenerating = ref(false);
+const closeOneTimeKey = () => {
+  oneTimeKey.value = null;
+  selectedKey.value = null;
+  pendingCcsRow.value = null;
+  showUseKeyModal.value = false;
+  showCodexQuickConfigModal.value = false;
+  showCcsClientSelect.value = false;
+  copiedKeyId.value = null;
+};
+const regenerateKey = async () => {
+  if (!selectedKey.value || regenerating.value) return;
+  regenerating.value = true;
+  try {
+    const keyID = selectedKey.value.id;
+    const key = await stepUp.run(() => keysAPI.regenerate(keyID));
+    showRegenerateDialog.value = false;
+    oneTimeKey.value = key?.secret_available ? key : null;
+    if (!oneTimeKey.value) appStore.showError(t('keys.secretUnavailable'));
+    await loadApiKeys();
+  } catch (error: any) {
+    if (!isStepUpCancelled(error)) appStore.showError(error?.message || t('keys.failedToSave'));
+  } finally { regenerating.value = false; }
+};
+
 const showCreateModal = ref(false)
 const showEditModal = ref(false)
 const showDeleteDialog = ref(false)
 const showResetQuotaDialog = ref(false)
 const showResetRateLimitDialog = ref(false)
+const keyForTest = ref<ApiKey | null>(null)
+const canTestKey = (key: ApiKey) => key.status === 'active'
+  && (key.group_id != null || (key.group_ids?.length ?? 0) > 0)
+  && (!key.expires_at || new Date(key.expires_at).getTime() > Date.now())
 const showUseKeyModal = ref(false)
+const showCodexQuickConfigModal = ref(false)
+const showCcsClientSelect = ref(false)
 const ccSwitchCatalog = ref<{ key: ApiKey; baseUrl: string; models: string[] } | null>(null)
 const ccSwitchCatalogLoading = ref(false)
 const ccSwitchCatalogChoice = ref('')
 let ccSwitchCatalogController: AbortController | undefined
 const showColumnDropdown = ref(false)
+const pendingCcsRow = ref<ApiKey | null>(null)
 const selectedKey = ref<ApiKey | null>(null)
+const selectedCodexQuickConfigPlatform = computed(() => {
+  const platform = selectedKey.value?.group?.platform
+  return isCodexQuickConfigPlatform(platform) ? platform : null
+})
 const copiedKeyId = ref<number | null>(null)
 const groupSelectorKeyId = ref<number | null>(null)
 const publicSettings = ref<PublicSettings | null>(null)
-// Follows the current domain when the admin enabled api_base_url_follow_host.
-const displayApiEndpoint = computed(() => resolveApiEndpointFromSettings(publicSettings.value))
-// Show the chip when an endpoint was configured, or when the admin explicitly
-// opted into following the current domain. Deployments that left api_base_url
-// empty without opting in keep hiding it, as before.
-const showDefaultEndpoint = computed(
-  () =>
-    Boolean(publicSettings.value?.api_base_url) ||
-    (publicSettings.value?.api_base_url_follow_host === true && Boolean(displayApiEndpoint.value)),
-)
 const dropdownRef = ref<HTMLElement | null>(null)
 const columnDropdownRef = ref<HTMLElement | null>(null)
 const dropdownPosition = ref<{ top?: number; bottom?: number; left: number } | null>(null)
@@ -1442,7 +1675,10 @@ const setGroupButtonRef = (keyId: number, el: Element | ComponentPublicInstance 
 
 const formData = ref({
   name: '',
+  concurrency_limit: 0 as number | string,
   group_id: null as number | null,
+  group_ids: [] as number[],
+  fallback_group_id: null as number | null,
   status: 'active' as 'active' | 'inactive',
   use_custom_key: false,
   custom_key: '',
@@ -1452,7 +1688,6 @@ const formData = ref({
   // Quota settings (empty = unlimited)
   enable_quota: false,
   quota: null as number | null,
-  concurrency: 0,
   // Rate limit settings
   enable_rate_limit: false,
   rate_limit_5h: null as number | null,
@@ -1461,6 +1696,18 @@ const formData = ref({
   enable_expiration: false,
   expiration_preset: '30' as '7' | '30' | '90' | 'custom',
   expiration_date: ''
+})
+
+const concurrencyLimitError = computed(() => {
+  const limit = Number(formData.value.concurrency_limit)
+  return Number.isSafeInteger(limit) && limit >= 0 ? '' : t('keys.concurrencyLimitInvalid')
+})
+
+const queuePolicyDescription = computed(() => {
+  if (Number(formData.value.concurrency_limit) === 0) return t('keys.queueNotApplicable')
+  if (!queuePolicy.value) return t(concurrencyState.value.status === 'loading' ? 'keys.queuePolicyLoading' : 'keys.queuePolicyUnavailable')
+  if (queuePolicy.value.max_waiting === 0) return t('keys.queuePolicyOff')
+  return t('keys.queuePolicy', { max: queuePolicy.value.max_waiting, seconds: queuePolicy.value.timeout_seconds })
 })
 
 // 自定义Key验证
@@ -1546,6 +1793,11 @@ const createProviderOptions = computed(() => KEY_GROUP_PROVIDERS.map((value) => 
   count: groups.value.filter((group) => getKeyGroupProvider(group.platform) === value).length
 })))
 
+const formGroups = computed(() => showEditModal.value
+  ? groups.value
+  : groups.value.filter((group) => getKeyGroupProvider(group.platform) === createProvider.value)
+)
+
 const formGroupOptions = computed(() => showEditModal.value
   ? groupOptions.value
   : groupOptions.value.filter((group) => getKeyGroupProvider(group.platform) === createProvider.value)
@@ -1596,6 +1848,8 @@ const isAbortError = (error: unknown) => {
 }
 
 const loadApiKeys = async () => {
+  concurrencyPageReady = false
+  stopConcurrencyRefresh()
   abortController?.abort()
   const controller = new AbortController()
   abortController = controller
@@ -1626,10 +1880,15 @@ const loadApiKeys = async () => {
     pagination.value.total = response.total
     pagination.value.pages = response.pages
 
-    // 用量统计要聚合 30 天的 usage_logs，可能比列表慢很多：不阻塞表格渲染，单独加载
-    usageLoading.value = response.items.length > 0
+    // The list is usable before slower aggregate usage becomes available.
+    usageStats.value = {}
     if (response.items.length > 0) {
-      void loadUsageStats(response.items.map((k) => k.id), signal)
+      const keyIds = response.items.map((k) => k.id)
+      usageLoading.value = true
+      void usageAPI.getDashboardApiKeysUsage(keyIds, { signal })
+        .then(response => { if (!signal.aborted) usageStats.value = response.stats })
+        .catch(error => { if (!isAbortError(error)) console.error('Failed to load usage stats:', error) })
+        .finally(() => { if (abortController === controller) usageLoading.value = false })
     }
   } catch (error) {
     if (isAbortError(error)) {
@@ -1639,41 +1898,43 @@ const loadApiKeys = async () => {
   } finally {
     if (abortController === controller) {
       loading.value = false
+      concurrencyPageReady = true
+      void refreshConcurrency()
     }
   }
 }
 
-const loadUsageStats = async (keyIds: number[], signal: AbortSignal) => {
+const groupPricingLoading = ref(false)
+let groupPricingGeneration = 0
+
+const loadGroupPricing = async () => {
+  const generation = ++groupPricingGeneration
+  groupPricingLoading.value = true
   try {
-    const usageResponse = await usageAPI.getDashboardApiKeysUsage(keyIds, { signal })
-    if (signal.aborted) return
-    usageStats.value = usageResponse.stats
-  } catch (e) {
-    if (!isAbortError(e)) {
-      console.error('Failed to load usage stats:', e)
-    }
+    const [availableGroups, rates] = await Promise.all([
+      userGroupsAPI.getAvailable(),
+      userGroupsAPI.getUserGroupRates()
+    ])
+    if (disposed || generation !== groupPricingGeneration) return
+    // Apply both together so a failed refresh cannot mix new defaults with old overrides.
+    groups.value = availableGroups
+    userGroupRates.value = rates
+  } catch (error) {
+    if (disposed || generation !== groupPricingGeneration) return
+    console.error('Failed to load group pricing:', error)
+    appStore.showError(t('keys.failedToLoad'))
   } finally {
-    if (!signal.aborted) {
-      usageLoading.value = false
-    }
+    if (generation === groupPricingGeneration) groupPricingLoading.value = false
   }
 }
 
-const loadGroups = async () => {
-  try {
-    groups.value = await userGroupsAPI.getAvailable()
-  } catch (error) {
-    console.error('Failed to load groups:', error)
-  }
+const refreshPage = async () => {
+  await Promise.all([loadApiKeys(), loadGroupPricing()])
 }
 
-const loadUserGroupRates = async () => {
-  try {
-    userGroupRates.value = await userGroupsAPI.getUserGroupRates()
-  } catch (error) {
-    console.error('Failed to load user group rates:', error)
-  }
-}
+watch([showCreateModal, showEditModal], ([creating, editing]) => {
+  if (creating || editing) void loadGroupPricing()
+})
 
 const loadPublicSettings = async () => {
   try {
@@ -1688,8 +1949,18 @@ const openUseKeyModal = (key: ApiKey) => {
   showUseKeyModal.value = true
 }
 
+const openCodexQuickConfigModal = (key: ApiKey) => {
+  selectedKey.value = key
+  showCodexQuickConfigModal.value = true
+}
+
 const closeUseKeyModal = () => {
   showUseKeyModal.value = false
+  selectedKey.value = null
+}
+
+const closeCodexQuickConfigModal = () => {
+  showCodexQuickConfigModal.value = false
   selectedKey.value = null
 }
 
@@ -1714,13 +1985,21 @@ const handleSort = (key: string, order: 'asc' | 'desc') => {
   loadApiKeys()
 }
 
+const selectedFormGroupIDs = (): number[] => [...new Set([
+  ...(formData.value.group_id === null ? [] : [formData.value.group_id]),
+  ...formData.value.group_ids.filter(id => id !== formData.value.group_id)
+])]
+
 const editKey = (key: ApiKey) => {
   selectedKey.value = key
   const hasIPRestriction = (key.ip_whitelist?.length > 0) || (key.ip_blacklist?.length > 0)
   const hasExpiration = !!key.expires_at
   formData.value = {
     name: key.name,
+    concurrency_limit: key.concurrency_limit ?? 0,
     group_id: key.group_id,
+    fallback_group_id: key.fallback_group_id ?? null,
+    group_ids: (key.group_ids ?? []).filter(id => id !== key.group_id),
     status: key.status === 'quota_exhausted' || key.status === 'expired' ? 'inactive' : key.status,
     use_custom_key: false,
     custom_key: '',
@@ -1729,7 +2008,6 @@ const editKey = (key: ApiKey) => {
     ip_blacklist: (key.ip_blacklist || []).join('\n'),
     enable_quota: key.quota > 0,
     quota: key.quota > 0 ? key.quota : null,
-    concurrency: key.concurrency ?? 0,
     enable_rate_limit: (key.rate_limit_5h > 0) || (key.rate_limit_1d > 0) || (key.rate_limit_7d > 0),
     rate_limit_5h: key.rate_limit_5h || null,
     rate_limit_1d: key.rate_limit_1d || null,
@@ -1759,6 +2037,7 @@ const openGroupSelector = (key: ApiKey) => {
     groupSelectorKeyId.value = null
     dropdownPosition.value = null
   } else {
+    void loadGroupPricing()
     const buttonEl = groupButtonRefs.value.get(key.id)
     if (buttonEl) {
       const rect = buttonEl.getBoundingClientRect()
@@ -1794,7 +2073,7 @@ const changeGroup = async (key: ApiKey, newGroupId: number | null) => {
   if (key.group_id === newGroupId) return
 
   try {
-    await keysAPI.update(key.id, { group_id: newGroupId })
+    await keysAPI.update(key.id, { group_id: newGroupId, group_ids: newGroupId === null ? [] : [newGroupId] })
     appStore.showSuccess(t('keys.groupChangedSuccess'))
     loadApiKeys()
   } catch (error) {
@@ -1820,6 +2099,13 @@ const confirmDelete = (key: ApiKey) => {
 }
 
 const handleSubmit = async () => {
+  if (concurrencyLimitError.value) {
+    appStore.showError(concurrencyLimitError.value)
+    return
+  }
+  // An empty input explicitly clears the saved key limit.
+  const concurrencyLimit = Number(formData.value.concurrency_limit)
+
   // Validate group_id is required
   if (formData.value.group_id === null) {
     appStore.showError(t('keys.groupRequired'))
@@ -1878,11 +2164,13 @@ const handleSubmit = async () => {
     if (showEditModal.value && selectedKey.value) {
       const updates: UpdateApiKeyRequest = {
         name: formData.value.name,
+        concurrency_limit: concurrencyLimit,
         group_id: formData.value.group_id,
+        group_ids: selectedFormGroupIDs(),
+        fallback_group_id: formData.value.fallback_group_id,
         ip_whitelist: ipWhitelist,
         ip_blacklist: ipBlacklist,
         quota: quota,
-        concurrency: formData.value.concurrency ?? 0,
         expires_at: expiresAt,
         rate_limit_5h: rateLimitData.rate_limit_5h,
         rate_limit_1d: rateLimitData.rate_limit_1d,
@@ -1895,17 +2183,21 @@ const handleSubmit = async () => {
       appStore.showSuccess(t('keys.keyUpdatedSuccess'))
     } else {
       const customKey = formData.value.use_custom_key ? formData.value.custom_key : undefined
-      await keysAPI.create(
+      const createdKey = await stepUp.run(() => keysAPI.create(
         formData.value.name,
         formData.value.group_id,
+        formData.value.fallback_group_id,
         customKey,
         ipWhitelist,
         ipBlacklist,
         quota,
         expiresInDays,
         rateLimitData,
-        formData.value.concurrency ?? 0
-      )
+        concurrencyLimit,
+        selectedFormGroupIDs()
+      ))
+      oneTimeKey.value = createdKey?.secret_available ? { ...createdKey, group: groups.value.find(group => group.id === createdKey.group_id) } : null
+      if (!oneTimeKey.value) appStore.showError(t('keys.secretUnavailable'))
       appStore.showSuccess(t('keys.keyCreatedSuccess'))
       // Only advance tour if active, on submit step, and creation succeeded
       if (onboardingStore.isCurrentStep('[data-tour="key-form-submit"]')) {
@@ -1916,7 +2208,7 @@ const handleSubmit = async () => {
     loadApiKeys()
   } catch (error: any) {
     const errorMsg = error.response?.data?.detail || t('keys.failedToSave')
-    appStore.showError(errorMsg)
+    if (!isStepUpCancelled(error)) appStore.showError(errorMsg)
     // Don't advance tour on error
   } finally {
     submitting.value = false
@@ -1949,7 +2241,10 @@ const closeModals = () => {
   selectedKey.value = null
   formData.value = {
     name: '',
+    concurrency_limit: 0,
     group_id: null,
+    group_ids: [],
+    fallback_group_id: null,
     status: 'active',
     use_custom_key: false,
     custom_key: '',
@@ -1958,7 +2253,6 @@ const closeModals = () => {
     ip_blacklist: '',
     enable_quota: false,
     quota: null,
-    concurrency: 0,
     enable_rate_limit: false,
     rate_limit_5h: null,
     rate_limit_1d: null,
@@ -2036,9 +2330,15 @@ const resetRateLimitUsage = async () => {
 
 const importToCcswitch = async (row: ApiKey) => {
   if (ccSwitchCatalogLoading.value) return
-  const baseUrl = displayApiEndpoint.value || window.location.origin
-  if (resolveCcSwitchImportConfig(row.group?.platform, baseUrl).app !== 'codex') {
-    executeCcsImport(row, 'claude', baseUrl)
+  const platform = row.group?.platform || 'anthropic'
+  if (platform === 'antigravity') {
+    pendingCcsRow.value = row
+    showCcsClientSelect.value = true
+    return
+  }
+  const baseUrl = publicSettings.value?.api_base_url || window.location.origin
+  if (resolveCcSwitchImportConfig(platform, platform === 'gemini' ? 'gemini' : 'claude', baseUrl).app !== 'codex') {
+    executeCcsImport(row, platform === 'gemini' ? 'gemini' : 'claude', baseUrl)
     return
   }
   const controller = new AbortController()
@@ -2071,7 +2371,8 @@ const importCcSwitchCatalogChoice = () => {
   ccSwitchCatalog.value = null
 }
 
-const executeCcsImport = (row: ApiKey, clientType: CcSwitchClientType, baseUrl: string, codexModel?: string) => {
+const executeCcsImport = (row: ApiKey, clientType: CcSwitchClientType, baseUrlOverride?: string, codexModel?: string) => {
+  const baseUrl = baseUrlOverride || publicSettings.value?.api_base_url || window.location.origin
   const platform = row.group?.platform || 'anthropic'
 
   const usageScript = CC_SWITCH_USAGE_SCRIPT
@@ -2101,6 +2402,19 @@ const executeCcsImport = (row: ApiKey, clientType: CcSwitchClientType, baseUrl: 
   }
 }
 
+const handleCcsClientSelect = (clientType: CcSwitchClientType) => {
+  if (pendingCcsRow.value) {
+    executeCcsImport(pendingCcsRow.value, clientType)
+  }
+  showCcsClientSelect.value = false
+  pendingCcsRow.value = null
+}
+
+const closeCcsClientSelect = () => {
+  showCcsClientSelect.value = false
+  pendingCcsRow.value = null
+}
+
 function formatResetTime(resetAt: string | null): string {
   if (!resetAt) return ''
   const diff = new Date(resetAt).getTime() - now.value.getTime()
@@ -2116,16 +2430,31 @@ function formatResetTime(resetAt: string | null): string {
 onMounted(() => {
   loadSavedColumns()
   loadApiKeys()
-  loadGroups()
-  loadUserGroupRates()
+  loadGroupPricing()
   loadPublicSettings()
   document.addEventListener('click', closeGroupSelector)
+  document.addEventListener('visibilitychange', handleConcurrencyVisibility)
   resetTimer = setInterval(() => { now.value = new Date() }, 60000)
 })
 
 onUnmounted(() => {
+  disposed = true
+  stopConcurrencyRefresh()
+  abortController?.abort()
+  document.removeEventListener('visibilitychange', handleConcurrencyVisibility)
   ccSwitchCatalogController?.abort()
   document.removeEventListener('click', closeGroupSelector)
   if (resetTimer) clearInterval(resetTimer)
 })
 </script>
+
+<style scoped>
+:deep([data-field='current_concurrency']) {
+  flex-wrap: wrap;
+}
+
+:deep([data-field='current_concurrency'] > div) {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+</style>

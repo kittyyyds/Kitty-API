@@ -10,26 +10,18 @@ import {
 const {
   createAccountMock,
   probeUpstreamBillingMock,
-  previewUpstreamGroup,
   syncUpstreamModelsMock,
   showWarningMock,
   importCodexSessionMock,
   createOpenAICodexPATMock,
-  generateAuthUrlMock,
-  exchangeCodeMock,
-  refreshOpenAITokenMock,
   authIsSimpleMode,
 } = vi.hoisted(() => ({
   createAccountMock: vi.fn(),
   probeUpstreamBillingMock: vi.fn(),
-  previewUpstreamGroup: vi.fn(),
   syncUpstreamModelsMock: vi.fn(),
   showWarningMock: vi.fn(),
   importCodexSessionMock: vi.fn(),
   createOpenAICodexPATMock: vi.fn(),
-  generateAuthUrlMock: vi.fn(),
-  exchangeCodeMock: vi.fn(),
-  refreshOpenAITokenMock: vi.fn(),
   authIsSimpleMode: { value: true },
 }))
 
@@ -54,23 +46,23 @@ vi.mock('@/api/admin', () => ({
     accounts: {
       create: createAccountMock,
       probeUpstreamBilling: probeUpstreamBillingMock,
-      previewUpstreamGroup,
       syncUpstreamModels: syncUpstreamModelsMock,
       checkMixedChannelRisk: vi.fn().mockResolvedValue({ has_risk: false }),
       importCodexSession: importCodexSessionMock,
       createOpenAICodexPAT: createOpenAICodexPATMock,
-      generateAuthUrl: generateAuthUrlMock,
-      exchangeCode: exchangeCodeMock,
-      refreshOpenAIToken: refreshOpenAITokenMock,
     },
     settings: {
-      getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
       getSettings: vi.fn().mockResolvedValue({}),
+      getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
     },
     tlsFingerprintProfiles: {
       list: vi.fn().mockResolvedValue([]),
     },
   },
+}))
+
+vi.mock('@/api/admin/accounts', () => ({
+  getAntigravityDefaultModelMapping: vi.fn().mockResolvedValue([]),
 }))
 
 vi.mock('vue-i18n', async () => {
@@ -96,10 +88,11 @@ const OAuthAuthorizationFlowStub = defineComponent({
     showCodexSessionImportOption: Boolean,
     showAgentIdentityOption: Boolean,
     showCodexPatOption: Boolean,
+    showOpenaiPasswordOption: Boolean,
     initialInputMethod: String,
   },
-  data: () => ({ inputMethod: 'manual', authCode: 'authorization-code', oauthState: 'oauth-state' }),
-  emits: ['import-codex-session', 'import-codex-pat', 'generate-url', 'validate-refresh-token', 'validate-mobile-refresh-token'],
+  data: () => ({ inputMethod: 'manual' }),
+  emits: ['import-codex-session', 'import-codex-pat', 'openai-password-authorized'],
   template: `
     <div>
       <button data-testid="import-codex-session" @click="$emit('import-codex-session', 'session-json')">session</button>
@@ -146,6 +139,22 @@ const ModelWhitelistSelectorStub = defineComponent({
   >models</button>`,
 })
 
+const ProxySelectorStub = defineComponent({
+  name: 'ProxySelector',
+  props: {
+    modelValue: {
+      type: Array,
+      default: () => [],
+    },
+  },
+  emits: ['update:modelValue'],
+  template: `
+    <div>
+      <button type="button" data-testid="set-proxies" @click="$emit('update:modelValue', [11, 12])">proxies</button>
+    </div>
+  `,
+})
+
 function mountModal(groups: any[] = []) {
   return mount(CreateAccountModal, {
     props: { show: true, proxies: [], groups },
@@ -157,11 +166,12 @@ function mountModal(groups: any[] = []) {
         Select: true,
         Icon: true,
         PlatformIcon: true,
-        ProxySelector: true,
+        ProxySelector: ProxySelectorStub,
         ProxyAdBanner: true,
         GroupSelector: GroupSelectorStub,
         ModelWhitelistSelector: ModelWhitelistSelectorStub,
         QuotaLimitCard: true,
+        OpenAIVMManagedWizard: true,
       },
     },
   })
@@ -207,31 +217,6 @@ async function openCodexImportStep(toggleClicks = 0) {
   return wrapper
 }
 
-type OpenAICreateMethod = 'code' | 'refresh-token' | 'mobile-refresh-token' | 'session' | 'pat' | 'agent-identity'
-
-async function submitOpenAIOAuthMethod(wrapper: ReturnType<typeof mountModal>, method: OpenAICreateMethod) {
-  const flow = wrapper.getComponent(OAuthAuthorizationFlowStub)
-  if (method === 'code') {
-    flow.vm.$emit('generate-url')
-    await flushPromises()
-    await selectButtonByText(wrapper, 'admin.accounts.oauth.completeAuth')
-  } else if (method === 'refresh-token' || method === 'mobile-refresh-token') {
-    flow.vm.$emit(method === 'refresh-token' ? 'validate-refresh-token' : 'validate-mobile-refresh-token', 'refresh-token')
-  } else if (method === 'pat') {
-    flow.vm.$emit('import-codex-pat', 'pat-token')
-  } else {
-    if (method === 'agent-identity') flow.vm.inputMethod = 'agent_identity'
-    flow.vm.$emit('import-codex-session', method === 'agent-identity'
-      ? JSON.stringify({ auth_mode: 'agentIdentity', agent_identity: { agent_runtime_id: 'runtime' } })
-      : 'session-json')
-  }
-  await flushPromises()
-  const mock = method === 'pat' ? createOpenAICodexPATMock
-    : method === 'session' || method === 'agent-identity' ? importCodexSessionMock : createAccountMock
-  expect(mock).toHaveBeenCalledTimes(1)
-  return mock.mock.calls[0]?.[0]
-}
-
 describe('CreateAccountModal OpenAI long-context billing', () => {
   beforeEach(() => {
     authIsSimpleMode.value = true
@@ -248,110 +233,61 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
       warnings: [],
     })
     createOpenAICodexPATMock.mockReset().mockResolvedValue({})
-    generateAuthUrlMock.mockReset().mockResolvedValue({
-      auth_url: 'https://auth.example/authorize?state=oauth-state',
-      session_id: 'oauth-session',
-    })
-    const tokenInfo = { access_token: 'access-token', refresh_token: 'refresh-token', email: 'test@example.com' }
-    exchangeCodeMock.mockReset().mockResolvedValue(tokenInfo)
-    refreshOpenAITokenMock.mockReset().mockResolvedValue(tokenInfo)
   })
 
   afterEach(() => vi.useRealTimers())
 
-  it.each<OpenAICreateMethod>(['code', 'refresh-token', 'mobile-refresh-token', 'session', 'pat', 'agent-identity'])(
-    'defaults %s OAuth creation to concurrency 10 and Hosted image bridge', async (method) => {
-      const wrapper = await openCodexImportStep()
-      const payload = await submitOpenAIOAuthMethod(wrapper, method)
-      expect(payload.concurrency).toBe(10)
-      expect(payload.extra.codex_image_generation_bridge).toBe(true)
-      expect(payload.extra).not.toHaveProperty('codex_image_generation_bridge_enabled')
-      expect(payload.extra).not.toHaveProperty('codex_image_generation_explicit_tool_policy')
-      wrapper.unmount()
-    },
-  )
-
-  it.each([
-    ['enabled', true, undefined],
-    ['disabled', false, undefined],
-    ['inherit', null, undefined],
-    ['block', undefined, 'strip'],
-  ])('preserves the explicit %s image policy and concurrency on OAuth import', async (mode, bridge, toolPolicy) => {
-    const wrapper = mountModal()
-    await selectButtonByText(wrapper, 'OpenAI')
-    await wrapper.get('[data-testid="create-account-concurrency"]').setValue(23)
-    await wrapper.get('[data-testid="create-codex-image-tool-mode"]').setValue(mode)
-    await wrapper.get('form#create-account-form input[type="text"]').setValue('Custom OAuth settings')
+  it('keeps the full form before VM creation and passes common settings to the wizard', async () => {
+    const wrapper = mountModal([{id:1, name:'VM group', platform:'openai'}, {id:2, name:'Other', platform:'openai'}])
+    await selectButtonByText(wrapper,'OpenAI')
+    await wrapper.get('[data-testid="select-vm-managed"]').trigger('click')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('KVM pool')
+    await wrapper.get('#account-cost-multiplier').setValue('0.5')
+    await wrapper.get('[data-testid="account-group-rate-multiplier"]').setValue('0.65')
+    await wrapper.get('[data-testid="select-pricing-groups"]').trigger('click')
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
-    const payload = await submitOpenAIOAuthMethod(wrapper, 'session')
-    expect(payload.concurrency).toBe(23)
-    if (mode === 'block') {
-      expect(payload.extra).not.toHaveProperty('codex_image_generation_bridge')
-    } else {
-      expect(payload.extra.codex_image_generation_bridge).toBe(bridge)
-    }
-    if (toolPolicy) {
-      expect(payload.extra.codex_image_generation_explicit_tool_policy).toBe(toolPolicy)
-    } else {
-      expect(payload.extra).not.toHaveProperty('codex_image_generation_explicit_tool_policy')
-    }
-    expect(payload.extra).not.toHaveProperty('codex_image_generation_bridge_enabled')
+    await flushPromises()
+    const wizard = wrapper.findComponent({name:'OpenAIVMManagedWizard'})
+    expect(wizard.props('show')).toBe(true)
+    expect(wizard.props('namePrefix')).toBe('KVM pool')
+    expect(wizard.props('settings')).toMatchObject({group_ids:[1,2],group_rate_multiplier:0.65,extra:{cost_multiplier:0.5}})
+    expect(createAccountMock).not.toHaveBeenCalled()
+    wizard.vm.$emit('back');await flushPromises()
+    expect((wrapper.get('form#create-account-form input[type="text"]').element as HTMLInputElement).value).toBe('KVM pool')
     wrapper.unmount()
   })
 
-  it('changes untouched defaults only for GPT OAuth and keeps explicit concurrency', async () => {
-    const wrapper = mountModal()
-    const concurrency = () => wrapper.get<HTMLInputElement>('[data-testid="create-account-concurrency"]')
-    expect(concurrency().element.value).toBe('10')
-    await selectButtonByText(wrapper, 'OpenAI')
-    expect(concurrency().element.value).toBe('10')
-    expect(wrapper.get<HTMLSelectElement>('[data-testid="create-codex-image-tool-mode"]').element.value).toBe('enabled')
-    await selectButtonByText(wrapper, 'API Key')
-    expect(concurrency().element.value).toBe('10')
-    expect(wrapper.find('[data-testid="create-codex-image-tool-mode"]').exists()).toBe(false)
-    await selectButtonByText(wrapper, 'Anthropic')
-    expect(concurrency().element.value).toBe('10')
-    await selectButtonByText(wrapper, 'Grok')
-    expect(concurrency().element.value).toBe('1')
-    await selectButtonByText(wrapper, 'OpenAI')
-    expect(concurrency().element.value).toBe('10')
-    await concurrency().setValue(17)
-    await selectButtonByText(wrapper, 'API Key')
-    expect(concurrency().element.value).toBe('17')
-    wrapper.unmount()
-  })
-
-  it('restores GPT OAuth defaults when reopening the create dialog', async () => {
+  it('persists the manually selected cost and account group billing multipliers', async () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'OpenAI')
-    await wrapper.get('[data-testid="create-account-concurrency"]').setValue(23)
-    await wrapper.get('[data-testid="create-codex-image-tool-mode"]').setValue('block')
-    await wrapper.setProps({ show: false })
-    await wrapper.setProps({ show: true })
-    await selectButtonByText(wrapper, 'OpenAI')
-    expect(wrapper.get<HTMLInputElement>('[data-testid="create-account-concurrency"]').element.value).toBe('10')
-    expect(wrapper.get<HTMLSelectElement>('[data-testid="create-codex-image-tool-mode"]').element.value).toBe('enabled')
-    wrapper.unmount()
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('manual rates')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('fixture-key')
+    await wrapper.get('#account-cost-multiplier').setValue('0.5')
+    await wrapper.get('[data-testid="account-group-rate-multiplier"]').setValue('0.65')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0][0]).toMatchObject({
+      group_rate_multiplier: 0.65, extra: { cost_multiplier: 0.5 }
+    })
   })
 
-  it.each(['openai', 'anthropic'] as const)('keeps %s API key creation defaults unchanged', async (platform) => {
-    const wrapper = await submitApiKeyAccount(platform)
-    const payload = createAccountMock.mock.calls[0]?.[0]
-    expect(payload.concurrency).toBe(10)
-    expect(payload.extra ?? {}).not.toHaveProperty('codex_image_generation_bridge')
-    expect(payload.extra ?? {}).not.toHaveProperty('codex_image_generation_explicit_tool_policy')
-    wrapper.unmount()
-  })
-
-  it('new OpenAI OAuth accounts hide policy copy and manual model controls', async () => {
+  it('no longer offers the removed Excel OAuth / BPS options', async () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'OpenAI')
-    expect(wrapper.find('[data-testid="astra-oauth-model-policy"]').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('admin.accounts.openai.astraPolicyTitle')
-    expect(wrapper.find('[data-testid="model-whitelist-selector"]').exists()).toBe(false)
-    await selectButtonByText(wrapper, 'API Key')
-    expect(wrapper.find('[data-testid="astra-oauth-model-policy"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="model-whitelist-selector"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="select-excel-oauth"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="excel-bps-settings"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('does not add Excel BPS extra during Codex session import', async () => {
+    const wrapper = await openCodexImportStep()
+    await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
+    await flushPromises()
+    expect(importCodexSessionMock).toHaveBeenCalledTimes(1)
+    expect(importCodexSessionMock.mock.calls[0]?.[0]?.extra ?? {}).not.toHaveProperty('openai_excel_bps')
+    wrapper.unmount()
   })
 
   it('sets month and year expiry presets without submitting the account form', async () => {
@@ -396,7 +332,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     wrapper.unmount()
   })
 
-  it('keeps the account opt-in when every selected group enables tier pricing', async () => {
+  it('hides only the redundant account toggle when every selected group enables tier pricing', async () => {
     authIsSimpleMode.value = false
     const wrapper = mountModal([
       { id: 1, long_context_pricing_enabled: true },
@@ -406,8 +342,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await selectButtonByText(wrapper, 'OpenAI')
     await wrapper.get('[data-testid="select-pricing-groups"]').trigger('click')
 
-    const toggle = wrapper.get('[data-testid="openai-long-context-billing-toggle"]')
-    expect(toggle.attributes('aria-checked')).toBe('true')
+    expect(wrapper.find('[data-testid="openai-long-context-billing-toggle"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="create-openai-ws-mode"]').exists()).toBe(true)
   })
 
@@ -425,87 +360,35 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     expect(wrapper.find('[data-testid="create-openai-ws-mode"]').exists()).toBe(true)
   })
 
-  it('sends true explicitly for normal OpenAI account creation by default', async () => {
+  it('sends false explicitly for normal OpenAI account creation by default', async () => {
     await submitApiKeyAccount('openai')
 
     expect(createAccountMock).toHaveBeenCalledTimes(1)
-    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(true)
-    expect(createAccountMock.mock.calls[0]?.[0]?.extra).not.toHaveProperty(
-      'openai_compatible_provider'
-    )
+    expect(createAccountMock.mock.calls[0]?.[0]?.rate_limit_429_retry_count).toBeUndefined()
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
   })
 
-  it.each([
-    {
-      provider: 'mimo',
-      baseUrl: 'https://api.xiaomimimo.com/v1',
-      modelMapping: { 'mimo-v2.5': 'mimo-v2.5' },
-      responsesMode: 'force_responses'
-    },
-    {
-      provider: 'zhipu_glm',
-      baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-      modelMapping: {
-        'glm-4.7-flash': 'glm-4.7-flash',
-        'glm-4.7-flashx': 'glm-4.7-flashx'
-      },
-      responsesMode: 'force_chat_completions'
-    },
-    {
-      provider: 'alibaba_qwen',
-      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-      modelMapping: { 'qwen3.7-flash': 'qwen3.7-flash' },
-      responsesMode: 'force_responses'
-    }
-  ])('applies and submits the $provider provider preset', async ({
-    provider,
-    baseUrl,
-    modelMapping,
-    responsesMode
-  }) => {
+  it('does not expose or submit the removed 429 retry setting', async () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'OpenAI')
     await selectButtonByText(wrapper, 'API Key')
-    await wrapper.get(`[data-testid="openai-provider-preset-${provider}"]`).trigger('click')
-
-    const baseUrlInput = wrapper.get<HTMLInputElement>('[data-testid="api-key-base-url"]')
-    expect(baseUrlInput.element.value).toBe(baseUrl)
-    expect(baseUrlInput.element.disabled).toBe(true)
-    expect(wrapper.get('[data-testid="openai-provider-force-non-reasoning"]').exists()).toBe(true)
-
-    await wrapper.get('form#create-account-form input[type="text"]').setValue(`${provider} account`)
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('OpenAI account')
     await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    expect(wrapper.find('#create-rate-limit-429-retry-count').exists()).toBe(false)
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
 
-    const payload = createAccountMock.mock.calls[0]?.[0]
-    expect(payload?.credentials?.base_url).toBe(baseUrl)
-    expect(payload?.credentials?.model_mapping).toEqual(modelMapping)
-    expect(payload?.credentials?.openai_capabilities).toEqual(['chat_completions'])
-    expect(payload?.extra?.openai_compatible_provider).toBe(provider)
-    expect(payload?.extra?.openai_responses_mode).toBe(responsesMode)
+    expect(createAccountMock.mock.calls[0]?.[0]?.rate_limit_429_retry_count).toBeUndefined()
   })
 
-  it('keeps provider-populated values editable when switching back to custom', async () => {
-    const wrapper = mountModal()
-    await selectButtonByText(wrapper, 'OpenAI')
-    await selectButtonByText(wrapper, 'API Key')
-    await wrapper.get('[data-testid="openai-provider-preset-mimo"]').trigger('click')
-    await wrapper.get('[data-testid="openai-provider-preset-custom"]').trigger('click')
-
-    const baseUrlInput = wrapper.get<HTMLInputElement>('[data-testid="api-key-base-url"]')
-    expect(baseUrlInput.element.disabled).toBe(false)
-    expect(baseUrlInput.element.value).toBe('https://api.xiaomimimo.com/v1')
-    await baseUrlInput.setValue('https://relay.example/v1')
-
-    await wrapper.get('form#create-account-form input[type="text"]').setValue('custom account')
-    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
-    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+  it('does not expose or submit the removed quota extension for OAuth imports', async () => {
+    const wrapper = await openCodexImportStep()
+    expect(wrapper.find('[data-testid="create-codex-quota-overdraft-toggle"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
     await flushPromises()
 
-    const payload = createAccountMock.mock.calls[0]?.[0]
-    expect(payload?.credentials?.base_url).toBe('https://relay.example/v1')
-    expect(payload?.extra).not.toHaveProperty('openai_compatible_provider')
+    expect(importCodexSessionMock).toHaveBeenCalledTimes(1)
+    expect(importCodexSessionMock.mock.calls[0]?.[0]?.extra ?? {}).not.toHaveProperty('codex_quota_overdraft_enabled')
   })
 
   it('omits the upstream request id header from extra when left empty', async () => {
@@ -647,6 +530,17 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     expect(wrapper.find('[data-testid="create-openai-flatten-namespaces-toggle"]').exists()).toBe(
       false
     )
+  })
+
+  it('defaults to the four official fingerprint modes and exposes no retired ceiling', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    const select = wrapper.getComponent('[data-testid="create-codex-fingerprint-mode-select"]')
+    expect(select.props('modelValue')).toBe('off')
+    expect(select.props('options').map((option: { value: string }) => option.value)).toEqual(['off', 'device', 'session', 'full'])
+    await selectButtonByText(wrapper, 'API Key')
+    expect(wrapper.find('[data-testid="upstream-billing-rate-limit"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="upstream-billing-auto-probe"]').attributes('disabled')).toBeUndefined()
   })
 
   it('enables upstream billing probes by default for new OpenAI API key accounts', async () => {
@@ -1015,6 +909,31 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     expect(flow.props('initialInputMethod')).toBe('manual')
   })
 
+  it('saves password/2FA grants as normal OAuth with the complete account settings', async () => {
+    const wrapper = mountModal([{id:1, name:'Group 1', platform:'openai'}, {id:2, name:'Group 2', platform:'openai'}])
+    await selectButtonByText(wrapper, 'OpenAI')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Direct OAuth')
+    await wrapper.get('#account-cost-multiplier').setValue('0.5')
+    await wrapper.get('[data-testid="account-group-rate-multiplier"]').setValue('0.65')
+    await wrapper.get('[data-testid="select-pricing-groups"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    const flow = wrapper.getComponent(OAuthAuthorizationFlowStub)
+    expect(flow.props('showOpenaiPasswordOption')).toBe(true)
+    flow.vm.$emit('openai-password-authorized', {
+      proxy_id: 7,
+      token_info: { access_token:'synthetic-access', refresh_token:'synthetic-refresh', client_id:'app_EMoamEEZ73f0CkXaXp7hrann', expires_at: 1900000000, email:'owner@example.test' },
+    })
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    const request = createAccountMock.mock.calls[0][0]
+    expect(request).toMatchObject({name:'Direct OAuth',platform:'openai',type:'oauth',proxy_id:7,group_ids:[1,2],group_rate_multiplier:0.65})
+    expect(request.extra).toMatchObject({cost_multiplier:0.5})
+    expect(request.extra.openai_vm_managed).toBeUndefined()
+    expect(request.credentials.refresh_token).toBe('synthetic-refresh')
+    expect(wrapper.emitted('created')).toHaveLength(1)
+  })
+
   it.each([
     ['camelCase', { authMode: 'agentIdentity', agentIdentity: { agentRuntimeId: 'runtime' } }],
     ['nested identity without auth_mode', { agent_identity: { agent_runtime_id: 'runtime' } }],
@@ -1029,11 +948,11 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     expect(importCodexSessionMock).toHaveBeenCalledTimes(1)
   })
 
-  it('sends false explicitly when OpenAI long-context billing is turned off', async () => {
+  it('sends true explicitly when OpenAI long-context billing is enabled', async () => {
     await submitApiKeyAccount('openai', true)
 
     expect(createAccountMock).toHaveBeenCalledTimes(1)
-    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(true)
   })
 
   it('omits the OpenAI setting for non-OpenAI account creation', async () => {
@@ -1051,32 +970,39 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     expect(createAccountMock.mock.calls[0]?.[0]?.upstream_billing_probe_enabled).toBe(false)
   })
 
+  it('antigravity upstream 创建默认携带上游倍率探测开关', async () => {
+    // antigravity upstream 走独立创建 helper，
+    // 也必须与其余 API-key 平台一样默认开启探测并传递开关。
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Antigravity')
+    await selectButtonByText(wrapper, 'admin.accounts.types.antigravityApikey')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('antigravity relay')
+    const baseInput = wrapper
+      .findAll('input')
+      .find((candidate) => candidate.attributes('placeholder') === 'https://cloudcode-pa.googleapis.com')
+    expect(baseInput).toBeDefined()
+    await baseInput?.setValue('https://relay.example')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-upstream')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    const payload = createAccountMock.mock.calls[0]?.[0]
+    expect(payload?.platform).toBe('antigravity')
+    expect(payload?.type).toBe('apikey')
+    expect(payload?.upstream_billing_probe_enabled).toBe(true)
+    // 创建成功后前端立即发起一次首探（与其他 apikey 平台一致）。
+    expect(probeUpstreamBillingMock).toHaveBeenCalledWith(42)
+  })
+
   it('leaves Codex session import billing ownership to the backend', async () => {
     const wrapper = await openCodexImportStep()
     await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
     await flushPromises()
 
     expect(importCodexSessionMock).toHaveBeenCalledTimes(1)
+    expect(importCodexSessionMock.mock.calls[0]?.[0]?.rate_limit_429_retry_count).toBeUndefined()
     expect(importCodexSessionMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBeUndefined()
-  })
-
-  it('defaults new OpenAI OAuth accounts to the ctx_pool WS v2 mode', async () => {
-    const wrapper = await openCodexImportStep()
-    await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
-    await flushPromises()
-
-    const extra = importCodexSessionMock.mock.calls[0]?.[0]?.extra
-    expect(extra?.openai_oauth_responses_websockets_v2_mode).toBe('ctx_pool')
-    expect(extra?.openai_oauth_responses_websockets_v2_enabled).toBe(true)
-  })
-
-  it('keeps new OpenAI API key accounts on the off WS v2 mode', async () => {
-    await submitApiKeyAccount('openai')
-
-    const extra = createAccountMock.mock.calls[0]?.[0]?.extra
-    expect(extra?.openai_apikey_responses_websockets_v2_mode).toBe('off')
-    expect(extra?.openai_apikey_responses_websockets_v2_enabled).toBe(false)
-    expect(extra?.openai_oauth_responses_websockets_v2_mode).toBeUndefined()
   })
 
   it('leaves Codex PAT import billing ownership to the backend', async () => {
@@ -1085,47 +1011,205 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await flushPromises()
 
     expect(createOpenAICodexPATMock).toHaveBeenCalledTimes(1)
+    expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.rate_limit_429_retry_count).toBeUndefined()
     expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBeUndefined()
   })
 
-  it('sends explicit false for Codex session import after the toggle is turned off', async () => {
+  it('sends explicit true for Codex session import after the toggle is enabled', async () => {
     const wrapper = await openCodexImportStep(1)
-    await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
-    await flushPromises()
-
-    expect(importCodexSessionMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
-  })
-
-  it('sends explicit true for Codex session import after the toggle is changed back', async () => {
-    const wrapper = await openCodexImportStep(2)
     await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
     await flushPromises()
 
     expect(importCodexSessionMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(true)
   })
 
-  it('sends explicit false for Codex PAT import after the toggle is turned off', async () => {
-    const wrapper = await openCodexImportStep(1)
-    await wrapper.get('[data-testid="import-codex-pat"]').trigger('click')
+  it('sends explicit false for Codex session import after the toggle is changed back', async () => {
+    const wrapper = await openCodexImportStep(2)
+    await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
     await flushPromises()
 
-    expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
+    expect(importCodexSessionMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
   })
 
-  it('sends explicit true for Codex PAT import after the toggle is changed back', async () => {
-    const wrapper = await openCodexImportStep(2)
+  it('sends explicit true for Codex PAT import after the toggle is enabled', async () => {
+    const wrapper = await openCodexImportStep(1)
     await wrapper.get('[data-testid="import-codex-pat"]').trigger('click')
     await flushPromises()
 
     expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(true)
   })
+
+  it('sends explicit false for Codex PAT import after the toggle is changed back', async () => {
+    const wrapper = await openCodexImportStep(2)
+    await wrapper.get('[data-testid="import-codex-pat"]').trigger('click')
+    await flushPromises()
+
+    expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
+  })
 })
 
-describe('CreateAccountModal Vertex service account', () => {
+describe('CreateAccountModal gemini explicit cache upstream switch', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    createAccountMock.mockReset().mockResolvedValue({ id: 43, platform: 'gemini', type: 'apikey' })
+    probeUpstreamBillingMock.mockReset().mockResolvedValue({})
+    syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
+  })
+
+  it('only offers the switch for a custom base url and sends it on create', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Gemini')
+    await selectButtonByText(wrapper, 'admin.accounts.gemini.accountType.apiKeyTitle')
+    expect(wrapper.find('[data-testid="explicit-cache-upstream-section"]').exists()).toBe(false)
+
+    const baseUrlInput = wrapper
+      .findAll('form#create-account-form input[type="text"]')
+      .find((input) => (input.element as HTMLInputElement).value === 'https://generativelanguage.googleapis.com')
+    expect(baseUrlInput).toBeDefined()
+    await baseUrlInput!.setValue('https://upstream.example.com')
+    expect(wrapper.find('[data-testid="explicit-cache-upstream-section"]').exists()).toBe(true)
+
+    await wrapper.get('[data-testid="explicit-cache-upstream-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="explicit-cache-upstream-max-ttl"]').setValue('1800')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('gemini upstream gateway')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-upstream')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      base_url: 'https://upstream.example.com',
+      explicit_cache_upstream: true,
+      explicit_cache_upstream_max_ttl_seconds: 1800
+    })
+  })
+
+  it('only offers the AI Studio tier for the official base url', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Gemini')
+    await selectButtonByText(wrapper, 'admin.accounts.gemini.accountType.apiKeyTitle')
+    expect(wrapper.find('[data-testid="gemini-oauth-tier"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="gemini-apikey-note"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="gemini-apikey-tier"]').setValue('aistudio_paid')
+
+    const baseUrlInput = wrapper
+      .findAll('form#create-account-form input[type="text"]')
+      .find((input) => (input.element as HTMLInputElement).value === 'https://generativelanguage.googleapis.com')
+    expect(baseUrlInput).toBeDefined()
+    await baseUrlInput!.setValue('https://upstream.example.com')
+    expect(wrapper.find('[data-testid="gemini-apikey-tier"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="gemini-apikey-note"]').exists()).toBe(false)
+
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('gemini relay')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-upstream')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    const credentials = createAccountMock.mock.calls[0]?.[0]?.credentials
+    expect(credentials).toMatchObject({ base_url: 'https://upstream.example.com' })
+    expect(credentials).not.toHaveProperty('tier_id')
+  })
+
+  it('shows the OAuth tier fallback only on the OAuth form', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Gemini')
+    await selectButtonByText(wrapper, 'admin.accounts.gemini.accountType.oauthTitle')
+    expect(wrapper.find('[data-testid="gemini-oauth-tier"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="gemini-apikey-note"]').exists()).toBe(false)
+  })
+
+  it('keeps the selected AI Studio tier for the official base url', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Gemini')
+    await selectButtonByText(wrapper, 'admin.accounts.gemini.accountType.apiKeyTitle')
+    await wrapper.get('[data-testid="gemini-apikey-tier"]').setValue('aistudio_paid')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('gemini official')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('AIza-official')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      base_url: 'https://generativelanguage.googleapis.com',
+      tier_id: 'aistudio_paid'
+    })
+  })
+})
+
+describe('CreateAccountModal Vertex API key auth', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    createAccountMock.mockReset().mockResolvedValue({ id: 44, platform: 'gemini', type: 'service_account' })
+    probeUpstreamBillingMock.mockReset().mockResolvedValue({})
+    syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
+  })
+
+  async function openGeminiVertexApiKeyForm() {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Gemini')
+    await selectButtonByText(wrapper, 'admin.accounts.vertexLabel')
+    await wrapper.get('[data-testid="vertex-auth-mode-apikey"]').setValue(true)
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('vertex api key account')
+    await wrapper.get('[data-testid="vertex-api-key-input"]').setValue(' vertex-key ')
+    return wrapper
+  }
+
+  it('creates a Gemini Vertex account with API key auth and no project for the express endpoint', async () => {
+    const wrapper = await openGeminiVertexApiKeyForm()
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    const payload = createAccountMock.mock.calls[0]?.[0]
+    expect(payload?.platform).toBe('gemini')
+    expect(payload?.type).toBe('service_account')
+    expect(payload?.credentials).toEqual({
+      auth_mode: 'apikey',
+      api_key: 'vertex-key',
+      location: 'global',
+      tier_id: 'vertex'
+    })
+  })
+
+  it('sends the project id when an API key account targets a project endpoint', async () => {
+    const wrapper = await openGeminiVertexApiKeyForm()
+    await wrapper.get('[data-testid="vertex-api-key-project-id-input"]').setValue(' my-project ')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      auth_mode: 'apikey',
+      api_key: 'vertex-key',
+      project_id: 'my-project',
+      location: 'global'
+    })
+  })
+
   it('keeps Anthropic Vertex accounts on Service Account JSON only', async () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'admin.accounts.vertexLabel')
     expect(wrapper.find('[data-testid="vertex-auth-mode-apikey"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="vertex-api-key-input"]').exists()).toBe(false)
   })
+
+  it('keeps a source whitelist when passthrough filtering is explicitly enabled', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('filtered passthrough')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('local-test-key')
+    await wrapper.get('[data-testid="openai-passthrough-toggle"]').trigger('click')
+    const filter = wrapper.get('[data-testid="openai-passthrough-model-filter"]')
+    expect((filter.element as HTMLInputElement).checked).toBe(false)
+    await filter.setValue(true)
+    await wrapper.get('[data-testid="model-whitelist-selector"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    const payload = createAccountMock.mock.calls.at(-1)?.[0]
+    expect(payload?.extra).toMatchObject({ openai_passthrough: true, openai_passthrough_model_filter: true })
+    expect(payload?.credentials.model_mapping).toEqual({ 'public-glm': 'public-glm' })
+    wrapper.unmount()
+  })
+
 })

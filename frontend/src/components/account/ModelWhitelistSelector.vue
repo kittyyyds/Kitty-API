@@ -238,7 +238,7 @@ const availableOptions = computed(() => {
 
   const allowedModels = new Set<string>()
   for (const platform of normalizedPlatforms.value) {
-    for (const model of getModelsByPlatform(platform)) {
+    for (const model of getModelsByPlatform(platform, true)) {
       allowedModels.add(model)
     }
   }

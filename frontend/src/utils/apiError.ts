@@ -3,11 +3,9 @@
  *
  * The API client interceptor rejects with a plain object: { status, code, message, error }
  * This utility extracts the user-facing message from any error shape.
- * Website popups prefer i18n by error code so they follow the selected locale.
- * API clients still receive bilingual backend messages.
  */
 
-import { i18n } from '@/i18n'
+import { localizeClientErrorMessage } from './clientErrorMessage'
 
 interface ApiErrorLike {
   status?: number
@@ -124,27 +122,12 @@ export function extractI18nErrorMessage(
  * @param fallback - Fallback message if none can be extracted (use t('common.error') or similar)
  * @param i18nMap - Optional map of error codes to i18n translated strings
  */
-function lookupCommonApiError(err: unknown): string | undefined {
-  const code = extractApiErrorCode(err)
-  if (!code || /^\d+$/.test(code)) return undefined
-  const key = `common.apiErrors.${code}`
-  const global = i18n.global as unknown as {
-    t: TranslateFn
-    te?: (key: string) => boolean
-  }
-  if (typeof global.t !== 'function') return undefined
-  if (typeof global.te === 'function' && !global.te(key)) return undefined
-  const translated = String(global.t(key, extractApiErrorMetadata(err)))
-  if (!translated || translated === key) return undefined
-  return translated
-}
-
 export function extractApiErrorMessage(
   err: unknown,
   fallback = 'Unknown error',
   i18nMap?: Record<string, string>,
 ): string {
-  if (!err) return fallback
+  if (!err) return localizeClientErrorMessage(fallback)
 
   // Try i18n mapping by error code first
   if (i18nMap) {
@@ -152,24 +135,23 @@ export function extractApiErrorMessage(
     if (code && i18nMap[code]) return i18nMap[code]
   }
 
-  const localized = lookupCommonApiError(err)
-  if (localized) return localized
-
   // Plain object from API client interceptor (most common case)
   if (typeof err === 'object' && err !== null) {
     const e = err as ApiErrorLike
     // Interceptor shape: { message, error }
-    if (e.message) return e.message
-    if (e.error) return e.error
+    const code = extractApiErrorCode(err)
+    const status = e.status
+    if (e.message) return localizeClientErrorMessage(e.message, { code, status })
+    if (e.error) return localizeClientErrorMessage(e.error, { code, status })
     // Legacy axios shape: { response.data.detail }
-    if (e.response?.data?.detail) return e.response.data.detail
-    if (e.response?.data?.message) return e.response.data.message
+    if (e.response?.data?.detail) return localizeClientErrorMessage(e.response.data.detail, { code, status })
+    if (e.response?.data?.message) return localizeClientErrorMessage(e.response.data.message, { code, status })
   }
 
   // Standard Error
-  if (err instanceof Error) return err.message
+  if (err instanceof Error) return localizeClientErrorMessage(err.message)
 
   // Last resort
   const str = String(err)
-  return str === '[object Object]' ? fallback : str
+  return str === '[object Object]' ? fallback : localizeClientErrorMessage(str, { fallback })
 }

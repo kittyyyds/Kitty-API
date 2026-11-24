@@ -8,7 +8,10 @@ vi.mock('@/i18n', () => {
     'nav.subscribe': '订阅',
     'nav.buySubscription': '充值/订阅',
   }
-  return { i18n: { global: { t: (key: string) => messages[key] ?? key } } }
+  return { i18n: { global: { locale: { value: 'en' },
+    t: (key: string) => messages[key] ?? key,
+    te: (key: string) => key in messages,
+  } } }
 })
 
 describe('resolveDocumentTitle', () => {
@@ -21,8 +24,8 @@ describe('resolveDocumentTitle', () => {
   })
 
   it('站点名为空时，回退默认站点名', () => {
-    expect(resolveDocumentTitle('Dashboard', '')).toBe('Dashboard - Sub2API')
-    expect(resolveDocumentTitle(undefined, '   ')).toBe('Sub2API')
+    expect(resolveDocumentTitle('Dashboard', '')).toBe('Dashboard - Kitty奇妙屋')
+    expect(resolveDocumentTitle(undefined, '   ')).toBe('Kitty奇妙屋')
   })
 
   it('站点名变更时仅影响后续路由标题计算', () => {
@@ -35,6 +38,19 @@ describe('resolveDocumentTitle', () => {
 })
 
 describe('resolveRouteDocumentTitle', () => {
+  it('原生客户功能使用固定本地化标题，不依赖后台自定义菜单', () => {
+    const route = {
+      name: 'CustomPage',
+      params: { id: 'billing-rules' },
+      meta: {
+        title: 'Custom Page',
+        titleKey: 'customPage.title'
+      }
+    }
+
+    expect(resolveRouteDocumentTitle(route, 'KittyAPI')).toBe('计费规则 - KittyAPI')
+  })
+
   it('自定义页面菜单加载后，使用菜单名称作为标题', () => {
     const route = {
       name: 'CustomPage',
@@ -55,6 +71,27 @@ describe('resolveRouteDocumentTitle', () => {
         sort_order: 0
       }
     ])).toBe('账号调度器 - EzouAPI')
+  })
+
+  it('自定义页面标题跟随界面语言并兼容旧名称字段', async () => {
+    const route = { name: 'CustomPage', params: { id: 'recharge' }, meta: { title: 'Custom Page' } }
+    const menu = [{
+      id: 'recharge',
+      label: '旧版本名称',
+      label_zh: '充值中心',
+      label_en: 'Recharge',
+      icon_svg: '',
+      url: 'https://example.com',
+      visibility: 'user' as const,
+      sort_order: 0,
+    }]
+
+    expect(resolveRouteDocumentTitle(route, 'EzouAPI', menu)).toBe('Recharge - EzouAPI')
+    const { i18n } = await import('@/i18n')
+    i18n.global.locale.value = 'zh'
+    expect(resolveRouteDocumentTitle(route, 'EzouAPI', menu)).toBe('充值中心 - EzouAPI')
+    expect(resolveRouteDocumentTitle(route, 'EzouAPI', [{ ...menu[0], label_zh: '', label_en: '', label: 'Legacy' }]))
+      .toBe('Legacy - EzouAPI')
   })
 })
 

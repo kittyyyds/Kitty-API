@@ -28,11 +28,12 @@ describe("groups image pricing platform support", () => {
     expect(supportsImagePricingPlatform("anthropic")).toBe(false);
   });
 
-  it("defaults image generation on for Grok groups only", () => {
+  it("defaults image generation on for Grok and Gemini-family groups only", () => {
     expect(defaultAllowImageGenerationForPlatform("grok")).toBe(true);
+    expect(defaultAllowImageGenerationForPlatform("gemini")).toBe(true);
+    expect(defaultAllowImageGenerationForPlatform("antigravity")).toBe(true);
     expect(defaultAllowImageGenerationForPlatform("composite")).toBe(false);
     expect(defaultAllowImageGenerationForPlatform("openai")).toBe(false);
-    expect(defaultAllowImageGenerationForPlatform("anthropic")).toBe(false);
   });
 
   it("includes Composite groups in image pricing controls", () => {

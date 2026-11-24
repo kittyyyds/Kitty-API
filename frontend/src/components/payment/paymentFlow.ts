@@ -3,6 +3,7 @@ import type {
   CreateOrderResult,
   MethodLimit,
   OrderType,
+  SubscriptionRenewalMode,
   WechatJSAPIPayload,
   WechatOAuthInfo,
 } from '@/types/payment'
@@ -16,9 +17,11 @@ const VISIBLE_METHOD_ALIASES = {
   wxpay_direct: 'wxpay',
   stripe: 'stripe',
   airwallex: 'airwallex',
+  dujiaopay: 'dujiaopay',
+  paypal: 'paypal',
 } as const
 
-export type VisiblePaymentMethod = 'alipay' | 'wxpay' | 'stripe' | 'airwallex'
+export type VisiblePaymentMethod = 'alipay' | 'wxpay' | 'stripe' | 'airwallex' | 'dujiaopay' | 'paypal'
 export type StripeVisibleMethod = 'alipay' | 'wechat_pay'
 export type PaymentLaunchKind =
   | 'qr_waiting'
@@ -77,10 +80,12 @@ export interface PaymentLaunchDecision {
 }
 
 export interface BuildCreateOrderPayloadInput {
+  couponId?: number
   amount: number
   paymentType: string
   orderType: OrderType
   planId?: number
+  renewalMode?: SubscriptionRenewalMode
   origin?: string
   isMobile: boolean
   isWechatBrowser: boolean
@@ -136,8 +141,14 @@ export function buildCreateOrderPayload(input: BuildCreateOrderPayloadInput): Cr
       : 'hosted_redirect',
   }
 
+  if (input.orderType === 'balance' && input.couponId && Number.isSafeInteger(input.couponId) && input.couponId > 0) {
+    payload.coupon_id = input.couponId
+  }
   if (input.planId) {
     payload.plan_id = input.planId
+  }
+  if (input.orderType === 'subscription' && input.renewalMode) {
+    payload.renewal_mode = input.renewalMode
   }
   if (normalizedOrigin) {
     payload.return_url = `${normalizedOrigin}/payment/result`

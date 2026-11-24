@@ -1,6 +1,6 @@
 <template>
   <AppLayout>
-    <div class="mx-auto max-w-2xl space-y-6">
+    <div class="w-full min-w-0  space-y-6">
       <!-- Current Balance Card -->
       <div class="card overflow-hidden">
         <div class="bg-gradient-to-br from-primary-500 to-primary-600 px-6 py-8 text-center">
@@ -375,7 +375,6 @@ import { redeemAPI, authAPI, type RedeemHistoryItem } from '@/api'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { formatDateTime } from '@/utils/format'
-import { extractApiErrorMessage } from '@/utils/apiError'
 
 const { t } = useI18n()
 const authStore = useAuthStore()
@@ -409,7 +408,7 @@ const contactInfo = ref('')
 
 // Helper functions for history display
 const isBalanceType = (type: string) => {
-  return type === 'balance' || type === 'admin_balance'
+  return type === 'balance' || type === 'admin_balance' || type === 'qq_reward' || type === 'qq_transfer'
 }
 
 const isSubscriptionType = (type: string) => {
@@ -421,6 +420,8 @@ const isAdminAdjustment = (type: string) => {
 }
 
 const getHistoryItemTitle = (item: RedeemHistoryItem) => {
+  if (item.type === 'qq_reward') return t('qqbot.rewardCreditHistory')
+  if (item.type === 'qq_transfer') return t('qqbot.transferCreditHistory')
   if (item.type === 'balance') {
     return t('redeem.balanceAddedRedeem')
   } else if (item.type === 'admin_balance') {
@@ -514,7 +515,7 @@ const handleRedeem = async () => {
     // Show success toast
     appStore.showSuccess(t('redeem.codeRedeemSuccess'))
   } catch (error: any) {
-    errorMessage.value = extractApiErrorMessage(error, t('redeem.failedToRedeem'))
+    errorMessage.value = error.response?.data?.detail || t('redeem.failedToRedeem')
 
     appStore.showError(t('redeem.redeemFailed'))
   } finally {

@@ -15,15 +15,35 @@
               <Icon name="play" size="sm" class="text-green-500" :stroke-width="2" />
               {{ t('admin.accounts.testConnection') }}
             </button>
+            <button
+              v-if="!isShadow"
+              @click="$emit('sync-models', account); $emit('close')"
+              :disabled="syncingUpstreamModels"
+              :title="t('admin.accounts.syncUpstreamModelsReplaceHint')"
+              class="flex w-full items-center gap-2 px-4 py-2 text-sm text-emerald-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60 dark:text-emerald-400 dark:hover:bg-dark-700"
+            >
+              <Icon name="sync" size="sm" :class="syncingUpstreamModels ? 'animate-spin' : ''" />
+              {{ syncingUpstreamModels ? t('admin.accounts.syncUpstreamModelsLoading') : t('admin.accounts.syncUpstreamModels') }}
+            </button>
+            <button v-if="['openai', 'anthropic'].includes(account.platform)" @click="$emit('intelligence', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-dark-700"><Icon name="play" size="sm" class="text-amber-500" />{{ t('admin.accounts.manualIntelligence.title') }}</button>
             <button @click="$emit('stats', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-dark-700">
               <Icon name="chart" size="sm" class="text-indigo-500" />
               {{ t('admin.accounts.viewStats') }}
+            </button>
+            <button v-if="['openai', 'anthropic'].includes(account.platform)" @click="$emit('schedule', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-dark-700">
+              <Icon name="clock" size="sm" class="text-orange-500" />
+              {{ t('admin.accounts.intelligenceSchedule.title') }}
             </button>
             <button v-if="canDuplicate" @click="$emit('duplicate', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-dark-700">
               <Icon name="copy" size="sm" class="text-sky-500" />
               {{ t('admin.accounts.duplicateAccount') }}
             </button>
-            <template v-if="account.type === 'oauth' || account.type === 'setup-token'">
+            <!-- 影子账号不持凭据:重授权/刷新 token 对其无效(后端拒绝),故隐藏(外审 G4)。 -->
+            <button v-if="isVMManaged" data-testid="menu-vm-managed" @click="$emit('openai-vm-managed', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-sky-600 hover:bg-gray-100 dark:text-sky-400 dark:hover:bg-dark-700">
+              <Icon name="server" size="sm" />
+              {{ t('admin.accounts.vmManaged.menuOpen') }}
+            </button>
+            <template v-if="(account.type === 'oauth' || account.type === 'setup-token') && !isShadow && !isVMManaged">
               <button @click="$emit('reauth', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-blue-600 hover:bg-gray-100 dark:hover:bg-dark-700">
                 <Icon name="link" size="sm" />
                 {{ t('admin.accounts.reAuthorize') }}
@@ -33,12 +53,24 @@
                 {{ t('admin.accounts.refreshToken') }}
               </button>
             </template>
-            <button v-if="supportsPrivacy" @click="$emit('set-privacy', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-emerald-600 hover:bg-gray-100 dark:hover:bg-dark-700">
+            <button v-if="isOpenAIOAuthParent && !isVMManaged" @click="$emit('create-spark-shadow', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-amber-600 hover:bg-gray-100 dark:hover:bg-dark-700">
+              <Icon name="sparkles" size="sm" />
+              {{ t('admin.accounts.createSparkShadow') }}
+            </button>
+            <button v-if="isOpenAIOAuthParent && !isVMManaged" @click="$emit('openai-vm', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-sky-600 hover:bg-gray-100 dark:text-sky-400 dark:hover:bg-dark-700">
+              <Icon name="server" size="sm" />
+              {{ t('admin.accounts.openaiVm.title') }}
+            </button>
+            <button v-if="isOpenAIOAuthParent && !isVMManaged" @click="$emit('openai-ipv6', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-sky-600 hover:bg-gray-100 dark:text-sky-400 dark:hover:bg-dark-700">
+              <Icon name="server" size="sm" />
+              {{ t('admin.accounts.openaiIPv6.title') }}
+            </button>
+            <button v-if="supportsPrivacy && !isVMManaged" @click="$emit('set-privacy', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-emerald-600 hover:bg-gray-100 dark:hover:bg-dark-700">
               <Icon name="shield" size="sm" />
               {{ t('admin.accounts.setPrivacy') }}
             </button>
             <div v-if="hasRecoverableState" class="my-1 border-t border-gray-100 dark:border-dark-700"></div>
-            <button v-if="hasRecoverableState" @click="$emit('recover-state', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-emerald-600 hover:bg-gray-100 dark:hover:bg-dark-700">
+            <button v-if="hasRecoverableState" :title="t('admin.accounts.recoverStateHint')" @click="$emit('recover-state', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-emerald-600 hover:bg-gray-100 dark:hover:bg-dark-700">
               <Icon name="sync" size="sm" />
               {{ t('admin.accounts.recoverState') }}
             </button>
@@ -61,8 +93,13 @@ import { Icon } from '@/components/icons'
 import type { Account } from '@/types'
 import { supportsAccountQuota } from '@/utils/accountQuota'
 
-const props = defineProps<{ show: boolean; account: Account | null; anchorRect: DOMRect | null }>()
-const emit = defineEmits(['close', 'test', 'stats', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy'])
+const props = defineProps<{
+  show: boolean
+  account: Account | null
+  anchorRect: DOMRect | null
+  syncingUpstreamModels?: boolean
+}>()
+const emit = defineEmits(['close', 'test', 'intelligence', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow', 'openai-vm', 'openai-vm-managed', 'openai-ipv6', 'sync-models'])
 const { t } = useI18n()
 const menuRef = ref<HTMLElement | null>(null)
 const { width: viewportWidth, height: viewportHeight } = useWindowSize()
@@ -98,7 +135,7 @@ watch([menuRef, () => props.anchorRect, viewportWidth, viewportHeight], updatePo
 useResizeObserver(menuRef, updatePosition)
 
 const canDuplicate = computed(() => {
-  if (!props.account) return false
+  if (!props.account || props.account.parent_account_id != null) return false
   return ['apikey', 'upstream', 'bedrock', 'service_account'].includes(props.account.type)
 })
 const isRateLimited = computed(() => {
@@ -117,10 +154,27 @@ const isRateLimited = computed(() => {
 const isOverloaded = computed(() => props.account?.overload_until && new Date(props.account.overload_until) > new Date())
 const isTempUnschedulable = computed(() => props.account?.temp_unschedulable_until && new Date(props.account.temp_unschedulable_until) > new Date())
 const hasRecoverableState = computed(() => {
-  return props.account?.status === 'error' || Boolean(isRateLimited.value) || Boolean(isOverloaded.value) || Boolean(isTempUnschedulable.value)
+  const extra = props.account?.extra
+  const hasQualityHold = ['active_test_model_holds', 'active_pass_rate_holds'].some(key => {
+    const holds = extra?.[key]
+    return holds && typeof holds === 'object' && Object.values(holds).some(value => {
+      if (value === false) return false
+      return !(value && typeof value === 'object' && 'blocked' in value && value.blocked === false)
+    })
+  })
+  return props.account?.status === 'error' || props.account?.status === 'quality_paused' ||
+    extra?.active_test_all_models_paused === true || hasQualityHold ||
+    Boolean(isRateLimited.value) || Boolean(isOverloaded.value) || Boolean(isTempUnschedulable.value)
 })
+const isAntigravityOAuth = computed(() => props.account?.platform === 'antigravity' && props.account?.type === 'oauth')
 const isOpenAIOAuth = computed(() => props.account?.platform === 'openai' && props.account?.type === 'oauth')
-const supportsPrivacy = computed(() => isOpenAIOAuth.value)
+// 影子账号(链接型,持 parent_account_id)不持凭据、type 不可变,凭据/隐私类操作对其无效。
+const isShadow = computed(() => props.account?.parent_account_id != null)
+// A "parent" OpenAI OAuth account is one that is NOT itself a shadow (parent_account_id == null)
+const isOpenAIOAuthParent = computed(() => isOpenAIOAuth.value && !isShadow.value)
+// Login and tokens of a VM2-managed account live in its slot, not here.
+const isVMManaged = computed(() => isOpenAIOAuthParent.value && (props.account?.extra as Record<string, unknown> | undefined)?.openai_vm_managed === true)
+const supportsPrivacy = computed(() => (isAntigravityOAuth.value || isOpenAIOAuth.value) && !isShadow.value)
 const hasQuotaLimit = computed(() => {
   return supportsAccountQuota(props.account?.type) && (
     (props.account?.quota_limit ?? 0) > 0 ||

@@ -280,7 +280,6 @@ watch(
       return
     }
     status.value = null
-  },
-  { immediate: true }
+  }
 )
 </script>

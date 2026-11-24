@@ -123,14 +123,12 @@ describe('OpsErrorLogTable i18n keys exist in the errorLog namespace', () => {
   }
 })
 
-describe('OpsErrorLogTable final request scope', () => {
-  it('keeps legacy upstream status by default and uses the final status only on request views', async () => {
-    const row = { status_code: 503, final_request_status: 499 } as Partial<OpsErrorLog> & { final_request_status: number }
-    const wrapper = mountTable(row)
-    await wrapper.setProps({ visibleColumnKeys: ['status'] })
-    expect(wrapper.find('tbody td span').text()).toBe('503')
-    await wrapper.setProps({ visibleColumnKeys: ['status'], useFinalRequestStatus: true } as Parameters<typeof wrapper.setProps>[0])
-    expect(wrapper.find('tbody td span').text()).toBe('499')
-    wrapper.unmount()
-  })
+it('labels historical balance failures by source while preserving the raw message', () => {
+  const user = mountTable({ phase: 'request', error_source: 'client_request', error_owner: 'client', status_code: 403, message: 'insufficient balance' })
+  expect(user.get('[data-testid="balance-source"]').text()).toBe('admin.ops.balanceError.user')
+  expect(user.text()).toContain('insufficient balance')
+  user.unmount()
+  const upstream = mountTable({ status_code: 403, message: 'insufficient balance', account_id: 9 })
+  expect(upstream.get('[data-testid="balance-source"]').text()).toBe('admin.ops.balanceError.upstream')
+  upstream.unmount()
 })

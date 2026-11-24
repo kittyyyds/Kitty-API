@@ -1,9 +1,9 @@
 <template>
   <AppLayout>
     <div class="space-y-6">
-      <UsageStatsCards :stats="usageStats" :show-account-cost="false" :strike-standard-cost="true" />
+      <UsageStatsCards v-if="activeTab !== 'traffic'" :stats="usageStats" :show-account-cost="false" :strike-standard-cost="true" />
 
-      <div class="space-y-4">
+      <div v-if="activeTab !== 'traffic'" class="space-y-4">
         <div class="card p-4">
           <div class="flex flex-wrap items-center gap-4">
             <div class="flex items-center gap-2">
@@ -67,7 +67,7 @@
         </div>
       </div>
 
-      <div class="card p-6">
+      <div v-if="activeTab !== 'traffic'" class="card p-6">
         <div class="flex flex-wrap items-end justify-between gap-4">
           <div v-if="activeTab === 'errors'" class="flex flex-1 flex-wrap items-end gap-4">
             <div class="w-full sm:w-auto sm:min-w-[220px]">
@@ -168,13 +168,14 @@
         </div>
       </div>
 
-      <div v-if="errorViewEnabled" class="flex gap-2 border-b border-gray-200 dark:border-dark-700">
+      <div class="flex gap-2 border-b border-gray-200 dark:border-dark-700">
         <button class="tab" :class="{ 'tab-active': activeTab === 'usage' }" @click="activeTab = 'usage'">
           {{ t('usage.tabs.usage') }}
         </button>
-        <button class="tab" :class="{ 'tab-active': activeTab === 'errors' }" @click="switchToErrors">
+        <button v-if="errorViewEnabled" class="tab" :class="{ 'tab-active': activeTab === 'errors' }" @click="switchToErrors">
           {{ t('usage.tabs.errors') }}
         </button>
+        <button class="tab" :class="{ 'tab-active': activeTab === 'traffic' }" @click="activeTab = 'traffic'">{{ t('traffic.title') }}</button>
       </div>
 
       <template v-if="activeTab === 'usage'">
@@ -185,6 +186,7 @@
           :server-side-sort="true"
           :show-account-billing="false"
           :show-upstream-endpoint="false"
+          cache-rate-audience="user"
           default-sort-key="created_at"
           default-sort-order="desc"
           @sort="handleSort"
@@ -192,6 +194,7 @@
         />
 
         <Pagination
+          show-jump
           v-if="pagination.total > 0"
           :page="pagination.page"
           :total="pagination.total"
@@ -202,7 +205,7 @@
       </template>
 
       <UserErrorRequestsTable
-        v-else-if="errorViewEnabled"
+        v-else-if="activeTab === 'errors' && errorViewEnabled"
         :rows="errorRows"
         :total="errorTotal"
         :loading="errorLoading"
@@ -214,6 +217,7 @@
         @update:pageSize="onErrorPageSize"
         @ipGeoBatchFailed="handleIpGeoBatchFailed"
       />
+      <TrafficPanel v-if="activeTab === 'traffic'" :api-key-options="apiKeyOptions" class="card" />
     </div>
   </AppLayout>
 
@@ -221,6 +225,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { FeatureFlags, resolveFeatureFlag } from '@/utils/featureFlags'
@@ -231,6 +236,7 @@ import Select, { type SelectOption } from '@/components/common/Select.vue'
 import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'
 import UsageTable from '@/components/admin/usage/UsageTable.vue'
+import TrafficPanel from '@/components/usage/TrafficPanel.vue'
 import ModelDistributionChart from '@/components/charts/ModelDistributionChart.vue'
 import GroupDistributionChart from '@/components/charts/GroupDistributionChart.vue'
 import EndpointDistributionChart from '@/components/charts/EndpointDistributionChart.vue'
@@ -239,14 +245,10 @@ import Icon from '@/components/icons/Icon.vue'
 import UserErrorRequestsTable from '@/components/user/UserErrorRequestsTable.vue'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { formatReasoningEffort } from '@/utils/format'
+import { formatUsageCacheRate, showUsageCacheRate } from '@/utils/usageCacheRate'
+import { showUpstreamResponseModelToUsers } from '@/utils/upstreamResponseModel'
 import { getBillingModeLabel, getDisplayBillingMode as resolveDisplayBillingMode } from '@/utils/billingMode'
 import { resolveUsageRequestType, requestTypeToLegacyStream } from '@/utils/usageRequestType'
-import {
-  buildUsageRangeQuery,
-  createLast24HoursRange,
-  LAST_24_HOURS_PRESET,
-  type ExactUsageTimeRange,
-} from '@/utils/usageTimeRange'
 import type {
   ApiKey,
   EndpointStat,
@@ -264,6 +266,7 @@ import { COMMON_ERROR_STATUS_CODES } from '@/utils/errorBadges'
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const route = useRoute()
 
 type DistributionMetric = 'tokens' | 'actual_cost'
 type EndpointSource = 'inbound' | 'upstream' | 'path'
@@ -284,7 +287,6 @@ const endpointStatsLoading = ref(false)
 const exporting = ref(false)
 const errorRows = ref<UserErrorRequest[]>([])
 const errorLoading = ref(false)
-let errorRequestVersion = 0
 const errorPage = ref(1)
 const errorPageSize = ref(20)
 const errorSortBy = ref('created_at')
@@ -339,28 +341,34 @@ let chartReqSeq = 0
 let statsReqSeq = 0
 let modelStatsReqSeq = 0
 
+const formatLocalDate = (date: Date): string =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+
+const getLast24HoursRangeDates = () => {
+  const end = new Date()
+  const start = new Date(end.getTime() - 24 * 60 * 60 * 1000)
+  return { start: formatLocalDate(start), end: formatLocalDate(end) }
+}
+
 const getGranularityForRange = (start: string, end: string): 'day' | 'hour' => {
   const startTime = new Date(`${start}T00:00:00`).getTime()
   const endTime = new Date(`${end}T00:00:00`).getTime()
   return Math.ceil((endTime - startTime) / (1000 * 60 * 60 * 24)) <= 1 ? 'hour' : 'day'
 }
 
-const defaultRange = createLast24HoursRange()
+const defaultRange = getLast24HoursRangeDates()
 const startDate = ref(defaultRange.start)
 const endDate = ref(defaultRange.end)
-const activeDatePreset = ref<string | null>(LAST_24_HOURS_PRESET)
-const exactTimeRange = ref<ExactUsageTimeRange | null>({
-  start_time: defaultRange.start_time,
-  end_time: defaultRange.end_time,
-})
 const granularity = ref<'day' | 'hour'>(getGranularityForRange(startDate.value, endDate.value))
 
 const modelDistributionMetric = ref<DistributionMetric>('tokens')
 const groupDistributionMetric = ref<DistributionMetric>('tokens')
 const endpointDistributionMetric = ref<DistributionMetric>('tokens')
 const endpointDistributionSource = ref<EndpointSource>('inbound')
-const activeTab = ref<'usage' | 'errors'>('usage')
+const activeTab = ref<'usage' | 'errors' | 'traffic'>('usage')
 const errorViewEnabled = computed(() => appStore.cachedPublicSettings?.allow_user_view_error_requests ?? false)
+const includeCacheRate = computed(() => showUsageCacheRate(appStore.cachedPublicSettings, 'user'))
+const includeUpstreamResponseModel = computed(() => showUpstreamResponseModelToUsers(appStore.cachedPublicSettings))
 
 const filters = ref<UsageQueryParams>({
   start_date: startDate.value,
@@ -371,22 +379,20 @@ const filters = ref<UsageQueryParams>({
   billing_mode: null,
 })
 
-const refreshRollingRange = () => {
-  if (activeDatePreset.value !== LAST_24_HOURS_PRESET) return
-  const range = createLast24HoursRange()
-  startDate.value = range.start
-  endDate.value = range.end
-  filters.value.start_date = range.start
-  filters.value.end_date = range.end
-  exactTimeRange.value = {
-    start_time: range.start_time,
-    end_time: range.end_time,
+const applyRouteQueryFilters = () => {
+  const single = (value: string | null | Array<string | null> | undefined) =>
+    Array.isArray(value) ? value.find((item): item is string => typeof item === 'string' && item.length > 0) : value
+  const keyID = Number(single(route.query.api_key_id))
+  const start = single(route.query.start_date)
+  const end = single(route.query.end_date)
+  if (start && /^\d{4}-\d{2}-\d{2}$/.test(start)) startDate.value = start
+  if (end && /^\d{4}-\d{2}-\d{2}$/.test(end)) endDate.value = end
+  filters.value = { ...filters.value,
+    api_key_id: Number.isSafeInteger(keyID) && keyID > 0 ? keyID : undefined,
+    start_date: startDate.value, end_date: endDate.value,
   }
+  granularity.value = getGranularityForRange(startDate.value, endDate.value)
 }
-
-const usageRangeQuery = computed(() =>
-  buildUsageRangeQuery(startDate.value, endDate.value, exactTimeRange.value)
-)
 
 const pagination = reactive({
   page: 1,
@@ -450,7 +456,8 @@ const normalizedFilters = computed<UsageQueryParams>(() => {
   const legacyStream = requestType ? requestTypeToLegacyStream(requestType) : filters.value.stream
   return {
     ...filters.value,
-    ...usageRangeQuery.value,
+    start_date: startDate.value,
+    end_date: endDate.value,
     stream: legacyStream === null ? undefined : legacyStream,
   }
 })
@@ -561,7 +568,6 @@ const refreshModelOptions = (models: ModelStat[]) => {
 }
 
 const applyFilters = () => {
-  refreshRollingRange()
   pagination.page = 1
   void loadLogs()
   void loadStats()
@@ -571,7 +577,6 @@ const applyFilters = () => {
 }
 
 const refreshData = () => {
-  refreshRollingRange()
   void loadLogs()
   void loadStats()
   void loadModelStats()
@@ -580,14 +585,9 @@ const refreshData = () => {
 }
 
 const resetFilters = () => {
-  activeDatePreset.value = LAST_24_HOURS_PRESET
-  const range = createLast24HoursRange()
+  const range = getLast24HoursRangeDates()
   startDate.value = range.start
   endDate.value = range.end
-  exactTimeRange.value = {
-    start_time: range.start_time,
-    end_time: range.end_time,
-  }
   filters.value = {
     start_date: range.start,
     end_date: range.end,
@@ -605,14 +605,10 @@ const resetFilters = () => {
 }
 
 const onDateRangeChange = (range: { startDate: string; endDate: string; preset: string | null }) => {
-  activeDatePreset.value = range.preset
   startDate.value = range.startDate
   endDate.value = range.endDate
   filters.value.start_date = range.startDate
   filters.value.end_date = range.endDate
-  exactTimeRange.value = range.preset === LAST_24_HOURS_PRESET
-    ? exactTimeRange.value
-    : null
   granularity.value = getGranularityForRange(range.startDate, range.endDate)
   applyFilters()
 }
@@ -707,6 +703,7 @@ const exportToCSV = async () => {
       'Time',
       'API Key Name',
       'Model',
+      ...(includeUpstreamResponseModel.value ? ['Upstream Response Model'] : []),
       'Reasoning Effort',
       'Inbound Endpoint',
       'IP Address',
@@ -716,6 +713,7 @@ const exportToCSV = async () => {
       'Output Tokens',
       'Cache Read Tokens',
       'Cache Creation Tokens',
+      ...(includeCacheRate.value ? ['Cache Rate'] : []),
       'Rate Multiplier',
       'Billed Cost',
       'Original Cost',
@@ -726,6 +724,7 @@ const exportToCSV = async () => {
       log.created_at,
       log.api_key?.name || '',
       log.model,
+      ...(includeUpstreamResponseModel.value ? [log.upstream_response_model?.trim() || ''] : []),
       formatReasoningEffort(log.reasoning_effort),
       log.inbound_endpoint || '',
       log.ip_address || '',
@@ -735,6 +734,7 @@ const exportToCSV = async () => {
       log.output_tokens,
       log.cache_read_tokens,
       log.cache_creation_tokens,
+      ...(includeCacheRate.value ? [formatUsageCacheRate(log) ?? ''] : []),
       log.rate_multiplier,
       log.actual_cost.toFixed(8),
       log.total_cost.toFixed(8),
@@ -892,8 +892,6 @@ const loadFilterOptions = async () => {
 }
 
 const resetErrorRows = () => {
-  errorRequestVersion++
-  errorLoading.value = false
   errorPage.value = 1
   if (activeTab.value === 'errors') {
     void loadErrors()
@@ -904,14 +902,13 @@ const resetErrorRows = () => {
 }
 
 const loadErrors = async () => {
-  const version = ++errorRequestVersion
   errorLoading.value = true
   try {
     const resp = await usageAPI.listMyErrorRequests({
-      status_scope: 'request',
       page: errorPage.value,
       page_size: errorPageSize.value,
-      ...usageRangeQuery.value,
+      start_date: startDate.value,
+      end_date: endDate.value,
       model: (errorFilter.value.model ?? '').trim() || undefined,
       category: errorFilter.value.category || undefined,
       api_key_id: errorFilter.value.api_key_id ?? undefined,
@@ -919,15 +916,13 @@ const loadErrors = async () => {
       sort_by: errorSortBy.value,
       sort_order: errorSortOrder.value,
     })
-    if (version !== errorRequestVersion) return
     errorRows.value = resp.items
     errorTotal.value = resp.total
   } catch (error) {
-    if (version !== errorRequestVersion) return
     console.error('[UsageView] loadErrors failed:', error)
     appStore.showError(t('usage.errors.failedToLoad'))
   } finally {
-    if (version === errorRequestVersion) errorLoading.value = false
+    errorLoading.value = false
   }
 }
 
@@ -955,6 +950,7 @@ const switchToErrors = () => {
 }
 
 onMounted(() => {
+  applyRouteQueryFilters()
   loadSavedColumns()
   loadSavedErrColumns()
   document.addEventListener('click', handleColumnClickOutside)
@@ -963,7 +959,6 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  errorRequestVersion++
   abortController?.abort()
   document.removeEventListener('click', handleColumnClickOutside)
 })

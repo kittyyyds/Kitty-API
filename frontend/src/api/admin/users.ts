@@ -69,11 +69,10 @@ export async function list(
   pageSize: number = 20,
   filters?: {
     status?: 'active' | 'disabled'
-    role?: 'admin' | 'user'
+    role?: 'super_admin' | 'admin' | 'user'
     search?: string
     group_name?: string         // fuzzy filter by allowed group name
     api_key_group_id?: number   // filter users by the group their API keys are bound to
-    vip?: boolean               // filter by SVIP flag; omit = no filter
     attributes?: Record<number, string>  // attributeId -> value
     include_subscriptions?: boolean
     sort_by?: string
@@ -92,7 +91,6 @@ export async function list(
     search: filters?.search,
     group_name: filters?.group_name,
     api_key_group_id: filters?.api_key_group_id,
-    vip: filters?.vip,
     include_subscriptions: filters?.include_subscriptions,
     sort_by: filters?.sort_by,
     sort_order: filters?.sort_order
@@ -135,7 +133,7 @@ export async function create(userData: {
   password: string
   username?: string
   notes?: string
-  role?: 'admin' | 'user'
+  role?: 'super_admin' | 'admin' | 'user'
   balance?: number
   concurrency?: number
   rpm_limit?: number
@@ -209,6 +207,32 @@ export async function batchUpdateLimits(
   return data
 }
 
+/** Active non-admin user whose inbox identity matches a blacklisted email. */
+export interface BlacklistedEmailUser {
+  id: number
+  email: string
+  username: string
+}
+
+/** Find active non-admin users whose email (or an alias of it) is in the given list. */
+export async function findBlacklistedEmailUsers(
+  emails: string[]
+): Promise<{ items: BlacklistedEmailUser[]; total: number }> {
+  const { data } = await apiClient.post<{ items: BlacklistedEmailUser[]; total: number }>(
+    '/admin/users/blacklist-matches',
+    { emails }
+  )
+  return data
+}
+
+/** Disable multiple users; admins and already-disabled users are skipped. */
+export async function batchDisable(userIds: number[]): Promise<{ affected: number }> {
+  const { data } = await apiClient.post<{ affected: number }>('/admin/users/batch-disable', {
+    user_ids: userIds
+  })
+  return data
+}
+
 /**
  * Toggle user status
  * @param id - User ID
@@ -217,12 +241,6 @@ export async function batchUpdateLimits(
  */
 export async function toggleStatus(id: number, status: 'active' | 'disabled'): Promise<AdminUser> {
   return update(id, { status })
-}
-
-/** Manually grant or revoke SVIP. */
-export async function setVIP(id: number, vip: boolean): Promise<AdminUser> {
-  const { data } = await apiClient.post<AdminUser>(`/admin/users/${id}/vip`, { vip })
-  return data
 }
 
 /**
@@ -412,33 +430,7 @@ export async function resetPlatformQuotaWindow(
   return data
 }
 
-
-export interface BlacklistedEmailUser {
-  id: number
-  email: string
-  username: string
-}
-
-export async function findBlacklistedEmailUsers(
-  emails: string[]
-): Promise<{ items: BlacklistedEmailUser[]; total: number }> {
-  const { data } = await apiClient.post<{ items: BlacklistedEmailUser[]; total: number }>(
-    '/admin/users/blacklist-matches',
-    { emails }
-  )
-  return data
-}
-
-export async function batchDisable(userIds: number[]): Promise<{ affected: number }> {
-  const { data } = await apiClient.post<{ affected: number }>('/admin/users/batch-disable', {
-    user_ids: userIds
-  })
-  return data
-}
-
 export const usersAPI = {
-  findBlacklistedEmailUsers,
-  batchDisable,
   list,
   getById,
   create,
@@ -447,8 +439,9 @@ export const usersAPI = {
   updateBalance,
   updateConcurrency,
   batchUpdateLimits,
+  findBlacklistedEmailUsers,
+  batchDisable,
   toggleStatus,
-  setVIP,
   getUserApiKeys,
   getUserUsageStats,
   getUserBalanceHistory,

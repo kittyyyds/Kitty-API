@@ -39,7 +39,6 @@ const sampleLimit = 24
 
 const shortName = computed(() => {
   if (props.model === 'gpt-6-astra') return 'astra'
-  if (props.model === 'gpt-5.6-sol') return 'sol'
   return props.model
 })
 

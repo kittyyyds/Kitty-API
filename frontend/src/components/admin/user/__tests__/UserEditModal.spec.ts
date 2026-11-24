@@ -3,20 +3,22 @@ import { flushPromises, mount } from '@vue/test-utils'
 
 import UserEditModal from '../UserEditModal.vue'
 
-const { update, setVIP, updateUserAttributeValues, showSuccess, showError } = vi.hoisted(() => ({
+const { update, updateUserAttributeValues, showSuccess, showError, auth } = vi.hoisted(() => ({
   update: vi.fn(),
-  setVIP: vi.fn(),
   updateUserAttributeValues: vi.fn(),
   showSuccess: vi.fn(),
-  showError: vi.fn()
+  showError: vi.fn(),
+  auth: { isSimpleMode: false, isAdmin: false }
 }))
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
-    users: { update, setVIP },
+    users: { update },
     userAttributes: { updateUserAttributeValues }
   }
 }))
+
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ ...auth, isSuperAdmin: true, user: { id: 1 } }) }))
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({ showSuccess, showError })
@@ -49,6 +51,7 @@ const mountModal = (concurrency: number) => mount(UserEditModal, {
       Select: true,
       Icon: true,
       UserAttributeForm: true,
+      UserCleanupGuard: true,
       TotpStepUpDialog: true
     }
   }
@@ -56,13 +59,13 @@ const mountModal = (concurrency: number) => mount(UserEditModal, {
 
 describe('UserEditModal concurrency', () => {
   beforeEach(() => {
+    auth.isSimpleMode = false
+    auth.isAdmin = false
     update.mockReset()
-    setVIP.mockReset()
     updateUserAttributeValues.mockReset()
     showSuccess.mockReset()
     showError.mockReset()
     update.mockResolvedValue({})
-    setVIP.mockResolvedValue({})
   })
 
   // Regression coverage for issue #5977: the gateway treats concurrency <= 0 as
@@ -78,16 +81,6 @@ describe('UserEditModal concurrency', () => {
     expect(showError).not.toHaveBeenCalled()
     expect(update).toHaveBeenCalledWith(7, expect.objectContaining({ concurrency: 0 }))
     expect(wrapper.emitted('success')).toBeTruthy()
-  })
-
-  it('saves SVIP changes through setVIP', async () => {
-    const wrapper = mountModal(1)
-    await wrapper.get('[data-test="svip-checkbox"]').setValue(true)
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-
-    expect(update).toHaveBeenCalled()
-    expect(setVIP).toHaveBeenCalledWith(7, true)
   })
 
   it('still rejects a negative concurrency', async () => {

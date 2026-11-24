@@ -26,7 +26,7 @@ vi.mock('@/api/admin', () => ({
       update: updateAccountMock,
       getGrokMediaEligibility: getEligibilityMock,
       updateGrokMediaEligibility: updateEligibilityMock,
-      checkMixedChannelRisk: vi.fn().mockResolvedValue({ has_risk: false }),
+      checkMixedChannelRisk: vi.fn().mockResolvedValue({ has_risk: false })
     },
     settings: {
       getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
@@ -38,7 +38,7 @@ vi.mock('@/api/admin', () => ({
 vi.mock('@/api/admin/accounts', () => ({ getAntigravityDefaultModelMapping: vi.fn() }))
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
-  return { ...actual, useI18n: () => ({ t: (key: string) => key }) }
+  return { ...actual, useI18n: () => ({ locale: { value: 'zh' }, t: (key: string) => key }) }
 })
 
 import EditAccountModal from '../EditAccountModal.vue'

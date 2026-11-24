@@ -1,15 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
 import type { DashboardStats } from '@/types'
+import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import DashboardView from '../DashboardView.vue'
 
-const { getSnapshotV2, getUserUsageTrend, getUserSpendingRanking, routerPush } = vi.hoisted(() => ({
+const { getSnapshotV2, getUserUsageTrend, getUserSpendingRanking } = vi.hoisted(() => ({
   getSnapshotV2: vi.fn(),
   getUserUsageTrend: vi.fn(),
-  getUserSpendingRanking: vi.fn(),
-  routerPush: vi.fn()
+  getUserSpendingRanking: vi.fn()
 }))
 
 vi.mock('vue-chartjs', () => ({
@@ -34,7 +34,7 @@ vi.mock('@/stores/app', () => ({
 
 vi.mock('vue-router', () => ({
   useRouter: () => ({
-    push: routerPush
+    push: vi.fn()
   })
 }))
 
@@ -43,10 +43,51 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string) => key
+      t: (key: string) => key,
+      locale: { value: 'en' }
     })
   }
 })
+
+enableAutoUnmount(afterEach)
+
+const formatLocalDate = (date: Date): string => {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const mountDashboard = () => mount(DashboardView, {
+  global: {
+    stubs: {
+      AppLayout: { template: '<div><slot /></div>' },
+      LoadingSpinner: true,
+      Icon: true,
+      Select: true,
+      ModelDistributionChart: true,
+      TokenUsageTrend: true,
+      Line: true
+    }
+  }
+})
+
+const expectDashboardRange = (startDate: string, endDate: string) => {
+  expect(getSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({
+    start_date: startDate,
+    end_date: endDate,
+    granularity: 'hour'
+  }))
+  expect(getUserUsageTrend).toHaveBeenCalledWith(expect.objectContaining({
+    start_date: startDate,
+    end_date: endDate,
+    granularity: 'hour'
+  }))
+  expect(getUserSpendingRanking).toHaveBeenCalledWith(expect.objectContaining({
+    start_date: startDate,
+    end_date: endDate
+  }))
+}
 
 const createDashboardStats = (): DashboardStats => ({
   total_users: 0,
@@ -91,7 +132,6 @@ describe('admin DashboardView', () => {
     getSnapshotV2.mockReset()
     getUserUsageTrend.mockReset()
     getUserSpendingRanking.mockReset()
-    routerPush.mockReset()
 
     getSnapshotV2.mockResolvedValue({
       stats: createDashboardStats(),
@@ -142,63 +182,26 @@ describe('admin DashboardView', () => {
     expect(chart.props('data').datasets[0].data).toEqual([5])
   })
 
-  const mountDashboard = () => mount(DashboardView, {
-    global: {
-      stubs: {
-        AppLayout: { template: '<div><slot /></div>' },
-        LoadingSpinner: true,
-        Icon: true,
-        DateRangePicker: true,
-        Select: true,
-        ModelDistributionChart: true,
-        TokenUsageTrend: true,
-        Line: true
-      }
-    }
-  })
-
-  it('uses one exact rolling 24-hour range for every default dashboard request', async () => {
-    vi.useFakeTimers()
-    const now = new Date('2026-08-20T14:45:25.123Z')
+  it('requests an exact rolling 24-hour range initially and opts the picker into rolling ranges', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const now = new Date(2026, 9, 1, 0, 15, 30, 123)
     vi.setSystemTime(now)
 
     const wrapper = mountDashboard()
     await flushPromises()
 
-    const expectedRange = {
-      start_time: new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(),
-      end_time: now.toISOString()
-    }
-    const requests = [
-      getSnapshotV2.mock.calls[0][0],
-      getUserUsageTrend.mock.calls[0][0],
-      getUserSpendingRanking.mock.calls[0][0]
-    ]
+    const startDate = new Date(now.getTime() - 86_400_000).toISOString()
+    const endDate = now.toISOString()
 
-    expect(getSnapshotV2).toHaveBeenCalledTimes(1)
-    expect(getUserUsageTrend).toHaveBeenCalledTimes(1)
-    expect(getUserSpendingRanking).toHaveBeenCalledTimes(1)
-    for (const request of requests) {
-      expect(request).toEqual(expect.objectContaining(expectedRange))
-      expect(request.start_date).toBeUndefined()
-      expect(request.end_date).toBeUndefined()
-    }
-    expect(getSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({
-      granularity: 'hour'
-    }))
-
-    wrapper.findComponent({ name: 'ModelDistributionChart' }).vm.$emit('ranking-click', {
-      user_id: 42
-    })
-    expect(routerPush).toHaveBeenCalledWith({
-      path: '/admin/usage',
-      query: { user_id: '42' }
-    })
+    expect(Date.parse(endDate) - Date.parse(startDate)).toBe(86_400_000)
+    expectDashboardRange(startDate, endDate)
+    expect(wrapper.findComponent(DateRangePicker).props('rolling24Hours')).toBe(true)
   })
 
-  it('keeps calendar-day semantics for non-rolling dashboard ranges', async () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-08-20T14:45:25.123Z'))
+  it('sends exact timestamps for the dashboard Last 24 Hours preset', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const now = new Date(2026, 9, 1, 0, 15, 30, 123)
+    vi.setSystemTime(now)
 
     const wrapper = mountDashboard()
     await flushPromises()
@@ -206,41 +209,101 @@ describe('admin DashboardView', () => {
     getUserUsageTrend.mockClear()
     getUserSpendingRanking.mockClear()
 
-    wrapper.findComponent({ name: 'DateRangePicker' }).vm.$emit('change', {
-      startDate: '2026-08-01',
-      endDate: '2026-08-07',
-      preset: '7days'
-    })
+    await wrapper.get('.date-picker-trigger').trigger('click')
+    await wrapper.findAll('.date-picker-preset').find(button => button.text() === 'dates.last24Hours')!.trigger('click')
+    await wrapper.get('.date-picker-apply').trigger('click')
     await flushPromises()
 
-    const expectedRange = {
-      start_date: '2026-08-01',
-      end_date: '2026-08-07'
-    }
-    const requests = [
-      getSnapshotV2.mock.calls[0][0],
-      getUserUsageTrend.mock.calls[0][0],
-      getUserSpendingRanking.mock.calls[0][0]
-    ]
-    for (const request of requests) {
-      expect(request).toEqual(expect.objectContaining(expectedRange))
-      expect(request.start_time).toBeUndefined()
-      expect(request.end_time).toBeUndefined()
-    }
-    expect(getSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({
-      granularity: 'day'
-    }))
+    const startDate = new Date(now.getTime() - 86_400_000).toISOString()
+    const endDate = now.toISOString()
+    expect(Date.parse(endDate) - Date.parse(startDate)).toBe(86_400_000)
+    expectDashboardRange(startDate, endDate)
+  })
 
-    wrapper.findComponent({ name: 'ModelDistributionChart' }).vm.$emit('ranking-click', {
-      user_id: 42
-    })
-    expect(routerPush).toHaveBeenCalledWith({
-      path: '/admin/usage',
-      query: {
-        user_id: '42',
-        start_date: '2026-08-01',
-        end_date: '2026-08-07'
-      }
-    })
+  it('refreshes a rolling Last 24 Hours range from the current clock', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const initialNow = new Date(2026, 9, 1, 0, 15, 30, 123)
+    vi.setSystemTime(initialNow)
+
+    const wrapper = mountDashboard()
+    await flushPromises()
+    getSnapshotV2.mockClear()
+    getUserUsageTrend.mockClear()
+    getUserSpendingRanking.mockClear()
+
+    const refreshedNow = new Date(initialNow.getTime() + 3 * 60 * 60 * 1000)
+    vi.setSystemTime(refreshedNow)
+    const refreshButton = wrapper.findAll('button').find(button => button.attributes('aria-label') === 'common.refresh')
+    expect(refreshButton).toBeDefined()
+    await refreshButton!.trigger('click')
+    await flushPromises()
+
+    const startDate = new Date(refreshedNow.getTime() - 86_400_000).toISOString()
+    const endDate = refreshedNow.toISOString()
+    expect(Date.parse(endDate) - Date.parse(startDate)).toBe(86_400_000)
+    expect(getSnapshotV2).toHaveBeenCalledTimes(1)
+    expect(getUserUsageTrend).toHaveBeenCalledTimes(1)
+    expect(getUserSpendingRanking).toHaveBeenCalledTimes(1)
+    expectDashboardRange(startDate, endDate)
+  })
+
+  it('keeps Today and custom dashboard ranges date-only', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const now = new Date(2026, 9, 1, 0, 15, 30, 123)
+    vi.setSystemTime(now)
+
+    const wrapper = mountDashboard()
+    await flushPromises()
+
+    await wrapper.get('.date-picker-trigger').trigger('click')
+    await wrapper.findAll('.date-picker-preset').find(button => button.text() === 'dates.today')!.trigger('click')
+    await wrapper.get('.date-picker-apply').trigger('click')
+    await flushPromises()
+
+    const today = formatLocalDate(now)
+    expectDashboardRange(today, today)
+
+    getSnapshotV2.mockClear()
+    getUserUsageTrend.mockClear()
+    getUserSpendingRanking.mockClear()
+
+    vi.setSystemTime(new Date(2026, 9, 1, 3, 15, 30, 123))
+    const todayRefreshButton = wrapper.findAll('button').find(button => button.attributes('aria-label') === 'common.refresh')
+    expect(todayRefreshButton).toBeDefined()
+    await todayRefreshButton!.trigger('click')
+    await flushPromises()
+
+    expect(getSnapshotV2).toHaveBeenCalledTimes(1)
+    expect(getUserUsageTrend).toHaveBeenCalledTimes(1)
+    expect(getUserSpendingRanking).toHaveBeenCalledTimes(1)
+    expectDashboardRange(today, today)
+
+    getSnapshotV2.mockClear()
+    getUserUsageTrend.mockClear()
+    getUserSpendingRanking.mockClear()
+
+    await wrapper.get('.date-picker-trigger').trigger('click')
+    const inputs = wrapper.findAll<HTMLInputElement>('input[type="date"]')
+    await inputs[0].setValue('2026-09-28')
+    await inputs[1].setValue('2026-09-29')
+    await wrapper.get('.date-picker-apply').trigger('click')
+    await flushPromises()
+
+    expectDashboardRange('2026-09-28', '2026-09-29')
+
+    getSnapshotV2.mockClear()
+    getUserUsageTrend.mockClear()
+    getUserSpendingRanking.mockClear()
+
+    vi.setSystemTime(new Date(2026, 9, 1, 6, 15, 30, 123))
+    const refreshButton = wrapper.findAll('button').find(button => button.attributes('aria-label') === 'common.refresh')
+    expect(refreshButton).toBeDefined()
+    await refreshButton!.trigger('click')
+    await flushPromises()
+
+    expect(getSnapshotV2).toHaveBeenCalledTimes(1)
+    expect(getUserUsageTrend).toHaveBeenCalledTimes(1)
+    expect(getUserSpendingRanking).toHaveBeenCalledTimes(1)
+    expectDashboardRange('2026-09-28', '2026-09-29')
   })
 })

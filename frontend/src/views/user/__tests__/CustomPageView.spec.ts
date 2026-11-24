@@ -6,12 +6,14 @@ import CustomPageView from '../CustomPageView.vue'
 const { appStore } = vi.hoisted(() => ({
   appStore: {
     publicSettingsLoaded: true,
-    cachedPublicSettings: { custom_menu_items: [{ id: 'docs', url: 'https://example.com/docs' }] },
+    cachedPublicSettings: { custom_menu_items: [{ id: 'external-guide', url: 'https://example.com/docs' }] },
   },
 }))
 
 vi.mock('@/components/layout/AppLayout.vue', () => ({ default: { template: '<div><slot /></div>' } }))
-vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: 'docs' } }) }))
+// Kitty reserves "docs" for its native Feishu guide; exercise the generic embed
+// controls with a custom menu ID so native feature routing stays intact.
+vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: 'external-guide' } }) }))
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key, locale: { value: 'en' } }) }))
 vi.mock('@/stores', () => ({ useAppStore: () => appStore }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ isAdmin: false, user: { id: 7 }, token: 'test-token' }) }))
@@ -66,7 +68,7 @@ function click(button: HTMLElement, detail = 1) {
 
 describe('custom page open button', () => {
   beforeEach(() => {
-    appStore.cachedPublicSettings.custom_menu_items = [{ id: 'docs', url: 'https://example.com/docs' }]
+    appStore.cachedPublicSettings.custom_menu_items = [{ id: 'external-guide', url: 'https://example.com/docs' }]
     vi.stubGlobal('ResizeObserver', class {
       constructor(callback: () => void) { notifyResize = callback }
       observe() {}
@@ -90,7 +92,9 @@ describe('custom page open button', () => {
     const { wrapper, button } = mountEmbed()
     expect(button.href).toBe(wrapper.get('iframe').attributes('src'))
     expect(button.href).toContain('user_id=7')
-    expect(button.href).toContain('token=test-token')
+    expect(new URL(button.href).searchParams.has('token')).toBe(false)
+    expect(button.href).not.toContain('test-token')
+    expect(wrapper.get('iframe').attributes('referrerpolicy')).toBe('no-referrer')
     expect(button.target).toBe('_blank')
     expect(button.rel).toBe('noopener noreferrer')
     await pointer(button, 'pointerdown', 700, 24)
@@ -116,6 +120,15 @@ describe('custom page open button', () => {
     await pointer(button, 'pointermove', 220, 124)
     await pointer(button, 'pointerup', 220, 124)
     expect(click(button, 0).defaultPrevented).toBe(false)
+  })
+
+  it('keeps stale bearer credentials out of both iframe and new-window URLs', () => {
+    appStore.cachedPublicSettings.custom_menu_items[0].url = 'https://example.com/docs?%74oken=stale-jwt&token=duplicate-jwt&section=help'
+    const { wrapper, button } = mountEmbed()
+    const frameUrl = wrapper.get('iframe').attributes('src')
+    expect(button.href).toBe(frameUrl)
+    expect(frameUrl).not.toMatch(/stale-jwt|duplicate-jwt|test-token/)
+    expect(new URL(frameUrl).searchParams.get('section')).toBe('help')
   })
 
   it('keeps the button inside each boundary and reachable when the container shrinks', async () => {
@@ -157,7 +170,7 @@ describe('custom page open button', () => {
   })
 
   it('keeps Markdown pages separate from the embedded-page controls', async () => {
-    appStore.cachedPublicSettings.custom_menu_items = [{ id: 'docs', url: 'md:guide' }]
+    appStore.cachedPublicSettings.custom_menu_items = [{ id: 'external-guide', url: 'md:guide' }]
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, text: async () => '# Guide' }))
     const wrapper = mountPage()
     await flushPromises()

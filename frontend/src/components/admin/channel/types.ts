@@ -1,5 +1,7 @@
 import type { BillingMode, ChannelTimePricing, PricingInterval } from '@/api/admin/channels'
 import { REASONING_EFFORT_LEVELS } from '@/constants/channel'
+import type { ImageModelConfig } from '@/api/admin/imageUpstream'
+import type { VideoModelConfig } from '@/api/admin/videoUpstream'
 
 type TranslateFn = (key: string, params?: Record<string, unknown>) => string
 
@@ -22,6 +24,8 @@ export interface IntervalFormEntry {
 }
 
 export interface PricingFormEntry {
+  image?: ImageModelConfig
+  video?: VideoModelConfig
   models: string[]
   billing_mode: BillingMode
   input_price: number | string | null
@@ -30,9 +34,9 @@ export interface PricingFormEntry {
   cache_write_1h_price?: number | string | null
   cache_write_12h_price?: number | string | null
   cache_read_price: number | string | null
+  ultrafast_multiplier?: number | string | null
   fast_multiplier?: number | string | null
   flex_multiplier?: number | string | null
-  ultrafast_multiplier?: number | string | null
   reasoning_effort_multipliers?: Record<string, number | string> | null
   image_input_price: number | string | null
   image_output_price: number | string | null
@@ -308,7 +312,7 @@ export function findModelConflict(models: string[]): [string, string] | null {
  *
  * mode 决定区间语义：
  * - token：区间是上下文 token 数分段 (min, max]，不能重叠，无上限段必须放最后
- * - per_request / image：区间是按 tier_label 分层（1K/2K/4K 等），后端按 label
+ * - per_request / image / video：区间是按 tier_label 分层（1K/2K/4K、480p/720p/1080p 等），后端按 label
  *   匹配，不依赖 min/max，因此跳过重叠 / last-unlimited 校验
  */
 export function validateIntervals(
@@ -322,11 +326,11 @@ export function validateIntervals(
   const sorted = [...intervals].sort((a, b) => a.min_tokens - b.min_tokens)
 
   for (let i = 0; i < sorted.length; i++) {
-    const err = validateSingleInterval(sorted[i], i, t)
+    const err = validateSingleInterval(sorted[i], i, mode, t)
     if (err) return err
   }
 
-  // per_request / image 模式按 tier_label 匹配，不做 token 区间重叠校验
+  // 非 token 模式按 tier_label 匹配，不做 token 区间重叠校验
   if (mode !== 'token') return null
   return checkIntervalOverlap(sorted, t)
 }
@@ -343,7 +347,12 @@ function intervalPriceLabel(t: TranslateFn, key: string): string {
   return t(`admin.channels.intervalValidation.price.${key}`)
 }
 
-function validateSingleInterval(iv: IntervalFormEntry, idx: number, t: TranslateFn): string | null {
+function validateSingleInterval(
+  iv: IntervalFormEntry,
+  idx: number,
+  mode: BillingMode,
+  t: TranslateFn,
+): string | null {
   const index = idx + 1
   if (iv.min_tokens < 0) {
     return intervalValidationMessage(
@@ -368,10 +377,15 @@ function validateSingleInterval(iv: IntervalFormEntry, idx: number, t: Translate
       )
     }
   }
-  return validateIntervalPrices(iv, idx, t)
+  return validateIntervalPrices(iv, idx, mode, t)
 }
 
-function validateIntervalPrices(iv: IntervalFormEntry, idx: number, t: TranslateFn): string | null {
+function validateIntervalPrices(
+  iv: IntervalFormEntry,
+  idx: number,
+  mode: BillingMode,
+  t: TranslateFn,
+): string | null {
   const index = idx + 1
   const prices: [string, number | string | null][] = [
     ['inputPrice', iv.input_price],
@@ -384,7 +398,8 @@ function validateIntervalPrices(iv: IntervalFormEntry, idx: number, t: Translate
   ]
   for (const [key, val] of prices) {
     if (val != null && val !== '' && Number(val) < 0) {
-      const field = intervalPriceLabel(t, key)
+      const priceKey = key === 'perRequestPrice' && mode === 'video' ? 'perSecondPrice' : key
+      const field = intervalPriceLabel(t, priceKey)
       return intervalValidationMessage(
         t,
         'negativePrice',
@@ -405,6 +420,11 @@ function validateIntervalPrices(iv: IntervalFormEntry, idx: number, t: Translate
         field: intervalPriceLabel(t, key),
       })
     }
+  }
+  const hasPrice = prices.some(([, val]) => val != null && val !== '')
+  const hasMultiplier = multipliers.some(([, val]) => val != null && val !== '')
+  if (!hasPrice && !hasMultiplier) {
+    return intervalValidationMessage(t, 'missingPrice', { index })
   }
   return null
 }
@@ -439,6 +459,8 @@ export function getPlatformTagClass(platform: string): string {
   switch (platform) {
     case 'anthropic': return 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
     case 'openai': return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+    case 'gemini': return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+    case 'antigravity': return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
     case 'grok': return 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
     case 'kimi': return 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400'
     case 'zhipu': return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400'
@@ -452,6 +474,8 @@ export function getPlatformTextClass(platform: string): string {
   switch (platform) {
     case 'anthropic': return 'text-orange-700 dark:text-orange-400'
     case 'openai': return 'text-emerald-700 dark:text-emerald-400'
+    case 'gemini': return 'text-blue-700 dark:text-blue-400'
+    case 'antigravity': return 'text-purple-700 dark:text-purple-400'
     case 'grok': return 'text-slate-700 dark:text-slate-300'
     case 'kimi': return 'text-pink-700 dark:text-pink-400'
     case 'zhipu': return 'text-indigo-700 dark:text-indigo-400'

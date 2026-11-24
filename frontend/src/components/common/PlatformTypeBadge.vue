@@ -58,21 +58,8 @@
       </span>
     </div>
     <!-- Row 3: Subscription expiration (non-free paid accounts only) -->
-    <div
-      v-if="expiresLabel"
-      data-testid="subscription-expiry"
-      class="text-[10px] leading-tight text-gray-400 dark:text-gray-500 pl-0.5"
-      :title="formatDateTime(subscriptionExpiry, undefined, locale)"
-    >
+    <div v-if="expiresLabel" class="text-[10px] leading-tight text-gray-400 dark:text-gray-500 pl-0.5" :title="subscriptionExpiresAt">
       {{ expiresLabel }}
-    </div>
-    <div
-      v-if="subscriptionGrace"
-      data-testid="subscription-grace"
-      class="pl-0.5 text-[10px] leading-tight text-gray-400 dark:text-gray-500"
-      :title="formatDateTime(subscriptionGrace, undefined, locale)"
-    >
-      {{ t('admin.accounts.subscriptionGraceUntil', { date: formatDateLocalInput(subscriptionGrace) }) }}
     </div>
   </div>
 </template>
@@ -81,14 +68,13 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { AccountPlatform, AccountType } from '@/types'
-import { formatDateLocalInput, formatDateTime } from '@/utils/format'
 import { platformLabel as sharedPlatformLabel } from '@/utils/platformColors'
 import { normalizePlanType, openAIPlanTypeLabel } from '@/utils/planType'
 import GrokFreeIcon from './GrokFreeIcon.vue'
 import PlatformIcon from './PlatformIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 
 interface Props {
   platform: AccountPlatform
@@ -97,7 +83,6 @@ interface Props {
   planType?: string
   privacyMode?: string
   subscriptionExpiresAt?: string
-  subscriptionIsDelinquent?: boolean | null
 }
 
 const props = defineProps<Props>()
@@ -110,6 +95,7 @@ const normalizedAuthMode = computed(() =>
 
 const typeLabel = computed(() => {
   if (props.platform === 'openai' && props.type === 'oauth') {
+    if (normalizedAuthMode.value === 'bps') return 'BPS'
     if (normalizedAuthMode.value === 'agentidentity') return 'Agent Identity'
     if (normalizedAuthMode.value === 'personalaccesstoken') return 'PAT'
   }
@@ -131,7 +117,11 @@ const typeLabel = computed(() => {
 
 const normalizedPlanType = computed(() => normalizePlanType(props.planType))
 
+// API keys can proxy another account's errors; legacy plan metadata is not their subscription.
+const isOpenAIAPIKey = computed(() => props.platform === 'openai' && props.type === 'apikey')
+
 const planLabel = computed(() => {
+  if (isOpenAIAPIKey.value) return ''
   if (!normalizedPlanType.value) return ''
   // ChatGPT 档位命名（Pro 100 / Pro 200 / Pro 500、Business / Business Premium）只适用于
   // OpenAI：Antigravity 与 Grok 各自的 pro/team 沿用下面的通用标签。
@@ -197,6 +187,9 @@ const platformClass = computed(() => {
   if (props.platform === 'openai') {
     return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
   }
+  if (props.platform === 'antigravity') {
+    return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+  }
   if (props.platform === 'grok') {
     return 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300'
   }
@@ -221,6 +214,9 @@ const typeClass = computed(() => {
   }
   if (props.platform === 'openai') {
     return 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400'
+  }
+  if (props.platform === 'antigravity') {
+    return 'bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400'
   }
   if (props.platform === 'grok') {
     return 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300'
@@ -283,60 +279,32 @@ const planBadgeClass = computed(() => {
   return typeClass.value
 })
 
-const subscriptionExpiry = computed(() => {
-  if (!props.subscriptionExpiresAt || !normalizedPlanType.value) return null
+// Subscription expiration label (non-free only)
+const expiresLabel = computed(() => {
+  if (isOpenAIAPIKey.value) return ''
+  if (!props.subscriptionExpiresAt || !props.planType) return ''
   if (
     normalizedPlanType.value === 'free' ||
     normalizedPlanType.value === 'basic' ||
     normalizedPlanType.value === 'xbasic'
-  ) return null
-  const date = new Date(props.subscriptionExpiresAt)
-  if (!Number.isFinite(date.getTime())) return null
-  // Date parsing otherwise normalizes impossible ISO dates, such as February 30.
-  const isoDate = /^(\d{4}-\d{2}-\d{2})(?:T|$)/.exec(props.subscriptionExpiresAt)
-  if (isoDate && new Date(`${isoDate[1]}T00:00:00Z`).getUTCDate() !== Number(isoDate[1].slice(8))) {
-    return null
+  ) return ''
+  try {
+    const d = new Date(props.subscriptionExpiresAt)
+    if (isNaN(d.getTime())) return ''
+    const yyyy = d.getFullYear()
+    const mm = String(d.getMonth() + 1).padStart(2, '0')
+    const dd = String(d.getDate()).padStart(2, '0')
+    return `${t('admin.accounts.subscriptionExpires')} ${yyyy}-${mm}-${dd}`
+  } catch {
+    return ''
   }
-  if (props.platform === 'openai' && props.subscriptionIsDelinquent === true) {
-    // Keep the local time and clamp the day to the previous calendar month's end.
-    const previousMonthEnd = new Date(date.getTime())
-    previousMonthEnd.setDate(0)
-    date.setMonth(date.getMonth() - 1, Math.min(date.getDate(), previousMonthEnd.getDate()))
-  }
-  return Number.isFinite(date.getTime()) ? date : null
 })
 
-// Subscription expiration label (non-free only)
-const expiresLabel = computed(() => subscriptionExpiry.value
-  ? `${t('admin.accounts.subscriptionExpires')} ${formatDateLocalInput(subscriptionExpiry.value)}`
-  : '')
-
-const subscriptionGrace = computed(() => {
-  if (props.platform !== 'openai' || !subscriptionExpiry.value) return null
-  let days: number
-  switch (normalizedPlanType.value) {
-    case 'pro':
-    case 'chatgptpro':
-    case 'prolite':
-    case 'promax':
-      days = 14
-      break
-    case 'plus':
-      days = 30
-      break
-    default:
-      return null
-  }
-  // Fixed 24-hour days avoid DST calendar shifts.
-  const until = new Date(subscriptionExpiry.value.getTime() + days * 24 * 60 * 60 * 1000)
-  return Number.isFinite(until.getTime()) ? until : null
-})
-
-// Privacy badge — shows different states for OpenAI OAuth privacy setting
+// Privacy badge — shows different states for OpenAI/Antigravity OAuth privacy setting
 const privacyBadge = computed(() => {
   if (props.type !== 'oauth' || !props.privacyMode) return null
-  // 仅 OpenAI 平台支持
-  if (props.platform !== 'openai') return null
+  // 支持 OpenAI 和 Antigravity 平台
+  if (props.platform !== 'openai' && props.platform !== 'antigravity') return null
 
   const shieldCheck = 'M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z'
   const shieldX = 'M12 9v3.75m0-10.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285zM12 18h.008v.008H12V18z'
@@ -348,6 +316,11 @@ const privacyBadge = computed(() => {
       return { label: 'CF', icon: shieldX, title: t('admin.accounts.privacyCfBlocked'), class: 'bg-yellow-100 text-yellow-600 dark:bg-yellow-900/30 dark:text-yellow-400' }
     case 'training_set_failed':
       return { label: 'Fail', icon: shieldX, title: t('admin.accounts.privacyFailed'), class: 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400' }
+    // Antigravity states
+    case 'privacy_set':
+      return { label: 'Private', icon: shieldCheck, title: t('admin.accounts.privacyAntigravitySet'), class: 'bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400' }
+    case 'privacy_set_failed':
+      return { label: 'Fail', icon: shieldX, title: t('admin.accounts.privacyAntigravityFailed'), class: 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400' }
     default:
       return null
   }

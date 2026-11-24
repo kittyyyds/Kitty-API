@@ -5,19 +5,15 @@ import { mount } from '@vue/test-utils'
 import PlanEditDialog from '../PlanEditDialog.vue'
 import type { AdminGroup } from '@/types'
 
-vi.mock('vue-i18n', async () => {
-  const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
-  return {
-    ...actual,
-    useI18n: () => ({
-      t: (key: string, params?: Record<string, unknown>) => {
-        if (key === 'payment.admin.subscriptionCnyPayPreview') return `preview ${params?.amount}`
-        if (key === 'payment.admin.subscriptionCnyPayPreviewWithFee') return `fee ${params?.feeRate} ${params?.total}`
-        return key
-      },
-    }),
-  }
-})
+vi.mock('vue-i18n', () => ({
+  useI18n: () => ({
+    t: (key: string, params?: Record<string, unknown>) => {
+      if (key === 'payment.admin.subscriptionCnyPayPreview') return `preview ${params?.amount}`
+      if (key === 'payment.admin.subscriptionCnyPayPreviewWithFee') return `fee ${params?.feeRate} ${params?.total}`
+      return key
+    },
+  }),
+}))
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
@@ -112,6 +108,7 @@ const groupFixture = (overrides: Partial<AdminGroup>): AdminGroup => ({
   updated_at: '2026-07-01T00:00:00Z',
   model_routing: null,
   model_routing_enabled: false,
+  mcp_xml_inject: false,
   sort_order: 0,
   ...overrides,
 })
@@ -177,7 +174,7 @@ describe('PlanEditDialog', () => {
       groups: [
         groupFixture({
           id: 10,
-          name: 'OpenAI + Claude + Grok',
+          name: 'OpenAI + Claude + Gemini + Grok',
           platform: 'composite',
           rate_multiplier: 1.2,
           subscription_type: 'subscription',
@@ -193,7 +190,7 @@ describe('PlanEditDialog', () => {
 
     const options = wrapper.findAll('option').map(option => option.text())
 
-    expect(options).toContain('OpenAI + Claude + Grok — composite (1.2x)')
+    expect(options).toContain('OpenAI + Claude + Gemini + Grok — composite (1.2x)')
     expect(options).not.toContain('Standard OpenAI — openai (1x)')
   })
 })

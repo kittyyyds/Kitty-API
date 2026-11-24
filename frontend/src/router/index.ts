@@ -1,3 +1,4 @@
+import { settingsLocation } from '@/utils/settingsSearch'
 /**
  * Vue Router configuration for Sub2API frontend
  * Defines all application routes with lazy loading and navigation guards
@@ -31,21 +32,25 @@ const routes: RouteRecordRaw[] = [
 
   // ==================== Public Routes ====================
   {
-    path: '/home',
-    name: 'Home',
-    component: () => import('@/views/HomeView.vue'),
-    meta: {
-      requiresAuth: false,
-      title: 'Home'
-    }
-  },
-  {
     path: '/guide',
     name: 'Guide',
     component: () => import('@/views/public/GuideView.vue'),
+    meta: { requiresAuth: false, title: '使用教程', titleKey: 'admin.settings.tabs.guide' }
+  },
+  {
+    path: '/community',
+    name: 'Community',
+    component: () => import('@/views/public/CommunityView.vue'),
+    meta: { requiresAuth: false, title: 'QQ群与福利', titleKey: 'qqbot.communityTitle' }
+  },
+  {
+    path: '/home',
+    name: 'Home',
+    component: () => import('@/views/HomeLandingView.vue'),
     meta: {
       requiresAuth: false,
-      title: '使用教程'
+      title: 'Home',
+      titleKey: 'home.pageTitle'
     }
   },
   {
@@ -67,6 +72,10 @@ const routes: RouteRecordRaw[] = [
       title: 'Register',
       titleKey: 'auth.createAccount'
     }
+  },
+  {
+    path: '/signup',
+    redirect: (to) => ({ path: '/register', query: to.query, hash: to.hash }),
   },
   {
     path: '/email-verify',
@@ -158,6 +167,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/qqbot/bind',
+    name: 'QQBotBind',
+    component: () => import('@/views/auth/QQBotBindView.vue'),
+    meta: { requiresAuth: false, title: 'Confirm QQ Binding', titleKey: 'qqbot.emailBindTitle' }
+  },
+  {
+    path: '/qqbot/transfer',
+    name: 'QQBotTransfer',
+    component: () => import('@/views/auth/QQBotTransferView.vue'),
+    meta: { requiresAuth: false, title: 'Confirm balance transfer', titleKey: 'qqbot.transferConfirmTitle' }
+  },
+  {
     path: '/reset-password',
     name: 'ResetPassword',
     component: () => import('@/views/auth/ResetPasswordView.vue'),
@@ -201,17 +222,6 @@ const routes: RouteRecordRaw[] = [
     redirect: '/home'
   },
   {
-    path: '/pelican-test',
-    name: 'PelicanTest',
-    component: () => import('@/views/user/PelicanTestView.vue'),
-    meta: {
-      requiresAuth: true,
-      requiresAdmin: false,
-      title: 'Pelican Test',
-      titleKey: 'nav.pelicanTest'
-    }
-  },
-  {
     path: '/dashboard',
     name: 'Dashboard',
     component: () => import('@/views/user/DashboardView.vue'),
@@ -219,8 +229,7 @@ const routes: RouteRecordRaw[] = [
       requiresAuth: true,
       requiresAdmin: false,
       title: 'Dashboard',
-      titleKey: 'dashboard.title',
-      descriptionKey: 'dashboard.welcomeMessage'
+      titleKey: 'dashboard.title'
     }
   },
   {
@@ -236,6 +245,19 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/batch-image',
+    name: 'BatchImageGuide',
+    alias: '/docs/batch-image',
+    component: () => import('@/views/user/BatchImageGuideView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Batch Image Guide',
+      titleKey: 'batchImageGuide.title',
+      descriptionKey: 'batchImageGuide.description'
+    }
+  },
+  {
     path: '/usage',
     name: 'Usage',
     component: () => import('@/views/user/UsageView.vue'),
@@ -246,6 +268,53 @@ const routes: RouteRecordRaw[] = [
       titleKey: 'usage.title',
       descriptionKey: 'usage.description'
     }
+  },
+  {
+    path: '/test-results',
+    name: 'TestResults',
+    component: () => import('@/views/user/TestResultsView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: false, requiresChannelQualityPublic: true, title: 'Channel Quality Checks', titleKey: 'tests.title', descriptionKey: 'tests.description' }
+  },
+  {
+    path: '/gpt-direct',
+    name: 'GPTDirect',
+    component: () => import('@/views/user/GPTDirectView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: false, title: 'GPT Direct', titleKey: 'gptDirect.title', descriptionKey: 'gptDirect.subtitle' }
+  },
+  {
+    path: '/apps',
+    name: 'AppCenter',
+    component: () => import('@/views/user/CanvasRedirectView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: '无限画布 · 生图与视频',
+      titleKey: 'nav.creativeCanvas'
+    }
+  },
+  {
+    path: '/creative-canvas',
+    name: 'CreativeCanvas',
+    component: () => import('@/views/user/CreativeCanvasView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: false, title: '无限画布' }
+  },
+  {
+    path: '/video-tasks',
+    name: 'VideoTasks',
+    component: () => import('@/views/user/VideoTasksView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: false, title: '视频任务' }
+  },
+  {
+    path: '/admin/video-tasks',
+    name: 'AdminVideoTasks',
+    component: () => import('@/views/user/VideoTasksView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: '视频任务管理' }
+  },
+  {
+    path: '/admin/video-upstream',
+    name: 'AdminVideoUpstream',
+    component: () => import('@/views/admin/VideoUpstreamView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: '上游与自动跟价' }
   },
   {
     path: '/redeem',
@@ -260,16 +329,19 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/redeem-store',
-    name: 'RedeemStore',
-    component: () => import('@/views/user/RedeemStoreView.vue'),
+    path: '/billing',
+    name: 'Billing',
+    component: () => import('@/views/user/BillingView.vue'),
     meta: {
       requiresAuth: true,
       requiresAdmin: false,
-      title: 'Buy Redeem Codes',
-      titleKey: 'nav.buyRedeemCode'
+      title: 'Billing Statement',
+      titleKey: 'billing.title',
+      descriptionKey: 'billing.description'
     }
   },
+  { path: '/tickets', redirect: '/support-tickets' },
+  { path: '/admin/tickets', redirect: '/admin/support-tickets' },
   {
     path: '/affiliate',
     name: 'Affiliate',
@@ -283,6 +355,31 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/support-tickets',
+    name: 'SupportTickets',
+    component: () => import('@/views/user/SupportTicketsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      requiresSupportTickets: true,
+      title: 'Support Tickets',
+      titleKey: 'supportTickets.title',
+      descriptionKey: 'supportTickets.description'
+    }
+  },
+  {
+    path: '/support-tickets/:id(\\d+)',
+    name: 'SupportTicketDetail',
+    component: () => import('@/views/user/SupportTicketDetailView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      requiresSupportTickets: true,
+      title: 'Support Tickets',
+      titleKey: 'supportTickets.title'
+    }
+  },
+  {
     path: '/available-channels',
     name: 'UserAvailableChannels',
     component: () => import('@/views/user/AvailableChannelsView.vue'),
@@ -292,6 +389,29 @@ const routes: RouteRecordRaw[] = [
       title: 'Available Channels',
       titleKey: 'availableChannels.title',
       descriptionKey: 'availableChannels.description'
+    }
+  },
+  {
+    path: '/settings/mcp',
+    name: 'MCP',
+    component: () => import('@/views/user/MCPView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'MCP Connection',
+      titleKey: 'mcp.title',
+      descriptionKey: 'mcp.description'
+    }
+  },
+  {
+    path: '/oauth/mcp/authorize',
+    name: 'MCPOAuthAuthorize',
+    component: () => import('@/views/auth/MCPOAuthAuthorizeView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Authorize MCP Application',
+      titleKey: 'mcp.consentTitle'
     }
   },
   {
@@ -341,6 +461,19 @@ const routes: RouteRecordRaw[] = [
       requiresAdmin: false,
       title: 'My Orders',
       titleKey: 'nav.myOrders',
+      requiresPayment: true
+    }
+  },
+  { path: '/coupons', name: 'UserCoupons', component: () => import('@/views/user/UserCouponsView.vue'), meta: { requiresAuth: true, requiresAdmin: false, title: 'My coupons', titleKey: 'coupon.title' } },
+  {
+    path: '/invoices',
+    name: 'UserInvoices',
+    component: () => import('@/views/user/UserInvoicesView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Self-service invoicing',
+      titleKey: 'invoice.title',
       requiresPayment: true
     }
   },
@@ -404,6 +537,34 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/image-generator',
+    redirect: '/apps'
+  },
+  {
+    path: '/custom/image-generator',
+    redirect: '/apps'
+  },
+  {
+    // Retired feature: old bookmarks return to the dashboard.
+    path: '/custom/reset-radar',
+    alias: '/reset-radar',
+    redirect: '/dashboard'
+  },
+  {
+    path: '/billing-rules',
+    redirect: '/custom/billing-rules'
+  },
+  ...(import.meta.env.DEV ? [{
+    path: '/billing-rules-preview',
+    name: 'BillingRulesPreview',
+    component: () => import('@/views/user/native/BillingRulesPanel.vue'),
+    meta: { requiresAuth: false, requiresAdmin: false, title: 'Billing Rules Preview' }
+  }] : []),
+  {
+    path: '/docs',
+    redirect: '/custom/docs'
+  },
+  {
     path: '/custom/:id',
     name: 'CustomPage',
     component: () => import('@/views/user/CustomPageView.vue'),
@@ -442,6 +603,62 @@ const routes: RouteRecordRaw[] = [
       title: 'Ops Monitoring',
       titleKey: 'admin.ops.title',
       descriptionKey: 'admin.ops.description'
+    }
+  },
+  {
+    path: '/admin/tests',
+    name: 'AdminTests',
+    component: () => import('@/views/admin/TestManagementView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Channel Quality Management', titleKey: 'admin.tests.title', descriptionKey: 'admin.tests.description' }
+  },
+  {
+    path: '/admin/risk-control',
+    name: 'AdminRiskControl',
+    component: () => import('@/views/admin/RiskControlView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Risk Control',
+      titleKey: 'admin.riskControl.title',
+      descriptionKey: 'admin.riskControl.description',
+      requiresRiskControl: true
+    }
+  },
+  {
+    path: '/security-records', name: 'SecurityRecords',
+    component: () => import('@/features/security-penalties/SecurityRecordsView.vue'),
+    meta: { requiresAuth: true, title: 'Security records', titleKey: 'securityRecords.title' }
+  },
+  {
+    path: '/admin/ip-audit',
+    name: 'AdminIPAudit',
+    component: () => import('@/features/ip-audit/IPAuditView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'ipAudit.title' }
+  },
+  {
+    path: '/admin/prompt-audit',
+    name: 'AdminPromptAudit',
+    component: () => import('@/features/prompt-audit/PromptAuditView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Prompt Audit',
+      titleKey: 'admin.promptAudit.title',
+      descriptionKey: 'admin.promptAudit.description',
+      requiresRiskControl: true
+    }
+  },
+  {
+    path: '/admin/safety-prompt-audit',
+    name: 'AdminSafetyPromptAudit',
+    component: () => import('@/views/admin/SafetyPromptAuditView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Safety Injection Audit',
+      titleKey: 'admin.safetyPromptAudit.title',
+      descriptionKey: 'admin.safetyPromptAudit.description',
+      requiresRiskControl: true
     }
   },
   {
@@ -496,6 +713,7 @@ const routes: RouteRecordRaw[] = [
       descriptionKey: 'admin.channels.description'
     }
   },
+
   {
     path: '/admin/channels/monitor',
     name: 'AdminChannelMonitor',
@@ -515,6 +733,7 @@ const routes: RouteRecordRaw[] = [
     meta: {
       requiresAuth: true,
       requiresAdmin: false,
+      requiresChannelMonitor: true,
       title: 'Channel Status',
       titleKey: 'nav.channelStatus'
     }
@@ -531,41 +750,16 @@ const routes: RouteRecordRaw[] = [
       descriptionKey: 'admin.subscriptions.description'
     }
   },
+  { path: '/admin/upstream', redirect: '/admin/providers' },
+  { path: '/admin/procurement', name: 'AdminProcurement', component: () => import('@/views/admin/ProviderHubView.vue'), meta: { requiresAuth: true, requiresAdmin: true, title: '采购与成本规则' } },
+  { path: '/admin/procurement/receipts', name: 'AdminProcurementReceipts', component: () => import('@/views/admin/ProviderOperationsView.vue'), meta: { requiresAuth: true, requiresAdmin: true, title: '采购收据明细' } },
+  { path: '/admin/providers', name: 'AdminProviderHub', component: () => import('@/views/admin/UpstreamView.vue'), meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'providerHub.title' } },
+  { path: '/admin/operations', name: 'AdminProviderOperations', component: () => import('@/views/admin/OperationsView.vue'), meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'providerHub.operations' } },
   {
-    path: '/admin/accounts/tests',
-    name: 'AdminIntelligentTests',
-    component: () => import('@/views/admin/IntelligentTestsView.vue'),
-    props: { mode: 'tests' },
-    meta: {
-      requiresAuth: true,
-      requiresAdmin: true,
-      title: 'Intelligent Tests',
-      titleKey: 'nav.intelligentTests'
-    }
-  },
-  {
-    path: '/admin/accounts/test-history',
-    name: 'AdminIntelligentTestHistory',
-    component: () => import('@/views/admin/IntelligentTestsView.vue'),
-    props: { mode: 'history' },
-    meta: {
-      requiresAuth: true,
-      requiresAdmin: true,
-      title: 'Intelligent Test History',
-      titleKey: 'nav.intelligentTests'
-    }
-  },
-  {
-    path: '/admin/accounts/test-settings',
-    name: 'AdminIntelligentTestSettings',
-    component: () => import('@/views/admin/IntelligentTestsView.vue'),
-    props: { mode: 'settings' },
-    meta: {
-      requiresAuth: true,
-      requiresAdmin: true,
-      title: 'Intelligent Test Settings',
-      titleKey: 'nav.intelligentTests'
-    }
+    path: '/admin/account-health',
+    name: 'AdminAccountHealth',
+    component: () => import('@/views/admin/AccountHealthView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Account Health', titleKey: 'admin.accountHealth.title' }
   },
   {
     path: '/admin/accounts',
@@ -586,10 +780,69 @@ const routes: RouteRecordRaw[] = [
     meta: {
       requiresAuth: true,
       requiresAdmin: true,
+      requiresSuperAdmin: true,
       title: 'Plugin Management',
       titleKey: 'admin.plugins.title',
       descriptionKey: 'admin.plugins.description'
     }
+  },
+  {
+    path: '/admin/qqbot',
+    redirect: '/admin/qqbot/overview'
+  },
+  {
+    path: '/admin/qqbot/overview', name: 'AdminQQBotOverview',
+    component: () => import('@/views/admin/QQBotOverviewView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Bot Overview', titleKey: 'qqbot.workspace.overview' }
+  },
+  {
+    path: '/admin/qqbot/groups', name: 'AdminQQBotGroups',
+    component: () => import('@/views/admin/QQBotView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Group Management', titleKey: 'qqbot.workspace.groups' }
+  },
+  {
+    path: '/admin/qqbot/setup', name: 'AdminQQBotSetup',
+    component: () => import('@/views/admin/QQBotSetupView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Bot Quick Setup', titleKey: 'qqbot.simple.setup' }
+  },
+  {
+    path: '/admin/qqbot/config',
+    name: 'AdminQQBot',
+    component: () => import('@/views/admin/QQBotView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Bot Settings', titleKey: 'qqbot.basicConfig', descriptionKey: 'qqbot.description' }
+  },
+  {
+    path: '/admin/qqbot/bindings',
+    name: 'AdminQQBotBindings',
+    component: () => import('@/views/admin/QQBotBindingsView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Bindings', titleKey: 'qqbot.bindingsTitle' }
+  },
+  {
+    path: '/admin/qqbot/runtime',
+    name: 'AdminQQBotRuntime',
+    redirect: '/admin/qqbot/records'
+  },
+  {
+    path: '/admin/qqbot/records',
+    name: 'AdminQQBotRecords',
+    component: () => import('@/views/admin/QQBotRecordsView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Activity Records', titleKey: 'qqbot.recordsTitle' }
+  },
+  {
+    path: '/admin/qqbot/activities',
+    name: 'AdminQQBotActivities',
+    component: () => import('@/views/admin/QQBotActivitiesView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Activity Settings', titleKey: 'qqbot.activitiesTitle', descriptionKey: 'qqbot.activitiesHelp' }
+  },
+  {
+    path: '/admin/qqbot/checkin',
+    name: 'AdminQQBotCheckin',
+    redirect: { path: '/admin/qqbot/activities', query: { tab: 'checkin' } }
+  },
+  {
+    path: '/admin/qqbot/lottery',
+    name: 'AdminQQBotLottery',
+    redirect: { path: '/admin/qqbot/activities', query: { tab: 'lottery' } }
   },
   {
     path: '/admin/announcements',
@@ -601,6 +854,31 @@ const routes: RouteRecordRaw[] = [
       title: 'Announcements',
       titleKey: 'admin.announcements.title',
       descriptionKey: 'admin.announcements.description'
+    }
+  },
+  {
+    path: '/admin/support-tickets',
+    name: 'AdminSupportTickets',
+    component: () => import('@/views/admin/SupportTicketsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      requiresSupportTickets: true,
+      title: 'Support Tickets',
+      titleKey: 'supportTickets.title',
+      descriptionKey: 'supportTickets.adminDescription'
+    }
+  },
+  {
+    path: '/admin/support-tickets/:id(\\d+)',
+    name: 'AdminSupportTicketDetail',
+    component: () => import('@/views/admin/SupportTicketDetailView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      requiresSupportTickets: true,
+      title: 'Support Tickets',
+      titleKey: 'supportTickets.title'
     }
   },
   {
@@ -628,45 +906,32 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/promo-codes',
+    name: 'AdminPromoCodes',
+    component: () => import('@/views/admin/PromoCodesView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Promo Code Management',
+      titleKey: 'admin.promo.title',
+      descriptionKey: 'admin.promo.description'
+    }
+  },
+  {
     path: '/admin/settings',
     name: 'AdminSettings',
     component: () => import('@/views/admin/SettingsView.vue'),
     meta: {
       requiresAuth: true,
       requiresAdmin: true,
+      requiresSuperAdmin: true,
       title: 'System Settings',
       titleKey: 'admin.settings.title',
       descriptionKey: 'admin.settings.description'
     }
   },
-  {
-    path: '/admin/risk-control',
-    name: 'AdminRiskControl',
-    component: () => import('@/views/admin/RiskControlView.vue'),
-    meta: {
-      requiresAuth: true,
-      requiresAdmin: true,
-      title: 'Risk Control',
-      titleKey: 'admin.riskControl.title',
-      descriptionKey: 'admin.riskControl.description',
-      requiresRiskControl: true
-    }
-  },
-  {
-    path: '/admin/account-health',
-    name: 'AdminAccountHealth',
-    component: () => import('@/views/admin/AccountHealthView.vue'),
-    meta: {
-      requiresAuth: true,
-      requiresAdmin: true,
-      title: 'Account Health',
-      titleKey: 'nav.accountHealth'
-    }
-  },
-  {
-    path: '/admin/intelligent-tests',
-    redirect: '/admin/accounts/tests'
-  },
+
+
   {
     path: '/admin/usage',
     name: 'AdminUsage',
@@ -677,6 +942,18 @@ const routes: RouteRecordRaw[] = [
       title: 'Usage Records',
       titleKey: 'admin.usage.title',
       descriptionKey: 'admin.usage.description'
+    }
+  },
+  {
+    path: '/admin/call-errors',
+    name: 'AdminCallErrors',
+    component: () => import('@/views/admin/CallErrorsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Call Errors',
+      titleKey: 'usage.errors.pageTitle',
+      descriptionKey: 'usage.errors.pageDescription'
     }
   },
   {
@@ -723,6 +1000,18 @@ const routes: RouteRecordRaw[] = [
 
   // ==================== Payment Admin Routes ====================
   {
+    path: '/admin/orders/coupons',
+    name: 'AdminCoupons',
+    component: () => import('@/views/admin/orders/AdminCouponsView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Recharge coupons', titleKey: 'coupon.adminTitle' }
+  },
+  {
+    path: '/admin/orders/invoices',
+    name: 'AdminInvoices',
+    component: () => import('@/views/admin/orders/AdminInvoicesView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Invoices', titleKey: 'invoice.adminTitle' }
+  },
+  {
     path: '/admin/orders/dashboard',
     name: 'AdminPaymentDashboard',
     component: () => import('@/views/admin/orders/AdminPaymentDashboardView.vue'),
@@ -730,9 +1019,7 @@ const routes: RouteRecordRaw[] = [
       requiresAuth: true,
       requiresAdmin: true,
       title: 'Payment Dashboard',
-      titleKey: 'nav.paymentDashboard',
-      requiresPayment: true
-    }
+      titleKey: 'nav.paymentDashboard' }
   },
   {
     path: '/admin/orders',
@@ -742,10 +1029,10 @@ const routes: RouteRecordRaw[] = [
       requiresAuth: true,
       requiresAdmin: true,
       title: 'Order Management',
-      titleKey: 'nav.orderManagement',
-      requiresPayment: true
-    }
+      titleKey: 'nav.orderManagement' }
   },
+
+
   {
     path: '/admin/orders/plans',
     name: 'AdminPaymentPlans',
@@ -754,167 +1041,10 @@ const routes: RouteRecordRaw[] = [
       requiresAuth: true,
       requiresAdmin: true,
       title: 'Subscription Plans',
-      titleKey: 'nav.paymentPlans',
-      requiresPayment: true
-    }
+      titleKey: 'nav.paymentPlans' }
   },
 
   // ==================== 404 Not Found ====================
-  
-  // ===== Kitty Reconstructed Routes (aligned with live 0.2.19.77-kitty.24) =====
-  {
-    path: '/community',
-    name: 'Community',
-    component: () => import('@/views/public/CommunityView.vue'),
-    meta: { requiresAuth: false, title: 'QQ群与福利', titleKey: 'qqbot.communityTitle' }
-  },
-  {
-    path: '/qqbot/bind',
-    name: 'QQBotBind',
-    component: () => import('@/views/auth/QQBotBindView.vue'),
-    meta: { requiresAuth: false, title: 'Confirm QQ Binding', titleKey: 'qqbot.emailBindTitle' }
-  },
-  {
-    path: '/qqbot/transfer',
-    name: 'QQBotTransfer',
-    component: () => import('@/views/auth/QQBotTransferView.vue'),
-    meta: { requiresAuth: false, title: 'Confirm balance transfer', titleKey: 'qqbot.transferConfirmTitle' }
-  },
-  {
-    path: '/billing',
-    name: 'Billing',
-    component: () => import('@/views/user/BillingView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: false, title: 'Billing Statement', titleKey: 'billing.title', descriptionKey: 'billing.description' }
-  },
-  { path: '/billing-rules', redirect: '/billing' },
-  {
-    path: '/billing-rules-preview',
-    name: 'BillingRulesPreview',
-    component: () => import('@/views/user/native/BillingRulesPanel.vue'),
-    meta: { requiresAuth: false, requiresAdmin: false, title: 'Billing Rules Preview' }
-  },
-  {
-    path: '/docs',
-    name: 'Documentation',
-    component: () => import('@/views/user/native/DocumentationPanel.vue'),
-    meta: { requiresAuth: true, requiresAdmin: false, title: 'Documentation' }
-  },
-  {
-    path: '/invoices',
-    name: 'UserInvoices',
-    component: () => import('@/views/user/UserInvoicesView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: false, title: 'Invoices', titleKey: 'invoice.title' }
-  },
-  { path: '/tickets', redirect: '/support-tickets' },
-  { path: '/admin/tickets', redirect: '/admin/support-tickets' },
-  {
-    path: '/support-tickets',
-    name: 'SupportTickets',
-    component: () => import('@/views/user/SupportTicketsView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: false, title: 'Support Tickets', titleKey: 'supportTickets.title' }
-  },
-  {
-    path: '/support-tickets/:id(\\d+)',
-    name: 'SupportTicketDetail',
-    component: () => import('@/views/user/SupportTicketDetailView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: false, title: 'Support Ticket', titleKey: 'supportTickets.detailTitle' }
-  },
-  {
-    path: '/admin/support-tickets',
-    name: 'AdminSupportTickets',
-    component: () => import('@/views/admin/SupportTicketsView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: 'Support Tickets', titleKey: 'supportTickets.adminTitle' }
-  },
-  {
-    path: '/admin/support-tickets/:id(\\d+)',
-    name: 'AdminSupportTicketDetail',
-    component: () => import('@/views/admin/SupportTicketDetailView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: 'Support Ticket', titleKey: 'supportTickets.detailTitle' }
-  },
-  { path: '/admin/upstream', redirect: '/admin/providers' },
-  {
-    path: '/admin/procurement',
-    name: 'AdminProcurement',
-    component: () => import('@/views/admin/ProviderHubView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: '采购与成本规则' }
-  },
-  {
-    path: '/admin/procurement/receipts',
-    name: 'AdminProcurementReceipts',
-    component: () => import('@/views/admin/ProviderOperationsView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: '采购收据明细' }
-  },
-  {
-    path: '/admin/providers',
-    name: 'AdminProviderHub',
-    component: () => import('@/views/admin/UpstreamView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: 'Providers', titleKey: 'providerHub.title' }
-  },
-  {
-    path: '/admin/operations',
-    name: 'AdminProviderOperations',
-    component: () => import('@/views/admin/OperationsView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: 'Operations', titleKey: 'providerHub.operations' }
-  },
-  {
-    path: '/admin/orders/invoices',
-    name: 'AdminInvoices',
-    component: () => import('@/views/admin/orders/AdminInvoicesView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: 'Invoices', titleKey: 'invoice.adminTitle' }
-  },
-  {
-    path: '/admin/call-errors',
-    name: 'AdminCallErrors',
-    component: () => import('@/views/admin/CallErrorsView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: 'Call Errors' }
-  },
-  { path: '/admin/qqbot', redirect: '/admin/qqbot/overview' },
-  {
-    path: '/admin/qqbot/overview',
-    name: 'AdminQQBotOverview',
-    component: () => import('@/views/admin/QQBotOverviewView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Bot Overview', titleKey: 'qqbot.workspace.overview' }
-  },
-  {
-    path: '/admin/qqbot/groups',
-    name: 'AdminQQBotGroups',
-    component: () => import('@/views/admin/QQBotView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Group Management', titleKey: 'qqbot.workspace.groups' }
-  },
-  {
-    path: '/admin/qqbot/setup',
-    name: 'AdminQQBotSetup',
-    component: () => import('@/views/admin/QQBotSetupView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Bot Quick Setup', titleKey: 'qqbot.simple.setup' }
-  },
-  {
-    path: '/admin/qqbot/config',
-    name: 'AdminQQBot',
-    component: () => import('@/views/admin/QQBotView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Bot Settings', titleKey: 'qqbot.basicConfig', descriptionKey: 'qqbot.description' }
-  },
-  {
-    path: '/admin/qqbot/bindings',
-    name: 'AdminQQBotBindings',
-    component: () => import('@/views/admin/QQBotBindingsView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Bindings', titleKey: 'qqbot.bindingsTitle' }
-  },
-  { path: '/admin/qqbot/runtime', name: 'AdminQQBotRuntime', redirect: '/admin/qqbot/records' },
-  {
-    path: '/admin/qqbot/records',
-    name: 'AdminQQBotRecords',
-    component: () => import('@/views/admin/QQBotRecordsView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Activity Records', titleKey: 'qqbot.recordsTitle' }
-  },
-  {
-    path: '/admin/qqbot/activities',
-    name: 'AdminQQBotActivities',
-    component: () => import('@/views/admin/QQBotActivitiesView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Activity Settings', titleKey: 'qqbot.activitiesTitle', descriptionKey: 'qqbot.activitiesHelp' }
-  },
-  { path: '/admin/qqbot/checkin', name: 'AdminQQBotCheckin', redirect: { path: '/admin/qqbot/activities', query: { tab: 'checkin' } } },
-  { path: '/admin/qqbot/lottery', name: 'AdminQQBotLottery', redirect: { path: '/admin/qqbot/activities', query: { tab: 'lottery' } } },
-
   {
     path: '/:pathMatch(.*)*',
     name: 'NotFound',
@@ -931,7 +1061,11 @@ const routes: RouteRecordRaw[] = [
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes,
-  scrollBehavior(_to, _from, savedPosition) {
+  scrollBehavior(to, from, savedPosition) {
+    // SettingsView waits for its async form and reveals the target tab first.
+    if (to.path === '/admin/settings' && settingsLocation(to.query.tab, to.hash).linked) return false
+    // An in-page anchor (#section on the same page) is already scrolled by the browser; jumping to top would undo it.
+    if (to.hash && to.path === from.path && !savedPosition) return false
     // Scroll to saved position when using browser back/forward
     if (savedPosition) {
       return savedPosition
@@ -950,8 +1084,10 @@ let authInitialized = false
 const navigationLoading = useNavigationLoadingState()
 // 延迟初始化预加载，传入 router 实例
 let routePrefetch: ReturnType<typeof useRoutePrefetch> | null = null
-export const BACKEND_MODE_ALLOWED_PATHS = ['/login', '/key-usage', '/guide', '/setup', '/payment/result', '/payment/airwallex', '/legal']
+const BACKEND_MODE_ALLOWED_PATHS = ['/login', '/key-usage', '/setup', '/payment/result', '/payment/airwallex', '/legal']
 const BACKEND_MODE_CALLBACK_PATHS = [
+  '/qqbot/bind',
+  '/qqbot/transfer',
   '/auth/callback',
   '/auth/linuxdo/callback',
   '/auth/dingtalk/callback',
@@ -962,7 +1098,8 @@ const BACKEND_MODE_CALLBACK_PATHS = [
 ]
 const BACKEND_MODE_PENDING_AUTH_PATHS = ['/register', '/email-verify']
 
-export function isBackendModePublicRouteAllowed(path: string, hasPendingAuthSession: boolean): boolean {
+function isBackendModePublicRouteAllowed(path: string, hasPendingAuthSession: boolean): boolean {
+  if (import.meta.env.DEV && path === '/billing-rules-preview') return true
   if (BACKEND_MODE_ALLOWED_PATHS.some((allowedPath) => path === allowedPath || path.startsWith(allowedPath))) {
     return true
   }
@@ -988,6 +1125,22 @@ router.beforeEach(async (to, _from, next) => {
   if (!authInitialized) {
     authStore.checkAuth()
     authInitialized = true
+  }
+
+  // Old IP tabs are now a separate page. Normalize before auth/feature checks
+  // so refresh, same-route query navigation and login return URLs agree.
+  if (to.path === '/admin/prompt-audit' && to.query.tab === 'ip') {
+    const query = { ...to.query }
+    delete query.tab
+    next({ path: '/admin/ip-audit', query, hash: to.hash, replace: true })
+    return
+  }
+
+  // The former settings form now lives on IP Audit. Match the exact anchor
+  // so unrelated Security settings and their deep links stay on Settings.
+  if (to.path === '/admin/settings' && to.hash === '#ip-risk-settings') {
+    next({ path: '/admin/ip-audit', query: { ...to.query, tab: 'config' }, hash: to.hash, replace: true })
+    return
   }
 
   // Set page title
@@ -1089,6 +1242,12 @@ router.beforeEach(async (to, _from, next) => {
     return
   }
 
+  if (to.meta.requiresSuperAdmin && !authStore.isSuperAdmin) {
+    next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
+    return
+  }
+
+
   if (requiresAdmin && authStore.isAdmin) {
     const adminComplianceStore = useAdminComplianceStore()
     if (!adminComplianceStore.initialized) {
@@ -1105,9 +1264,9 @@ router.beforeEach(async (to, _from, next) => {
 
 
   // 公共设置可能尚未加载（App.vue 的 onMounted 异步拉取晚于首次导航，且纯静态部署
-  // 无 __APP_CONFIG__ 注入）。此时 cachedPublicSettings 为空会把 payment/risk_control
+  // 无 __APP_CONFIG__ 注入）。此时 cachedPublicSettings 为空可能把功能开关
   // 误判为“未启用”而错误拦截，故这里先确保设置加载完成。
-  if ((to.meta.requiresPayment || to.meta.requiresRiskControl || to.meta.requiresSubscription) && !appStore.publicSettingsLoaded) {
+  if ((to.meta.requiresPayment || to.meta.requiresRiskControl || to.meta.requiresChannelQualityPublic || to.meta.requiresChannelMonitor || to.meta.requiresSubscription || to.meta.requiresSupportTickets) && !appStore.publicSettingsLoaded) {
     try {
       await appStore.fetchPublicSettings()
     } catch (error) {
@@ -1115,8 +1274,24 @@ router.beforeEach(async (to, _from, next) => {
     }
   }
 
+
+  if (to.meta.requiresChannelQualityPublic && appStore.publicSettingsLoaded &&
+      appStore.cachedPublicSettings?.channel_quality_public_enabled === false) {
+    next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
+    return
+  }
+
   // Only an explicit value from successfully loaded settings can disable a route.
   // A transient settings failure is unknown state, not a confirmed feature toggle.
+  if (
+    to.meta.requiresChannelMonitor &&
+    appStore.publicSettingsLoaded &&
+    appStore.cachedPublicSettings?.channel_monitor_enabled === false
+  ) {
+    next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
+    return
+  }
+
   if (
     to.meta.requiresPayment &&
     appStore.publicSettingsLoaded &&
@@ -1130,6 +1305,16 @@ router.beforeEach(async (to, _from, next) => {
     to.meta.requiresRiskControl &&
     appStore.publicSettingsLoaded &&
     appStore.cachedPublicSettings?.risk_control_enabled === false
+  ) {
+    next(authStore.isAdmin ? '/admin/settings' : '/dashboard')
+    return
+  }
+
+  // 网站工单是 opt-in 开关：设置加载成功且未开启时拦截直达。
+  if (
+    to.meta.requiresSupportTickets &&
+    appStore.publicSettingsLoaded &&
+    appStore.cachedPublicSettings?.support_ticket_enabled !== true
   ) {
     next(authStore.isAdmin ? '/admin/settings' : '/dashboard')
     return
