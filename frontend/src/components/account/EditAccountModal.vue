@@ -41,7 +41,14 @@
       </div>
 
       <!-- API Key fields (only for apikey type) -->
-      <div v-if="account.type === 'apikey'" class="space-y-4">
+      <KittyOAuthModelSync
+          :account="account"
+          :active="show"
+          :disabled="submitting"
+          @busy="kittyOAuthSyncBusy = $event"
+          @finished="kittyOAuthSyncedId = $event"
+        />
+        <div v-if="account.type === 'apikey'" class="space-y-4">
         <OpenAICompatibleProviderPresetSelector
           v-if="account.platform === 'openai'"
           :model-value="openAICompatibleProviderSelection"
@@ -3540,6 +3547,8 @@ interface TempUnschedRuleForm {
 
 // State
 const submitting = ref(false)
+const kittyOAuthSyncBusy = ref(false)
+const kittyOAuthSyncedId = ref<number | null>(null)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
 

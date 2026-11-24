@@ -684,7 +684,6 @@ const purchaseNavLabel = computed(() => {
   }
 })
 const flagAffiliate = makeSidebarFlag(FeatureFlags.affiliate)
-const flagRiskControl = makeSidebarFlag(FeatureFlags.riskControl)
 const flagPluginManagement = makeSidebarFlag(FeatureFlags.pluginManagement)
 const flagOpsMonitoring = () => adminSettingsStore.opsMonitoringEnabled
 const flagAdminPayment = () => adminSettingsStore.paymentEnabled
@@ -701,13 +700,16 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
   }
   items.push(
     { path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon },
-    { path: '/pelican-test', label: t('nav.pelicanTest'), icon: GlobeIcon },
     { path: '/usage', label: t('nav.usage'), icon: ChartIcon, hideInSimpleMode: true },
     { path: '/available-channels', label: t('nav.availableChannels'), icon: ChannelIcon, hideInSimpleMode: true, featureFlag: flagAvailableChannels },
     { path: '/monitor', label: t('nav.channelStatus'), icon: SignalIcon, featureFlag: flagChannelMonitor },
     { path: '/subscriptions', label: t('nav.mySubscriptions'), icon: CreditCardIcon, hideInSimpleMode: true, featureFlag: flagSubscription },
     { path: '/purchase', label: purchaseNavLabel.value, icon: RechargeSubscriptionIcon, hideInSimpleMode: true, featureFlag: flagPayment },
     { path: '/orders', label: t('nav.myOrders'), icon: OrderListIcon, hideInSimpleMode: true, featureFlag: flagPayment },
+    { path: '/billing', label: t('billing.title'), icon: OrderIcon, hideInSimpleMode: true },
+    { path: '/invoices', label: t('invoice.title'), icon: TicketIcon, hideInSimpleMode: true, featureFlag: flagPayment },
+    { path: '/support-tickets', label: t('supportTickets.title'), icon: BellIcon, hideInSimpleMode: true },
+    { path: '/community', label: t('qqbot.communityTitle'), icon: UsersIcon, hideInSimpleMode: true },
     { path: '/redeem-store', label: t('nav.buyRedeemCode'), icon: PriceTagIcon, hideInSimpleMode: true },
     { path: '/redeem', label: t('nav.redeem'), icon: GiftIcon, hideInSimpleMode: true },
     { path: '/affiliate', label: t('nav.affiliate'), icon: UsersIcon, hideInSimpleMode: true, featureFlag: flagAffiliate },
@@ -754,6 +756,7 @@ const customMenuItemsForAdmin = computed(() => {
 const adminNavItems = computed((): NavItem[] => {
   const baseItems: NavItem[] = [
     { path: '/admin/dashboard', label: t('nav.dashboard'), icon: DashboardIcon },
+    { path: '/admin/operations', label: t('providerHub.operations'), icon: ChartIcon },
     { path: '/admin/ops', label: t('nav.ops'), icon: ChartIcon, featureFlag: flagOpsMonitoring },
     { path: '/admin/users', label: t('nav.users'), icon: UsersIcon, hideInSimpleMode: true },
     { path: '/admin/groups', label: t('nav.groups'), icon: FolderIcon },
@@ -771,17 +774,13 @@ const adminNavItems = computed((): NavItem[] => {
     // 「仅充值」站点连管理端的「订阅管理」入口也一并收起（路由本身不拦截）。
     { path: '/admin/subscriptions', label: t('nav.subscriptions'), icon: CreditCardIcon, hideInSimpleMode: true, featureFlag: flagSubscription },
     { path: '/admin/accounts', label: t('nav.accounts'), icon: GlobeIcon },
-    { path: '/admin/account-health', label: t('nav.accountHealth'), icon: ShieldIcon },
-    { path: '/admin/accounts/tests', label: t('nav.intelligentTests'), icon: GlobeIcon },
+    { path: '/admin/providers', label: t('providerHub.title'), icon: ServerIcon },
+    { path: '/admin/procurement', label: t('providerHub.procurement'), icon: CreditCardIcon },
     { path: '/admin/plugins', label: t('nav.plugins'), icon: PluginIcon, featureFlag: flagPluginManagement },
     { path: '/admin/announcements', label: t('nav.announcements'), icon: BellIcon },
+    { path: '/admin/support-tickets', label: t('supportTickets.adminTitle'), icon: BellIcon },
+    { path: '/admin/qqbot/overview', label: t('qqbot.workspace.overview'), icon: UsersIcon },
     { path: '/admin/proxies', label: t('nav.proxies'), icon: ServerIcon },
-    {
-      path: '/admin/risk-control',
-      label: t('nav.riskControl'),
-      icon: ShieldIcon,
-      featureFlag: flagRiskControl,
-    },
     { path: '/admin/redeem', label: t('nav.redeemCodes'), icon: TicketIcon, hideInSimpleMode: true },
     {
       path: '/admin/affiliates',
@@ -807,6 +806,7 @@ const adminNavItems = computed((): NavItem[] => {
         { path: '/admin/orders/dashboard', label: t('nav.paymentDashboard'), icon: ChartIcon },
         { path: '/admin/orders', label: t('nav.orderManagement'), icon: OrderIcon },
         { path: '/admin/orders/plans', label: t('nav.paymentPlans'), icon: CreditCardIcon },
+        { path: '/admin/orders/invoices', label: t('invoice.adminTitle'), icon: TicketIcon },
       ],
     },
     { path: '/admin/usage', label: t('nav.usage'), icon: ChartIcon },

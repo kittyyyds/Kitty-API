@@ -1677,7 +1677,34 @@ export async function resetWebSearchUsage(payload: {
   );
 }
 
+
+export interface RegistrationEmailBlacklist {
+  emails: string[]
+  max: number
+}
+
+export interface UpdateRegistrationEmailBlacklistResponse extends RegistrationEmailBlacklist {
+  added: string[]
+}
+
+export async function getRegistrationEmailBlacklist(): Promise<RegistrationEmailBlacklist> {
+  const { data } = await apiClient.get<RegistrationEmailBlacklist>('/admin/settings/registration-email-blacklist')
+  return data
+}
+
+export async function updateRegistrationEmailBlacklist(
+  emails: string[]
+): Promise<UpdateRegistrationEmailBlacklistResponse> {
+  const { data } = await apiClient.put<UpdateRegistrationEmailBlacklistResponse>(
+    '/admin/settings/registration-email-blacklist',
+    { emails }
+  )
+  return data
+}
+
 export const settingsAPI = {
+  getRegistrationEmailBlacklist,
+  updateRegistrationEmailBlacklist,
   getSettings,
   updateSettings,
   getGuideSettings,

@@ -210,6 +210,8 @@ export interface LoginAgreementDocument {
 }
 
 export interface PublicSettings {
+  support_ticket_enabled?: boolean
+  api_base_url_description?: string
   registration_enabled: boolean
   email_verify_enabled: boolean
   force_email_on_third_party_signup: boolean
@@ -488,6 +490,7 @@ export interface ApiError {
 }
 
 export interface PaginatedResponse<T> {
+  total_exact?: boolean
   items: T[]
   total: number
   page: number
@@ -1965,6 +1968,7 @@ export interface UsageLogAccountSummary {
 }
 
 export interface AdminUsageLog extends UsageLog {
+  usage_audit?: UsageAudit | null
   upstream_model?: string | null
   upstream_reasoning_effort?: string | null
   upstream_response_model?: string | null
@@ -2571,3 +2575,165 @@ export type {
   PlatformQuotaWindow,
   PlatformQuotasResponse,
 } from '@/api/admin/users'
+
+export interface BillingStatementRow {
+  model: string
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  cache_tokens: number
+  total_tokens: number
+  cost: number
+}
+
+export interface BillingStatement {
+  user_id: number
+  year: number
+  month: number
+  rows: BillingStatementRow[]
+  requests: number
+  cost: number
+}
+
+
+export type UsageAuditStatus = 'pass' | 'warning' | 'anomaly' | 'unverifiable' | 'not_applicable'
+export type UsageAuditConfidence = 'high' | 'medium' | 'low'
+export type UsageAuditEvidenceSource = 'upstream_raw' | 'gateway_response' | 'normalized_only'
+
+export interface UsageAuditTokenSnapshot {
+  input_tokens?: number
+  total_input_tokens?: number
+  output_tokens?: number
+  cache_creation_tokens?: number
+  cache_read_tokens?: number
+}
+
+export interface UsageAuditTokenDelta {
+  input_tokens?: number
+  output_tokens?: number
+}
+
+export interface UsageAuditDeviation {
+  input_tokens?: number
+  output_tokens?: number
+}
+
+export interface ImageOutputEvidence {
+ version: number; requested_model?: string; upstream_model?: string; reported_model?: string;
+ model_status: 'consistent' | 'different' | 'missing'; requested_size?: string;
+ size_status: 'consistent' | 'different' | 'unverified' | 'auto'; size_evidence: string;
+ outputs?: { declared_size?: string; measured_size?: string }[]; postprocessed?: boolean;
+}
+export interface UsageAudit {
+  image_output_evidence?: ImageOutputEvidence
+  version: number
+  status: UsageAuditStatus
+  confidence: UsageAuditConfidence
+  evidence_source: UsageAuditEvidenceSource
+  protocol: string
+  estimator?: string
+  upstream: UsageAuditTokenSnapshot
+  local: UsageAuditTokenSnapshot
+  delta: UsageAuditTokenDelta
+  deviation_pct: UsageAuditDeviation
+  cache_hit_rate?: number
+  reasons: string[]
+  upstream_raw_usage?: Record<string, unknown>
+  capture_truncated: boolean
+}
+
+export interface UsageLog {
+  id: number
+  user_id: number
+  api_key_id: number
+  account_id: number | null
+  request_id: string
+  model: string
+  service_tier?: string | null
+  reasoning_effort?: string | null
+  inbound_endpoint?: string | null
+  upstream_endpoint?: string | null
+
+  group_id: number | null
+  subscription_id: number | null
+
+  input_tokens: number
+  output_tokens: number
+  cache_creation_tokens: number
+  cache_read_tokens: number
+  cache_creation_5m_tokens: number
+  cache_creation_1h_tokens: number
+  cache_creation_30m_tokens?: number
+  cache_creation_12h_tokens?: number
+
+  input_cost: number
+  output_cost: number
+  cache_creation_cost: number
+  cache_read_cost: number
+  total_cost: number
+  actual_cost: number
+  rate_multiplier: number
+  long_context_billing_applied: boolean
+  billing_type: number
+
+  request_type?: UsageRequestType
+  stream: boolean
+  openai_ws_mode?: boolean
+  native_compaction_v2: boolean
+  duration_ms: number | null
+  first_token_ms: number | null
+  queue_wait_ms?: number | null
+  queue_timing?: {
+    status: string; source: string; scope: string; queue_clamped: boolean
+    server_first_token_ms: number | null; server_duration_ms: number
+    forward_first_token_ms: number | null; forward_duration_ms: number
+  } | null
+  content_timing?: {
+    reasoning_first_ms: number | null; visible_text_first_ms: number | null; response_byte_first_ms: number | null
+    status: string; source: string; scope: string; reasoning_streaming_capability: string; capability_source: string
+  }
+
+  // 图片生成字段
+  image_count: number
+  image_size: string | null
+  image_input_size: string | null
+  image_output_size: string | null
+  image_size_source: ImageSizeSource | null
+  image_size_breakdown: ImageSizeBreakdown | null
+  image_input_tokens: number
+  image_input_cost: number
+  image_output_tokens: number
+  image_output_cost: number
+
+  // Missing on older API responses; do not infer unknown historical units.
+  video_count?: number
+  video_resolution?: string | null
+  video_duration_seconds?: number | null
+
+  // User-Agent
+  user_agent: string | null
+  ip_address?: string | null
+
+  // Cache TTL Override
+  cache_ttl_overridden: boolean
+
+  // 计费模式
+  billing_mode?: string | null
+
+  // 上游响应声明的实际模型。仅在管理员打开对用户可见时由用户接口返回。
+  upstream_response_model?: string | null
+
+  created_at: string
+
+  user?: User
+  api_key?: ApiKey
+  group?: Group
+  subscription?: UserSubscription
+}
+
+export interface UsageLogAccountSummary {
+  id: number
+  name: string
+}
+
+

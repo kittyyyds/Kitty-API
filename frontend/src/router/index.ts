@@ -760,6 +760,161 @@ const routes: RouteRecordRaw[] = [
   },
 
   // ==================== 404 Not Found ====================
+  
+  // ===== Kitty Reconstructed Routes (aligned with live 0.2.19.77-kitty.24) =====
+  {
+    path: '/community',
+    name: 'Community',
+    component: () => import('@/views/public/CommunityView.vue'),
+    meta: { requiresAuth: false, title: 'QQ群与福利', titleKey: 'qqbot.communityTitle' }
+  },
+  {
+    path: '/qqbot/bind',
+    name: 'QQBotBind',
+    component: () => import('@/views/auth/QQBotBindView.vue'),
+    meta: { requiresAuth: false, title: 'Confirm QQ Binding', titleKey: 'qqbot.emailBindTitle' }
+  },
+  {
+    path: '/qqbot/transfer',
+    name: 'QQBotTransfer',
+    component: () => import('@/views/auth/QQBotTransferView.vue'),
+    meta: { requiresAuth: false, title: 'Confirm balance transfer', titleKey: 'qqbot.transferConfirmTitle' }
+  },
+  {
+    path: '/billing',
+    name: 'Billing',
+    component: () => import('@/views/user/BillingView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: false, title: 'Billing Statement', titleKey: 'billing.title', descriptionKey: 'billing.description' }
+  },
+  { path: '/billing-rules', redirect: '/billing' },
+  {
+    path: '/billing-rules-preview',
+    name: 'BillingRulesPreview',
+    component: () => import('@/views/user/native/BillingRulesPanel.vue'),
+    meta: { requiresAuth: false, requiresAdmin: false, title: 'Billing Rules Preview' }
+  },
+  {
+    path: '/docs',
+    name: 'Documentation',
+    component: () => import('@/views/user/native/DocumentationPanel.vue'),
+    meta: { requiresAuth: true, requiresAdmin: false, title: 'Documentation' }
+  },
+  {
+    path: '/invoices',
+    name: 'UserInvoices',
+    component: () => import('@/views/user/UserInvoicesView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: false, title: 'Invoices', titleKey: 'invoice.title' }
+  },
+  { path: '/tickets', redirect: '/support-tickets' },
+  { path: '/admin/tickets', redirect: '/admin/support-tickets' },
+  {
+    path: '/support-tickets',
+    name: 'SupportTickets',
+    component: () => import('@/views/user/SupportTicketsView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: false, title: 'Support Tickets', titleKey: 'supportTickets.title' }
+  },
+  {
+    path: '/support-tickets/:id(\\d+)',
+    name: 'SupportTicketDetail',
+    component: () => import('@/views/user/SupportTicketDetailView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: false, title: 'Support Ticket', titleKey: 'supportTickets.detailTitle' }
+  },
+  {
+    path: '/admin/support-tickets',
+    name: 'AdminSupportTickets',
+    component: () => import('@/views/admin/SupportTicketsView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Support Tickets', titleKey: 'supportTickets.adminTitle' }
+  },
+  {
+    path: '/admin/support-tickets/:id(\\d+)',
+    name: 'AdminSupportTicketDetail',
+    component: () => import('@/views/admin/SupportTicketDetailView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Support Ticket', titleKey: 'supportTickets.detailTitle' }
+  },
+  { path: '/admin/upstream', redirect: '/admin/providers' },
+  {
+    path: '/admin/procurement',
+    name: 'AdminProcurement',
+    component: () => import('@/views/admin/ProviderHubView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: '采购与成本规则' }
+  },
+  {
+    path: '/admin/procurement/receipts',
+    name: 'AdminProcurementReceipts',
+    component: () => import('@/views/admin/ProviderOperationsView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: '采购收据明细' }
+  },
+  {
+    path: '/admin/providers',
+    name: 'AdminProviderHub',
+    component: () => import('@/views/admin/UpstreamView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Providers', titleKey: 'providerHub.title' }
+  },
+  {
+    path: '/admin/operations',
+    name: 'AdminProviderOperations',
+    component: () => import('@/views/admin/OperationsView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Operations', titleKey: 'providerHub.operations' }
+  },
+  {
+    path: '/admin/orders/invoices',
+    name: 'AdminInvoices',
+    component: () => import('@/views/admin/orders/AdminInvoicesView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Invoices', titleKey: 'invoice.adminTitle' }
+  },
+  {
+    path: '/admin/call-errors',
+    name: 'AdminCallErrors',
+    component: () => import('@/views/admin/CallErrorsView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Call Errors' }
+  },
+  { path: '/admin/qqbot', redirect: '/admin/qqbot/overview' },
+  {
+    path: '/admin/qqbot/overview',
+    name: 'AdminQQBotOverview',
+    component: () => import('@/views/admin/QQBotOverviewView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Bot Overview', titleKey: 'qqbot.workspace.overview' }
+  },
+  {
+    path: '/admin/qqbot/groups',
+    name: 'AdminQQBotGroups',
+    component: () => import('@/views/admin/QQBotView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Group Management', titleKey: 'qqbot.workspace.groups' }
+  },
+  {
+    path: '/admin/qqbot/setup',
+    name: 'AdminQQBotSetup',
+    component: () => import('@/views/admin/QQBotSetupView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Bot Quick Setup', titleKey: 'qqbot.simple.setup' }
+  },
+  {
+    path: '/admin/qqbot/config',
+    name: 'AdminQQBot',
+    component: () => import('@/views/admin/QQBotView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Bot Settings', titleKey: 'qqbot.basicConfig', descriptionKey: 'qqbot.description' }
+  },
+  {
+    path: '/admin/qqbot/bindings',
+    name: 'AdminQQBotBindings',
+    component: () => import('@/views/admin/QQBotBindingsView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Bindings', titleKey: 'qqbot.bindingsTitle' }
+  },
+  { path: '/admin/qqbot/runtime', name: 'AdminQQBotRuntime', redirect: '/admin/qqbot/records' },
+  {
+    path: '/admin/qqbot/records',
+    name: 'AdminQQBotRecords',
+    component: () => import('@/views/admin/QQBotRecordsView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Activity Records', titleKey: 'qqbot.recordsTitle' }
+  },
+  {
+    path: '/admin/qqbot/activities',
+    name: 'AdminQQBotActivities',
+    component: () => import('@/views/admin/QQBotActivitiesView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'QQ Activity Settings', titleKey: 'qqbot.activitiesTitle', descriptionKey: 'qqbot.activitiesHelp' }
+  },
+  { path: '/admin/qqbot/checkin', name: 'AdminQQBotCheckin', redirect: { path: '/admin/qqbot/activities', query: { tab: 'checkin' } } },
+  { path: '/admin/qqbot/lottery', name: 'AdminQQBotLottery', redirect: { path: '/admin/qqbot/activities', query: { tab: 'lottery' } } },
+
   {
     path: '/:pathMatch(.*)*',
     name: 'NotFound',

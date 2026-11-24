@@ -547,6 +547,7 @@ import AccountTableActions from '@/components/admin/account/AccountTableActions.
 import AccountTableFilters from '@/components/admin/account/AccountTableFilters.vue'
 import AccountBulkActionsBar from '@/components/admin/account/AccountBulkActionsBar.vue'
 import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
+import { useAccountIntelligencePoller } from '@/composables/useAccountIntelligencePoller'
 import AccountStatusIndicator from '@/components/account/AccountStatusIndicator.vue'
 import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vue'
@@ -1228,6 +1229,9 @@ type AccountLoadOptions = {
   refreshTodayStats?: boolean
 }
 
+const { byAccount: intelligenceByAccount, refresh: refreshIntelligence } = useAccountIntelligencePoller(() => accounts.value)
+void intelligenceByAccount
+
 const load = async (options: AccountLoadOptions = {}) => {
   const requestParams = params as any
   syncAccountListDerivedParams()
@@ -1236,6 +1240,7 @@ const load = async (options: AccountLoadOptions = {}) => {
   pendingTodayStatsRefresh.value = false
   requestParams.lite = '1'
   await baseLoad()
+  void refreshIntelligence()
   if (options.refreshTodayStats !== false) await refreshTodayStatsBatch()
 }
 
@@ -1245,6 +1250,7 @@ const reload = async (options: AccountLoadOptions = {}) => {
   resetAutoRefreshCache()
   pendingTodayStatsRefresh.value = false
   await baseReload()
+  void refreshIntelligence()
   if (options.refreshTodayStats !== false) await refreshTodayStatsBatch()
 }
 

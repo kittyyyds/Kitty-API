@@ -1,10 +1,12 @@
+import { shiftDate, zonedDayStart } from '@/views/admin/operationsUtils'
+import type { RechargeChannel, RechargeOrder, RechargeOrderPage, RechargeRiskEvent, RechargeStatus, RechargeSummary } from '@/views/admin/operationsRechargeTypes'
 /**
  * Admin Dashboard API endpoints
  * Provides system-wide statistics and metrics
  */
 
 import { apiClient } from '../client'
-import type {
+import type { GroupPlatform,
   DashboardStats,
   TrendDataPoint,
   ModelStat,
@@ -340,7 +342,187 @@ export async function getBatchApiKeysUsage(
   return data
 }
 
+export interface OperationsDashboardParams {
+  start_date: string
+  end_date: string
+  timezone: string
+  trend_days: 7 | 15
+  /** 0 means all groups; -1 selects unassigned usage. */
+  group_id: number
+}
+
+export interface OperationsDashboardMetrics {
+  today_cost_unknown?: number
+  today_monitor_unknown?: number
+  today_user_consumption: number
+  today_user_recharge: number
+  today_monitor_consumption: number
+  /** Estimated gross margin, unavailable while any cost is unknown. */
+  today_revenue: Record<string, number | null>
+  yesterday_user_consumption: number
+  yesterday_user_recharge: number
+  yesterday_monitor_consumption: number
+  yesterday_revenue: Record<string, number | null>
+  /** Null when historical balance changes are unavailable. */
+  yesterday_user_balance_change: number | null
+  yesterday_admin_consumption: number
+  total_user_consumption: number
+  total_user_balance: number
+  total_monitor_consumption: number
+  admin_balance: number
+}
+
+export interface OperationsProfitTrendPoint {
+  date: string
+  upstream_cost: number
+  user_cost: number
+  profit: number | null
+}
+
+export interface OperationsGroupProfitStat {
+ unknown_cost?: number
+  group_id: number
+  group_name: string
+  platform: GroupPlatform
+  rate_multiplier: number
+  user_cost: number
+  upstream_cost: number
+}
+
+export interface OperationsModelProfitStat {
+ unknown_cost?: number
+  model: string
+  platforms?: GroupPlatform[]
+  user_cost: number
+  upstream_cost: number
+}
+
+export interface OperationsUserSpendStat {
+ unknown_cost?: number
+  user_id: number
+  email: string
+  user_cost: number
+  upstream_cost: number
+}
+
+export interface OperationsUserSpendResponse {
+  users: OperationsUserSpendStat[]
+  detail: {
+    user_id: number
+    email: string
+    groups: OperationsGroupProfitStat[]
+    models: OperationsModelProfitStat[]
+  } | null
+}
+
+export interface OperationsUserSpendParams {
+  start_date: string
+  end_date: string
+  timezone: string
+  search?: string
+  user_id?: number
+}
+
+export interface OperationsDashboardResponse {
+  today_date?: string
+  today_start?: string
+  site_timezone?: string
+ cost_coverage: { requests: number; reconciled: number; procurement_estimated: number; account_estimated: number; unknown: number }
+ details_retained_since: string | null
+  metrics: OperationsDashboardMetrics
+  trend: OperationsProfitTrendPoint[]
+  groups: OperationsGroupProfitStat[]
+  models: OperationsModelProfitStat[]
+}
+
+export async function getOperationsDashboard(
+  params: OperationsDashboardParams
+): Promise<OperationsDashboardResponse> {
+  const { data } = await apiClient.get<OperationsDashboardResponse>('/admin/dashboard/operations', {
+    params
+  })
+  return data
+}
+
+export async function getOperationsUserSpend(params: OperationsUserSpendParams): Promise<OperationsUserSpendResponse> {
+  const { data } = await apiClient.get<OperationsUserSpendResponse>('/admin/dashboard/operations/users', { params })
+  return data
+}
+
+export async function getOperationsUserSuggestions(q: string): Promise<Array<{ user_id: number; email: string }>> {
+  const { data } = await apiClient.get<Array<{ user_id: number; email: string }>>('/admin/dashboard/operations/users/suggest', { params: { q } })
+  return data
+}
+
+export interface OperationsRechargeRankingResponse {
+  users: Array<{ user_id: number; email: string; amount: number; recharge_count: number }>
+  total_amount: number
+  total_users: number
+  total_count: number
+  date: string
+  start_time: string
+  end_time: string
+  site_timezone: string
+}
+export async function getOperationsRechargeRanking(): Promise<OperationsRechargeRankingResponse> {
+  const { data } = await apiClient.get<OperationsRechargeRankingResponse>('/admin/dashboard/operations/recharge-ranking')
+  return data
+}
+
+export interface OperationsRechargeOrderParams {
+  timezone?: string
+  page: number
+  page_size: 25
+  start_date: string
+  end_date: string
+  search?: string
+  status?: RechargeStatus
+  channel?: RechargeChannel
+}
+
+export async function getOperationsRechargeOrders(params: OperationsRechargeOrderParams): Promise<RechargeOrderPage> {
+  const start = zonedDayStart(params.start_date, params.timezone)
+  const end = zonedDayStart(shiftDate(params.end_date, 1), params.timezone)
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error('Invalid recharge date range')
+  const query = {
+    page: params.page,
+    page_size: params.page_size,
+    email: params.search,
+    status: params.status,
+    channel: params.channel === 'code' ? 'redeem' : params.channel,
+    start_time: start.toISOString(),
+    end_time: end.toISOString()
+  }
+  const { data } = await apiClient.get<Omit<RechargeOrderPage, 'items'> & { items: Array<Omit<RechargeOrder, 'channel'> & { channel: RechargeChannel | 'redeem' }> }>('/admin/payment/recharge-activity', { params: query })
+  return { ...data, items: (data.items ?? []).map(order => ({ ...order, channel: order.channel === 'redeem' ? 'code' : order.channel })) }
+}
+
+export async function getOperationsRechargeSummary(params: Omit<OperationsRechargeOrderParams, 'page' | 'page_size' | 'status'>): Promise<RechargeSummary> {
+  const start = zonedDayStart(params.start_date, params.timezone)
+  const end = zonedDayStart(shiftDate(params.end_date, 1), params.timezone)
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error('Invalid recharge date range')
+  const { data } = await apiClient.get<RechargeSummary>('/admin/payment/recharge-activity/summary', { params: {
+    email: params.search, channel: params.channel === 'code' ? 'redeem' : params.channel,
+    start_time: start.toISOString(), end_time: end.toISOString()
+  } })
+  return data
+}
+
+export async function getOperationsRechargeRisks(): Promise<RechargeRiskEvent[]> {
+  const { data } = await apiClient.get<RechargeRiskEvent[]>('/admin/payment/recharge-risks')
+  return data
+}
+
+
+
 export const dashboardAPI = {
+  getOperationsDashboard,
+  getOperationsUserSpend,
+  getOperationsUserSuggestions,
+  getOperationsRechargeRanking,
+  getOperationsRechargeOrders,
+  getOperationsRechargeSummary,
+  getOperationsRechargeRisks,
   getStats,
   getRealtimeMetrics,
   getUsageTrend,

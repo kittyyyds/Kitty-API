@@ -94,6 +94,11 @@ function defineFlag<K extends keyof PublicSettings>(
  * public-settings-driven switch; see the "Adding a new flag" checklist above.
  */
 export const FeatureFlags = {
+  supportTickets: defineFlag({
+    key: 'support_ticket_enabled',
+    mode: 'opt-in',
+    label: 'Support Tickets',
+  }),
   channelMonitor: defineFlag({
     key: 'channel_monitor_enabled',
     mode: 'opt-out',
@@ -178,7 +183,7 @@ export function isChannelMonitorRouteEnabled(): boolean {
   return isFeatureFlagEnabled(FeatureFlags.channelMonitor)
 }
 
-export type ChannelMonitorMode = 'v1' | 'v2'
+export type ChannelMonitorMode = 'v1' | 'v2' | 'v3'
 
 /** Exclusive channel-monitor implementation. Invalid/missing → v1 (opt-in to v2). */
 export function getChannelMonitorMode(): ChannelMonitorMode {
@@ -222,4 +227,8 @@ export function isChannelMonitorQuotaVisible(): boolean {
 export function isChannelMonitorUserRankingHidden(): boolean {
   const appStore = useAppStore()
   return Boolean(appStore.cachedPublicSettings?.channel_monitor_hide_user_ranking)
+}
+
+export function isChannelMonitorV3Mode(): boolean {
+  return isChannelMonitorRouteEnabled() && getChannelMonitorMode() === 'v3'
 }

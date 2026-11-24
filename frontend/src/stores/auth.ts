@@ -92,6 +92,7 @@ export const useAuthStore = defineStore('auth', () => {
     return !!token.value && !!user.value
   })
 
+  const isSuperAdmin = computed(() => ['super_admin', 'admin'].includes(String(user.value?.role ?? '')))
   const isAdmin = computed(() => {
     return user.value?.role === 'admin'
   })
@@ -498,6 +499,7 @@ export const useAuthStore = defineStore('auth', () => {
     // Computed
     isAuthenticated,
     isAdmin,
+    isSuperAdmin,
     isSimpleMode,
     hasPendingAuthSession,
 

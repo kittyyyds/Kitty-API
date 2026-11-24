@@ -28,6 +28,7 @@
                 v-model="filters.role"
                 :options="[
                   { value: '', label: t('admin.users.allRoles') },
+                  { value: 'super_admin', label: '超级管理员' },
                   { value: 'admin', label: t('admin.users.admin') },
                   { value: 'user', label: t('admin.users.user') }
                 ]"
@@ -43,19 +44,6 @@
                   { value: '', label: t('admin.users.allStatus') },
                   { value: 'active', label: t('common.active') },
                   { value: 'disabled', label: t('admin.users.disabled') }
-                ]"
-                @change="applyFilter"
-              />
-            </div>
-
-            <!-- SVIP Filter (visible when enabled) -->
-            <div v-if="visibleFilters.has('vip')" class="w-full sm:w-32" data-test="svip-filter">
-              <Select
-                v-model="filters.vip"
-                :options="[
-                  { value: '', label: t('admin.users.allSvip') },
-                  { value: 'true', label: t('common.vipBadge') },
-                  { value: 'false', label: t('admin.users.notSvip') }
                 ]"
                 @change="applyFilter"
               />
@@ -138,6 +126,7 @@
 
           <!-- Right: Actions and Settings -->
           <div class="flex flex-wrap items-center justify-end gap-2">
+            <UserCleanupControl ref="cleanupControl" @completed="handleCleanupCompleted" />
             <!-- Mobile: Secondary buttons (icon only) -->
             <div class="flex items-center gap-2 md:contents">
               <!-- Refresh Button -->
@@ -152,7 +141,6 @@
               <!-- Filter Settings Dropdown -->
               <div class="relative" ref="filterDropdownRef">
                 <button
-                  data-test="filter-settings"
                   @click="showFilterDropdown = !showFilterDropdown"
                   class="btn btn-secondary px-2 md:px-3"
                   :title="t('admin.users.filterSettings')"
@@ -169,7 +157,6 @@
                   <button
                     v-for="filter in builtInFilters"
                     :key="filter.key"
-                    :data-test="`filter-toggle-${filter.key}`"
                     @click="toggleBuiltInFilter(filter.key)"
                     class="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700"
                   >
@@ -297,7 +284,7 @@
           selectable
           :selected-keys="selectedIds"
           :selection-label="getUserSelectionLabel"
-          :actions-count="8"
+          :actions-count="7"
           :server-side-sort="true"
           default-sort-key="created_at"
           default-sort-order="desc"
@@ -305,7 +292,7 @@
           @sort="handleSort"
           @update:selected-keys="handleSelectedKeysUpdate"
         >
-          <template #cell-email="{ row, value }">
+          <template #cell-email="{ value }">
             <div class="flex items-center gap-2">
               <div
                 class="flex h-8 w-8 items-center justify-center rounded-full bg-primary-100 dark:bg-primary-900/30"
@@ -315,14 +302,11 @@
                 </span>
               </div>
               <span class="font-medium text-gray-900 dark:text-white">{{ value }}</span>
-              <VipBadge v-if="row.is_vip" size="xs" data-test="svip-badge" />
             </div>
           </template>
 
-          <template #cell-username="{ row }">
-            <span data-test="username-cell" class="text-sm text-gray-700 dark:text-gray-300">
-              {{ row.username || '-' }}
-            </span>
+          <template #cell-username="{ value }">
+            <span class="text-sm text-gray-700 dark:text-gray-300">{{ value || '-' }}</span>
           </template>
 
           <template #cell-notes="{ value }">
@@ -355,8 +339,8 @@
           </template>
 
           <template #cell-role="{ value }">
-            <span :class="['badge', value === 'admin' ? 'badge-purple' : 'badge-gray']">
-              {{ t('admin.users.roles.' + value) }}
+            <span :class="['badge', value === 'admin' || value === 'super_admin' ? 'badge-purple' : 'badge-gray']">
+              {{ value === 'super_admin' ? '超级管理员' : t('admin.users.roles.' + value) }}
             </span>
           </template>
 
@@ -583,6 +567,14 @@
             <PlatformCostCell :usage="getPlatformUsage(row.id, 'openai')" />
           </template>
 
+          <template #cell-usage_gemini="{ row }">
+            <PlatformCostCell :usage="getPlatformUsage(row.id, 'gemini')" />
+          </template>
+
+          <template #cell-usage_antigravity="{ row }">
+            <PlatformCostCell :usage="getPlatformUsage(row.id, 'antigravity')" />
+          </template>
+
           <template #cell-concurrency="{ row }">
             <UserConcurrencyCell
               :current="row.current_concurrency ?? 0"
@@ -624,6 +616,7 @@
             <div class="flex items-center gap-1">
               <!-- Edit Button -->
               <button
+                v-if="canManageUser(row)"
                 @click="handleEdit(row)"
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400"
               >
@@ -631,29 +624,15 @@
                 <span class="text-xs">{{ t('common.edit') }}</span>
               </button>
 
+              <!-- Toggle Status Button (not for admin) -->
               <button
-                type="button"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-amber-600 transition-colors hover:bg-amber-50 hover:text-amber-700 dark:text-amber-400 dark:hover:bg-amber-900/20 dark:hover:text-amber-300"
-                data-test="svip-action"
-                @click="openVipDialog(row, !row.is_vip)"
-              >
-                <Icon name="trophy" size="sm" />
-                <span class="text-xs">{{ row.is_vip ? t('admin.users.revokeSvip') : t('admin.users.grantSvip') }}</span>
-              </button>
-
-              <!-- Admin users can be re-enabled, but cannot be manually disabled. -->
-              <button
-                type="button"
-                :disabled="row.role === 'admin' && row.status === 'active'"
-                :title="row.status === 'disabled'
-                  ? t('admin.users.enableUserHint')
-                  : row.role === 'admin' ? t('admin.users.adminDisableForbidden') : undefined"
+                v-if="row.role === 'user'"
                 @click="handleToggleStatus(row)"
                 :class="[
-                  'flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                  'flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors',
                   row.status === 'active'
-                    ? 'enabled:hover:bg-orange-50 enabled:hover:text-orange-600 dark:enabled:hover:bg-orange-900/20 dark:enabled:hover:text-orange-400'
-                    : 'enabled:hover:bg-green-50 enabled:hover:text-green-600 dark:enabled:hover:bg-green-900/20 dark:enabled:hover:text-green-400'
+                    ? 'hover:bg-orange-50 hover:text-orange-600 dark:hover:bg-orange-900/20 dark:hover:text-orange-400'
+                    : 'hover:bg-green-50 hover:text-green-600 dark:hover:bg-green-900/20 dark:hover:text-green-400'
                 ]"
               >
                 <Icon v-if="row.status === 'active'" name="ban" size="sm" />
@@ -663,6 +642,7 @@
 
               <!-- More Actions Menu Trigger -->
               <button
+                v-if="canManageUser(row)"
                 @click="openActionMenu(row, $event)"
                 class="action-menu-trigger flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-dark-700 dark:hover:text-white"
                 :class="{ 'bg-gray-100 text-gray-900 dark:bg-dark-700 dark:text-white': activeMenuId === row.id }"
@@ -767,19 +747,9 @@
 
               <div class="my-1 border-t border-gray-100 dark:border-dark-700"></div>
 
-              <button
-                @click="openVipDialog(user, !user.is_vip); closeActionMenu()"
-                class="flex w-full items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700"
-              >
-                <Icon name="trophy" size="sm" class="text-amber-500" :stroke-width="2" />
-                {{ user.is_vip ? t('admin.users.revokeSvip') : t('admin.users.grantSvip') }}
-              </button>
-
-              <div class="my-1 border-t border-gray-100 dark:border-dark-700"></div>
-
               <!-- Delete (not for admin) -->
               <button
-                v-if="user.role !== 'admin'"
+                v-if="user.role === 'user'"
                 @click="handleDelete(user); closeActionMenu()"
                 class="flex w-full items-center gap-2 px-4 py-2 text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
               >
@@ -793,14 +763,6 @@
     </Teleport>
 
     <ConfirmDialog :show="showDeleteDialog" :title="t('admin.users.deleteUser')" :message="t('admin.users.deleteConfirm', { email: deletingUser?.email })" :danger="true" @confirm="confirmDelete" @cancel="showDeleteDialog = false" />
-    <ConfirmDialog
-      :show="showVipDialog"
-      :title="vipNextValue ? t('admin.users.grantSvipTitle') : t('admin.users.revokeSvipTitle')"
-      :message="vipConfirmMessage"
-      :danger="!vipNextValue"
-      @confirm="confirmToggleVip"
-      @cancel="showVipDialog = false"
-    />
     <ConfirmDialog
       :show="bulkDeleteIds.length > 0"
       :title="t('admin.users.bulkDelete.title')"
@@ -837,6 +799,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { useTableSelection } from '@/composables/useTableSelection'
 import { formatDateTime } from '@/utils/format'
@@ -856,7 +819,6 @@ import Pagination from '@/components/common/Pagination.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import GroupBadge from '@/components/common/GroupBadge.vue'
-import VipBadge from '@/components/common/VipBadge.vue'
 import Select from '@/components/common/Select.vue'
 import { buildApiKeyGroupFilterOptions } from './apiKeyGroupFilterOptions'
 import UserAttributesConfigModal from '@/components/user/UserAttributesConfigModal.vue'
@@ -866,6 +828,7 @@ import PlatformCostCell from '@/components/user/PlatformCostCell.vue'
 import UserPlatformQuotaCell from '@/components/user/UserPlatformQuotaCell.vue'
 import UserCreateModal from '@/components/admin/user/UserCreateModal.vue'
 import UserEditModal from '@/components/admin/user/UserEditModal.vue'
+import UserCleanupControl from '@/components/admin/user/UserCleanupControl.vue'
 import BulkEditUserModal from '@/components/admin/user/BulkEditUserModal.vue'
 import UserPlatformQuotaModal from '@/components/admin/user/UserPlatformQuotaModal.vue'
 import UserApiKeysModal from '@/components/admin/user/UserApiKeysModal.vue'
@@ -873,9 +836,11 @@ import UserAllowedGroupsModal from '@/components/admin/user/UserAllowedGroupsMod
 import UserBalanceModal from '@/components/admin/user/UserBalanceModal.vue'
 import UserBalanceHistoryModal from '@/components/admin/user/UserBalanceHistoryModal.vue'
 import GroupReplaceModal from '@/components/admin/user/GroupReplaceModal.vue'
-import { VIP_BALANCE_THRESHOLD } from '@/utils/vip-balance'
 
 const appStore = useAppStore()
+const authStore = useAuthStore()
+const cleanupControl = ref<InstanceType<typeof UserCleanupControl> | null>(null)
+const canManageUser = (user: AdminUser) => authStore.isSuperAdmin || user.role === 'user'
 
 // Generate dynamic attribute columns from enabled definitions
 const attributeColumns = computed<Column[]>(() =>
@@ -939,6 +904,8 @@ const allColumns = computed<Column[]>(() => [
   { key: 'usage', label: t('admin.users.columns.usage'), sortable: false },
   { key: 'usage_anthropic', label: t('admin.users.columns.usageAnthropic'), sortable: false },
   { key: 'usage_openai', label: t('admin.users.columns.usageOpenAI'), sortable: false },
+  { key: 'usage_gemini', label: t('admin.users.columns.usageGemini'), sortable: false },
+  { key: 'usage_antigravity', label: t('admin.users.columns.usageAntigravity'), sortable: false },
   { key: 'concurrency', label: t('admin.users.columns.concurrency'), sortable: true },
   { key: 'status', label: t('admin.users.columns.status'), sortable: true },
   { key: 'last_active_at', label: t('admin.users.columns.lastActive'), sortable: true },
@@ -959,11 +926,10 @@ const hiddenColumns = reactive<Set<string>>(new Set())
 // Default hidden columns (columns hidden by default on first load)
 const DEFAULT_HIDDEN_COLUMNS = [
   'notes', 'groups', 'subscriptions', 'usage', 'concurrency',
-  'usage_anthropic', 'usage_openai',
+  'usage_anthropic', 'usage_openai', 'usage_gemini', 'usage_antigravity',
   'balance_platform_quota'
 ]
-// gemini/antigravity 平台已下线，其用量列从 localStorage 旧偏好里清理掉
-const REMOVED_COLUMNS = new Set(['last_login_at', 'usage_gemini', 'usage_antigravity'])
+const REMOVED_COLUMNS = new Set(['last_login_at'])
 // 强制可见列：加载时会被强制移出 hiddenColumns，并在列设置 UI 上 disabled。
 // 当前没有列需要强制可见 —— last_active_at 已改为可被用户隐藏。
 const FORCED_VISIBLE_COLUMNS = new Set<string>()
@@ -976,7 +942,7 @@ const HIDDEN_COLUMNS_KEY = 'user-hidden-columns'
 const COLUMN_SETTINGS_VERSION_KEY = 'user-column-settings-version'
 const COLUMN_SETTINGS_VERSION = 3
 const VERSION_NEW_HIDDEN_COLUMNS: Record<number, string[]> = {
-  2: ['usage_anthropic', 'usage_openai'],
+  2: ['usage_anthropic', 'usage_openai', 'usage_gemini', 'usage_antigravity'],
   3: ['balance_platform_quota']
 }
 
@@ -1057,11 +1023,13 @@ const isColumnVisible = (key: string) => !hiddenColumns.has(key)
 // 列 key → 平台名（'usage' 主列汇总所有平台时为 null）
 // 显式数组取代 Object.keys()：保证迭代顺序（决定列头排序按钮渲染顺序）
 // 不会因 JS 引擎差异或 USAGE_COLUMN_PLATFORMS 属性顺序调整而静默变化。
-const USAGE_COLUMN_KEYS: readonly string[] = ['usage', 'usage_anthropic', 'usage_openai']
+const USAGE_COLUMN_KEYS: readonly string[] = ['usage', 'usage_anthropic', 'usage_openai', 'usage_gemini', 'usage_antigravity']
 const USAGE_COLUMN_PLATFORMS: Record<string, string | null> = {
   usage: null,
   usage_anthropic: 'anthropic',
-  usage_openai: 'openai'
+  usage_openai: 'openai',
+  usage_gemini: 'gemini',
+  usage_antigravity: 'antigravity'
 }
 const PLATFORM_USAGE_COLUMNS = USAGE_COLUMN_KEYS.filter((k) => k !== 'usage')
 const hasVisibleUsageColumn = computed(
@@ -1170,20 +1138,13 @@ const apiKeyGroupFilterOptions = computed(() =>
 const filters = reactive({
   role: '',
   status: '',
-  vip: '',  // '' = all, 'true' = SVIP, 'false' = non-SVIP
   group: '',  // group name for fuzzy match, '' = all
   apiKeyGroup: null as number | null  // group id bound to the user's API keys, null = all
 })
-
-const vipQueryParam = (value: unknown): boolean | undefined => {
-  if (value === true || value === 'true') return true
-  if (value === false || value === 'false') return false
-  return undefined
-}
 const activeAttributeFilters = reactive<Record<number, string>>({})
 
 // Visible filters tracking (which filters are shown in the UI)
-// Keys: 'role', 'status', 'vip', 'group', 'apiKeyGroup', 'attr_${id}'
+// Keys: 'role', 'status', 'attr_${id}'
 const visibleFilters = reactive<Set<string>>(new Set())
 
 // Dropdown states
@@ -1207,7 +1168,6 @@ const filterableAttributes = computed(() =>
 const builtInFilters = computed(() => [
   { key: 'role', name: t('admin.users.columns.role'), type: 'select' as const },
   { key: 'status', name: t('admin.users.columns.status'), type: 'select' as const },
-  { key: 'vip', name: t('admin.users.svipFilter'), type: 'select' as const },
   { key: 'group', name: t('admin.users.authorizedGroupFilter'), type: 'select' as const },
   { key: 'apiKeyGroup', name: t('admin.users.apiKeyGroupFilter'), type: 'select' as const }
 ])
@@ -1227,7 +1187,6 @@ const loadSavedFilters = () => {
       const parsed = JSON.parse(savedValues)
       if (parsed.role) filters.role = parsed.role
       if (parsed.status) filters.status = parsed.status
-      if (parsed.vip === 'true' || parsed.vip === 'false') filters.vip = parsed.vip
       if (parsed.group) filters.group = parsed.group
       if (typeof parsed.apiKeyGroup === 'number') filters.apiKeyGroup = parsed.apiKeyGroup
       if (parsed.attributes) {
@@ -1248,7 +1207,6 @@ const saveFiltersToStorage = () => {
     const values = {
       role: filters.role,
       status: filters.status,
-      vip: filters.vip,
       group: filters.group,
       apiKeyGroup: filters.apiKeyGroup,
       attributes: activeAttributeFilters
@@ -1374,7 +1332,11 @@ const {
 })
 
 const handleSelectedKeysUpdate = (keys: Array<string | number>) => {
-  setSelectedIds(keys.filter((key): key is number => typeof key === 'number'))
+  // Keep previously authorized selections on other pages while excluding any
+  // administrator rows on this page that the current operator cannot manage.
+  const allowed = new Set([...selectedIds.value, ...users.value.filter(canManageUser).map(user => user.id)])
+  for (const user of users.value) if (!canManageUser(user)) allowed.delete(user.id)
+  setSelectedIds(keys.filter((key): key is number => typeof key === 'number' && allowed.has(key)))
 }
 
 const getUserSelectionLabel = (user: AdminUser) =>
@@ -1392,20 +1354,6 @@ const pagination = reactive({
 
 const showCreateModal = ref(false)
 const showEditModal = ref(false)
-const showVipDialog = ref(false)
-const vipTarget = ref<AdminUser | null>(null)
-const vipNextValue = ref(false)
-const vipConfirmMessage = computed(() => {
-  const email = vipTarget.value?.email || ''
-  if (vipNextValue.value) {
-    return t('admin.users.grantSvipConfirm', { email })
-  }
-  const base = t('admin.users.revokeSvipConfirm', { email })
-  if (Number(vipTarget.value?.balance || 0) >= VIP_BALANCE_THRESHOLD) {
-    return `${base}\n${t('admin.users.revokeSvipConfirmAutoUpgrade')}`
-  }
-  return base
-})
 const showBulkEditModal = ref(false)
 const showDeleteDialog = ref(false)
 const bulkDeleteIds = ref<number[]>([])
@@ -1671,7 +1619,6 @@ const loadUsers = async () => {
         search: searchQuery.value || undefined,
         group_name: filters.group || undefined,
         api_key_group_id: filters.apiKeyGroup ?? undefined,
-        vip: vipQueryParam(filters.vip),
         attributes: Object.keys(attrFilters).length > 0 ? attrFilters : undefined,
         // 始终请求 subscriptions：列隐藏时仍需用于 UserPlatformQuotaModal 的 active-subscription 警示 banner
         include_subscriptions: true,
@@ -1684,6 +1631,7 @@ const loadUsers = async () => {
       return
     }
     users.value = response.items
+    void cleanupControl.value?.refreshSummary()
     pagination.total = response.total
     pagination.pages = response.pages
     usageStats.value = {}
@@ -1716,6 +1664,12 @@ const loadUsers = async () => {
 
 const handleBulkLimitsSuccess = async () => {
   clearSelection()
+  await loadUsers()
+}
+
+const handleCleanupCompleted = async () => {
+  clearSelection()
+  pagination.page = 1
   await loadUsers()
 }
 
@@ -1761,11 +1715,9 @@ const toggleBuiltInFilter = (key: string) => {
     visibleFilters.delete(key)
     if (key === 'role') filters.role = ''
     if (key === 'status') filters.status = ''
-    if (key === 'vip') filters.vip = ''
     if (key === 'group') filters.group = ''
     if (key === 'apiKeyGroup') filters.apiKeyGroup = null
   } else {
-    if (key === 'vip') filters.vip = 'true'
     visibleFilters.add(key)
     if (key === 'group') loadAllGroups()
     if (key === 'apiKeyGroup') loadAllGroupsForApiKeyFilter()
@@ -1808,30 +1760,6 @@ const handleEdit = (user: AdminUser) => {
 const closeEditModal = () => {
   showEditModal.value = false
   editingUser.value = null
-}
-
-const openVipDialog = (user: AdminUser, nextValue: boolean) => {
-  vipTarget.value = user
-  vipNextValue.value = nextValue
-  showVipDialog.value = true
-}
-
-const confirmToggleVip = async () => {
-  const user = vipTarget.value
-  if (!user) {
-    showVipDialog.value = false
-    return
-  }
-  try {
-    await adminAPI.users.setVIP(user.id, vipNextValue.value)
-    appStore.showSuccess(vipNextValue.value ? t('admin.users.svipGranted') : t('admin.users.svipRevoked'))
-    showVipDialog.value = false
-    vipTarget.value = null
-    loadUsers()
-  } catch (error: any) {
-    appStore.showError(error.response?.data?.detail || t('admin.users.failedToToggleSvip'))
-    console.error('Error toggling SVIP:', error)
-  }
 }
 
 const handleToggleStatus = async (user: AdminUser) => {

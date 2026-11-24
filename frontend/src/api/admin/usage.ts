@@ -4,7 +4,7 @@
  */
 
 import { apiClient } from '../client'
-import type { AdminUsageLog, UsageQueryParams, PaginatedResponse, UsageRequestType } from '@/types'
+import type { AdminUsageLog, UsageQueryParams, PaginatedResponse, UsageRequestType, UsageAuditStatus } from '@/types'
 import type { EndpointStat } from '@/types'
 
 // ==================== Types ====================
@@ -213,7 +213,126 @@ export async function cancelCleanupTask(taskId: number): Promise<{ id: number; s
   return data
 }
 
+export interface UsageAuditStatusCounts {
+  pass: number
+  warning: number
+  anomaly: number
+  unverifiable: number
+  not_applicable: number
+  unknown: number
+  missing: number
+}
+
+export interface UsageAuditDimensionStats {
+  key: string
+  name: string
+  total: number
+  counts: UsageAuditStatusCounts
+  average_input_deviation_pct?: number
+  maximum_input_deviation_pct?: number
+  average_output_deviation_pct?: number
+  maximum_output_deviation_pct?: number
+}
+
+export interface UsageAuditStatsResponse {
+  total_records: number
+  audited_records: number
+  coverage_pct: number
+  counts: UsageAuditStatusCounts
+  average_input_deviation_pct?: number
+  maximum_input_deviation_pct?: number
+  average_output_deviation_pct?: number
+  maximum_output_deviation_pct?: number
+  by_platform: UsageAuditDimensionStats[]
+  by_account: UsageAuditDimensionStats[]
+  by_model: UsageAuditDimensionStats[]
+}
+
+export interface SimpleUser {
+  id: number
+  email: string
+  deleted: boolean
+}
+
+export interface SimpleApiKey {
+  id: number
+  name: string
+  user_id: number
+}
+
+export interface UsageCleanupFilters {
+  start_time: string
+  end_time: string
+  user_id?: number
+  api_key_id?: number
+  account_id?: number
+  group_id?: number
+  model?: string | null
+  request_type?: UsageRequestType | null
+  stream?: boolean | null
+  billing_type?: number | null
+}
+
+export interface UsageCleanupTask {
+  id: number
+  status: string
+  filters: UsageCleanupFilters
+  created_by: number
+  deleted_rows: number
+  error_message?: string | null
+  canceled_by?: number | null
+  canceled_at?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateUsageCleanupTaskRequest {
+  start_date: string
+  end_date: string
+  user_id?: number
+  api_key_id?: number
+  account_id?: number
+  group_id?: number
+  model?: string | null
+  request_type?: UsageRequestType | null
+  stream?: boolean | null
+  billing_type?: number | null
+  timezone?: string
+}
+
+
+export interface UsageAuditQueryParams extends AdminUsageQueryParams {
+  usage_audit_status?: UsageAuditStatus | 'missing'
+}
+
+export async function getAuditStats(
+  params: UsageAuditQueryParams,
+  options?: { signal?: AbortSignal }
+): Promise<UsageAuditStatsResponse> {
+  const { data } = await apiClient.get<UsageAuditStatsResponse>('/admin/usage/audit/stats', {
+    params,
+    signal: options?.signal
+  })
+  return data
+}
+
+export async function exportAudit(
+  params: UsageAuditQueryParams,
+  format: 'csv' | 'json'
+): Promise<Blob> {
+  const response = await apiClient.get('/admin/usage/audit/export', {
+    params: { ...params, format },
+    responseType: 'blob',
+    timeout: 120000
+  })
+  return response.data
+}
+
 export const adminUsageAPI = {
+  getAuditStats,
+  exportAudit,
   list,
   getStats,
   searchUsers,
