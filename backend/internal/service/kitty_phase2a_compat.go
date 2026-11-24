@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
 )
 
 const (
@@ -49,4 +51,22 @@ type ScheduledTestResult struct {
 	ResponseText string `json:"response_text,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
 	LatencyMs    int64  `json:"latency_ms"`
+}
+
+func startBackgroundService(cfg *config.Config, job interface{ Start() }) {
+	if job == nil {
+		return
+	}
+	if cfg == nil || cfg.RunMode == "" || cfg.RunMode == config.RunModeStandard {
+		job.Start()
+	}
+}
+
+func IsAdminRole(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case RoleAdmin, "super_admin", "superadmin":
+		return true
+	default:
+		return false
+	}
 }

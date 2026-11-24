@@ -39,6 +39,7 @@ type AccountQuotaReader interface {
 
 // BalanceNotifyService handles balance and quota threshold notifications.
 type BalanceNotifyService struct {
+	balanceAlertSink         func(context.Context, int64, float64, float64, string, string) error
 	emailService             *EmailService
 	settingRepo              SettingRepository
 	accountRepo              AccountQuotaReader
@@ -83,12 +84,19 @@ func (s *BalanceNotifyService) CheckBalanceAfterDeduction(ctx context.Context, u
 	if !crossedDownward(oldBalance, newBalance, effectiveThreshold) {
 		return
 	}
-	s.dispatchBalanceLowEmail(ctx, user, newBalance, effectiveThreshold, rechargeURL)
+	if s.balanceAlertSink != nil {
+		if err := s.balanceAlertSink(ctx, user.ID, newBalance, effectiveThreshold, s.getSiteName(ctx), rechargeURL); err != nil {
+			slog.Warn("balance QQ notification enqueue failed", "user_id", user.ID, "error", err)
+		}
+	}
+	if s.emailService != nil {
+		s.dispatchBalanceLowEmail(ctx, user, newBalance, effectiveThreshold, rechargeURL)
+	}
 }
 
 // canNotifyBalance checks nil guards and user-level toggle.
 func (s *BalanceNotifyService) canNotifyBalance(user *User) bool {
-	if user == nil || s.emailService == nil || s.settingRepo == nil {
+	if user == nil || (s.emailService == nil && s.balanceAlertSink == nil) || s.settingRepo == nil {
 		return false
 	}
 	return user.BalanceNotifyEnabled

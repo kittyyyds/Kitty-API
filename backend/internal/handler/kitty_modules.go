@@ -7,6 +7,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
+	"github.com/Wei-Shaw/sub2api/internal/qqbot"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/redis/go-redis/v9"
 )
@@ -26,6 +27,8 @@ type KittyModules struct {
 	BillingPreview         *BillingPreviewHandler
 	ChannelMonitorV3       *ChannelMonitorV3Handler
 	ChannelMonitorV3Prober *service.ChannelMonitorV3Prober
+	QQBotService           *qqbot.Service
+	QQBot                  *QQBotHandler
 }
 
 func ProvideKittyModules(
@@ -33,14 +36,23 @@ func ProvideKittyModules(
 	entClient *ent.Client,
 	redisClient *redis.Client,
 	cfg *config.Config,
+	secretEncryptor service.SecretEncryptor,
 	settingService *service.SettingService,
+	emailService *service.EmailService,
+	userRepo service.UserRepository,
 	groupRepo service.GroupRepository,
+	accountRepo service.AccountRepository,
+	channelRepo service.ChannelRepository,
+	userGroupRateRepo service.UserGroupRateRepository,
 	apiKeyService *service.APIKeyService,
+	authCacheInvalidator service.APIKeyAuthCacheInvalidator,
 	channelService *service.ChannelService,
+	channelMonitorV2Service *service.ChannelMonitorV2Service,
 	billingService *service.BillingService,
 	billingCache *service.BillingCacheService,
 	modelPricingResolver *service.ModelPricingResolver,
 	paymentService *service.PaymentService,
+	balanceNotifyService *service.BalanceNotifyService,
 	rechargeBonusRepo service.RechargeBonusRepository,
 	supportTicketRepo service.SupportTicketRepository,
 	channelMonitorV3Repo service.ChannelMonitorV3Repository,
@@ -67,6 +79,28 @@ func ProvideKittyModules(
 		monitorV3Prober.Start()
 	}
 
+	qqbotSvc := service.ProvideQQBotService(
+		sqlDB,
+		secretEncryptor,
+		cfg,
+		authCacheInvalidator,
+		billingCache,
+		emailService,
+		settingService,
+		userRepo,
+		channelMonitorV2Service,
+		groupRepo,
+		channelRepo,
+		channelService,
+		modelPricingResolver,
+		billingService,
+		userGroupRateRepo,
+		apiKeyService,
+		accountRepo,
+		concurrencyService,
+		balanceNotifyService,
+	)
+
 	return &KittyModules{
 		SQLDB:                  sqlDB,
 		EntClient:              entClient,
@@ -80,5 +114,7 @@ func ProvideKittyModules(
 		BillingPreview:         NewBillingPreviewHandler(billingPreviewSvc),
 		ChannelMonitorV3:       NewChannelMonitorV3Handler(monitorV3Svc, apiKeyService, settingService),
 		ChannelMonitorV3Prober: monitorV3Prober,
+		QQBotService:           qqbotSvc,
+		QQBot:                  NewQQBotHandler(qqbotSvc),
 	}
 }
