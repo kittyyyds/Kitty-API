@@ -1,0 +1,29 @@
+{
+  "site": "https://kittyapi.xyz",
+  "image": "kitty/sub2api-cs-zuchengchen:0.2.19.77-kitty.24",
+  "files": [
+    {
+      "name": "EditAccountModal-CNS9cVsq.js",
+      "original_sha256": "5056b3837185bf25b42359843181a99e09de3c81f9488e9bdc91b2d46b92c086",
+      "patched_sha256": "a268b93f90221410aee13b6bff39f35b734a46ad0e5c37f510626cb8dc6b9603",
+      "changes": [
+        "new isolated OAuth catalog component",
+        "isolated sync lifecycle state",
+        "OAuth sync entry before untouched API key section",
+        "preserve freshly synchronized metadata on normal save"
+      ]
+    },
+    {
+      "name": "AccountsView-TALAMsyU.js",
+      "original_sha256": "9e007294e82c90b0143837b7ea39c0e5aaac66da0aa3dfe570d8dc130c5cba90",
+      "patched_sha256": "e6d4c9ea2cd05f97c21b685ac79142cf8b0d346cb8b15b890060243d06bd66fe",
+      "changes": [
+        "lifecycle-safe intelligence polling",
+        "remove obsolete ID-only watcher",
+        "manual account-list refresh includes intelligence summaries"
+      ]
+    }
+  ],
+  "poll_interval_ms": 15000,
+  "untouched_bytes_verified": true
+}

@@ -1,0 +1,30 @@
+{
+  "active_openai_oauth": 3,
+  "sampled_since_start": 3,
+  "recent_samples": [
+    {
+      "id": 1000000015,
+      "sampled": true,
+      "reset_sampled": true,
+      "sample_at": 1795438126
+    },
+    {
+      "id": 1000000035,
+      "sampled": true,
+      "reset_sampled": true,
+      "sample_at": 1795438125
+    },
+    {
+      "id": 1000000037,
+      "sampled": true,
+      "reset_sampled": true,
+      "sample_at": 1795438125
+    }
+  ],
+  "worker_scan_failures": 0,
+  "worker_account_warnings": 0,
+  "startup_panic": false,
+  "started_at": "2026-11-23T12:43:44.349868143Z",
+  "utc": "2026-11-23T12:51:50.474725+00:00",
+  "passed": true
+}

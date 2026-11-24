@@ -1,0 +1,1 @@
+import{k as l}from"./index-CGgBv6sc.js";import{p as s,S as c}from"./vendor-vue-IOCH49nt.js";const a=s([]),o=s([]);c(()=>{const e=l().map(t=>({value:t.id,label:t.display_name}));a.splice(0,a.length,...e),o.splice(0,o.length,...e,{value:"composite",label:"Composite"})});export{a as C,o as G};

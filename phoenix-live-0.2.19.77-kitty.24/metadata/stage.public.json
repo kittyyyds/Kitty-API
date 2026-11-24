@@ -1,0 +1,6 @@
+{
+  "image": "kitty/sub2api-cs-zuchengchen:0.2.19.77-kitty.24",
+  "image_id": "sha256:61accfee059de4e8308c062070d7ab869531dc24f5cd76ec52b5a90b70d5f459",
+  "version_output": "2026-11-23T12:08:01.069Z\tINFO\tstdlog\tSub2API 0.2.19.77-kitty.24 (commit: 7eb98b08e96d0df96da9e9a948c7165935dea50a, built: 2026-11-23T11:57:29Z)\t{\"service\": \"sub2api\", \"env\": \"bootstrap\", \"legacy_stdlog\": true}",
+  "binary_sha256": "480ad19e03de50f0fe56b168b097edcc68ed7ee4a064ea137524d99da5d71878"
+}

@@ -1,0 +1,1 @@
+function t(n,e){return!n||!n.length||e==null||!Number.isFinite(e)||e<=0?null:n.find(r=>Math.abs(r.recharge_amount-e)<1e-8)??null}function i(n){const e=Number(n??0);return Number.isFinite(e)?e!==0&&Math.abs(e)<.01?e.toFixed(8).replace(/0+$/,""):e.toFixed(2):"0.00"}export{i as f,t as m};

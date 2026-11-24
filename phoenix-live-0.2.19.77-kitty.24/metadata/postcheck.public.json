@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "version": "0.2.19.77-kitty.24",
+  "binary_hash_matches": true,
+  "restart_count": 0,
+  "migrations_total": "363",
+  "new_migrations_applied": []
+}

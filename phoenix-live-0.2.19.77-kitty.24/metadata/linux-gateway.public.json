@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "return_code": 0,
+  "tests_including_subtests": {
+    "passed": 821,
+    "failed": 0,
+    "skipped": 0
+  },
+  "failed_tests": [],
+  "platform": "linux/amd64",
+  "network": "none",
+  "includes_posix_path_regressions": true,
+  "utc": "2026-11-23T12:29:36.024134+00:00"
+}

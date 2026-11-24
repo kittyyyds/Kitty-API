@@ -1,0 +1,194 @@
+{
+  "base_checks": [
+    {
+      "path": "/health",
+      "authenticated": false,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/auth/me",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/user/profile",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/keys",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/groups/available",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/usage/stats",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/accounts",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/groups",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/users",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/dashboard/stats",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/settings",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/accounts",
+      "authenticated": false,
+      "status": 401,
+      "expected": 401
+    },
+    {
+      "path": "/v1/models",
+      "authenticated": false,
+      "status": 401,
+      "expected": 401
+    }
+  ],
+  "compliance_locked": false,
+  "extra": {
+    "passed": true,
+    "checks": [
+      {
+        "path": "/api/v1/admin/security-policy/config",
+        "status": 404
+      },
+      {
+        "path": "/api/v1/admin/security-policy/logs",
+        "status": 404
+      },
+      {
+        "path": "/api/v1/auth/me",
+        "scope": "customer",
+        "status": 200
+      },
+      {
+        "path": "/api/v1/keys",
+        "scope": "customer",
+        "status": 200
+      },
+      {
+        "path": "/api/v1/billing/statement",
+        "scope": "customer",
+        "status": 200
+      },
+      {
+        "path": "/api/v1/payment/orders/my",
+        "scope": "customer",
+        "status": 200
+      },
+      {
+        "path": "/api/v1/payment/invoices/config",
+        "scope": "customer",
+        "status": 200
+      },
+      {
+        "path": "/api/v1/user/qqbot/binding",
+        "scope": "customer",
+        "status": 200
+      },
+      {
+        "path": "/api/v1/usage/stats",
+        "scope": "customer",
+        "status": 200
+      },
+      {
+        "path": "/api/v1/payment/checkout-info",
+        "scope": "customer",
+        "status": 200,
+        "methods": [
+          "alipay",
+          "dujiaopay",
+          "wxpay"
+        ],
+        "fixed_packages_eligible": [
+          5,
+          10,
+          30,
+          50,
+          100,
+          500,
+          1000,
+          5000
+        ],
+        "no_order_created": true
+      },
+      {
+        "path": "/api/v1/admin/accounts/1000000015/usage?source=passive",
+        "status": 200,
+        "local_snapshot_only": true
+      },
+      {
+        "path": "/api/v1/admin/accounts/1000000035/usage?source=passive",
+        "status": 200,
+        "local_snapshot_only": true
+      },
+      {
+        "path": "/api/v1/admin/accounts/1000000037/usage?source=passive",
+        "status": 200,
+        "local_snapshot_only": true
+      },
+      {
+        "path": "/api/v1/admin/accounts/usage/batch",
+        "status": 200,
+        "local_snapshot_only": true,
+        "account_count": 3
+      }
+    ],
+    "original_cs_oauth_rows_retained": 4,
+    "original_cs_oauth_active_identities": 2,
+    "original_cs_oauth_prior_deletions_preserved": true,
+    "retired_setting_rows": 0,
+    "actual_payment_not_attempted": true
+  },
+  "passed": true,
+  "version": "0.2.19.77-kitty.24",
+  "business_counts": {
+    "users": 1030,
+    "balances": "a32654842ff06171463b7bbed84d6d42",
+    "user_identity_status": "c99a0a8a9d0bdb68821ee08da3c2ca67",
+    "codes": 2336,
+    "orders": 2292,
+    "accounts": 12716,
+    "keys": 1798,
+    "key_ownership_status": "1ef88842d265021b3ef3feddf8ffd974",
+    "key_groups": "c65dcb0eed87f83465688271f292cbd2",
+    "groups": 71,
+    "usage_logs": 2601402
+  },
+  "settings_preserved": true
+}

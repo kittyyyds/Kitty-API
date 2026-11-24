@@ -1,0 +1,14 @@
+{
+  "version": "0.2.19.77-kitty.24",
+  "tag": "cs-v0.2.19.77-kitty.24",
+  "image": "kitty/sub2api-cs-zuchengchen:0.2.19.77-kitty.24",
+  "old_image": "kitty/sub2api-cs-zuchengchen:0.2.19.68-kitty.23",
+  "new_migrations": [],
+  "compare_iq_schedule_settings": true,
+  "drain_timeout_seconds": 300,
+  "force_disconnect_authorized": true,
+  "public_url": "https://kittyapi.xyz",
+  "commit": "7eb98b08e96d0df96da9e9a948c7165935dea50a",
+  "binary_sha256": "480ad19e03de50f0fe56b168b097edcc68ed7ee4a064ea137524d99da5d71878",
+  "build_utc": "2026-11-23T11:57:29Z"
+}

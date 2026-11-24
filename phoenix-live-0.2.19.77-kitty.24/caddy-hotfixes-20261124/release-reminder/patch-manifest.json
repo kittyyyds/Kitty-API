@@ -1,0 +1,20 @@
+{
+  "site": "https://kittyapi.xyz",
+  "container": "kitty-cs-czc-app",
+  "image": "kitty/sub2api-cs-zuchengchen:0.2.19.77-kitty.24",
+  "filename": "AppLayout-Dn-Qkd4D.js",
+  "server_directory": "/opt/codex-migration/20261019/source-tree/opt/kitty-migration/public/kitty-upstream-release-reminder/assets",
+  "original_sha256": "bf78cb747c50556dd0d0c70cd8c4f0da15828d92a217a9f049b80feff77c4344",
+  "patched_sha256": "941b12baa1ca40492c1241edb791ebd1ccd6a7c0af2bfdaa9f48cebfb36a9445",
+  "changed_component": "VersionBadge",
+  "upstream_baseline": {
+    "id": 454966374,
+    "tag_name": "czc-v2026.11.23.2",
+    "name": "czc-v2026.11.23.2 (0.2.19.77)",
+    "published_at": "2026-11-23T03:51:52Z",
+    "html_url": "https://github.com/zuchengchen/sub2api/releases/tag/czc-v2026.11.23.2"
+  },
+  "original_component_bytes": 15225,
+  "replacement_bytes": 6097,
+  "deployment_method": "Exact main-site Caddy asset route and graceful reload through 1Panel APIs"
+}

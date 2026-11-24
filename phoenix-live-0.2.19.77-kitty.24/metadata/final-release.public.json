@@ -1,0 +1,88 @@
+{
+  "passed": true,
+  "version": "0.2.19.77-kitty.24",
+  "checks": [
+    {
+      "path": "/health",
+      "authenticated": false,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/auth/me",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/user/profile",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/keys",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/groups/available",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/usage/stats",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/accounts",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/groups",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/users",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/dashboard/stats",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/settings",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/accounts",
+      "authenticated": false,
+      "status": 401,
+      "expected": 401
+    },
+    {
+      "path": "/v1/models",
+      "authenticated": false,
+      "status": 401,
+      "expected": 401
+    }
+  ],
+  "unretired_release_keys": 0,
+  "healthy": true,
+  "restart_count": 0,
+  "utc": "2026-11-23T13:00:14.271198+00:00"
+}

@@ -1,0 +1,221 @@
+{
+  "started_utc": "20261123T124335Z-76457a",
+  "backup": "/opt/kitty-cs-zuchengchen-20261120/backups/cutover-0.2.19.77-kitty.24-20261123T124335Z-76457a",
+  "old_image": "kitty/sub2api-cs-zuchengchen:0.2.19.68-kitty.23",
+  "new_image": "kitty/sub2api-cs-zuchengchen:0.2.19.77-kitty.24",
+  "version": "0.2.19.77-kitty.24",
+  "tag": "cs-v0.2.19.77-kitty.24",
+  "commit": "7eb98b08e96d0df96da9e9a948c7165935dea50a",
+  "pre_maintenance_drain": {
+    "skipped_by_explicit_user_authorization": true,
+    "active_slots": 16,
+    "waiting": 0
+  },
+  "drain": {
+    "forced_disconnect_authorized": true,
+    "active_slots": 18,
+    "waiting": 0
+  },
+  "verified_full_backup": "/opt/kitty-cs-zuchengchen-20261120/backups/before-0.2.19.77-kitty.24-20261123T114935Z-a51d04",
+  "db_sha256": "7b0c2628fa3dfc95f4ddde3a8374f2e5fcf66bf8fd8902ff95812e9d0cdf5c65",
+  "business_changed_fields": [],
+  "checks": [
+    {
+      "path": "/health",
+      "authenticated": false,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/auth/me",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/user/profile",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/keys",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/groups/available",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/usage/stats",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/accounts",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/groups",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/users",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/dashboard/stats",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/settings",
+      "authenticated": true,
+      "status": 200,
+      "expected": 200
+    },
+    {
+      "path": "/api/v1/admin/accounts",
+      "authenticated": false,
+      "status": 401,
+      "expected": 401
+    },
+    {
+      "path": "/v1/models",
+      "authenticated": false,
+      "status": 401,
+      "expected": 401
+    }
+  ],
+  "compliance_locked": false,
+  "extra": {
+    "passed": true,
+    "checks": [
+      {
+        "path": "/api/v1/admin/security-policy/config",
+        "status": 404
+      },
+      {
+        "path": "/api/v1/admin/security-policy/logs",
+        "status": 404
+      },
+      {
+        "path": "/api/v1/auth/me",
+        "scope": "customer",
+        "status": 200
+      },
+      {
+        "path": "/api/v1/keys",
+        "scope": "customer",
+        "status": 200
+      },
+      {
+        "path": "/api/v1/billing/statement",
+        "scope": "customer",
+        "status": 200
+      },
+      {
+        "path": "/api/v1/payment/orders/my",
+        "scope": "customer",
+        "status": 200
+      },
+      {
+        "path": "/api/v1/payment/invoices/config",
+        "scope": "customer",
+        "status": 200
+      },
+      {
+        "path": "/api/v1/user/qqbot/binding",
+        "scope": "customer",
+        "status": 200
+      },
+      {
+        "path": "/api/v1/usage/stats",
+        "scope": "customer",
+        "status": 200
+      },
+      {
+        "path": "/api/v1/payment/checkout-info",
+        "scope": "customer",
+        "status": 200,
+        "methods": [
+          "alipay",
+          "dujiaopay",
+          "wxpay"
+        ],
+        "fixed_packages_eligible": [
+          5,
+          10,
+          30,
+          50,
+          100,
+          500,
+          1000,
+          5000
+        ],
+        "no_order_created": true
+      },
+      {
+        "path": "/api/v1/admin/accounts/1000000015/usage?source=passive",
+        "status": 200,
+        "local_snapshot_only": true
+      },
+      {
+        "path": "/api/v1/admin/accounts/1000000035/usage?source=passive",
+        "status": 200,
+        "local_snapshot_only": true
+      },
+      {
+        "path": "/api/v1/admin/accounts/1000000037/usage?source=passive",
+        "status": 200,
+        "local_snapshot_only": true
+      },
+      {
+        "path": "/api/v1/admin/accounts/usage/batch",
+        "status": 200,
+        "local_snapshot_only": true,
+        "account_count": 3
+      }
+    ],
+    "original_cs_oauth_rows_retained": 4,
+    "original_cs_oauth_active_identities": 2,
+    "original_cs_oauth_prior_deletions_preserved": true,
+    "retired_setting_rows": 0,
+    "actual_payment_not_attempted": true
+  },
+  "passed": true,
+  "business_counts": {
+    "users": 1030,
+    "balances": "92e5a8c19d9e61bc03b60e743412771a",
+    "user_identity_status": "c99a0a8a9d0bdb68821ee08da3c2ca67",
+    "codes": 2337,
+    "orders": 2293,
+    "accounts": 12716,
+    "keys": 1799,
+    "key_ownership_status": "f0544aefe5fee664f0bb9ee91fa0d16c",
+    "key_groups": "4c4722533a471eeb8b092e4acbd73fb4",
+    "groups": 71,
+    "usage_logs": 2602137
+  },
+  "settings_preserved": true,
+  "preserved_containers": [
+    "kitty-final-migration-target",
+    "kitty-cs-czc-redis",
+    "kitty-subcustom-app",
+    "kitty-old-archive-app",
+    "kitty-prod-public-caddy"
+  ],
+  "ended_utc": "2026-11-23T12:43:52.579870+00:00"
+}

@@ -1,0 +1,1 @@
+function e(r,t="/dashboard"){return typeof r!="string"||!r.startsWith("/")||r.startsWith("//")||r.includes("\\")||/[\t\n\r]/.test(r)?t:r}function i(r){const t=e(r,"");return t?{redirect:t}:void 0}export{i as r,e as s};

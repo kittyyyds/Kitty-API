@@ -1,0 +1,1 @@
+function n(i){return i?i.length<=12?`${i.slice(0,4)}***`:`${i.slice(0,6)}...${i.slice(-4)}`:""}function t(i){return(i==null?void 0:i.key_digest_only)===!0}function r(i){return t(i)?i.key:n(i.key)}export{r as d,t as i};
