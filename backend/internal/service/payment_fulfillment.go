@@ -498,6 +498,9 @@ func (s *PaymentService) dispatchPaymentFulfillmentNotification(o *dbent.Payment
 		var err error
 		switch auditAction {
 		case "RECHARGE_SUCCESS":
+			if bonusErr := s.applyKittyRechargeBonusForOrder(ctx, o); bonusErr != nil {
+				slog.Warn("apply kitty recharge bonus failed", "order_id", o.ID, "error", bonusErr)
+			}
 			err = s.sendBalanceRechargeSuccessNotification(ctx, o)
 		case "SUBSCRIPTION_SUCCESS":
 			err = s.sendSubscriptionPurchaseSuccessNotification(ctx, o)

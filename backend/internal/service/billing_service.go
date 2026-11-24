@@ -208,6 +208,8 @@ type UsageTokens struct {
 
 // CostBreakdown 费用明细
 type CostBreakdown struct {
+	ContextRuleID       int64
+	ContextRuleRevision int64
 	InputCost                 float64 // 文本输入费用（不含图片输入，图片输入单独记入 ImageInputCost）
 	ImageInputCost            float64 // 图片输入 token 费用（如 gpt-image-2 图片编辑）
 	OutputCost                float64
@@ -334,7 +336,8 @@ type BillingService struct {
 	// fallbackWarnSeen 记录已打过 fallback 警告日志的(已小写化)模型名,
 	// 让 "[Billing] Using fallback pricing" 每个模型每进程最多打一条,
 	// 避免热路径上每请求刷屏(issue #3394)。零值即可用,无需在构造函数初始化。
-	fallbackWarnSeen sync.Map
+	fallbackWarnSeen   sync.Map
+	globalContextRules globalContextRuleReader
 }
 
 // NewBillingService 创建计费服务实例
@@ -1687,6 +1690,8 @@ func applyChannelTokenPriceOverrides(pricing *ModelPricing, channelPricing *Chan
 
 // CostInput 统一计费输入
 type CostInput struct {
+	SkipGlobalContextRules bool
+	overrideContextPricing bool
 	Ctx                       context.Context
 	Model                     string
 	GroupID                   *int64 // 用于渠道定价查找

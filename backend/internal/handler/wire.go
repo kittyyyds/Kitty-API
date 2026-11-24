@@ -177,6 +177,7 @@ func ProvideAdminSettingHandler(settingService *service.SettingService, emailSer
 
 // ProvideHandlers creates the Handlers struct
 func ProvideHandlers(
+	kittyModules *KittyModules,
 	authHandler *AuthHandler,
 	userHandler *UserHandler,
 	apiKeyHandler *APIKeyHandler,
@@ -203,6 +204,7 @@ func ProvideHandlers(
 	_ *service.OpenAIQuotaAutoResetService,
 ) *Handlers {
 	return &Handlers{
+		Kitty:            kittyModules,
 		KeyPouchImport:   keyPouchImportHandler,
 		Auth:             authHandler,
 		User:             userHandler,
@@ -290,6 +292,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewAuditLogHandler,
 
 	// AdminHandlers and Handlers constructors
+	ProvideKittyModules,
 	ProvideAdminHandlers,
 	ProvideHandlers,
 )

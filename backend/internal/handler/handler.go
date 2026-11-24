@@ -64,6 +64,7 @@ type Handlers struct {
 	AvailableChannel *AvailableChannelHandler
 	ModelPlaza       *ModelPlazaHandler
 	AsyncImage       *AsyncImageHandler
+	Kitty            *KittyModules
 }
 
 // BuildInfo contains build-time information

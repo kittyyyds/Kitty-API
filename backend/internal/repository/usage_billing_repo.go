@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -12,11 +13,12 @@ import (
 )
 
 type usageBillingRepository struct {
-	db *sql.DB
+	db    *sql.DB
+	bonus *rechargeBonusRepository
 }
 
 func NewUsageBillingRepository(_ *dbent.Client, sqlDB *sql.DB) service.UsageBillingRepository {
-	return &usageBillingRepository{db: sqlDB}
+	return &usageBillingRepository{db: sqlDB, bonus: newRechargeBonusRepository(sqlDB)}
 }
 
 func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBillingCommand) (_ *service.UsageBillingApplyResult, err error) {
@@ -117,6 +119,11 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
 	}
 
 	if cmd.BalanceCost > 0 {
+		if r != nil && r.bonus != nil {
+			if _, _, bonusErr := r.bonus.consumeInTx(ctx, tx, cmd.UserID, cmd.RequestID, cmd.BalanceCost, time.Now().UTC()); bonusErr != nil {
+				return bonusErr
+			}
+		}
 		newBalance, sufficient, err := deductUsageBillingBalance(ctx, tx, cmd.UserID, cmd.BalanceCost)
 		if err != nil {
 			return err
