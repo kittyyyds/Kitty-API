@@ -291,6 +291,7 @@ type UsageLogFilters struct {
 	// degraded; false keeps rows served on a healthy/unknown route. NULL rows
 	// (Tibo route selection not applied) match neither value.
 	RouteDegraded *bool
+	UsageAuditStatus string
 	StartTime     *time.Time
 	EndTime       *time.Time
 	// ExactTotal requests exact COUNT(*) for pagination. Default false for fast large-table paging.

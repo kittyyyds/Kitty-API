@@ -16,14 +16,6 @@ import (
 
 type TrafficRecorder interface{ RecordTraffic(service.TrafficEvent) }
 
-func connectionMetadata(value string, limit int) string {
-	value = strings.ToValidUTF8(value, "")
-	if len(value) > limit {
-		value = strings.ToValidUTF8(value[:limit], "")
-	}
-	return value
-}
-
 const trafficRecoveryFinishKey = "sub2api.user_traffic.recovery_finish"
 
 // Recovery calls this after its error response has passed through the writer.

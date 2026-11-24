@@ -65,6 +65,7 @@ func RegisterKittyRoutes(
 		ctxRules.PUT("/:ruleID", h.Admin.Channel.SaveContextRule)
 		ctxRules.DELETE("/:ruleID", h.Admin.Channel.DeleteContextRule)
 		ctxRules.GET("/models", h.Admin.Channel.ContextRuleModels)
+		admin.GET("/channels/context-rule-models", h.Admin.Channel.ContextRuleModels)
 	}
 
 	// Expirable Recharge Bonus (902_kitty_recharge_bonus.sql)
@@ -95,6 +96,9 @@ func RegisterKittyRoutes(
 		adminTraffic.GET("/traffic", h.Admin.Usage.Traffic)
 		adminTraffic.GET("/traffic/keys", h.Admin.Usage.TrafficKeys)
 		adminTraffic.GET("/traffic/health", h.Admin.Usage.TrafficHealth)
+		adminTraffic.GET("/connections", h.Admin.Usage.Connections)
+		adminTraffic.GET("/audit/stats", h.Admin.Usage.AuditStats)
+		adminTraffic.GET("/audit/export", h.Admin.Usage.AuditExport)
 	}
 
 	// Support Tickets (904_support_tickets.sql)

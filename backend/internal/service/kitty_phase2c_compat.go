@@ -150,3 +150,21 @@ func sanitizeUpstreamBalanceText(value string, maxRunes int) string {
 	}
 	return strings.TrimSpace(string(kept))
 }
+
+type ImageOutputEvidence struct {
+	Version        int                      `json:"version"`
+	RequestedModel string                   `json:"requested_model,omitempty"`
+	UpstreamModel  string                   `json:"upstream_model,omitempty"`
+	ReportedModel  string                   `json:"reported_model,omitempty"`
+	ModelStatus    string                   `json:"model_status"`
+	RequestedSize  string                   `json:"requested_size,omitempty"`
+	SizeStatus     string                   `json:"size_status"`
+	SizeEvidence   string                   `json:"size_evidence"`
+	Outputs        []ImageOutputObservation `json:"outputs,omitempty"`
+	Postprocessed  *bool                    `json:"postprocessed,omitempty"`
+}
+
+type ImageOutputObservation struct {
+	DeclaredSize string `json:"declared_size,omitempty"`
+	MeasuredSize string `json:"measured_size,omitempty"`
+}

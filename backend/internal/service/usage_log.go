@@ -219,6 +219,8 @@ type UsageLog struct {
 	VideoResolution      *string
 	VideoDurationSeconds *int
 
+	UsageAudit *UsageAudit
+
 	CreatedAt time.Time
 
 	User         *User
