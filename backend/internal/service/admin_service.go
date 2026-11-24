@@ -17,6 +17,8 @@ type AdminService interface {
 	GetUser(ctx context.Context, id int64) (*User, error)
 	GetUserIncludeDeleted(ctx context.Context, id int64) (*User, error)
 	CreateUser(ctx context.Context, input *CreateUserInput) (*User, error)
+	FindActiveUsersByBlacklistedEmails(ctx context.Context, emails []string) ([]User, error)
+	BatchDisableUsers(ctx context.Context, userIDs []int64) (int, error)
 	UpdateUser(ctx context.Context, id int64, input *UpdateUserInput) (*User, error)
 	DeleteUser(ctx context.Context, id int64) error
 	UpdateUserBalance(ctx context.Context, userID int64, balance float64, operation string, notes string) (*User, error)

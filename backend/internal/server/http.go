@@ -6,6 +6,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -14,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/setup"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/wire"
@@ -91,6 +93,13 @@ func ProvideRouter(
 		service.SetWebSearchManager(websearch.NewManager(configs, redisClient))
 	})
 
+	if handlers != nil && handlers.Admin != nil && handlers.Admin.Usage != nil {
+		if _, err := handlers.Admin.Usage.ConfigureTrafficDelivery(func() string {
+			return filepath.Join(setup.GetDataDir(), "user-traffic-pending")
+		}); err != nil {
+			log.Printf("Traffic statistics unavailable: %v", err)
+		}
+	}
 	return SetupRouter(r, handlers, jwtAuth, optionalJWTAuth, adminAuth, apiKeyAuth, auditLog, stepUpAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg, redisClient)
 }
 

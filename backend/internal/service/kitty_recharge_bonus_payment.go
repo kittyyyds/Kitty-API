@@ -32,6 +32,26 @@ func (s *PaymentService) GetRechargeBonusSummary(ctx context.Context, userID int
 	return s.rechargeBonusRepo.GetUserSummary(ctx, userID, time.Now().UTC())
 }
 
+func (s *PaymentService) quoteBalanceRecharge(ctx context.Context, cfg *PaymentConfig, amount float64, currency string) (rechargeBonusQuote, *RechargeBonusRule, error) {
+	var rule *RechargeBonusRule
+	if s.rechargeBonusRepo != nil {
+		matched, err := s.rechargeBonusRepo.MatchRule(ctx, amount, time.Now().UTC())
+		if err != nil {
+			return rechargeBonusQuote{}, nil, fmt.Errorf("match recharge bonus rule: %w", err)
+		}
+		if matched != nil {
+			copyRule := *matched
+			rule = &copyRule
+		}
+	}
+	if rule != nil && cfg != nil {
+		copyConfig := *cfg
+		copyConfig.RechargeBonusTiers = nil
+		return quoteRechargeBonus(&copyConfig, amount, currency), rule, nil
+	}
+	return quoteRechargeBonus(cfg, amount, currency), nil, nil
+}
+
 func (s *PaymentService) applyKittyRechargeBonusForOrder(ctx context.Context, o *dbent.PaymentOrder) error {
 	if s == nil || s.rechargeBonusRepo == nil || o == nil || o.OrderType != payment.OrderTypeBalance {
 		return nil

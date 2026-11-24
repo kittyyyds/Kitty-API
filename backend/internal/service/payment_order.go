@@ -26,6 +26,15 @@ func (s *PaymentService) CreateOrder(ctx context.Context, req CreateOrderRequest
 	if req.OrderType == "" {
 		req.OrderType = payment.OrderTypeBalance
 	}
+	if req.OrderType == payment.OrderTypeSubscription {
+		renewalMode, err := NormalizeSubscriptionRenewalMode(req.RenewalMode)
+		if err != nil {
+			return nil, err
+		}
+		req.RenewalMode = string(renewalMode)
+	} else {
+		req.RenewalMode = ""
+	}
 	if normalized := NormalizeVisibleMethod(req.PaymentType); normalized != "" {
 		req.PaymentType = normalized
 	}
@@ -69,7 +78,11 @@ func (s *PaymentService) CreateOrder(ctx context.Context, req CreateOrderRequest
 		limitAmount = plan.Price
 	} else if req.OrderType == payment.OrderTypeBalance {
 		// 阈值按支付金额命中。赠金模式：到账 = 基数 + 赠送；折扣模式：到账 = 基数，实付基数按折扣减少。
-		quote := quoteRechargeBonus(cfg, req.Amount, methodCurrency)
+		quote, rule, quoteErr := s.quoteBalanceRecharge(ctx, cfg, req.Amount, methodCurrency)
+		if quoteErr != nil {
+			return nil, quoteErr
+		}
+		req.rechargeBonusRule = rule
 		limitAmount = quote.PayBase
 		bonusAmount = quote.Bonus
 		orderAmount = quote.Credited
@@ -218,11 +231,16 @@ func (s *PaymentService) createOrderInTx(ctx context.Context, req CreateOrderReq
 		b.SetProviderSnapshot(providerSnapshot)
 	}
 	if plan != nil {
-		b.SetPlanID(plan.ID).SetSubscriptionGroupID(plan.GroupID).SetSubscriptionDays(psComputeValidityDays(plan.ValidityDays, plan.ValidityUnit))
+		b.SetPlanID(plan.ID).SetSubscriptionGroupID(plan.GroupID).SetSubscriptionDays(psComputeValidityDays(plan.ValidityDays, plan.ValidityUnit)).SetSubscriptionRenewalMode(req.RenewalMode)
 	}
 	order, err := b.Save(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("create order: %w", err)
+	}
+	if req.OrderType == payment.OrderTypeBalance && s.rechargeBonusRepo != nil && req.rechargeBonusRule != nil {
+		if snapshotErr := s.rechargeBonusRepo.SnapshotOrder(ctx, tx.Client(), order.ID, req.rechargeBonusRule); snapshotErr != nil {
+			return nil, fmt.Errorf("snapshot recharge bonus rule: %w", snapshotErr)
+		}
 	}
 	code := fmt.Sprintf("PAY-%d-%d", order.ID, time.Now().UnixNano()%100000)
 	order, err = tx.PaymentOrder.UpdateOneID(order.ID).SetRechargeCode(code).Save(ctx)

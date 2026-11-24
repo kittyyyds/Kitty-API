@@ -1157,6 +1157,9 @@ func (s *AuthService) validateRegistrationEmailPolicy(ctx context.Context, email
 	if s.settingService == nil {
 		return nil
 	}
+	if s.settingService.IsRegistrationEmailBlacklisted(ctx, email) {
+		return ErrEmailBlocked
+	}
 	whitelist := s.settingService.GetRegistrationEmailSuffixWhitelist(ctx)
 	if !IsRegistrationEmailSuffixAllowed(email, whitelist) {
 		return buildEmailSuffixNotAllowedError(whitelist)
@@ -1170,6 +1173,9 @@ func (s *AuthService) validateRegistrationEmailPolicy(ctx context.Context, email
 func (s *AuthService) validateRegistrationEmailQuota(ctx context.Context, email string) error {
 	if s.settingService == nil {
 		return nil
+	}
+	if s.settingService.IsRegistrationEmailBlacklisted(ctx, email) {
+		return ErrEmailBlocked
 	}
 	whitelist := s.settingService.GetRegistrationEmailSuffixWhitelist(ctx)
 	if !IsRegistrationEmailSuffixLimited(email, whitelist) {

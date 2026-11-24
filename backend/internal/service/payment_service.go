@@ -82,9 +82,11 @@ type CreateOrderRequest struct {
 	SrcURL          string
 	ReturnURL       string
 	PaymentSource   string
-	OrderType       string
-	PlanID          int64
-	Locale          string
+	OrderType         string
+	PlanID            int64
+	RenewalMode       string
+	Locale            string
+	rechargeBonusRule *RechargeBonusRule
 }
 
 type CreateOrderResponse struct {

@@ -69,6 +69,11 @@ func SetupRouter(
 		return nil
 	}))
 	r.Use(middleware2.ServerTiming(cfg.Server.EnableServerTiming))
+	var trafficRecorder middleware2.TrafficRecorder
+	if handlers != nil && handlers.Admin != nil && handlers.Admin.Usage != nil {
+		trafficRecorder = handlers.Admin.Usage
+	}
+	r.Use(middleware2.UserTraffic(trafficRecorder))
 
 	// Serve embedded frontend with settings injection if available
 	if web.HasEmbeddedFrontend() {

@@ -1773,6 +1773,14 @@ func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input Cos
 		contextTierPricingEnabled = contextTierPricingEnabled && *input.LongContextBillingEnabled
 	}
 
+	rule, ruleErr := s.globalContextRuleForCost(input)
+	if ruleErr != nil {
+		return nil, ruleErr
+	}
+	if rule != nil {
+		contextTierPricingEnabled = false
+	}
+
 	pricingContext := totalContext
 	if !contextTierPricingEnabled {
 		// 渠道可能显式配置了第一档，也可能只配置高上下文档。用 1 token
@@ -1818,6 +1826,7 @@ func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input Cos
 	applyLongCtx := len(resolved.Intervals) == 0 && contextTierPricingEnabled
 
 	breakdown := s.computeTokenBreakdown(pricing, input.Tokens, input.RateMultiplier, input.ServiceTier, applyLongCtx)
+	applyGlobalContextRule(breakdown, rule, input.Tokens, input.RateMultiplier)
 	applyCostBreakdownMultiplier(breakdown, resolvedChannelTimeMultiplier(resolved, input.PricingAt))
 	applyCostBreakdownMultiplier(breakdown, reasoningEffortBillingMultiplier(input.ReasoningEffort, pricing.ReasoningEffortMultipliers))
 	return breakdown, nil
