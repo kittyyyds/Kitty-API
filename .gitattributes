@@ -1,0 +1,36 @@
+# 确保所有 SQL 迁移文件使用 LF 换行符
+backend/migrations/*.sql text eol=lf
+backend/migrations/history/*.sql text eol=lf
+
+# Go 源代码文件
+*.go text eol=lf
+
+# 前端 源代码文件
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.vue text eol=lf
+
+# Shell 脚本
+*.sh text eol=lf
+
+# YAML/YML 配置文件
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Dockerfile
+Dockerfile text eol=lf
+
+# Embedded moderation assets have byte-level SHA-256 manifests.
+backend/resources/content-moderation/**/*.txt text eol=lf
+backend/resources/content-moderation/**/*.json text eol=lf
+
+# Explicit ticket schema package uses the same byte checksums on every host.
+deploy/kitty-updater/ticket-schema-sql/*.sql text eol=lf
+
+# Historical production migrations retain the exact deployed checksum.
+backend/migrations/241_add_typesafe_platform.sql -text
+backend/migrations/263_kitty_typesafe_video_platforms.sql -text
+backend/migrations/264_retire_kitty_manual_prism.sql -text
+backend/migrations/298_kitty_retained_media.sql -text

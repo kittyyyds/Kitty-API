@@ -1,0 +1,257 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { reactive } from 'vue'
+import { mount, flushPromises } from '@vue/test-utils'
+import AutoConfigView from '../AutoConfigView.vue'
+import { getAutoConfig, saveAutoConfig, defaultIQBootstrap, type AutoConfig } from '@/api/admin/autoConfig'
+import { listQualityPlans } from '@/api/admin/accountQuality'
+import { getAllIncludingInactive, getAvailableModels } from '@/api/admin/groups'
+import type { Group } from '@/types'
+import { defaultModelBillingConfig } from '@/utils/modelBilling'
+import { defaultOAuthModelMappings } from '@/utils/oauthModelMappings'
+import { defaultOpenAITwoFAAdmissionConfig } from '@/utils/openaiTwoFAAdmission'
+vi.mock('@/components/account/ModelWhitelistSelector.vue', () => ({ default: { props: ['modelValue'], template: '<div data-testid="model-selection">{{ modelValue.join(", ") }}</div>' } }))
+const state = vi.hoisted(() => ({ auth: null as any }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => state.auth }))
+vi.mock('@/components/layout/AppLayout.vue', () => ({ default: { template: '<main><slot /></main>' } }))
+vi.mock('@/components/admin/operations/AutoConfigHistory.vue', () => ({ default: { props: ['refreshKey'], template: '<section data-testid="history" :data-refresh="refreshKey" />' } }))
+vi.mock('@/components/admin/operations/SmartOpsNav.vue', () => ({ default: { template: '<nav />' } }))
+vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
+vi.mock('@/api/client',()=>({apiClient:{get:vi.fn(),put:vi.fn()}}))
+vi.mock('@/api/admin/autoConfig', async importOriginal => ({ ...await importOriginal<typeof import('@/api/admin/autoConfig')>(), getAutoConfig: vi.fn(), saveAutoConfig: vi.fn() }))
+vi.mock('@/api/admin/accountQuality', () => ({ listQualityPlans: vi.fn() }))
+vi.mock('@/api/admin/groups', () => ({ getAllIncludingInactive: vi.fn(), getAvailableModels: vi.fn() }))
+const config: AutoConfig = { iq_bootstrap: defaultIQBootstrap(), openai_two_fa_admission: defaultOpenAITwoFAAdmissionConfig(), model_billing: defaultModelBillingConfig(), model_mappings: defaultOAuthModelMappings('openai'), enabled: false, platform: 'openai', priority: 50, load_factor: 1, concurrency: 3, cost_multiplier: 0.07, group_ids: [], upgrade_enabled: false, upgrade_group_ids: [], successes_per_step: 20, upgrade_step: 1, max_concurrency: 100, cooldown_seconds: 60, revision: '' }
+beforeEach(() => {
+ vi.resetAllMocks(); vi.mocked(getAvailableModels).mockResolvedValue(['gpt-test']); vi.mocked(listQualityPlans).mockResolvedValue([]); state.auth = reactive({ user: { id: 1, role: 'admin' } })
+ vi.mocked(getAutoConfig).mockResolvedValue(structuredClone(config)); vi.mocked(saveAutoConfig).mockImplementation(async c => c)
+ vi.mocked(getAllIncludingInactive).mockResolvedValue([{ id: 5, name: 'OpenAI test', platform: 'openai', status: 'active' }, { id: 6, name: 'Anthropic test', platform: 'anthropic', status: 'active' }] as Group[])
+})
+describe('AutoConfigView', () => {
+ it('starts unconfigured and saves a selected group and 50K rule', async () => {
+  const w=mount(AutoConfigView);await flushPromises()
+  expect(w.find('[data-testid="model-billing-model-0"]').exists()).toBe(false)
+  await w.get('[data-testid="model-billing-add"]').trigger('click')
+  await w.get('[data-testid="model-billing-group-0"]').setValue(5)
+  await flushPromises();expect(getAvailableModels).toHaveBeenCalledWith(5)
+  await w.get('[data-testid="model-billing-model-0"]').setValue(' gpt-test ')
+  expect(w.get<HTMLInputElement>('[data-testid="model-billing-threshold-0"]').element.value).toBe('50')
+  await w.get('[data-testid="model-billing-enabled"]').setValue(true)
+  await w.get('form').trigger('submit');await flushPromises()
+  expect(saveAutoConfig).toHaveBeenCalledWith({...config,model_billing:{schema_version:2,enabled:true,rules:[{group_id:5,model:'gpt-test',enabled:true,mode:'context',threshold_tokens:50000,multiplier:2}]}})
+  w.unmount()
+ })
+ it.each([0,-1,1001,''])('rejects invalid multipliers (%s)',async multiplier=>{
+  const w=mount(AutoConfigView);await flushPromises();await w.get('[data-testid="model-billing-add"]').trigger('click')
+  await w.get('[data-testid="model-billing-group-0"]').setValue(5);await w.get('[data-testid="model-billing-model-0"]').setValue('gpt-test')
+  await w.get('[data-testid="model-billing-multiplier-0"]').setValue(multiplier);await w.get('form').trigger('submit');await flushPromises()
+  expect(saveAutoConfig).not.toHaveBeenCalled();expect(w.get('[role="alert"]').text()).toContain('modelBilling.invalid');w.unmount()
+ })
+ it('supports always mode without threshold and rejects unscoped rules',async()=>{
+  const w=mount(AutoConfigView);await flushPromises();await w.get('[data-testid="model-billing-add"]').trigger('click')
+  await w.get('[data-testid="model-billing-model-0"]').setValue('gpt-test');await w.get('form').trigger('submit');expect(saveAutoConfig).not.toHaveBeenCalled()
+  await w.get('[data-testid="model-billing-group-0"]').setValue(6);await w.get('[data-testid="model-billing-model-0"]').setValue('gpt-test')
+  await w.get('[data-testid="model-billing-mode-0"]').setValue('always');expect(w.find('[data-testid="model-billing-threshold-0"]').exists()).toBe(false)
+  await w.get('[data-testid="model-billing-enabled"]').setValue(true);await w.get('form').trigger('submit');await flushPromises()
+  expect(vi.mocked(saveAutoConfig).mock.calls[0][0].model_billing).toEqual({schema_version:2,enabled:true,rules:[{group_id:6,model:'gpt-test',enabled:true,mode:'always',threshold_tokens:0,multiplier:2}]});w.unmount()
+ })
+
+ it('edits model mappings inside initial OAuth configuration using its existing switch and platform', async () => {
+  const w = mount(AutoConfigView); await flushPromises()
+  expect(w.find('[data-testid="mapping-enabled"]').exists()).toBe(false)
+  expect(w.find('[data-testid="mapping-platform"]').exists()).toBe(false)
+  expect(w.get('[data-testid="initial-model-mappings"]').element.closest('section')).toBe(w.get('[data-testid="initial-enabled"]').element.closest('section'))
+  expect(w.get<HTMLInputElement>('[data-testid="mapping-from-0"]').element.value).toBe('gpt-5.4')
+  expect(w.get<HTMLInputElement>('[data-testid="mapping-to-0"]').element.value).toBe('gpt-5.5')
+  await w.get('[data-testid="initial-enabled"]').setValue(true)
+  await w.get('[data-testid="initial-group-5"]').setValue(true)
+  await w.get('[data-testid="mapping-to-0"]').setValue(' custom-model ')
+  await w.get('form').trigger('submit'); await flushPromises()
+  expect(saveAutoConfig).toHaveBeenCalledWith({ ...config, enabled: true, group_ids: [5], model_mappings: [{ from: 'gpt-5.4', to: 'custom-model' }] })
+  w.unmount()
+ })
+ it('validates duplicates and wildcard targets, and allows removing every mapping', async () => {
+  const w = mount(AutoConfigView); await flushPromises()
+  await w.get('[data-testid="mapping-add"]').trigger('click')
+  await w.get('[data-testid="mapping-from-1"]').setValue(' gpt-5.4 ')
+  await w.get('[data-testid="mapping-to-1"]').setValue('gpt-other')
+  await w.get('form').trigger('submit')
+  expect(w.get('[role="alert"]').text()).toContain('mapping.duplicate')
+  await w.get('[data-testid="mapping-remove-1"]').trigger('click')
+  await w.get('[data-testid="mapping-to-0"]').setValue('gpt-*')
+  await w.get('form').trigger('submit')
+  expect(w.get('[role="alert"]').text()).toContain('mapping.invalid')
+  expect(saveAutoConfig).not.toHaveBeenCalled()
+  await w.get('[data-testid="mapping-remove-0"]').trigger('click')
+  await w.get('form').trigger('submit'); await flushPromises()
+  expect(saveAutoConfig).toHaveBeenCalledWith({ ...config, model_mappings: [] })
+  expect(w.find('[data-testid="mapping-from-0"]').exists()).toBe(false)
+  w.unmount()
+ })
+ it('clears incompatible mappings when the existing platform selection changes', async () => {
+  const w = mount(AutoConfigView); await flushPromises()
+  await w.get('[data-testid="platform"]').setValue('anthropic')
+  expect(w.find('[data-testid="mapping-from-0"]').exists()).toBe(false)
+  await w.get('[data-testid="mapping-add"]').trigger('click')
+  await w.get('[data-testid="mapping-from-0"]').setValue('claude-*')
+  await w.get('[data-testid="mapping-to-0"]').setValue('claude-example')
+  await w.get('form').trigger('submit'); await flushPromises()
+  expect(saveAutoConfig).toHaveBeenCalledWith({ ...config, quality_rule: null, platform: 'anthropic', model_mappings: [{ from: 'claude-*', to: 'claude-example' }] })
+  w.unmount()
+ })
+ it('saves model mappings and billing rules together without resetting either', async () => {
+  const w = mount(AutoConfigView); await flushPromises()
+  await w.get('[data-testid="mapping-to-0"]').setValue('gpt-6-luna')
+  await w.get('[data-testid="model-billing-enabled"]').setValue(true)
+  await w.get('[data-testid="model-billing-add"]').trigger('click')
+  await w.get('[data-testid="model-billing-group-0"]').setValue(5)
+  await w.get('[data-testid="model-billing-model-0"]').setValue('gpt-6-luna*')
+  await w.get('[data-testid="model-billing-multiplier-0"]').setValue(12.5)
+  await w.get('form').trigger('submit'); await flushPromises()
+  expect(saveAutoConfig).toHaveBeenLastCalledWith({
+    ...config,
+    model_mappings: [{ from: 'gpt-5.4', to: 'gpt-6-luna' }],
+    model_billing: { schema_version: 2, enabled: true, rules: [{ group_id:5, enabled:true, mode:'context', threshold_tokens:50000, model: 'gpt-6-luna*', multiplier: 12.5 }] }
+  })
+  expect(w.get<HTMLInputElement>('[data-testid="mapping-to-0"]').element.value).toBe('gpt-6-luna')
+  expect(w.get<HTMLInputElement>('[data-testid="model-billing-multiplier-0"]').element.value).toBe('12.5')
+  w.unmount()
+ })
+ it('fills compatible defaults when loading legacy settings', async () => {
+  const { model_billing: _billing, model_mappings: _mapping, ...legacy } = config
+  vi.mocked(getAutoConfig).mockResolvedValueOnce(legacy)
+  const w = mount(AutoConfigView); await flushPromises()
+  await w.get('form').trigger('submit'); await flushPromises()
+  expect(saveAutoConfig).toHaveBeenCalledWith(config); w.unmount()
+ })
+
+ it('saves initial OAuth values without enabling upgrades', async () => {
+  const w = mount(AutoConfigView); await flushPromises()
+  await w.get('[data-testid="initial-enabled"]').setValue(true); await w.get('[data-testid="initial-group-5"]').setValue(true)
+  await w.get('[data-testid="priority"]').setValue(0); await w.get('[data-testid="load_factor"]').setValue(90); await w.get('[data-testid="concurrency"]').setValue(7)
+  expect(w.find('[data-testid="initial-group-6"]').exists()).toBe(false)
+  await w.get('form').trigger('submit'); await flushPromises()
+  expect(w.get('[data-testid="history"]').attributes('data-refresh')).toBe('1')
+  expect(saveAutoConfig).toHaveBeenCalledWith({ ...config, enabled: true, priority: 0, load_factor: 90, concurrency: 7, group_ids: [5] }); w.unmount()
+ })
+ it('enables upgrades independently and validates scope', async () => {
+  const w = mount(AutoConfigView); await flushPromises(); await w.get('[data-testid="upgrade-enabled"]').setValue(true)
+  await w.get('form').trigger('submit'); expect(saveAutoConfig).not.toHaveBeenCalled()
+  await w.get('[data-testid="upgrade-group-6"]').setValue(true); await w.get('form').trigger('submit'); await flushPromises()
+  expect(saveAutoConfig).toHaveBeenCalledWith({ ...config, upgrade_enabled: true, upgrade_group_ids: [6] }); w.unmount()
+ })
+ it('clears incompatible initial groups when platform changes', async () => {
+  const w = mount(AutoConfigView); await flushPromises(); await w.get('[data-testid="initial-group-5"]').setValue(true)
+  await w.get('[data-testid="platform"]').setValue('anthropic'); await w.get('form').trigger('submit'); await flushPromises()
+  expect(saveAutoConfig).toHaveBeenCalledWith({ ...config, quality_rule: null, platform: 'anthropic', model_mappings: [] }); w.unmount()
+ })
+ it('does not allow saving before a successful load and supports retry', async () => {
+  vi.mocked(getAutoConfig).mockRejectedValueOnce(new Error('offline')); const w = mount(AutoConfigView); await flushPromises()
+  expect(w.find('form').exists()).toBe(false); await w.get('button').trigger('click'); await flushPromises(); expect(w.find('form').exists()).toBe(true); w.unmount()
+ })
+ it('preserves draft after a save error', async () => {
+  const w = mount(AutoConfigView); await flushPromises(); vi.mocked(saveAutoConfig).mockRejectedValueOnce(new Error('offline'))
+  await w.get('[data-testid="concurrency"]').setValue(12); await w.get('form').trigger('submit'); await flushPromises()
+  expect(w.get('[data-testid="history"]').attributes('data-refresh')).toBe('0')
+  expect((w.get('[data-testid="concurrency"]').element as HTMLInputElement).value).toBe('12'); expect(w.get('[role="alert"]').text()).toContain('saveFailed'); w.unmount()
+ })
+ it('discards a pending settings response after logout', async () => {
+  let resolve!: (v: AutoConfig) => void; vi.mocked(getAutoConfig).mockReturnValueOnce(new Promise(r => { resolve = r }))
+  const w = mount(AutoConfigView); state.auth.user = null; resolve(config); await flushPromises(); expect(w.find('form').exists()).toBe(false); w.unmount()
+ })
+})
+
+const qualityPlan = { id: 81, account_id: 21, account_name: 'Source account', model_id: 'gpt-5.4', cron_expression: '*/5 * * * *', enabled: true, max_results: 100, pelican_config: { question_kind: 'candy', prompt: 'What is 3 times 7?', parallel_count: 1, reasoning_effort: 'high', quality: { action: 'observe_only', expected_answer: '21' } } } as any
+it('copies a selected quality rule without account identity and clears it on platform change', async () => {
+ vi.mocked(listQualityPlans).mockResolvedValue([structuredClone(qualityPlan)])
+ const w = mount(AutoConfigView); await flushPromises()
+ await w.get('[data-testid="quality-rule-select"]').setValue('81')
+ await w.get('form').trigger('submit'); await flushPromises()
+ const saved = vi.mocked(saveAutoConfig).mock.calls[0][0].quality_rule!
+ expect(saved).toEqual({ model_id: 'gpt-5.4', cron_expression: '*/5 * * * *', enabled: true, max_results: 100, pelican_config: qualityPlan.pelican_config })
+ expect(saved).not.toHaveProperty('account_id')
+ expect(w.get('[data-testid="quality-rule-summary"]').text()).toContain('gpt-5.4')
+ await w.get('[data-testid="platform"]').setValue('anthropic')
+ expect((w.get('[data-testid="quality-rule-select"]').element as HTMLSelectElement).value).toBe('')
+ await w.get('form').trigger('submit'); await flushPromises()
+ expect(vi.mocked(saveAutoConfig).mock.calls[1][0].quality_rule).toBeNull()
+ w.unmount()
+})
+it('preserves the saved quality copy if listing fails and allows opting out', async () => {
+ const { model_id, cron_expression, enabled, max_results, pelican_config } = qualityPlan
+ const quality_rule = { model_id, cron_expression, enabled, max_results, pelican_config }
+ vi.mocked(getAutoConfig).mockResolvedValue({ ...structuredClone(config), quality_rule })
+ vi.mocked(listQualityPlans).mockRejectedValue(new Error('offline'))
+ const w = mount(AutoConfigView); await flushPromises()
+ expect(w.get('[data-testid="quality-rule-summary"]').text()).toContain('gpt-5.4')
+ await w.get('form').trigger('submit'); await flushPromises()
+ expect(vi.mocked(saveAutoConfig).mock.calls[0][0].quality_rule).toEqual(quality_rule)
+ await w.get('[data-testid="quality-rule-select"]').setValue('')
+ await w.get('form').trigger('submit'); await flushPromises()
+ expect(vi.mocked(saveAutoConfig).mock.calls[1][0].quality_rule).toBeNull()
+ w.unmount()
+})
+
+
+describe('new 2FA admission configuration', () => {
+ it('saves independently and validates active OpenAI isolation groups', async () => {
+  const w = mount(AutoConfigView); await flushPromises()
+  expect(w.get<HTMLInputElement>('[data-testid="admission-enabled"]').element.checked).toBe(false)
+  await w.get('[data-testid="admission-enabled"]').setValue(true)
+  await w.get('form').trigger('submit'); await flushPromises()
+  expect(saveAutoConfig).not.toHaveBeenCalled()
+  await w.get('[data-testid="admission-group"]').setValue('5')
+  await w.get('form').trigger('submit'); await flushPromises()
+  expect(saveAutoConfig).toHaveBeenCalledWith(expect.objectContaining({ enabled: false, openai_two_fa_admission: { ...defaultOpenAITwoFAAdmissionConfig(), enabled: true, isolation_group_id: 5 } }))
+  w.unmount()
+ })
+ it('fills defaults for older settings without changing the other feature switches', async () => {
+  const legacy = { ...config }; delete legacy.openai_two_fa_admission
+  vi.mocked(getAutoConfig).mockResolvedValue(legacy)
+  const w = mount(AutoConfigView); await flushPromises()
+  await w.get('[data-testid="admission-enabled"]').setValue(true)
+  expect(w.get<HTMLInputElement>('[data-testid="admission-model"]').element.value).toBe('gpt-6.1-sol')
+  expect(w.get<HTMLInputElement>('[data-testid="admission-pass_count"]').element.value).toBe('6')
+  expect(w.get<HTMLInputElement>('[data-testid="admission-wait_seconds"]').element.value).toBe('60')
+  await w.get('[data-testid="admission-enabled"]').setValue(false)
+  await w.get('form').trigger('submit'); await flushPromises()
+  expect(saveAutoConfig).toHaveBeenCalledWith(expect.objectContaining({ enabled: false, upgrade_enabled: false, openai_two_fa_admission: defaultOpenAITwoFAAdmissionConfig() }))
+  w.unmount()
+ })
+})
+
+describe('Kitty native standalone admission entry', () => {
+ it('keeps only the native standalone card and preserves legacy template compatibility', async () => {
+  const legacy={...structuredClone(config),enabled:true,group_ids:[5],iq_bootstrap:{...defaultIQBootstrap(),enabled:true,quarantine_enabled:true,quarantine_group_id:5}}
+  vi.mocked(getAutoConfig).mockResolvedValue(legacy)
+  const w=mount(AutoConfigView);await flushPromises()
+  expect(w.findAll('[data-testid="two-fa-admission"]')).toHaveLength(1)
+  expect(w.find('[data-testid="iq-bootstrap-settings"]').exists()).toBe(false)
+  expect(w.get('[data-testid="two-fa-admission"]').element.parentElement?.parentElement).toBe(w.get('form').element)
+  expect(w.get('[data-testid="two-fa-admission"]').element.closest('section')).not.toBe(w.get('[data-testid="initial-enabled"]').element.closest('section'))
+  expect(saveAutoConfig).not.toHaveBeenCalled()
+  expect(w.get<HTMLSelectElement>('[data-testid="admission-group"]').element.value).toBe('5')
+  await w.get('[data-testid="admission-isolation_count"]').setValue(8)
+  await w.get('form').trigger('submit');await flushPromises()
+  expect(saveAutoConfig).toHaveBeenCalledWith({...legacy,iq_bootstrap:{...legacy.iq_bootstrap,enabled:false},openai_two_fa_admission:{...defaultOpenAITwoFAAdmissionConfig(),enabled:true,isolation_group_id:5,isolation_count:8}})
+  expect(legacy.iq_bootstrap.enabled).toBe(true)
+  w.unmount()
+ })
+ it('preserves the configured new-engine rules when only the initial OAuth platform changes', async () => {
+  const admission={...defaultOpenAITwoFAAdmissionConfig(),enabled:true,model_id:'gpt-6.1-sol',reasoning_effort:'low',wait_seconds:60,pass_count:6,passed_concurrency:2,isolation_count:6,isolation_group_id:5}
+  const saved={...structuredClone(config),openai_two_fa_admission:admission,revision:'keep-existing-upgrade-revision'}
+  vi.mocked(getAutoConfig).mockResolvedValue(saved)
+  const w=mount(AutoConfigView);await flushPromises()
+  expect(saveAutoConfig).not.toHaveBeenCalled()
+  expect(w.get<HTMLInputElement>('[data-testid="admission-pass_count"]').element.value).toBe('6')
+  expect(w.get<HTMLInputElement>('[data-testid="admission-passed_concurrency"]').element.value).toBe('2')
+  expect(w.get<HTMLInputElement>('[data-testid="admission-isolation_count"]').element.value).toBe('6')
+  expect(w.get<HTMLSelectElement>('[data-testid="admission-group"]').element.value).toBe('5')
+  await w.get('[data-testid="platform"]').setValue('anthropic')
+  expect(w.findAll('[data-testid="two-fa-admission"]')).toHaveLength(1)
+  expect(w.get<HTMLInputElement>('[data-testid="admission-enabled"]').element.checked).toBe(true)
+  await w.get('form').trigger('submit');await flushPromises()
+  expect(saveAutoConfig).toHaveBeenCalledWith({...saved,platform:'anthropic',quality_rule:null,model_mappings:[]})
+  expect(saved.openai_two_fa_admission).toEqual(admission)
+  w.unmount()
+ })
+})

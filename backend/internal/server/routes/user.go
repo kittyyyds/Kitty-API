@@ -1,0 +1,241 @@
+package routes
+
+import (
+	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
+
+	"github.com/gin-gonic/gin"
+)
+
+// RegisterUserRoutes 注册用户相关路由（需要认证）
+func RegisterUserRoutes(
+	v1 *gin.RouterGroup,
+	h *handler.Handlers,
+	jwtAuth middleware.JWTAuthMiddleware,
+	auditLog middleware.AuditLogMiddleware,
+	settingService *service.SettingService,
+	panelRateLimiter *middleware.PanelRateLimiter,
+) {
+	authenticated := v1.Group("")
+	authenticated.Use(gin.HandlerFunc(jwtAuth))
+	authenticated.Use(middleware.BackendModeUserGuard(settingService))
+	// 面板全局按用户限流：防止单个账号高频刷接口打爆数据库
+	authenticated.Use(panelRateLimiter.Global())
+	// 用户管理面变更类操作入审计（含 TOTP 启用/禁用、step-up 验证、密码修改等安全事件）
+	authenticated.Use(gin.HandlerFunc(auditLog))
+	if h.RetainedMedia != nil {
+		storage := authenticated.Group("/media-storage")
+		storage.GET("/config", h.RetainedMedia.Config)
+		storage.GET("/assets", h.RetainedMedia.List)
+		storage.POST("/assets", h.RetainedMedia.Upload)
+		storage.GET("/assets/:id/content", h.RetainedMedia.Content)
+		storage.POST("/assets/:id/extend", h.RetainedMedia.Extend)
+		storage.GET("/orders", h.RetainedMedia.Orders)
+	}
+	authenticated.GET("/video-tasks", h.OpenAIGateway.ListMyVideoTasks)
+	authenticated.GET("/video-tasks/stats", h.OpenAIGateway.MyVideoTaskStats)
+	{
+		// 用户接口
+		if h.QQBot != nil {
+			bot := authenticated.Group("/user/qqbot")
+			bot.GET("/binding", h.QQBot.Binding)
+			bot.POST("/binding-code", panelRateLimiter.Heavy(), h.QQBot.CreateBindingCode)
+			bot.POST("/binding-confirm", h.QQBot.ConfirmBinding)
+		}
+		user := authenticated.Group("/user")
+		{
+			user.GET("/profile", h.User.GetProfile)
+			if h.Admin != nil && h.Admin.PromptAudit != nil {
+				user.GET("/security/summary", h.Admin.PromptAudit.MyPenaltySummary)
+				user.GET("/security/events", h.Admin.PromptAudit.MyPenaltyEvents)
+				user.GET("/security/events/:id", h.Admin.PromptAudit.MyPenaltyEvent)
+			}
+			user.PUT("/password", h.User.ChangePassword)
+			user.PUT("", h.User.UpdateProfile)
+			user.GET("/aff", h.User.GetAffiliate)
+			user.POST("/aff/transfer", h.User.TransferAffiliateQuota)
+			user.POST("/account-bindings/email/send-code", h.User.SendEmailBindingCode)
+			user.POST("/account-bindings/email", h.User.BindEmailIdentity)
+			user.DELETE("/account-bindings/:provider", h.User.UnbindIdentity)
+			user.POST("/auth-identities/bind/start", h.User.StartIdentityBinding)
+			user.GET("/api-keys/:id/usage/daily", panelRateLimiter.Heavy(), h.Usage.GetMyAPIKeyDailyUsage)
+			user.GET("/platform-quotas", h.User.GetMyPlatformQuotas)
+
+			// 通知邮箱管理
+			notifyEmail := user.Group("/notify-email")
+			{
+				notifyEmail.POST("/send-code", h.User.SendNotifyEmailCode)
+				notifyEmail.POST("/verify", h.User.VerifyNotifyEmail)
+				notifyEmail.PUT("/toggle", h.User.ToggleNotifyEmail)
+				notifyEmail.DELETE("", h.User.RemoveNotifyEmail)
+			}
+
+			// TOTP 双因素认证
+			totp := user.Group("/totp")
+			{
+				totp.GET("/status", h.Totp.GetStatus)
+				totp.GET("/verification-method", h.Totp.GetVerificationMethod)
+				totp.POST("/send-code", h.Totp.SendVerifyCode)
+				totp.POST("/setup", h.Totp.InitiateSetup)
+				totp.POST("/enable", h.Totp.Enable)
+				totp.POST("/disable", h.Totp.Disable)
+				// 敏感操作二次验证：授予当前会话一段时间的 step-up 权限
+				totp.POST("/step-up", h.Totp.StepUp)
+			}
+
+			passkeys := user.Group("/passkeys")
+			{
+				passkeys.GET("", h.Passkey.List)
+				passkeys.POST("/register/begin", h.Passkey.BeginRegistration)
+				passkeys.POST("/register/finish", h.Passkey.FinishRegistration)
+				passkeys.PATCH("/:id", h.Passkey.Rename)
+				passkeys.DELETE("/:id", h.Passkey.Delete)
+			}
+		}
+
+		// API Key管理
+		keys := authenticated.Group("/keys")
+		{
+			keys.GET("", h.APIKey.List)
+			// 必须在动态 /:id 路由之前注册，避免被参数路由吞掉。
+			keys.GET("/concurrency", h.APIKey.GetConcurrencyQueue)
+			keys.GET("/:id", h.APIKey.GetByID)
+			keys.POST("", h.APIKey.Create)
+			keys.PUT("/:id", h.APIKey.Update)
+			keys.DELETE("/:id", h.APIKey.Delete)
+		}
+
+		// 用户可用分组（非管理员接口）
+		groups := authenticated.Group("/groups")
+		{
+			groups.GET("/available", h.APIKey.GetAvailableGroups)
+			groups.GET("/rates", h.APIKey.GetUserGroupRates)
+		}
+
+		// 用户可用渠道（非管理员接口）
+		channels := authenticated.Group("/channels")
+		{
+			channels.GET("/available", h.AvailableChannel.List)
+		}
+
+		// 计费目录与预估（与正式扣费共用 BillingService）
+		billing := authenticated.Group("/billing")
+		{
+			billing.GET("/catalog", h.BillingPreview.Catalog)
+			billing.POST("/preview", h.BillingPreview.Preview)
+		}
+
+		// 使用记录（聚合统计属重查询，叠加更严格的按用户限流）
+		usage := authenticated.Group("/usage")
+		usage.Use(panelRateLimiter.Heavy())
+		{
+			usage.GET("", h.Usage.List)
+			usage.GET("/traffic", h.Usage.Traffic)
+			usage.GET("/traffic/keys", h.Usage.TrafficKeys)
+			usage.GET("/errors", h.Usage.ListErrors)
+			usage.GET("/errors/:id", h.Usage.GetErrorDetail)
+			usage.GET("/:id", h.Usage.GetByID)
+			usage.GET("/stats", h.Usage.Stats)
+			// User dashboard endpoints
+			usage.GET("/dashboard/stats", h.Usage.DashboardStats)
+			usage.GET("/dashboard/trend", h.Usage.DashboardTrend)
+			usage.GET("/dashboard/models", h.Usage.DashboardModels)
+			usage.GET("/dashboard/snapshot-v2", h.Usage.DashboardSnapshotV2)
+			usage.POST("/dashboard/api-keys-usage", h.Usage.DashboardAPIKeysUsage)
+		}
+
+		// 公告（用户可见）
+		announcements := authenticated.Group("/announcements")
+		{
+			announcements.GET("", h.Announcement.List)
+			announcements.POST("/:id/read", h.Announcement.MarkRead)
+		}
+
+		// 应用中心：目录、运行历史和客户端执行工作流。
+		apps := authenticated.Group("/apps")
+		{
+			apps.GET("", h.ApplicationCenter.ListApplications)
+			apps.GET("/runs", h.ApplicationCenter.ListRuns)
+			apps.GET("/runs/:run_id", h.ApplicationCenter.GetRun)
+			apps.POST("/:slug/runs", h.ApplicationCenter.StartRun)
+			apps.POST("/runs/:run_id/steps/:step_key/complete", h.ApplicationCenter.CompleteStep)
+			apps.POST("/runs/:run_id/steps/:step_key/checkpoint", h.ApplicationCenter.CheckpointStep)
+			apps.POST("/runs/:run_id/steps/:step_key/fail", h.ApplicationCenter.FailStep)
+			apps.POST("/runs/:run_id/cancel", h.ApplicationCenter.CancelRun)
+			apps.POST("/runs/:run_id/retry", h.ApplicationCenter.RetryRun)
+		}
+		// 工单
+
+		// 账单：月账单与用量导出
+		billingReports := authenticated.Group("/billing")
+		{
+			billingReports.GET("/statement", h.Admin.BillingExport.Statement)
+			billingReports.GET("/export", h.Admin.BillingExport.Export)
+		}
+
+		// 网站工单（关闭时 service 返回 SUPPORT_TICKET_DISABLED）
+		supportTickets := authenticated.Group("/support-tickets")
+		{
+			supportTickets.GET("", h.SupportTicket.List)
+			supportTickets.POST("", h.SupportTicket.Create)
+			supportTickets.GET("/summary", h.SupportTicket.Summary)
+			supportTickets.GET("/:id", h.SupportTicket.Get)
+			supportTickets.POST("/:id/messages", h.SupportTicket.Reply)
+			supportTickets.POST("/:id/close", h.SupportTicket.Close)
+			supportTickets.POST("/:id/reopen", h.SupportTicket.Reopen)
+		}
+
+		// 卡密兑换
+		redeem := authenticated.Group("/redeem")
+		{
+			redeem.POST("", h.Redeem.Redeem)
+			redeem.GET("/history", h.Redeem.GetHistory)
+		}
+
+		// 用户订阅
+		subscriptions := authenticated.Group("/subscriptions")
+		{
+			subscriptions.GET("", h.Subscription.List)
+			subscriptions.GET("/active", h.Subscription.GetActive)
+			subscriptions.GET("/progress", h.Subscription.GetProgress)
+			subscriptions.GET("/summary", h.Subscription.GetSummary)
+		}
+
+		// 渠道监控（用户只读）
+		monitors := authenticated.Group("/channel-monitors")
+		{
+			monitors.GET("", h.ChannelMonitor.List)
+			monitors.GET("/:id/status", h.ChannelMonitor.GetStatus)
+		}
+
+		// 鹈鹕测智展示（用户只读；功能关闭时返回空画廊）
+		showcase := authenticated.Group("/pelican-showcase")
+		{
+			showcase.GET("", h.PelicanShowcase.List)
+			showcase.GET("/items/:id", h.PelicanShowcase.GetItem)
+		}
+
+		// V2 passive views require feature on + mode=v2.
+		monitorV2 := authenticated.Group("/channel-monitor-v2")
+		monitorV2.Use(panelRateLimiter.Heavy())
+		monitorV2.Use(channelMonitorModeV2Guard(settingService))
+		{
+			monitorV2.GET("/dimensions", h.ChannelMonitorV2.Dimensions)
+			monitorV2.GET("/snapshot", h.ChannelMonitorV2.Snapshot)
+			monitorV2.GET("/models", h.ChannelMonitorV2.Models)
+			monitorV2.GET("/matrix", h.ChannelMonitorV2.Matrix)
+			monitorV2.GET("/errors", h.ChannelMonitorV2.Errors)
+			monitorV2.GET("/users", h.ChannelMonitorV2.Users)
+		}
+
+		// V3 component status page requires feature on + mode=v3.
+		monitorV3 := authenticated.Group("/channel-monitor-v3")
+		monitorV3.Use(panelRateLimiter.Heavy())
+		monitorV3.Use(channelMonitorModeV3Guard(settingService))
+		{
+			monitorV3.GET("/status", h.ChannelMonitorV3.Status)
+			monitorV3.GET("/incidents", h.ChannelMonitorV3.Incidents)
+		}
+	}
+}
