@@ -109,6 +109,8 @@ type SecurityPolicyVerdict struct {
 // EvaluateRequest 执行分组安全策略评估：开关关闭直接放行；先查会话封禁，
 // 再做本地关键词匹配。本方法只读（快照缓存 + Redis 查询），不写任何状态。
 func (s *SecurityPolicyService) EvaluateRequest(ctx context.Context, c *gin.Context, in SecurityPolicyRequest) *SecurityPolicyVerdict {
+	// Kitty 952: local security policy runtime is retired.
+	return nil
 	allow := &SecurityPolicyVerdict{Allowed: true}
 	if s == nil || in.APIKey == nil {
 		return allow
@@ -171,6 +173,8 @@ type SecurityPolicyHitRecord struct {
 // RecordHit 持久化命中日志；block_session 模式写会话封禁；邮件开关开启时提醒用户。
 // 设计为异步调用（handler 侧 go func），内部对各 IO 独立容错。
 func (s *SecurityPolicyService) RecordHit(ctx context.Context, in SecurityPolicyHitRecord) {
+	// Kitty 952: local security policy runtime is retired.
+	return
 	if s == nil || in.Verdict == nil || in.APIKey == nil {
 		return
 	}

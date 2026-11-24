@@ -783,13 +783,8 @@ func ProvideUsagePolicyService(
 	opsService *OpsService,
 	moderation *ContentModerationService,
 ) *UsagePolicyService {
-	svc := NewUsagePolicyService(repo, settingRepo, authCacheInvalidator)
-	svc.SetConversationArchiver(moderation)
-	if opsService != nil {
-		opsService.SetUsagePolicyObserver(svc)
-	}
-	svc.Start()
-	return svc
+	// Kitty 950/952: local usage policy runtime is retired.
+	return nil
 }
 
 func ProvideOpsIngressRejectAggregator(opsRepo OpsRepository, opsService *OpsService) *OpsIngressRejectAggregator {
@@ -884,15 +879,27 @@ func ProvideAPIKeyService(
 	svc := NewAPIKeyService(apiKeyRepo, userRepo, groupRepo, userSubRepo, userGroupRateRepo, cache, cfg)
 	svc.SetRateLimitCacheInvalidator(billingCacheService)
 	svc.SetConcurrencyService(concurrencyService)
-	// VIP 升级执行器：apiKeyService 本身即 APIKeyAuthCacheInvalidator，
-	// 在此完成接线以避免 BillingCacheService → invalidator 的 wire 依赖环。
-	vipExecutor := NewVipUpgradeExecutor(userRepo, svc)
-	billingCacheService.SetVipUpgradeExecutor(vipExecutor)
-	vipExecutor.StartSweep()
+	// Kitty 950: VIP auto-upgrade sweep is retired.
 	return svc
 }
 
 func ProvideContentModerationService(
+	settingRepo SettingRepository,
+	repo ContentModerationRepository,
+	hashCache ContentModerationHashCache,
+	groupRepo GroupRepository,
+	userRepo UserRepository,
+	proxyRepo ProxyRepository,
+	authCacheInvalidator APIKeyAuthCacheInvalidator,
+	emailService *EmailService,
+	apiKeyRepo APIKeyRepository,
+	cfg *config.Config,
+) (*ContentModerationService, error) {
+	// Kitty 952: local content moderation runtime is retired.
+	return nil, nil
+}
+
+func provideContentModerationServiceRetired(
 	settingRepo SettingRepository,
 	repo ContentModerationRepository,
 	hashCache ContentModerationHashCache,
@@ -1068,9 +1075,8 @@ var ProviderSet = wire.NewSet(
 
 // ProvideUserPlatformQuotaUsageFlusher 创建并启动 UserPlatformQuotaUsageFlusher。
 func ProvideIntelligentTestService(repo IntelligentTestRepository, runner *AccountTestService) *IntelligentTestService {
-	svc := NewIntelligentTestService(repo, runner)
-	svc.Start()
-	return svc
+	// Kitty: upstream intelligent_test/pelican service is retired.
+	return nil
 }
 
 func ProvideUserPlatformQuotaUsageFlusher(cfg *config.Config, cache BillingCache, quotaRepo UserPlatformQuotaRepository, tw *TimingWheelService) *UserPlatformQuotaUsageFlusher {

@@ -386,6 +386,20 @@ func (_u *PaymentOrderUpdate) ClearSubscriptionDays() *PaymentOrderUpdate {
 	return _u
 }
 
+// SetSubscriptionRenewalMode sets the "subscription_renewal_mode" field.
+func (_u *PaymentOrderUpdate) SetSubscriptionRenewalMode(v string) *PaymentOrderUpdate {
+	_u.mutation.SetSubscriptionRenewalMode(v)
+	return _u
+}
+
+// SetNillableSubscriptionRenewalMode sets the "subscription_renewal_mode" field if the given value is not nil.
+func (_u *PaymentOrderUpdate) SetNillableSubscriptionRenewalMode(v *string) *PaymentOrderUpdate {
+	if v != nil {
+		_u.SetSubscriptionRenewalMode(*v)
+	}
+	return _u
+}
+
 // SetProviderInstanceID sets the "provider_instance_id" field.
 func (_u *PaymentOrderUpdate) SetProviderInstanceID(v string) *PaymentOrderUpdate {
 	_u.mutation.SetProviderInstanceID(v)
@@ -449,6 +463,33 @@ func (_u *PaymentOrderUpdate) SetNillableStatus(v *string) *PaymentOrderUpdate {
 	if v != nil {
 		_u.SetStatus(*v)
 	}
+	return _u
+}
+
+// SetInvoiceRequestID sets the "invoice_request_id" field.
+func (_u *PaymentOrderUpdate) SetInvoiceRequestID(v int64) *PaymentOrderUpdate {
+	_u.mutation.ResetInvoiceRequestID()
+	_u.mutation.SetInvoiceRequestID(v)
+	return _u
+}
+
+// SetNillableInvoiceRequestID sets the "invoice_request_id" field if the given value is not nil.
+func (_u *PaymentOrderUpdate) SetNillableInvoiceRequestID(v *int64) *PaymentOrderUpdate {
+	if v != nil {
+		_u.SetInvoiceRequestID(*v)
+	}
+	return _u
+}
+
+// AddInvoiceRequestID adds value to the "invoice_request_id" field.
+func (_u *PaymentOrderUpdate) AddInvoiceRequestID(v int64) *PaymentOrderUpdate {
+	_u.mutation.AddInvoiceRequestID(v)
+	return _u
+}
+
+// ClearInvoiceRequestID clears the value of the "invoice_request_id" field.
+func (_u *PaymentOrderUpdate) ClearInvoiceRequestID() *PaymentOrderUpdate {
+	_u.mutation.ClearInvoiceRequestID()
 	return _u
 }
 
@@ -824,6 +865,11 @@ func (_u *PaymentOrderUpdate) check() error {
 			return &ValidationError{Name: "order_type", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.order_type": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.SubscriptionRenewalMode(); ok {
+		if err := paymentorder.SubscriptionRenewalModeValidator(v); err != nil {
+			return &ValidationError{Name: "subscription_renewal_mode", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.subscription_renewal_mode": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.ProviderInstanceID(); ok {
 		if err := paymentorder.ProviderInstanceIDValidator(v); err != nil {
 			return &ValidationError{Name: "provider_instance_id", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.provider_instance_id": %w`, err)}
@@ -968,6 +1014,9 @@ func (_u *PaymentOrderUpdate) sqlSave(ctx context.Context) (_node int, err error
 	if _u.mutation.SubscriptionDaysCleared() {
 		_spec.ClearField(paymentorder.FieldSubscriptionDays, field.TypeInt)
 	}
+	if value, ok := _u.mutation.SubscriptionRenewalMode(); ok {
+		_spec.SetField(paymentorder.FieldSubscriptionRenewalMode, field.TypeString, value)
+	}
 	if value, ok := _u.mutation.ProviderInstanceID(); ok {
 		_spec.SetField(paymentorder.FieldProviderInstanceID, field.TypeString, value)
 	}
@@ -988,6 +1037,15 @@ func (_u *PaymentOrderUpdate) sqlSave(ctx context.Context) (_node int, err error
 	}
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(paymentorder.FieldStatus, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.InvoiceRequestID(); ok {
+		_spec.SetField(paymentorder.FieldInvoiceRequestID, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedInvoiceRequestID(); ok {
+		_spec.AddField(paymentorder.FieldInvoiceRequestID, field.TypeInt64, value)
+	}
+	if _u.mutation.InvoiceRequestIDCleared() {
+		_spec.ClearField(paymentorder.FieldInvoiceRequestID, field.TypeInt64)
 	}
 	if value, ok := _u.mutation.RefundAmount(); ok {
 		_spec.SetField(paymentorder.FieldRefundAmount, field.TypeFloat64, value)
@@ -1476,6 +1534,20 @@ func (_u *PaymentOrderUpdateOne) ClearSubscriptionDays() *PaymentOrderUpdateOne 
 	return _u
 }
 
+// SetSubscriptionRenewalMode sets the "subscription_renewal_mode" field.
+func (_u *PaymentOrderUpdateOne) SetSubscriptionRenewalMode(v string) *PaymentOrderUpdateOne {
+	_u.mutation.SetSubscriptionRenewalMode(v)
+	return _u
+}
+
+// SetNillableSubscriptionRenewalMode sets the "subscription_renewal_mode" field if the given value is not nil.
+func (_u *PaymentOrderUpdateOne) SetNillableSubscriptionRenewalMode(v *string) *PaymentOrderUpdateOne {
+	if v != nil {
+		_u.SetSubscriptionRenewalMode(*v)
+	}
+	return _u
+}
+
 // SetProviderInstanceID sets the "provider_instance_id" field.
 func (_u *PaymentOrderUpdateOne) SetProviderInstanceID(v string) *PaymentOrderUpdateOne {
 	_u.mutation.SetProviderInstanceID(v)
@@ -1539,6 +1611,33 @@ func (_u *PaymentOrderUpdateOne) SetNillableStatus(v *string) *PaymentOrderUpdat
 	if v != nil {
 		_u.SetStatus(*v)
 	}
+	return _u
+}
+
+// SetInvoiceRequestID sets the "invoice_request_id" field.
+func (_u *PaymentOrderUpdateOne) SetInvoiceRequestID(v int64) *PaymentOrderUpdateOne {
+	_u.mutation.ResetInvoiceRequestID()
+	_u.mutation.SetInvoiceRequestID(v)
+	return _u
+}
+
+// SetNillableInvoiceRequestID sets the "invoice_request_id" field if the given value is not nil.
+func (_u *PaymentOrderUpdateOne) SetNillableInvoiceRequestID(v *int64) *PaymentOrderUpdateOne {
+	if v != nil {
+		_u.SetInvoiceRequestID(*v)
+	}
+	return _u
+}
+
+// AddInvoiceRequestID adds value to the "invoice_request_id" field.
+func (_u *PaymentOrderUpdateOne) AddInvoiceRequestID(v int64) *PaymentOrderUpdateOne {
+	_u.mutation.AddInvoiceRequestID(v)
+	return _u
+}
+
+// ClearInvoiceRequestID clears the value of the "invoice_request_id" field.
+func (_u *PaymentOrderUpdateOne) ClearInvoiceRequestID() *PaymentOrderUpdateOne {
+	_u.mutation.ClearInvoiceRequestID()
 	return _u
 }
 
@@ -1927,6 +2026,11 @@ func (_u *PaymentOrderUpdateOne) check() error {
 			return &ValidationError{Name: "order_type", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.order_type": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.SubscriptionRenewalMode(); ok {
+		if err := paymentorder.SubscriptionRenewalModeValidator(v); err != nil {
+			return &ValidationError{Name: "subscription_renewal_mode", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.subscription_renewal_mode": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.ProviderInstanceID(); ok {
 		if err := paymentorder.ProviderInstanceIDValidator(v); err != nil {
 			return &ValidationError{Name: "provider_instance_id", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.provider_instance_id": %w`, err)}
@@ -2088,6 +2192,9 @@ func (_u *PaymentOrderUpdateOne) sqlSave(ctx context.Context) (_node *PaymentOrd
 	if _u.mutation.SubscriptionDaysCleared() {
 		_spec.ClearField(paymentorder.FieldSubscriptionDays, field.TypeInt)
 	}
+	if value, ok := _u.mutation.SubscriptionRenewalMode(); ok {
+		_spec.SetField(paymentorder.FieldSubscriptionRenewalMode, field.TypeString, value)
+	}
 	if value, ok := _u.mutation.ProviderInstanceID(); ok {
 		_spec.SetField(paymentorder.FieldProviderInstanceID, field.TypeString, value)
 	}
@@ -2108,6 +2215,15 @@ func (_u *PaymentOrderUpdateOne) sqlSave(ctx context.Context) (_node *PaymentOrd
 	}
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(paymentorder.FieldStatus, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.InvoiceRequestID(); ok {
+		_spec.SetField(paymentorder.FieldInvoiceRequestID, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedInvoiceRequestID(); ok {
+		_spec.AddField(paymentorder.FieldInvoiceRequestID, field.TypeInt64, value)
+	}
+	if _u.mutation.InvoiceRequestIDCleared() {
+		_spec.ClearField(paymentorder.FieldInvoiceRequestID, field.TypeInt64)
 	}
 	if value, ok := _u.mutation.RefundAmount(); ok {
 		_spec.SetField(paymentorder.FieldRefundAmount, field.TypeFloat64, value)

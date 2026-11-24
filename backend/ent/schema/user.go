@@ -119,8 +119,6 @@ func (User) Fields() []ent.Field {
 
 		// VIP 用户标记：总余额达到阈值时自动升级，永久生效。
 		// 无保证金；跳过内容风控第二层审核，并在指定分组享受倍率减免。
-		field.Bool("vip").
-			Default(false),
 
 		// 用户级每分钟请求数上限（0 = 不限制）。仅当所在分组未设置 rpm_limit 时作为兜底生效。
 		field.Int("rpm_limit").

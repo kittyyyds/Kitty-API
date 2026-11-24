@@ -141,7 +141,7 @@ func (r *apiKeyRepository) GetByID(ctx context.Context, id int64) (*service.APIK
 		}
 		return nil, err
 	}
-	return apiKeyEntityToService(m), nil
+	return r.entityWithGroupIDs(ctx, m)
 }
 
 // GetKeyAndOwnerID 根据 API Key ID 获取其 key 与所有者（用户）ID。
@@ -164,8 +164,11 @@ func (r *apiKeyRepository) GetKeyAndOwnerID(ctx context.Context, id int64) (stri
 }
 
 func (r *apiKeyRepository) GetByKey(ctx context.Context, key string) (*service.APIKey, error) {
+	if isRejectedRawAPIKeyCredential(key) {
+		return nil, service.ErrAPIKeyNotFound
+	}
 	m, err := r.activeQuery().
-		Where(apikey.KeyEQ(key)).
+		Where(kittyAPIKeyCredentialPredicate(key)).
 		WithUser(func(q *dbent.UserQuery) {
 			q.WithAllowedGroups(func(gq *dbent.GroupQuery) {
 				gq.Select(group.FieldID)
@@ -179,12 +182,15 @@ func (r *apiKeyRepository) GetByKey(ctx context.Context, key string) (*service.A
 		}
 		return nil, err
 	}
-	return apiKeyEntityToService(m), nil
+	return r.entityWithGroupIDs(ctx, m)
 }
 
 func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*service.APIKey, error) {
+	if isRejectedRawAPIKeyCredential(key) {
+		return nil, service.ErrAPIKeyNotFound
+	}
 	m, err := r.activeQuery().
-		Where(apikey.KeyEQ(key)).
+		Where(kittyAPIKeyCredentialPredicate(key)).
 		Select(
 			apikey.FieldID,
 			apikey.FieldUserID,
@@ -208,7 +214,6 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				user.FieldStatus,
 				user.FieldRole,
 				user.FieldBalance,
-				user.FieldVip,
 				user.FieldConcurrency,
 				user.FieldBalanceNotifyEnabled,
 				user.FieldRestrictPublicGroups,
@@ -244,6 +249,7 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				group.FieldImagePrice1k,
 				group.FieldImagePrice2k,
 				group.FieldImagePrice4k,
+				group.FieldImageModelPrices,
 				group.FieldVideoRateIndependent,
 				group.FieldVideoRateMultiplier,
 				group.FieldVideoPrice480p,
@@ -298,7 +304,7 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 		}
 		return nil, err
 	}
-	return apiKeyEntityToService(m), nil
+	return r.entityWithGroupIDs(ctx, m)
 }
 
 func (r *apiKeyRepository) Update(ctx context.Context, key *service.APIKey, fields service.APIKeyUpdateFields) error {
@@ -695,8 +701,10 @@ func (r *apiKeyRepository) CountByUserID(ctx context.Context, userID int64) (int
 }
 
 func (r *apiKeyRepository) ExistsByKey(ctx context.Context, key string) (bool, error) {
-	count, err := r.activeQuery().Where(apikey.KeyEQ(key)).Count(ctx)
-	return count > 0, err
+	if key == "" {
+		return false, nil
+	}
+	return r.activeQuery().Where(kittyAPIKeyExistsPredicate(key)).Exist(ctx)
 }
 
 func (r *apiKeyRepository) ListByGroupID(ctx context.Context, groupID int64, params pagination.PaginationParams) ([]service.APIKey, *pagination.PaginationResult, error) {
@@ -1033,7 +1041,7 @@ func userEntityToService(u *dbent.User) *service.User {
 		BalanceNotifyThreshold:     u.BalanceNotifyThreshold,
 		TotalRecharged:             u.TotalRecharged,
 		RPMLimit:                   u.RpmLimit,
-		IsVIP:                      u.Vip,
+		IsVIP:                      false, // Kitty 950: users.vip retired
 		CreatedAt:                  u.CreatedAt,
 		UpdatedAt:                  u.UpdatedAt,
 		DeletedAt:                  u.DeletedAt,
@@ -1082,6 +1090,7 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		ImagePrice1K:                    g.ImagePrice1k,
 		ImagePrice2K:                    g.ImagePrice2k,
 		ImagePrice4K:                    g.ImagePrice4k,
+		ImageModelPrices:                g.ImageModelPrices,
 		VideoRateIndependent:            g.VideoRateIndependent,
 		VideoRateMultiplier:             g.VideoRateMultiplier,
 		VideoPrice480P:                  g.VideoPrice480p,

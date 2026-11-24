@@ -78,6 +78,8 @@ const (
 	FieldImagePrice2k = "image_price_2k"
 	// FieldImagePrice4k holds the string denoting the image_price_4k field in the database.
 	FieldImagePrice4k = "image_price_4k"
+	// FieldImageModelPrices holds the string denoting the image_model_prices field in the database.
+	FieldImageModelPrices = "image_model_prices"
 	// FieldBatchImageDiscountMultiplier holds the string denoting the batch_image_discount_multiplier field in the database.
 	FieldBatchImageDiscountMultiplier = "batch_image_discount_multiplier"
 	// FieldBatchImageHoldMultiplier holds the string denoting the batch_image_hold_multiplier field in the database.
@@ -275,6 +277,7 @@ var Columns = []string{
 	FieldImagePrice1k,
 	FieldImagePrice2k,
 	FieldImagePrice4k,
+	FieldImageModelPrices,
 	FieldBatchImageDiscountMultiplier,
 	FieldBatchImageHoldMultiplier,
 	FieldVideoRateIndependent,

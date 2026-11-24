@@ -26,7 +26,8 @@ func NewOpenAIAccountImportChecks(accounts AccountRepository, quota *OpenAIQuota
 	return &OpenAIAccountImportChecks{
 		accounts:  accounts,
 		quota:     quota,
-		probeTibo: gateway.probeNewOpenAIOAuthAccount,
+		// Kitty policy: keep .75 async quota refresh on OAuth import, skip retired Tibo probe.
+		probeTibo: nil,
 		pool:      pond.NewPool(openAIQuotaRefreshConcurrency),
 		ctx:       ctx,
 		cancel:    cancel,
@@ -59,8 +60,9 @@ func (s *OpenAIAccountImportChecks) check(accountID int64) {
 	if err != nil && s.ctx.Err() == nil {
 		slog.Warn("openai_import_quota_refresh_failed", "account_id", accountID, "error_code", infraerrors.Reason(err))
 	}
-	// Tibo can still run when the quota call failed or its deadline passed.
-	s.probeTibo(s.ctx, account)
+	if s.probeTibo != nil {
+		s.probeTibo(s.ctx, account)
+	}
 }
 
 func (s *OpenAIAccountImportChecks) Stop() {

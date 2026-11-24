@@ -109,11 +109,8 @@ func RegisterAdminRoutes(
 		registerChannelMonitorRoutes(admin, h, settingService)
 		registerChannelMonitorV2Routes(admin, h, settingService)
 
-		// 风控中心
-		registerContentModerationRoutes(admin, h)
-		registerSecurityPolicyRoutes(admin, h)
+		// Kitty 950/952: content-moderation, security-policy, and intelligent-test routes are retired (404).
 		registerAccountHealthRoutes(admin, h)
-		registerIntelligentTestRoutes(admin, h)
 
 		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
@@ -332,7 +329,7 @@ func registerUserManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		users.POST("", h.Admin.User.Create)
 		users.PUT("/:id", h.Admin.User.Update)
 		users.DELETE("/:id", h.Admin.User.Delete)
-		users.POST("/:id/vip", h.Admin.User.SetVIP)
+		// Kitty 950: POST /:id/vip is retired (404).
 		users.POST("/:id/balance", h.Admin.User.UpdateBalance)
 		users.GET("/:id/api-keys", h.Admin.User.GetUserAPIKeys)
 		users.GET("/:id/usage", h.Admin.User.GetUserUsage)

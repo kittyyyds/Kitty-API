@@ -546,6 +546,18 @@ func (_u *GroupUpdate) ClearImagePrice4k() *GroupUpdate {
 	return _u
 }
 
+// SetImageModelPrices sets the "image_model_prices" field.
+func (_u *GroupUpdate) SetImageModelPrices(v map[string]map[string]float64) *GroupUpdate {
+	_u.mutation.SetImageModelPrices(v)
+	return _u
+}
+
+// ClearImageModelPrices clears the value of the "image_model_prices" field.
+func (_u *GroupUpdate) ClearImageModelPrices() *GroupUpdate {
+	_u.mutation.ClearImageModelPrices()
+	return _u
+}
+
 // SetBatchImageDiscountMultiplier sets the "batch_image_discount_multiplier" field.
 func (_u *GroupUpdate) SetBatchImageDiscountMultiplier(v float64) *GroupUpdate {
 	_u.mutation.ResetBatchImageDiscountMultiplier()
@@ -1825,6 +1837,12 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if _u.mutation.ImagePrice4kCleared() {
 		_spec.ClearField(group.FieldImagePrice4k, field.TypeFloat64)
 	}
+	if value, ok := _u.mutation.ImageModelPrices(); ok {
+		_spec.SetField(group.FieldImageModelPrices, field.TypeJSON, value)
+	}
+	if _u.mutation.ImageModelPricesCleared() {
+		_spec.ClearField(group.FieldImageModelPrices, field.TypeJSON)
+	}
 	if value, ok := _u.mutation.BatchImageDiscountMultiplier(); ok {
 		_spec.SetField(group.FieldBatchImageDiscountMultiplier, field.TypeFloat64, value)
 	}
@@ -2917,6 +2935,18 @@ func (_u *GroupUpdateOne) AddImagePrice4k(v float64) *GroupUpdateOne {
 // ClearImagePrice4k clears the value of the "image_price_4k" field.
 func (_u *GroupUpdateOne) ClearImagePrice4k() *GroupUpdateOne {
 	_u.mutation.ClearImagePrice4k()
+	return _u
+}
+
+// SetImageModelPrices sets the "image_model_prices" field.
+func (_u *GroupUpdateOne) SetImageModelPrices(v map[string]map[string]float64) *GroupUpdateOne {
+	_u.mutation.SetImageModelPrices(v)
+	return _u
+}
+
+// ClearImageModelPrices clears the value of the "image_model_prices" field.
+func (_u *GroupUpdateOne) ClearImageModelPrices() *GroupUpdateOne {
+	_u.mutation.ClearImageModelPrices()
 	return _u
 }
 
@@ -4228,6 +4258,12 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if _u.mutation.ImagePrice4kCleared() {
 		_spec.ClearField(group.FieldImagePrice4k, field.TypeFloat64)
+	}
+	if value, ok := _u.mutation.ImageModelPrices(); ok {
+		_spec.SetField(group.FieldImageModelPrices, field.TypeJSON, value)
+	}
+	if _u.mutation.ImageModelPricesCleared() {
+		_spec.ClearField(group.FieldImageModelPrices, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.BatchImageDiscountMultiplier(); ok {
 		_spec.SetField(group.FieldBatchImageDiscountMultiplier, field.TypeFloat64, value)

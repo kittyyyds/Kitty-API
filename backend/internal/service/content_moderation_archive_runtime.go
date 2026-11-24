@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -175,7 +174,7 @@ func newContentModerationArchiveRuntime(repo ContentModerationArchiveRepository,
 		_ = lockFile.Close()
 		return nil, fmt.Errorf("restrict content moderation archive lock: %w", err)
 	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := flockExclusiveNonBlocking(lockFile); err != nil {
 		_ = lockFile.Close()
 		return nil, fmt.Errorf("%w: %s", ErrContentModerationArchiveDirectoryLocked, options.RetryDir)
 	}
@@ -212,7 +211,7 @@ func (r *contentModerationArchiveRuntime) Close() {
 		close(r.stop)
 		<-r.done
 		if r.lockFile != nil {
-			_ = syscall.Flock(int(r.lockFile.Fd()), syscall.LOCK_UN)
+			_ = flockUnlock(r.lockFile)
 			_ = r.lockFile.Close()
 		}
 	})
@@ -460,12 +459,11 @@ func (r *contentModerationArchiveRuntime) hasDiskHeadroom(path string) bool {
 	if r.options.DiskMinFreeBytes <= 0 {
 		return true
 	}
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
+	free, err := diskAvailableBytes(path)
+	if err != nil {
 		slog.Error("content_moderation.archive_disk_stat_failed", "error", err)
 		return false
 	}
-	free := int64(stat.Bavail) * int64(stat.Bsize)
 	r.diskFreeBytes.Store(free)
 	return free >= r.options.DiskMinFreeBytes
 }

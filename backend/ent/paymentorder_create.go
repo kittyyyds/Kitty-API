@@ -225,6 +225,20 @@ func (_c *PaymentOrderCreate) SetNillableSubscriptionDays(v *int) *PaymentOrderC
 	return _c
 }
 
+// SetSubscriptionRenewalMode sets the "subscription_renewal_mode" field.
+func (_c *PaymentOrderCreate) SetSubscriptionRenewalMode(v string) *PaymentOrderCreate {
+	_c.mutation.SetSubscriptionRenewalMode(v)
+	return _c
+}
+
+// SetNillableSubscriptionRenewalMode sets the "subscription_renewal_mode" field if the given value is not nil.
+func (_c *PaymentOrderCreate) SetNillableSubscriptionRenewalMode(v *string) *PaymentOrderCreate {
+	if v != nil {
+		_c.SetSubscriptionRenewalMode(*v)
+	}
+	return _c
+}
+
 // SetProviderInstanceID sets the "provider_instance_id" field.
 func (_c *PaymentOrderCreate) SetProviderInstanceID(v string) *PaymentOrderCreate {
 	_c.mutation.SetProviderInstanceID(v)
@@ -269,6 +283,20 @@ func (_c *PaymentOrderCreate) SetStatus(v string) *PaymentOrderCreate {
 func (_c *PaymentOrderCreate) SetNillableStatus(v *string) *PaymentOrderCreate {
 	if v != nil {
 		_c.SetStatus(*v)
+	}
+	return _c
+}
+
+// SetInvoiceRequestID sets the "invoice_request_id" field.
+func (_c *PaymentOrderCreate) SetInvoiceRequestID(v int64) *PaymentOrderCreate {
+	_c.mutation.SetInvoiceRequestID(v)
+	return _c
+}
+
+// SetNillableInvoiceRequestID sets the "invoice_request_id" field if the given value is not nil.
+func (_c *PaymentOrderCreate) SetNillableInvoiceRequestID(v *int64) *PaymentOrderCreate {
+	if v != nil {
+		_c.SetInvoiceRequestID(*v)
 	}
 	return _c
 }
@@ -543,6 +571,10 @@ func (_c *PaymentOrderCreate) defaults() {
 		v := paymentorder.DefaultOrderType
 		_c.mutation.SetOrderType(v)
 	}
+	if _, ok := _c.mutation.SubscriptionRenewalMode(); !ok {
+		v := paymentorder.DefaultSubscriptionRenewalMode
+		_c.mutation.SetSubscriptionRenewalMode(v)
+	}
 	if _, ok := _c.mutation.Status(); !ok {
 		v := paymentorder.DefaultStatus
 		_c.mutation.SetStatus(v)
@@ -636,6 +668,14 @@ func (_c *PaymentOrderCreate) check() error {
 	if v, ok := _c.mutation.OrderType(); ok {
 		if err := paymentorder.OrderTypeValidator(v); err != nil {
 			return &ValidationError{Name: "order_type", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.order_type": %w`, err)}
+		}
+	}
+	if _, ok := _c.mutation.SubscriptionRenewalMode(); !ok {
+		return &ValidationError{Name: "subscription_renewal_mode", err: errors.New(`ent: missing required field "PaymentOrder.subscription_renewal_mode"`)}
+	}
+	if v, ok := _c.mutation.SubscriptionRenewalMode(); ok {
+		if err := paymentorder.SubscriptionRenewalModeValidator(v); err != nil {
+			return &ValidationError{Name: "subscription_renewal_mode", err: fmt.Errorf(`ent: validator failed for field "PaymentOrder.subscription_renewal_mode": %w`, err)}
 		}
 	}
 	if v, ok := _c.mutation.ProviderInstanceID(); ok {
@@ -794,6 +834,10 @@ func (_c *PaymentOrderCreate) createSpec() (*PaymentOrder, *sqlgraph.CreateSpec)
 		_spec.SetField(paymentorder.FieldSubscriptionDays, field.TypeInt, value)
 		_node.SubscriptionDays = &value
 	}
+	if value, ok := _c.mutation.SubscriptionRenewalMode(); ok {
+		_spec.SetField(paymentorder.FieldSubscriptionRenewalMode, field.TypeString, value)
+		_node.SubscriptionRenewalMode = value
+	}
 	if value, ok := _c.mutation.ProviderInstanceID(); ok {
 		_spec.SetField(paymentorder.FieldProviderInstanceID, field.TypeString, value)
 		_node.ProviderInstanceID = &value
@@ -809,6 +853,10 @@ func (_c *PaymentOrderCreate) createSpec() (*PaymentOrder, *sqlgraph.CreateSpec)
 	if value, ok := _c.mutation.Status(); ok {
 		_spec.SetField(paymentorder.FieldStatus, field.TypeString, value)
 		_node.Status = value
+	}
+	if value, ok := _c.mutation.InvoiceRequestID(); ok {
+		_spec.SetField(paymentorder.FieldInvoiceRequestID, field.TypeInt64, value)
+		_node.InvoiceRequestID = &value
 	}
 	if value, ok := _c.mutation.RefundAmount(); ok {
 		_spec.SetField(paymentorder.FieldRefundAmount, field.TypeFloat64, value)
@@ -1259,6 +1307,18 @@ func (u *PaymentOrderUpsert) ClearSubscriptionDays() *PaymentOrderUpsert {
 	return u
 }
 
+// SetSubscriptionRenewalMode sets the "subscription_renewal_mode" field.
+func (u *PaymentOrderUpsert) SetSubscriptionRenewalMode(v string) *PaymentOrderUpsert {
+	u.Set(paymentorder.FieldSubscriptionRenewalMode, v)
+	return u
+}
+
+// UpdateSubscriptionRenewalMode sets the "subscription_renewal_mode" field to the value that was provided on create.
+func (u *PaymentOrderUpsert) UpdateSubscriptionRenewalMode() *PaymentOrderUpsert {
+	u.SetExcluded(paymentorder.FieldSubscriptionRenewalMode)
+	return u
+}
+
 // SetProviderInstanceID sets the "provider_instance_id" field.
 func (u *PaymentOrderUpsert) SetProviderInstanceID(v string) *PaymentOrderUpsert {
 	u.Set(paymentorder.FieldProviderInstanceID, v)
@@ -1322,6 +1382,30 @@ func (u *PaymentOrderUpsert) SetStatus(v string) *PaymentOrderUpsert {
 // UpdateStatus sets the "status" field to the value that was provided on create.
 func (u *PaymentOrderUpsert) UpdateStatus() *PaymentOrderUpsert {
 	u.SetExcluded(paymentorder.FieldStatus)
+	return u
+}
+
+// SetInvoiceRequestID sets the "invoice_request_id" field.
+func (u *PaymentOrderUpsert) SetInvoiceRequestID(v int64) *PaymentOrderUpsert {
+	u.Set(paymentorder.FieldInvoiceRequestID, v)
+	return u
+}
+
+// UpdateInvoiceRequestID sets the "invoice_request_id" field to the value that was provided on create.
+func (u *PaymentOrderUpsert) UpdateInvoiceRequestID() *PaymentOrderUpsert {
+	u.SetExcluded(paymentorder.FieldInvoiceRequestID)
+	return u
+}
+
+// AddInvoiceRequestID adds v to the "invoice_request_id" field.
+func (u *PaymentOrderUpsert) AddInvoiceRequestID(v int64) *PaymentOrderUpsert {
+	u.Add(paymentorder.FieldInvoiceRequestID, v)
+	return u
+}
+
+// ClearInvoiceRequestID clears the value of the "invoice_request_id" field.
+func (u *PaymentOrderUpsert) ClearInvoiceRequestID() *PaymentOrderUpsert {
+	u.SetNull(paymentorder.FieldInvoiceRequestID)
 	return u
 }
 
@@ -1992,6 +2076,20 @@ func (u *PaymentOrderUpsertOne) ClearSubscriptionDays() *PaymentOrderUpsertOne {
 	})
 }
 
+// SetSubscriptionRenewalMode sets the "subscription_renewal_mode" field.
+func (u *PaymentOrderUpsertOne) SetSubscriptionRenewalMode(v string) *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.SetSubscriptionRenewalMode(v)
+	})
+}
+
+// UpdateSubscriptionRenewalMode sets the "subscription_renewal_mode" field to the value that was provided on create.
+func (u *PaymentOrderUpsertOne) UpdateSubscriptionRenewalMode() *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.UpdateSubscriptionRenewalMode()
+	})
+}
+
 // SetProviderInstanceID sets the "provider_instance_id" field.
 func (u *PaymentOrderUpsertOne) SetProviderInstanceID(v string) *PaymentOrderUpsertOne {
 	return u.Update(func(s *PaymentOrderUpsert) {
@@ -2066,6 +2164,34 @@ func (u *PaymentOrderUpsertOne) SetStatus(v string) *PaymentOrderUpsertOne {
 func (u *PaymentOrderUpsertOne) UpdateStatus() *PaymentOrderUpsertOne {
 	return u.Update(func(s *PaymentOrderUpsert) {
 		s.UpdateStatus()
+	})
+}
+
+// SetInvoiceRequestID sets the "invoice_request_id" field.
+func (u *PaymentOrderUpsertOne) SetInvoiceRequestID(v int64) *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.SetInvoiceRequestID(v)
+	})
+}
+
+// AddInvoiceRequestID adds v to the "invoice_request_id" field.
+func (u *PaymentOrderUpsertOne) AddInvoiceRequestID(v int64) *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.AddInvoiceRequestID(v)
+	})
+}
+
+// UpdateInvoiceRequestID sets the "invoice_request_id" field to the value that was provided on create.
+func (u *PaymentOrderUpsertOne) UpdateInvoiceRequestID() *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.UpdateInvoiceRequestID()
+	})
+}
+
+// ClearInvoiceRequestID clears the value of the "invoice_request_id" field.
+func (u *PaymentOrderUpsertOne) ClearInvoiceRequestID() *PaymentOrderUpsertOne {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.ClearInvoiceRequestID()
 	})
 }
 
@@ -2945,6 +3071,20 @@ func (u *PaymentOrderUpsertBulk) ClearSubscriptionDays() *PaymentOrderUpsertBulk
 	})
 }
 
+// SetSubscriptionRenewalMode sets the "subscription_renewal_mode" field.
+func (u *PaymentOrderUpsertBulk) SetSubscriptionRenewalMode(v string) *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.SetSubscriptionRenewalMode(v)
+	})
+}
+
+// UpdateSubscriptionRenewalMode sets the "subscription_renewal_mode" field to the value that was provided on create.
+func (u *PaymentOrderUpsertBulk) UpdateSubscriptionRenewalMode() *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.UpdateSubscriptionRenewalMode()
+	})
+}
+
 // SetProviderInstanceID sets the "provider_instance_id" field.
 func (u *PaymentOrderUpsertBulk) SetProviderInstanceID(v string) *PaymentOrderUpsertBulk {
 	return u.Update(func(s *PaymentOrderUpsert) {
@@ -3019,6 +3159,34 @@ func (u *PaymentOrderUpsertBulk) SetStatus(v string) *PaymentOrderUpsertBulk {
 func (u *PaymentOrderUpsertBulk) UpdateStatus() *PaymentOrderUpsertBulk {
 	return u.Update(func(s *PaymentOrderUpsert) {
 		s.UpdateStatus()
+	})
+}
+
+// SetInvoiceRequestID sets the "invoice_request_id" field.
+func (u *PaymentOrderUpsertBulk) SetInvoiceRequestID(v int64) *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.SetInvoiceRequestID(v)
+	})
+}
+
+// AddInvoiceRequestID adds v to the "invoice_request_id" field.
+func (u *PaymentOrderUpsertBulk) AddInvoiceRequestID(v int64) *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.AddInvoiceRequestID(v)
+	})
+}
+
+// UpdateInvoiceRequestID sets the "invoice_request_id" field to the value that was provided on create.
+func (u *PaymentOrderUpsertBulk) UpdateInvoiceRequestID() *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.UpdateInvoiceRequestID()
+	})
+}
+
+// ClearInvoiceRequestID clears the value of the "invoice_request_id" field.
+func (u *PaymentOrderUpsertBulk) ClearInvoiceRequestID() *PaymentOrderUpsertBulk {
+	return u.Update(func(s *PaymentOrderUpsert) {
+		s.ClearInvoiceRequestID()
 	})
 }
 

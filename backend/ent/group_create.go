@@ -449,6 +449,12 @@ func (_c *GroupCreate) SetNillableImagePrice4k(v *float64) *GroupCreate {
 	return _c
 }
 
+// SetImageModelPrices sets the "image_model_prices" field.
+func (_c *GroupCreate) SetImageModelPrices(v map[string]map[string]float64) *GroupCreate {
+	_c.mutation.SetImageModelPrices(v)
+	return _c
+}
+
 // SetBatchImageDiscountMultiplier sets the "batch_image_discount_multiplier" field.
 func (_c *GroupCreate) SetBatchImageDiscountMultiplier(v float64) *GroupCreate {
 	_c.mutation.SetBatchImageDiscountMultiplier(v)
@@ -1708,6 +1714,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 		_spec.SetField(group.FieldImagePrice4k, field.TypeFloat64, value)
 		_node.ImagePrice4k = &value
 	}
+	if value, ok := _c.mutation.ImageModelPrices(); ok {
+		_spec.SetField(group.FieldImageModelPrices, field.TypeJSON, value)
+		_node.ImageModelPrices = value
+	}
 	if value, ok := _c.mutation.BatchImageDiscountMultiplier(); ok {
 		_spec.SetField(group.FieldBatchImageDiscountMultiplier, field.TypeFloat64, value)
 		_node.BatchImageDiscountMultiplier = value
@@ -2497,6 +2507,24 @@ func (u *GroupUpsert) AddImagePrice4k(v float64) *GroupUpsert {
 // ClearImagePrice4k clears the value of the "image_price_4k" field.
 func (u *GroupUpsert) ClearImagePrice4k() *GroupUpsert {
 	u.SetNull(group.FieldImagePrice4k)
+	return u
+}
+
+// SetImageModelPrices sets the "image_model_prices" field.
+func (u *GroupUpsert) SetImageModelPrices(v map[string]map[string]float64) *GroupUpsert {
+	u.Set(group.FieldImageModelPrices, v)
+	return u
+}
+
+// UpdateImageModelPrices sets the "image_model_prices" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateImageModelPrices() *GroupUpsert {
+	u.SetExcluded(group.FieldImageModelPrices)
+	return u
+}
+
+// ClearImageModelPrices clears the value of the "image_model_prices" field.
+func (u *GroupUpsert) ClearImageModelPrices() *GroupUpsert {
+	u.SetNull(group.FieldImageModelPrices)
 	return u
 }
 
@@ -3749,6 +3777,27 @@ func (u *GroupUpsertOne) UpdateImagePrice4k() *GroupUpsertOne {
 func (u *GroupUpsertOne) ClearImagePrice4k() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearImagePrice4k()
+	})
+}
+
+// SetImageModelPrices sets the "image_model_prices" field.
+func (u *GroupUpsertOne) SetImageModelPrices(v map[string]map[string]float64) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetImageModelPrices(v)
+	})
+}
+
+// UpdateImageModelPrices sets the "image_model_prices" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateImageModelPrices() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateImageModelPrices()
+	})
+}
+
+// ClearImageModelPrices clears the value of the "image_model_prices" field.
+func (u *GroupUpsertOne) ClearImageModelPrices() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearImageModelPrices()
 	})
 }
 
@@ -5279,6 +5328,27 @@ func (u *GroupUpsertBulk) UpdateImagePrice4k() *GroupUpsertBulk {
 func (u *GroupUpsertBulk) ClearImagePrice4k() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearImagePrice4k()
+	})
+}
+
+// SetImageModelPrices sets the "image_model_prices" field.
+func (u *GroupUpsertBulk) SetImageModelPrices(v map[string]map[string]float64) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetImageModelPrices(v)
+	})
+}
+
+// UpdateImageModelPrices sets the "image_model_prices" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateImageModelPrices() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateImageModelPrices()
+	})
+}
+
+// ClearImageModelPrices clears the value of the "image_model_prices" field.
+func (u *GroupUpsertBulk) ClearImageModelPrices() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearImageModelPrices()
 	})
 }
 
