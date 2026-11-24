@@ -30,6 +30,9 @@ const { locale } = useI18n()
 const mobileOpen = shallowRef(false)
 const sectionMenuOpen = shallowRef(false)
 const sectionPickerRef = shallowRef<HTMLElement | null>(null)
+const sectionTriggerRef = shallowRef<HTMLButtonElement | null>(null)
+const mobileMenuRef = shallowRef<HTMLElement | null>(null)
+const menuButtonRef = shallowRef<HTMLButtonElement | null>(null)
 const activeSectionLabel = computed(() => (
   props.copy.sections.find((section) => section.id === props.activeSection)?.label ?? props.copy.home
 ))
@@ -45,13 +48,30 @@ function navigate(sectionId: string): void {
 }
 
 function handleWindowPointerDown(event: PointerEvent): void {
-  if (sectionMenuOpen.value && !sectionPickerRef.value?.contains(event.target as Node)) {
+  const target = event.target as Node
+  if (sectionMenuOpen.value && !sectionPickerRef.value?.contains(target)) {
     sectionMenuOpen.value = false
+  }
+  if (
+    mobileOpen.value
+    && !mobileMenuRef.value?.contains(target)
+    && !menuButtonRef.value?.contains(target)
+  ) {
+    mobileOpen.value = false
   }
 }
 
 function handleWindowKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') sectionMenuOpen.value = false
+  if (event.key !== 'Escape') return
+  const focused = document.activeElement
+  if (sectionMenuOpen.value) {
+    sectionMenuOpen.value = false
+    if (sectionPickerRef.value?.contains(focused)) sectionTriggerRef.value?.focus()
+  }
+  if (mobileOpen.value) {
+    mobileOpen.value = false
+    if (mobileMenuRef.value?.contains(focused)) menuButtonRef.value?.focus()
+  }
 }
 
 onMounted(() => {
@@ -93,6 +113,7 @@ onBeforeUnmount(() => {
       </button>
       <div ref="sectionPickerRef" class="hr-section-picker">
         <button
+          ref="sectionTriggerRef"
           type="button"
           class="hr-section-trigger"
           aria-haspopup="menu"
@@ -120,6 +141,7 @@ onBeforeUnmount(() => {
       <router-link :to="modelPlazaEnabled ? '/model-plaza' : '/login'" class="hr-nav-link">
         {{ copy.models }}
       </router-link>
+      <router-link to="/guide" class="hr-nav-link">{{ locale.startsWith('zh') ? '使用教程' : 'Guide' }}</router-link>
       <a
         v-if="docUrl"
         :href="docUrl"
@@ -134,6 +156,7 @@ onBeforeUnmount(() => {
         <Icon name="login" size="sm" />
       </router-link>
       <button
+        ref="menuButtonRef"
         type="button"
         class="hr-icon-control hr-menu-control"
         :aria-label="mobileOpen ? copy.closeMenu : copy.menu"
@@ -145,7 +168,7 @@ onBeforeUnmount(() => {
     </nav>
 
     <Transition name="hr-mobile-menu">
-      <nav v-if="mobileOpen" class="hr-mobile-menu" :aria-label="copy.primary">
+      <nav v-if="mobileOpen" ref="mobileMenuRef" class="hr-mobile-menu" :aria-label="copy.primary">
         <button
           v-for="section in copy.sections"
           :key="section.id"
@@ -156,6 +179,7 @@ onBeforeUnmount(() => {
           {{ section.label }}
         </button>
         <router-link :to="modelPlazaEnabled ? '/model-plaza' : '/login'">{{ copy.models }}</router-link>
+        <router-link to="/guide" @click="mobileOpen = false">{{ locale.startsWith('zh') ? '使用教程' : 'Guide' }}</router-link>
         <a v-if="docUrl" :href="docUrl" target="_blank" rel="noopener noreferrer">{{ copy.docs }}</a>
       </nav>
     </Transition>

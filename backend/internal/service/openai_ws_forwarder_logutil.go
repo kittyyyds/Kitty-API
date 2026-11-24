@@ -21,9 +21,6 @@ import (
 
 func normalizeOpenAIWSLogValue(value string) string {
 	trimmed := strings.TrimSpace(value)
-	if trimmed != "invalid_encrypted_content" && trimmed != "thinking_signature_invalid" {
-		trimmed = redactOpenAIEncryptedDiagnostic(trimmed)
-	}
 	if trimmed == "" {
 		return "-"
 	}
@@ -202,35 +199,47 @@ func openAIWSMessageLikelyContainsToolCalls(message []byte) bool {
 }
 
 func parseOpenAIWSResponseUsageFromCompletedEvent(message []byte, usage *OpenAIUsage) {
-	if usage == nil || len(message) == 0 || !bytes.Contains(message, []byte(`"usage"`)) {
-		return
+	parseOpenAIWSResponseUsageWithObservation(message, usage)
+}
+
+// Observe explicit upstream usage (including zero) without changing Kitty's
+// existing accumulator, cache evidence, terminal reset or billing policy.
+func parseOpenAIWSResponseUsageWithObservation(message []byte, usage *OpenAIUsage) bool {
+	if usage == nil || len(message) == 0 {
+		return false
+	}
+	if openAIStreamEventTypeIsTerminal(effectiveOpenAISSEEventType(message, "")) {
+		usage.CacheReadKnown = false
+	}
+	if !bytes.Contains(message, []byte(`"usage"`)) {
+		return false
 	}
 	if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(message); ok {
+		mergeOpenAICacheUsageEvidence(*usage, &parsedUsage)
 		if openAIStreamEventTypeIsTerminal(effectiveOpenAISSEEventType(message, "")) {
 			if !openAIUsageHasTokens(&parsedUsage) && openAIUsageHasTokens(usage) {
-				return
+				return true
 			}
 			*usage = parsedUsage
 		} else {
 			mergeOpenAIUsageNonZero(usage, parsedUsage)
 		}
+		return true
 	}
+	return false
 }
 
 func parseOpenAIWSErrorEventFields(message []byte) (code string, errType string, errMessage string) {
-	if len(message) == 0 {
+	upstreamError, ok := normalizeOpenAIUpstreamError(message)
+	if !ok {
 		return "", "", ""
 	}
-	values := gjson.GetManyBytes(message, "error.code", "error.type", "error.message")
-	return strings.TrimSpace(values[0].String()), strings.TrimSpace(values[1].String()), strings.TrimSpace(values[2].String())
+	return strings.TrimSpace(upstreamError.Code), strings.TrimSpace(upstreamError.Type), strings.TrimSpace(upstreamError.Message)
 }
 
 func summarizeOpenAIWSErrorEventFieldsFromRaw(codeRaw, errTypeRaw, errMessageRaw string) (code string, errType string, errMessage string) {
 	code = truncateOpenAIWSLogValue(codeRaw, openAIWSLogValueMaxLen)
 	errType = truncateOpenAIWSLogValue(errTypeRaw, openAIWSLogValueMaxLen)
-	if openAIEncryptedErrorCode(codeRaw) {
-		errMessageRaw = openAIEncryptedErrorRedacted
-	}
 	errMessage = truncateOpenAIWSLogValue(errMessageRaw, openAIWSLogValueMaxLen)
 	return code, errType, errMessage
 }
@@ -665,12 +674,6 @@ func summarizeOpenAIWSDialError(err error) (
 
 func isOpenAIWSClientDisconnectError(err error) bool {
 	if err == nil {
-		return false
-	}
-	// Local policy/control closes can unwrap context.Canceled or an IO error;
-	// they must not be mistaken for an actual downstream disconnection.
-	var closeErr *OpenAIWSClientCloseError
-	if errors.As(err, &closeErr) {
 		return false
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) {

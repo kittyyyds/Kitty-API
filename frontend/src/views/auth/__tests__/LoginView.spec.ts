@@ -44,6 +44,8 @@ vi.mock('@/stores', () => ({
     loginWithPasskey: loginWithPasskeyMock
   }),
   useAppStore: () => ({
+    // The login page reads the app's cached settings; serve the same values the test configures.
+    fetchPublicSettings: () => getPublicSettingsMock(),
     showError: showErrorMock,
     showSuccess: showSuccessMock,
     showWarning: showWarningMock

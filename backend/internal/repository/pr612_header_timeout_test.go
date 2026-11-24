@@ -25,9 +25,6 @@ type pr612SettingRepo struct {
 
 func pr612NativeTransport(t *testing.T, upstream service.HTTPUpstream) *httpUpstreamService {
 	t.Helper()
-	if routed, ok := upstream.(*astraRoutingUpstream); ok {
-		upstream = routed.delegate
-	}
 	native, ok := upstream.(*httpUpstreamService)
 	require.True(t, ok)
 	return native

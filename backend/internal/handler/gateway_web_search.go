@@ -99,6 +99,11 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 		return
 	}
 	defer inflightDone()
+	userRelease, admitted := acquireImmediateGatewayUserSlot(c, h.concurrencyHelper, apiKey)
+	if !admitted {
+		return
+	}
+	defer userRelease()
 
 	subject, _ := middleware2.GetAuthSubjectFromContext(c)
 	reqLog := requestLogger(c, "handler.gateway.web_search")
@@ -136,12 +141,6 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 	}
 
 	failedAccounts := make(map[int64]struct{})
-	keyRelease, keyErr := h.concurrencyHelper.AcquireAPIKeySlot(c.Request.Context(), apiKey.ID, apiKey.ConcurrencyLimit)
-	if keyErr != nil {
-		h.handleConcurrencyError(c, keyErr, "API key", false)
-		return
-	}
-	defer keyRelease()
 	var account *service.Account
 	var accountReleaseFunc func()
 	var nativeResp *websearch.SearchResponse
@@ -161,6 +160,9 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 			c.Request.Context(), groupID, "", searchModel, failedAccounts, "", 0,
 		)
 		if selectErr != nil {
+			if handleAPIKeyFallbackAdmissionError(c, selectErr, c.Writer.Written()) {
+				return
+			}
 			if attempt == 0 {
 				c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{
 					"type":    "scheduling_error",
@@ -328,11 +330,13 @@ func (h *GatewayHandler) acquireWebSearchAccountSlot(
 		selected.WaitPlan.Timeout,
 		false,
 		&streamStarted,
+		&account,
 	)
 	releaseWait()
 	if err != nil {
 		return nil, false, err
 	}
+	selected.Account = account
 	return slotRelease, true, nil
 }
 

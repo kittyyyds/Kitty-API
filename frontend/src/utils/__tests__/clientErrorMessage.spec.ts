@@ -39,4 +39,11 @@ describe('localizeClientErrorMessage', () => {
     document.documentElement.lang = 'en'
     expect(localizeClientErrorMessage('Invalid credentials')).toBe('Invalid credentials')
   })
+
+  it('distinguishes settings storage validation from insufficient account funds', () => {
+    expect(localizeClientErrorMessage('Capture quota must be positive MiB within int64 range')).toBe('请求记录的存储容量配置无效。')
+    expect(localizeClientErrorMessage('Invalid request: cannot decode request_capture_quota_mib')).toBe('输入内容无效。')
+    expect(localizeClientErrorMessage('Insufficient user quota')).toBe('余额或配额不足。')
+    expect(localizeClientErrorMessage('Monthly quota exceeded')).toBe('余额或配额不足。')
+  })
 })

@@ -59,15 +59,6 @@ func (r *snapshotUpdateAccountRepo) UpdateExtra(ctx context.Context, id int64, u
 	return nil
 }
 
-func (r stubOpenAIAccountRepo) GetOpenAITurnAdmission(ctx context.Context, id int64) (*Account, *Account, error) {
-	account, err := r.GetByID(ctx, id)
-	var parent *Account
-	if err == nil && account != nil && account.IsShadow() {
-		parent, err = r.GetByID(ctx, *account.ParentAccountID)
-	}
-	return account, parent, err
-}
-
 func (r stubOpenAIAccountRepo) GetByID(ctx context.Context, id int64) (*Account, error) {
 	for i := range r.accounts {
 		if r.accounts[i].ID == id {
@@ -747,7 +738,6 @@ func (c stubConcurrencyCache) GetAccountWaitingCount(ctx context.Context, accoun
 
 type stubGatewayCache struct {
 	sessionBindings map[string]int64
-	sessionTTLs     map[string]time.Duration
 	deletedSessions map[string]int
 }
 
@@ -779,11 +769,7 @@ func (c *stubGatewayCache) SetSessionAccountID(ctx context.Context, groupID int6
 	if c.sessionBindings == nil {
 		c.sessionBindings = make(map[string]int64)
 	}
-	if c.sessionTTLs == nil {
-		c.sessionTTLs = make(map[string]time.Duration)
-	}
 	c.sessionBindings[sessionHash] = accountID
-	c.sessionTTLs[sessionHash] = ttl
 	return nil
 }
 
@@ -1269,7 +1255,7 @@ func TestOpenAISelectAccountWithLoadAwareness_StickyWaitPlan(t *testing.T) {
 	}
 }
 
-func TestOpenAISelectAccountWithLoadAwareness_StickyCapacitySpilloverKeepsBinding(t *testing.T) {
+func TestOpenAISelectAccountWithLoadAwareness_StickyCapacitySpilloverRebindsReplacement(t *testing.T) {
 	sessionHash := "sticky-spillover"
 	groupID := int64(1)
 	repo := stubOpenAIAccountRepo{
@@ -1304,9 +1290,21 @@ func TestOpenAISelectAccountWithLoadAwareness_StickyCapacitySpilloverKeepsBindin
 	require.NoError(t, err)
 	require.NotNil(t, selection)
 	require.NotNil(t, selection.Account)
-	require.Equal(t, int64(2), selection.Account.ID, "capacity spillover should use the other account for this request")
+	require.Equal(t, int64(2), selection.Account.ID, "capacity spillover should use the available peer")
 	require.True(t, selection.Acquired)
-	require.Equal(t, int64(1), cache.sessionBindings["openai:"+sessionHash], "capacity spillover must not migrate the durable sticky binding")
+	require.Equal(t, int64(2), cache.sessionBindings["openai:"+sessionHash], "successful spillover should migrate the durable sticky binding")
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+
+	concurrencyCache.acquireResults[1] = true
+	concurrencyCache.waitCounts[1] = 0
+	concurrencyCache.loadMap[1].LoadRate = 0
+	selection, err = svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, sessionHash, "gpt-4", nil)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, int64(2), selection.Account.ID, "original account recovery must not undo a completed migration")
+	require.True(t, selection.stickySessionHit)
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
@@ -3261,7 +3259,8 @@ func TestOpenAIBuildUpstreamRequestOAuthMessagesBridgeUsesSessionOnly(t *testing
 	require.NotEmpty(t, req.Header.Get("Session_Id"))
 	require.Empty(t, req.Header.Get("Conversation_Id"))
 	require.Empty(t, req.Header.Get("OpenAI-Beta"))
-	require.Empty(t, req.Header.Get("originator"))
+	// Codex OAuth session identity always carries the paired originator/UA.
+	require.Equal(t, openai.CodexDefaultOriginator, req.Header.Get("originator"))
 }
 
 func TestOpenAIBuildUpstreamRequestOAuthResponsesPreservesCallerBeta(t *testing.T) {
@@ -3279,18 +3278,21 @@ func TestOpenAIBuildUpstreamRequestOAuthResponsesPreservesCallerBeta(t *testing.
 	oauth := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"chatgpt_account_id": "chatgpt-acc"}}
 	apiKey := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "test-api-key"}}
 
-	t.Run("preserves caller multi-agent beta", func(t *testing.T) {
+	// OAuth Codex HTTP 出站按官方线序收口：OpenAI-Beta 是 WS 握手专有头，
+	// 官方 HTTP 业务头集合（build_responses_headers）不含它——caller 透传的
+	// beta 能力标志也被削平。apikey 不经 Codex 收口，仍保留 caller 值。
+	t.Run("oauth caller multi-agent beta is stripped", func(t *testing.T) {
 		c := makeRequest("responses_multi_agent=v1")
 		req, err := svc.buildUpstreamRequest(c.Request.Context(), c, oauth, []byte(`{"model":"gpt-5.5","input":"hello"}`), "token", true, "", false)
 		require.NoError(t, err)
-		require.Equal(t, "responses_multi_agent=v1", req.Header.Get("OpenAI-Beta"))
+		require.Empty(t, req.Header.Values("OpenAI-Beta"))
 	})
 
-	t.Run("preserves mixed beta tokens and removes legacy token", func(t *testing.T) {
+	t.Run("oauth mixed beta tokens are stripped", func(t *testing.T) {
 		c := makeRequest("responses_multi_agent=v1, responses=experimental", "future_feature=v2")
 		req, err := svc.buildUpstreamRequest(c.Request.Context(), c, oauth, []byte(`{"model":"gpt-5.5","input":"hello"}`), "token", true, "", false)
 		require.NoError(t, err)
-		require.Equal(t, []string{"responses_multi_agent=v1", "future_feature=v2"}, req.Header.Values("OpenAI-Beta"))
+		require.Empty(t, req.Header.Values("OpenAI-Beta"))
 	})
 
 	t.Run("absent beta remains absent", func(t *testing.T) {
@@ -3307,12 +3309,15 @@ func TestOpenAIBuildUpstreamRequestOAuthResponsesPreservesCallerBeta(t *testing.
 		require.Equal(t, []string{"responses=experimental, responses_multi_agent=v1"}, req.Header.Values("OpenAI-Beta"))
 	})
 
-	t.Run("compact OAuth removes legacy token and preserves independent beta", func(t *testing.T) {
+	// legacy /responses/compact 是不同上游契约，不参与官方线序收口（同
+	// sub4api）：caller 的非 responses=experimental beta 令牌保留；旧版
+	// responses=experimental 仍由 stripOpenAILegacyResponsesBeta 摘除。
+	t.Run("compact OAuth keeps caller beta", func(t *testing.T) {
 		c := makeRequest("responses=experimental, future_feature=v1")
 		c.Request.URL.Path = "/v1/responses/compact"
 		req, err := svc.buildUpstreamRequest(c.Request.Context(), c, oauth, []byte(`{"model":"gpt-5.5","input":"hello"}`), "token", false, "", false)
 		require.NoError(t, err)
-		require.Equal(t, "future_feature=v1", req.Header.Get("OpenAI-Beta"))
+		require.Equal(t, []string{"future_feature=v1"}, req.Header.Values("OpenAI-Beta"))
 	})
 }
 
@@ -3998,7 +4003,9 @@ func TestHandleSSEToJSON_ResponseFailedWithoutAccountReturnsProtocolError(t *tes
 	require.Nil(t, usage)
 	require.Error(t, err)
 	require.Equal(t, http.StatusBadGateway, rec.Code)
-	require.Contains(t, rec.Body.String(), "upstream rejected request")
+	require.Contains(t, rec.Body.String(), OpenAIUpstreamFailureClientMessage)
+	require.Equal(t, "upstream rejected request", c.GetString(OpsUpstreamErrorMessageKey))
+	require.ErrorContains(t, err, "upstream rejected request")
 	require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
 }
 

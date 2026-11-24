@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	_ "golang.org/x/image/webp"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
@@ -18,6 +17,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	_ "golang.org/x/image/webp"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -64,7 +65,7 @@ func suanliImageRequest(parsed *OpenAIImagesRequest, model string) (string, []by
 		}
 	}
 	for _, u := range parsed.Uploads {
-		images = append(images, u.ModerationDataURL())
+		images = append(images, u.ImageDataURL())
 	}
 	for _, ref := range images {
 		if !strings.HasPrefix(ref, "data:image/") {

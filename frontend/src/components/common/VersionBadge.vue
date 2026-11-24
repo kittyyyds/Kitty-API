@@ -10,7 +10,7 @@
             ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:hover:bg-amber-900/50'
             : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-800 dark:text-dark-400 dark:hover:bg-dark-700'
         ]"
-        :title="hasUpdate ? t('version.updateAvailable') : t('version.upToDate')"
+        :title="versionStatus"
       >
         <span v-if="currentVersion" class="font-medium">v{{ currentVersion }}</span>
         <span
@@ -44,7 +44,7 @@
             <button
               @click="refreshVersion(true)"
               class="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-dark-700 dark:hover:text-dark-200"
-              :disabled="loading"
+              :disabled="loading || updating"
               :title="t('version.refresh')"
             >
               <Icon
@@ -89,7 +89,8 @@
                   <span v-else class="text-2xl font-bold text-gray-400 dark:text-dark-500">--</span>
                   <!-- Show check mark when up to date -->
                   <span
-                    v-if="!hasUpdate"
+                    v-if="versionConfirmed && !hasUpdate"
+                    data-testid="version-up-to-date"
                     class="flex h-5 w-5 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/30"
                   >
                     <svg
@@ -106,15 +107,18 @@
                   </span>
                 </div>
                 <p class="mt-1 text-xs text-gray-500 dark:text-dark-400">
-                  {{
-                    hasUpdate
-                      ? t('version.latestVersion') + ': v' + latestVersion
-                      : t('version.upToDate')
-                  }}
+                  {{ versionStatus }}
                 </p>
+              </div>
+              <div v-if="versionWarning" role="alert" class="mb-4 space-y-1 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+                <p>{{ t('version.checkFailedHint') }}</p>
+                <p class="break-words">{{ versionWarning }}</p>
               </div>
 
               <!-- Priority 1: Update error (must check before hasUpdate) -->
+              <p v-if="appStore.versionWarning" role="status" class="mb-3 break-words text-xs text-amber-700 dark:text-amber-400">
+                {{ appStore.versionWarning }}
+              </p>
               <div v-if="updateError" class="space-y-2">
                 <div
                   class="flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-800/50 dark:bg-red-900/20"
@@ -133,7 +137,7 @@
                     <p class="text-sm font-medium text-red-700 dark:text-red-300">
                       {{ t('version.updateFailed') }}
                     </p>
-                    <p class="truncate text-xs text-red-600/70 dark:text-red-400/70">
+                    <p class="break-words text-xs text-red-600/70 dark:text-red-400/70">
                       {{ updateError }}
                     </p>
                   </div>
@@ -231,8 +235,8 @@
                 </button>
               </div>
 
-              <!-- Priority 3: Update available for source build - show git pull hint -->
-              <div v-else-if="hasUpdate && !isReleaseBuild" class="space-y-2">
+              <!-- Priority 3: Compose deployments use the host image updater. -->
+              <div v-else-if="(hasUpdate || updating) && (!isReleaseBuild || hostUpdateManaged)" class="space-y-2">
                 <a
                   v-if="releaseInfo?.html_url && releaseInfo.html_url !== '#'"
                   :href="releaseInfo.html_url"
@@ -268,9 +272,12 @@
                     <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
                   </svg>
                 </a>
-                <!-- Source build hint -->
+                <!-- Host updater status -->
                 <div
-                  class="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 p-2 dark:border-blue-800/50 dark:bg-blue-900/20"
+                  class="flex items-center gap-2 rounded-lg border p-2"
+                  :class="sourceUpdateEnabled
+                    ? 'border-green-200 bg-green-50 dark:border-green-800/50 dark:bg-green-900/20'
+                    : 'border-blue-200 bg-blue-50 dark:border-blue-800/50 dark:bg-blue-900/20'"
                 >
                   <svg
                     class="h-3.5 w-3.5 flex-shrink-0 text-blue-500 dark:text-blue-400"
@@ -285,10 +292,37 @@
                       d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                     />
                   </svg>
-                  <p class="text-xs text-blue-600 dark:text-blue-400">
-                    {{ t('version.sourceModeHint') }}
+                  <p
+                    class="text-xs"
+                    :class="sourceUpdateEnabled ? 'text-green-700 dark:text-green-300' : 'text-blue-600 dark:text-blue-400'"
+                  >
+                    {{ sourceUpdateEnabled ? t('version.sourceUpdaterReady') : t(hostUpdateManaged ? 'version.hostUpdaterUnavailable' : 'version.sourceModeHint') }}
                   </p>
                 </div>
+
+                <div
+                  v-if="sourceUpdateJob"
+                  class="rounded-lg border border-gray-200 bg-gray-50 p-2 text-xs text-gray-600 dark:border-dark-700 dark:bg-dark-900/40 dark:text-dark-300"
+                >
+                  <div class="flex items-center justify-between gap-2">
+                    <span>{{ t('version.sourceUpdateStage') }}</span>
+                    <span class="font-medium">{{ sourceStageLabel }}</span>
+                  </div>
+                  <p v-if="sourceUpdateJob.message" class="mt-1 truncate">
+                    {{ sourceUpdateJob.message }}
+                  </p>
+                </div>
+
+                <button
+                  v-if="sourceUpdateEnabled"
+                  @click="handleUpdate"
+                  :disabled="updating"
+                  class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Icon v-if="updating" name="refresh" size="sm" :stroke-width="2" class="animate-spin" />
+                  <Icon v-else name="download" size="sm" :stroke-width="2" />
+                  {{ updating ? t('version.updating') : t('version.updateNow') }}
+                </button>
               </div>
 
               <!-- Priority 4: Update available for release build - show update button -->
@@ -375,7 +409,7 @@
                 </a>
 
                 <!-- Version rollback entry -->
-                <div class="border-t border-gray-100 pt-2 dark:border-dark-700">
+                <div v-if="!hostUpdateManaged" class="border-t border-gray-100 pt-2 dark:border-dark-700">
                   <button
                     @click="toggleRollbackPanel"
                     class="group flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-xs text-gray-400 transition-colors hover:bg-gray-50 hover:text-gray-600 dark:text-dark-500 dark:hover:bg-dark-700/50 dark:hover:text-dark-300"
@@ -643,17 +677,20 @@ import { useI18n } from 'vue-i18n'
 import { useAuthStore, useAppStore } from '@/stores'
 import {
   performUpdate,
+  getSourceUpdateStatus,
   restartService,
   getRollbackVersions,
   rollback as rollbackAPI,
-  type RollbackVersionInfo
+  type RollbackVersionInfo,
+  type SourceUpdateJob
 } from '@/api/admin/system'
 import { useClipboard } from '@/composables/useClipboard'
 import Icon from '@/components/icons/Icon.vue'
 
-const GITHUB_REPO = 'Wei-Shaw/sub2api'
-// Docker Hub image published by CI (tags carry no "v" prefix, e.g. weishaw/sub2api:0.1.146)
-const DOCKER_IMAGE = 'weishaw/sub2api'
+const GITHUB_REPO = 'DeanZFC/sub2api-custom'
+const SOURCE_UPDATE_JOB_KEY = 'sub2api-source-update-job'
+// Fork image published by CI; tags carry no "v" prefix.
+const DOCKER_IMAGE = 'ghcr.io/deanzfc/sub2api'
 
 const { t } = useI18n()
 
@@ -671,9 +708,20 @@ const dropdownRef = ref<HTMLElement | null>(null)
 
 // Use store's cached version state
 const loading = computed(() => appStore.versionLoading)
-const currentVersion = computed(() => appStore.currentVersion || props.version || '')
-const latestVersion = computed(() => appStore.latestVersion)
+const displayVersion = (value: string) => String(value || '').replace(/^v+/i, '')
+const currentVersion = computed(() => displayVersion(appStore.currentVersion || props.version || ''))
+const latestVersion = computed(() => displayVersion(appStore.latestVersion))
 const hasUpdate = computed(() => appStore.hasUpdate)
+const versionWarning = computed(() => appStore.versionWarning)
+const versionConfirmed = computed(() => appStore.versionLoaded && !versionWarning.value && !loading.value)
+const versionStatus = computed(() => {
+  if (loading.value) return t('version.checking')
+  if (versionWarning.value) return t('version.checkFailed')
+  if (!versionConfirmed.value) return t('version.notChecked')
+  return hasUpdate.value ? t('version.latestVersion') + ': v' + latestVersion.value : t('version.upToDate')
+})
+const sourceUpdateEnabled = computed(() => appStore.sourceUpdateEnabled)
+const hostUpdateManaged = computed(() => appStore.hostUpdateManaged)
 const releaseInfo = computed(() => appStore.releaseInfo)
 const buildType = computed(() => appStore.buildType)
 
@@ -684,6 +732,28 @@ const needRestart = ref(false)
 const updateError = ref('')
 const updateSuccess = ref(false)
 const restartCountdown = ref(0)
+const sourceUpdateJob = ref<SourceUpdateJob | null>(null)
+let sourcePollingTimer: ReturnType<typeof setTimeout> | null = null
+let resolvePollingDelay: (() => void) | null = null
+let disposed = false
+const sourceStageLabel = computed(() => {
+  const stage = sourceUpdateJob.value?.stage || sourceUpdateJob.value?.status || ''
+  const knownStages = new Set([
+    'queued',
+    'validating',
+    'backing_up',
+    'resolving',
+    'pulling',
+    'fetching',
+    'building',
+    'deploying',
+    'health_check',
+    'rolling_back',
+    'completed',
+    'failed'
+  ])
+  return knownStages.has(stage) ? t(`version.sourceStages.${stage}`) : stage
+})
 // Distinguishes the success + restart panel between update and rollback flows
 const successKind = ref<'update' | 'rollback'>('update')
 
@@ -728,11 +798,12 @@ const activeManualCommand = computed(() =>
   manualTab.value === 'docker' ? dockerRollbackCommand.value : scriptRollbackCommand.value
 )
 
-// Only show update check for release builds (binary/docker deployment)
-const isReleaseBuild = computed(() => buildType.value === 'release')
+// Binary replacement and manual rollback apply only without a host updater.
+const isReleaseBuild = computed(() => buildType.value === 'release' && !hostUpdateManaged.value)
 
 function toggleDropdown() {
   dropdownOpen.value = !dropdownOpen.value
+  if (dropdownOpen.value) void appStore.fetchVersion(false)
 }
 
 function closeDropdown() {
@@ -746,6 +817,7 @@ async function refreshVersion(force = true) {
   updateError.value = ''
   updateSuccess.value = false
   needRestart.value = false
+  sourceUpdateJob.value = null
   resetRollbackState()
 
   await appStore.fetchVersion(force)
@@ -757,9 +829,19 @@ async function handleUpdate() {
   updating.value = true
   updateError.value = ''
   updateSuccess.value = false
+  sourceUpdateJob.value = null
 
   try {
     const result = await performUpdate()
+    if (result.source_update) {
+      if (!result.job?.job_id) {
+        throw new Error(t('version.sourceUpdateInvalidResponse'))
+      }
+      sourceUpdateJob.value = result.job
+      localStorage.setItem(SOURCE_UPDATE_JOB_KEY, result.job.job_id)
+      await pollSourceUpdate(result.job.job_id)
+      return
+    }
     successKind.value = 'update'
     updateSuccess.value = true
     needRestart.value = result.need_restart
@@ -771,6 +853,51 @@ async function handleUpdate() {
   } finally {
     updating.value = false
   }
+}
+
+async function pollSourceUpdate(jobID: string): Promise<void> {
+  const deadline = Date.now() + 50 * 60 * 1000
+
+  while (!disposed && Date.now() < deadline) {
+    try {
+      const job = await getSourceUpdateStatus(jobID)
+      if (disposed) return
+      sourceUpdateJob.value = job
+      if (job.status === 'succeeded') {
+        localStorage.removeItem(SOURCE_UPDATE_JOB_KEY)
+        await waitForNextPoll(1500)
+        if (disposed) return
+        await refreshVersion(true)
+        // Load the frontend shipped in the new image as well as its version.
+        if (!disposed) window.location.reload()
+        return
+      }
+      if (job.status === 'failed') {
+        localStorage.removeItem(SOURCE_UPDATE_JOB_KEY)
+        updateError.value = job.error || job.message || t('version.updateFailed')
+        return
+      }
+    } catch {
+      // The app is briefly unavailable while its container is recreated.
+    }
+
+    await waitForNextPoll(2000)
+  }
+
+  if (!disposed) updateError.value = t('version.sourceUpdateTimeout')
+}
+
+function waitForNextPoll(delay: number): Promise<void> {
+  if (disposed) return Promise.resolve()
+  return new Promise<void>((resolve) => {
+    resolvePollingDelay = () => {
+      if (sourcePollingTimer) clearTimeout(sourcePollingTimer)
+      sourcePollingTimer = null
+      resolvePollingDelay = null
+      resolve()
+    }
+    sourcePollingTimer = setTimeout(resolvePollingDelay, delay)
+  })
 }
 
 function resetRollbackState() {
@@ -913,11 +1040,20 @@ onMounted(() => {
   if (isAdmin.value) {
     // Use cached version if available, otherwise fetch
     appStore.fetchVersion(false)
+    const pendingJobID = localStorage.getItem(SOURCE_UPDATE_JOB_KEY)
+    if (pendingJobID) {
+      updating.value = true
+      void pollSourceUpdate(pendingJobID).finally(() => {
+        updating.value = false
+      })
+    }
   }
   document.addEventListener('click', handleClickOutside)
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  resolvePollingDelay?.()
   document.removeEventListener('click', handleClickOutside)
 })
 </script>

@@ -14,8 +14,10 @@ import (
 type OpenAIMessagesDispatchModelConfig = domain.OpenAIMessagesDispatchModelConfig
 type GroupCodexModelsManifestConfig = domain.GroupCodexModelsManifestConfig
 type ReasoningEffortMapping = domain.ReasoningEffortMapping
+type StrictFailoverConfig = domain.StrictFailoverConfig
 
 type Group struct {
+	StrictFailover StrictFailoverConfig
 	ID             int64
 	Name           string
 	Description    string
@@ -89,6 +91,8 @@ type Group struct {
 	FallbackGroupID *int64
 	// 无效请求兜底分组（仅 anthropic 平台使用）
 	FallbackGroupIDOnInvalidRequest *int64
+	// Account fallback preserves the original group for billing.
+	FallbackGroupIDOnUnavailable *int64
 
 	// StreamOnly 仅允许流式请求：非流式的对话生成请求在网关入口拒绝（见 middleware.GroupStreamOnly）。
 	StreamOnly bool
@@ -116,10 +120,11 @@ type Group struct {
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	AllowMessagesDispatch       bool
 	AllowLive                   bool
-	ForceOpenAIFast             bool // 强制 OpenAI 网关请求使用 service_tier=priority
-	FreeOpenAIFast              bool // OpenAI Fast 请求按 Standard 价格向用户计费
-	RequireOAuthOnly            bool // 仅允许非 apikey 类型账号关联（OpenAI/Antigravity/Anthropic/Gemini）
-	RequirePrivacySet           bool // 调度时仅允许 privacy 已成功设置的账号（OpenAI/Antigravity/Anthropic/Gemini）
+	ForceOpenAIFast             bool   // 强制 OpenAI 网关请求使用 service_tier=priority
+	ForceOpenAIServiceTier      string // Forced OpenAI tier: empty, priority, or ultrafast.
+	FreeOpenAIFast              bool   // OpenAI Fast 请求按 Standard 价格向用户计费
+	RequireOAuthOnly            bool   // 仅允许非 apikey 类型账号关联（OpenAI/Antigravity/Anthropic/Gemini）
+	RequirePrivacySet           bool   // 调度时仅允许 privacy 已成功设置的账号（OpenAI/Antigravity/Anthropic/Gemini）
 	DefaultMappedModel          string
 	MessagesDispatchModelConfig OpenAIMessagesDispatchModelConfig
 	ModelAllowlist              GroupModelAllowlist
@@ -130,6 +135,8 @@ type Group struct {
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制）。
 	// 一旦设置即接管该分组用户的限流（覆盖用户级 rpm_limit），可被 user-group rpm_override 进一步覆盖。
 	RPMLimit int
+	// UserConcurrencyLimit 分组内每个用户的并发上限（0 = 不限制）。
+	UserConcurrencyLimit int
 
 	// MaxReasoningEffort limits the effective Anthropic/OpenAI reasoning effort.
 	// Empty means unlimited; supported values are minimal/low/medium/high/xhigh/max.

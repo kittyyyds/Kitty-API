@@ -66,20 +66,21 @@ type UsageAuditDeviation struct {
 // UsageAudit contains only token evidence and derived metadata. Request and
 // response content are intentionally excluded from the persisted structure.
 type UsageAudit struct {
-	Version          int                      `json:"version"`
-	Status           UsageAuditStatus         `json:"status"`
-	Confidence       UsageAuditConfidence     `json:"confidence"`
-	EvidenceSource   UsageAuditEvidenceSource `json:"evidence_source"`
-	Protocol         string                   `json:"protocol"`
-	Estimator        string                   `json:"estimator,omitempty"`
-	Upstream         UsageAuditTokenSnapshot  `json:"upstream"`
-	Local            UsageAuditTokenSnapshot  `json:"local"`
-	Delta            UsageAuditTokenDelta     `json:"delta"`
-	DeviationPct     UsageAuditDeviation      `json:"deviation_pct"`
-	CacheHitRate     *float64                 `json:"cache_hit_rate,omitempty"`
-	Reasons          []string                 `json:"reasons"`
-	UpstreamRawUsage json.RawMessage          `json:"upstream_raw_usage,omitempty"`
-	CaptureTruncated bool                     `json:"capture_truncated"`
+	ImageOutputEvidence *ImageOutputEvidence     `json:"image_output_evidence,omitempty"`
+	Version             int                      `json:"version"`
+	Status              UsageAuditStatus         `json:"status"`
+	Confidence          UsageAuditConfidence     `json:"confidence"`
+	EvidenceSource      UsageAuditEvidenceSource `json:"evidence_source"`
+	Protocol            string                   `json:"protocol"`
+	Estimator           string                   `json:"estimator,omitempty"`
+	Upstream            UsageAuditTokenSnapshot  `json:"upstream"`
+	Local               UsageAuditTokenSnapshot  `json:"local"`
+	Delta               UsageAuditTokenDelta     `json:"delta"`
+	DeviationPct        UsageAuditDeviation      `json:"deviation_pct"`
+	CacheHitRate        *float64                 `json:"cache_hit_rate,omitempty"`
+	Reasons             []string                 `json:"reasons"`
+	UpstreamRawUsage    json.RawMessage          `json:"upstream_raw_usage,omitempty"`
+	CaptureTruncated    bool                     `json:"capture_truncated"`
 }
 
 // UsageAuditBuildInput retains its previous input shape for compatibility.

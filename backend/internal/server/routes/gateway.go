@@ -1,8 +1,6 @@
 package routes
 
 import (
-	"errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"net/http"
 	"strings"
 
@@ -10,7 +8,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmodel"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -39,32 +36,15 @@ func RegisterGatewayRoutes(
 	r.GET("/media/video-references/:id", videoReferences.Content)
 	r.HEAD("/media/video-references/:id", videoReferences.Content)
 	h.Gateway.ConfigureAPIKeyGroupRouting(apiKeyService)
-	podRoute := func(c *gin.Context) {
-		if settingService != nil && settingService.Serverless != nil {
-			if key, ok := middleware.GetAPIKeyFromContext(c); ok {
-				settingService.Serverless.Route(c, key.ID, ip.GetTrustedClientIP(c))
-				return
-			}
-		}
-		c.Next()
-	}
-	var trafficRecorder middleware.TrafficRecorder
-	if h.Admin != nil && h.Admin.Usage != nil {
-		trafficRecorder = h.Admin.Usage
-	}
-	traffic := middleware.UserTraffic(trafficRecorder)
-	bodyLimit := middleware.RequestBodyLimit(cfg.Gateway.MaxBodySize)
-	textBodyLimit := middleware.RequestBodyLimit(cfg.Gateway.TextMaxBodySize)
+	bodyMemoryBudget := pkghttputil.NewBodyMemoryBudget(cfg.Gateway.RequestBodyMemoryBudgetBytes)
+	bodyLimit := middleware.RequestBodyLimit(cfg.Gateway.MaxBodySize, bodyMemoryBudget)
+	textBodyLimit := middleware.RequestBodyLimit(cfg.Gateway.TextMaxBodySize, bodyMemoryBudget)
 	clientRequestID := middleware.ClientRequestID()
+	upstreamErrorMessage := handler.UpstreamErrorMessageMiddleware(settingService)
 	opsErrorLogger := handler.OpsErrorLoggerMiddleware(opsService)
-	var captureTraffic gin.HandlerFunc
-	if h.Admin != nil && h.Admin.RequestCapture != nil {
-		captureTraffic = middleware.RequestCapture(h.Admin.RequestCapture.Manager)
-	} else {
-		captureTraffic = func(c *gin.Context) { c.Next() }
-	}
 
 	endpointNorm := handler.InboundEndpointMiddleware()
+	upstreamErrorRetry := middleware.UpstreamErrorRetry(settingService)
 	compositeTarget := compositeTargetPlatformMiddleware(compositeResolver)
 	compositeGeminiTarget := compositeGeminiTargetPlatformMiddleware(compositeResolver)
 
@@ -74,21 +54,10 @@ func RegisterGatewayRoutes(
 
 	// 分组级模型白名单准入：在 apiKeyAuth 之后、compositeTarget 之前，
 	// 保证校验发生在合成路由改写与调度之前，且只看客户端书写的模型名。
+	// Reject ambiguous JSON before any model-specific admission or rewrite.
+	requestModelFields := middleware.RequestModelFields(cfg.Gateway.MaxBodySize, cfg.Gateway.TextMaxBodySize)
 	groupModelAllowlist := middleware.GroupModelAllowlist()
-	if cfg.Runtime.RegionalFundsFile != "" {
-		original := groupModelAllowlist
-		groupModelAllowlist = func(c *gin.Context) {
-			path := c.Request.URL.Path
-			discovery := c.Request.Method == http.MethodGet && (strings.Contains(path, "/models") || strings.HasSuffix(path, "/usage"))
-			generation := (c.Request.Method == http.MethodPost && (strings.HasSuffix(path, "/responses") || strings.HasSuffix(path, "/chat/completions"))) || (c.Request.Method == http.MethodGet && strings.HasSuffix(path, "/responses"))
-			key, ok := middleware.GetAPIKeyFromContext(c)
-			if !discovery && (!generation || !ok || key.Group == nil || key.Group.Platform != service.PlatformOpenAI) {
-				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"type": "regional_cost_bound_unavailable", "message": "This protocol has no certified regional cost bound"}})
-				return
-			}
-			original(c)
-		}
-	}
+
 	// 分组「仅允许流式请求」准入：挂在模型白名单之后，同样早于合成路由改写与调度。
 	groupStreamOnly := middleware.GroupStreamOnly()
 	promptTransform := h.OpenAIGateway.GatewayPromptMiddleware()
@@ -113,7 +82,9 @@ func RegisterGatewayRoutes(
 		dispatchCodexModelsGateway(c, h.OpenAIGateway.CodexModels, h.Gateway.CodexModels)
 	}
 	modelsHandler := func(c *gin.Context) {
-		if c.Query("client_version") != "" {
+		// Browser downloads select the manifest shape without pretending to
+		// be an old CLI; the existing service resolves an absent version.
+		if c.Query("client_version") != "" || c.Query("format") == "codex" {
 			codexModelsHandler(c)
 			return
 		}
@@ -239,17 +210,16 @@ func RegisterGatewayRoutes(
 
 	// API网关（Claude API兼容）
 	gateway := r.Group("/v1")
-	gateway.Use(traffic, bodyLimit)
+	gateway.Use(bodyLimit)
 	gateway.Use(clientRequestID)
-	gateway.Use(opsErrorLogger)
-	gateway.Use(endpointNorm)
+	gateway.Use(upstreamErrorMessage, opsErrorLogger)
+	gateway.Use(endpointNorm, upstreamErrorRetry)
 	gateway.Use(gin.HandlerFunc(apiKeyAuth), videoPlatformEndpointGuard)
-	gateway.Use(captureTraffic)
 	gateway.GET("/sub2api/billing", h.Gateway.KeyBillingInfo)
+	gateway.Use(requestModelFields)
 	gateway.Use(groupModelAllowlist)
 	gateway.Use(groupCodexCLIOnly, groupBlockSubagents)
 	gateway.Use(groupStreamOnly)
-	gateway.Use(podRoute)
 	gateway.Use(promptTransform)
 	gateway.Use(compositeTarget)
 	gateway.Use(requireGroupAnthropic)
@@ -359,15 +329,7 @@ func RegisterGatewayRoutes(
 			}
 		}
 		gateway.POST("/tts", voiceHandler("tts"))
-		// Streaming TTS shares the path with batch TTS: GET + Upgrade: websocket.
-		gateway.GET("/tts", func(c *gin.Context) {
-			if getGroupPlatform(c) != service.PlatformGrok {
-				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
-				c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Voice API is not supported for this platform"}})
-				return
-			}
-			h.OpenAIGateway.GrokTTSStream(c)
-		})
+		gateway.GET("/tts", h.OpenAIGateway.GrokTTSStream)
 		gateway.POST("/stt", voiceHandler("stt"))
 		gateway.POST("/custom-voices", voiceHandler("custom-voices"))
 		customVoicePathHandler := func(c *gin.Context) {
@@ -411,12 +373,12 @@ func RegisterGatewayRoutes(
 
 	// Gemini 原生 API 兼容层（Gemini SDK/CLI 直连）
 	gemini := r.Group("/v1beta")
-	gemini.Use(traffic, bodyLimit)
+	gemini.Use(bodyLimit)
 	gemini.Use(clientRequestID)
-	gemini.Use(opsErrorLogger)
-	gemini.Use(endpointNorm)
+	gemini.Use(upstreamErrorMessage, opsErrorLogger)
+	gemini.Use(endpointNorm, upstreamErrorRetry)
 	gemini.Use(middleware.APIKeyAuthWithSubscriptionGoogle(apiKeyService, subscriptionService, cfg), videoPlatformEndpointGuard)
-	gemini.Use(captureTraffic)
+	gemini.Use(requestModelFields)
 	gemini.Use(groupModelAllowlist)
 	gemini.Use(groupCodexCLIOnly, groupBlockSubagents)
 	gemini.Use(groupStreamOnly)
@@ -446,7 +408,7 @@ func RegisterGatewayRoutes(
 	// 根路径别名共用中间件链：白名单准入在 apiKeyAuth 之后、compositeTarget
 	// 之前，避免逐条路由手工维护链导致漏挂。
 	rootRoute := func(method, path string, limit gin.HandlerFunc, handler gin.HandlerFunc) {
-		r.Handle(method, path, traffic, limit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), videoPlatformEndpointGuard, captureTraffic, groupModelAllowlist, groupCodexCLIOnly, groupBlockSubagents, groupStreamOnly, podRoute, promptTransform, compositeTarget, requireGroupAnthropic, handler)
+		r.Handle(method, path, limit, clientRequestID, upstreamErrorMessage, opsErrorLogger, endpointNorm, upstreamErrorRetry, gin.HandlerFunc(apiKeyAuth), videoPlatformEndpointGuard, requestModelFields, groupModelAllowlist, promptTransform, compositeTarget, requireGroupAnthropic, handler)
 	}
 	for _, prefix := range []string{"/api/v3", "/v3", "/v1", ""} {
 		rootRoute(http.MethodPost, prefix+"/contents/generations/tasks", bodyLimit, h.OpenAIGateway.SeedanceTasks)
@@ -463,7 +425,7 @@ func RegisterGatewayRoutes(
 	rootRoute(http.MethodGet, "/models/:model", bodyLimit, h.Gateway.Models)
 	rootRoute(http.MethodPost, "/messages/count_tokens", bodyLimit, countTokensHandler)
 	codexDirect := r.Group("/backend-api/codex")
-	codexDirect.Use(traffic, bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), videoPlatformEndpointGuard, captureTraffic, groupModelAllowlist, groupCodexCLIOnly, groupBlockSubagents, groupStreamOnly, podRoute, promptTransform, compositeTarget, requireGroupAnthropic)
+	codexDirect.Use(bodyLimit, clientRequestID, upstreamErrorMessage, opsErrorLogger, endpointNorm, upstreamErrorRetry, gin.HandlerFunc(apiKeyAuth), videoPlatformEndpointGuard, requestModelFields, groupModelAllowlist, promptTransform, compositeTarget, requireGroupAnthropic)
 	{
 		codexDirect.POST("/realtime/calls", h.OpenAIGateway.Live)
 		codexDirect.GET("/:call_id", h.OpenAIGateway.LiveSideband)
@@ -525,14 +487,7 @@ func RegisterGatewayRoutes(
 		}
 	}
 	rootRoute(http.MethodPost, "/tts", bodyLimit, rootVoiceHandler("tts"))
-	rootRoute(http.MethodGet, "/tts", bodyLimit, func(c *gin.Context) {
-		if getGroupPlatform(c) != service.PlatformGrok {
-			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
-			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Voice API is not supported for this platform"}})
-			return
-		}
-		h.OpenAIGateway.GrokTTSStream(c)
-	})
+	rootRoute(http.MethodGet, "/tts", bodyLimit, h.OpenAIGateway.GrokTTSStream)
 	rootRoute(http.MethodPost, "/stt", bodyLimit, rootVoiceHandler("stt"))
 	rootRoute(http.MethodPost, "/custom-voices", bodyLimit, rootVoiceHandler("custom-voices"))
 	rootCustomVoicePathHandler := func(c *gin.Context) {
@@ -574,17 +529,17 @@ func RegisterGatewayRoutes(
 	})
 
 	// Antigravity 模型列表
-	r.GET("/antigravity/models", traffic, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.AntigravityModels)
+	r.GET("/antigravity/models", gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.AntigravityModels)
 
 	// Antigravity 专用路由（仅使用 antigravity 账户，不混合调度）
 	antigravityV1 := r.Group("/antigravity/v1")
-	antigravityV1.Use(traffic, bodyLimit)
+	antigravityV1.Use(bodyLimit)
 	antigravityV1.Use(clientRequestID)
-	antigravityV1.Use(opsErrorLogger)
-	antigravityV1.Use(endpointNorm)
+	antigravityV1.Use(upstreamErrorMessage, opsErrorLogger)
+	antigravityV1.Use(endpointNorm, upstreamErrorRetry)
 	antigravityV1.Use(middleware.ForcePlatform(service.PlatformAntigravity))
 	antigravityV1.Use(gin.HandlerFunc(apiKeyAuth), videoPlatformEndpointGuard)
-	antigravityV1.Use(captureTraffic)
+	antigravityV1.Use(requestModelFields)
 	antigravityV1.Use(groupModelAllowlist)
 	antigravityV1.Use(groupCodexCLIOnly, groupBlockSubagents)
 	antigravityV1.Use(groupStreamOnly)
@@ -598,13 +553,13 @@ func RegisterGatewayRoutes(
 	}
 
 	antigravityV1Beta := r.Group("/antigravity/v1beta")
-	antigravityV1Beta.Use(traffic, bodyLimit)
+	antigravityV1Beta.Use(bodyLimit)
 	antigravityV1Beta.Use(clientRequestID)
-	antigravityV1Beta.Use(opsErrorLogger)
-	antigravityV1Beta.Use(endpointNorm)
+	antigravityV1Beta.Use(upstreamErrorMessage, opsErrorLogger)
+	antigravityV1Beta.Use(endpointNorm, upstreamErrorRetry)
 	antigravityV1Beta.Use(middleware.ForcePlatform(service.PlatformAntigravity))
 	antigravityV1Beta.Use(middleware.APIKeyAuthWithSubscriptionGoogle(apiKeyService, subscriptionService, cfg), videoPlatformEndpointGuard)
-	antigravityV1Beta.Use(captureTraffic)
+	antigravityV1Beta.Use(requestModelFields)
 	antigravityV1Beta.Use(groupModelAllowlist)
 	antigravityV1Beta.Use(groupCodexCLIOnly, groupBlockSubagents)
 	antigravityV1Beta.Use(groupStreamOnly)
@@ -644,31 +599,22 @@ func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver)
 		resolver = service.NewCompositeRouteResolver(nil)
 	}
 	return func(c *gin.Context) {
-		done := requesttiming.Observe(c.Request.Context(), "composite_routing")
-		defer done()
 		apiKey, ok := middleware.GetAPIKeyFromContext(c)
 		if !ok || apiKey == nil || apiKey.Group == nil || apiKey.Group.Platform != service.PlatformComposite {
-			done()
 			c.Next()
 			return
 		}
 		if c.Request == nil || c.Request.Method == http.MethodGet {
-			done()
 			c.Next()
 			return
 		}
 
 		body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
 		if err != nil {
-			status := http.StatusBadRequest
-			message := "Failed to read request body"
-			var maxErr *http.MaxBytesError
-			if errors.As(err, &maxErr) {
-				status = http.StatusRequestEntityTooLarge
-				message = "Request body is too large"
+			if middleware.RejectRequestBodyReadError(c, "middleware.composite_route", err) {
+				return
 			}
-			c.JSON(status, gin.H{"error": gin.H{"type": "invalid_request_error", "message": message}})
-			c.Abort()
+			middleware.AbortWithRequestBodyReadFailure(c, "middleware.composite_route", err)
 			return
 		}
 
@@ -703,7 +649,6 @@ func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver)
 			}
 		}
 		requestmodel.ResetRequestBody(c.Request, body)
-		done()
 		c.Next()
 	}
 }

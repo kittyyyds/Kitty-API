@@ -187,7 +187,7 @@ func (r *contentModerationRepository) ApplyModerationHit(ctx context.Context, in
 	if err != nil {
 		return result, err
 	}
-	if in.AutoBan && in.Threshold > 0 && result.Count >= in.Threshold && !u.exempt && u.role != service.RoleAdmin && u.role != service.RoleSuperAdmin && u.status == service.StatusActive {
+	if in.AutoBan && in.Threshold > 0 && result.Count >= in.Threshold && !u.exempt && u.role != service.RoleAdmin && u.status == service.StatusActive {
 		var revision int64
 		if err = tx.QueryRowContext(ctx, `UPDATE users SET status='disabled',updated_at=NOW() WHERE id=$1 AND status='active' RETURNING moderation_status_revision`, in.UserID).Scan(&revision); err != nil {
 			return result, err

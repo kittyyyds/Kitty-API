@@ -52,7 +52,6 @@ const mountModal = (concurrency: number) => mount(UserEditModal, {
       Icon: true,
       UserAttributeForm: true,
       UserCleanupGuard: true,
-      ModerationUserPanel: true,
       TotpStepUpDialog: true
     }
   }
@@ -93,20 +92,5 @@ describe('UserEditModal concurrency', () => {
 
     expect(showError).toHaveBeenCalledWith('admin.users.concurrencyNonNegative')
     expect(update).not.toHaveBeenCalled()
-  })
-})
-
-
-describe('UserEditModal content moderation controls', () => {
-  it('exposes the persisted controls for the selected user only to administrators', async () => {
-    auth.isAdmin = true
-    const wrapper = mountModal(1)
-    await flushPromises()
-    expect(wrapper.findComponent({ name: 'ModerationUserPanel' }).props('userId')).toBe(7)
-    wrapper.unmount()
-    auth.isAdmin = false
-    const observer = mountModal(1)
-    await flushPromises()
-    expect(observer.findComponent({ name: 'ModerationUserPanel' }).exists()).toBe(false)
   })
 })

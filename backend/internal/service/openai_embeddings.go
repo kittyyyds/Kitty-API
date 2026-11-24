@@ -24,22 +24,8 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	body []byte,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
-	managed := account.HasManagedOpenAIConnections()
-	if account != nil && account.Platform == PlatformOpenAI && s.openAIOAuthReauth != nil {
-		if repo, ok := s.openAIOAuthReauth.repo.(OpenAIAuthConnectionRepository); ok {
-			var err error
-			managed, err = repo.AuthConnectionsManaged(ctx, account.ID)
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
-	if managed {
-		latest, err := s.admitOpenAITurn(ctx, c, account, gjson.GetBytes(body, "model").String(), body)
-		if err != nil {
-			return nil, err
-		}
-		account = latest
+	if err := CheckUpstreamModeration(ctx, c, account); err != nil {
+		return nil, err
 	}
 	startTime := time.Now()
 
@@ -103,7 +89,6 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	}
 
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效）
-	applyOpenAIAPIKeyIdentityHeaders(upstreamReq.Header, account, s.codexIdentityOverrideUA(account))
 	account.ApplyHeaderOverrides(upstreamReq.Header)
 
 	proxyURL := ""
@@ -159,13 +144,17 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 			})
 			shouldDisable := s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
 			retryableOnSameAccount := !shouldDisable && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode)
+			if IsUpstreamBillingError(resp.StatusCode, respBody) {
+				return nil, newUpstreamBillingFailoverError(resp.StatusCode, resp.Header, respBody, false)
+			}
 			if account.IsOpenAIOAuth() && resp.StatusCode == http.StatusTooManyRequests {
-				return nil, s.newOpenAIAccountFailoverError(account, resp.StatusCode, resp.Header, respBody, upstreamMsg, shouldDisable, retryableOnSameAccount)
+				return nil, s.newOpenAIAccountFailoverError(account, resp.StatusCode, resp.Header, respBody, upstreamMsg, shouldDisable, retryableOnSameAccount, resp.StatusCode)
 			}
 			if isOpenAIHTTPUpstreamAccessStateError(resp.StatusCode, upstreamMsg, respBody) {
-				return nil, newOpenAIUpstreamFailoverError(resp.StatusCode, resp.Header, respBody, upstreamMsg, retryableOnSameAccount)
+				return nil, newOpenAIUpstreamFailoverError(resp.StatusCode, resp.Header, respBody, upstreamMsg, retryableOnSameAccount, resp.StatusCode)
 			}
-			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody, RetryableOnSameAccount: retryableOnSameAccount}
+			return nil, &UpstreamFailoverError{ObservedUpstreamStatus: resp.StatusCode,
+				StatusCode: resp.StatusCode, ResponseBody: respBody, RetryableOnSameAccount: retryableOnSameAccount}
 		}
 		writeOpenAIEmbeddingsUpstreamResponse(c, resp, respBody, s.responseHeaderFilter)
 		return nil, fmt.Errorf("upstream returned status %d", resp.StatusCode)
@@ -182,15 +171,14 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	writeOpenAIEmbeddingsUpstreamResponse(c, resp, respBody, s.responseHeaderFilter)
 
 	return &OpenAIForwardResult{
-		AuthConnectionID: account.AuthConnectionID,
-		RequestID:        firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id")),
-		UpstreamHeaders:  resp.Header,
-		Usage:            extractOpenAIEmbeddingsUsage(respBody),
-		Model:            originalModel,
-		BillingModel:     billingModel,
-		UpstreamModel:    upstreamModel,
-		Stream:           false,
-		Duration:         time.Since(startTime),
+		RequestID:       firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id")),
+		UpstreamHeaders: resp.Header,
+		Usage:           extractOpenAIEmbeddingsUsage(respBody),
+		Model:           originalModel,
+		BillingModel:    billingModel,
+		UpstreamModel:   upstreamModel,
+		Stream:          false,
+		Duration:        time.Since(startTime),
 	}, nil
 }
 

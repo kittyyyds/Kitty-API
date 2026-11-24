@@ -59,6 +59,12 @@ type openAIWSInvalidEncryptedBinding struct {
 // 不影响正确性。
 const openAIWSInvalidEncryptedDigestsPerSession = 512
 
+// openAIWSDeltaChainBinding 是 delta 链快照的进程内绑定。
+type openAIWSDeltaChainBinding struct {
+	state     *openAIWSDeltaChainState
+	expiresAt time.Time
+}
+
 // OpenAIWSStateStore 管理 WSv2 的粘连状态。
 // - response_id -> account_id 用于续链路由
 // - response_id -> conn_id 用于连接内上下文复用
@@ -92,24 +98,37 @@ type OpenAIWSStateStore interface {
 	// HasAnySessionInvalidEncryptedContent 是热路径快速探测：全局无记录时
 	// 调用方可跳过会话哈希计算与摘要匹配。
 	HasAnySessionInvalidEncryptedContent() bool
+
+	// delta chain：按会话记录"上游侧已知的逻辑上下文"（逻辑 input 哈希 +
+	// 上轮 output item 哈希 + 锚点 response_id）。命中时请求只需发送尾部
+	// 新增 items + previous_response_id——官方 Codex CLI 的增量传输协议。
+	// 仅进程内有效；真正决定能否增量的是租到的连接上的 checkpoint。
+	BindSessionDeltaChain(groupID int64, sessionHash string, state *openAIWSDeltaChainState, ttl time.Duration)
+	GetSessionDeltaChain(groupID int64, sessionHash string) (*openAIWSDeltaChainState, bool)
+	DeleteSessionDeltaChain(groupID int64, sessionHash string)
 }
 
 type defaultOpenAIWSStateStore struct {
 	cache GatewayCache
 
-	responseToAccountMu  sync.RWMutex
-	responseToAccount    map[string]openAIWSAccountBinding
-	responseOwnerMu      sync.RWMutex
-	responseOwners       map[string]openAIHTTPResponseOwnerBinding
-	responseToConnMu     sync.RWMutex
-	responseToConn       map[string]openAIWSConnBinding
-	sessionToTurnStateMu sync.RWMutex
-	sessionToTurnState   map[string]openAIWSTurnStateBinding
-	sessionToConnMu      sync.RWMutex
-	sessionToConn        map[string]openAIWSSessionConnBinding
+	responseToAccountMu      sync.RWMutex
+	responseToAccount        map[string]openAIWSAccountBinding
+	responseOwnerMu          sync.RWMutex
+	responseOwners           map[string]openAIHTTPResponseOwnerBinding
+	responseAuthOwners       map[string]openAIResponseAuthOwnerBinding
+	responseAuthOwnerPending map[string]int64
+	responseToConnMu         sync.RWMutex
+	responseToConn           map[string]openAIWSConnBinding
+	sessionToTurnStateMu     sync.RWMutex
+	sessionToTurnState       map[string]openAIWSTurnStateBinding
+	sessionToConnMu          sync.RWMutex
+	sessionToConn            map[string]openAIWSSessionConnBinding
 
 	sessionInvalidEncryptedMu sync.RWMutex
 	sessionInvalidEncrypted   map[string]openAIWSInvalidEncryptedBinding
+
+	sessionDeltaChainMu sync.RWMutex
+	sessionDeltaChain   map[string]openAIWSDeltaChainBinding
 
 	lastCleanupUnixNano atomic.Int64
 }
@@ -117,13 +136,16 @@ type defaultOpenAIWSStateStore struct {
 // NewOpenAIWSStateStore 创建默认 WS 状态存储。
 func NewOpenAIWSStateStore(cache GatewayCache) OpenAIWSStateStore {
 	store := &defaultOpenAIWSStateStore{
-		cache:                   cache,
-		responseToAccount:       make(map[string]openAIWSAccountBinding, 256),
-		responseOwners:          make(map[string]openAIHTTPResponseOwnerBinding, 256),
-		responseToConn:          make(map[string]openAIWSConnBinding, 256),
-		sessionToTurnState:      make(map[string]openAIWSTurnStateBinding, 256),
-		sessionToConn:           make(map[string]openAIWSSessionConnBinding, 256),
-		sessionInvalidEncrypted: make(map[string]openAIWSInvalidEncryptedBinding),
+		cache:                    cache,
+		responseToAccount:        make(map[string]openAIWSAccountBinding, 256),
+		responseOwners:           make(map[string]openAIHTTPResponseOwnerBinding, 256),
+		responseAuthOwners:       make(map[string]openAIResponseAuthOwnerBinding, 256),
+		responseAuthOwnerPending: make(map[string]int64, 256),
+		responseToConn:           make(map[string]openAIWSConnBinding, 256),
+		sessionToTurnState:       make(map[string]openAIWSTurnStateBinding, 256),
+		sessionToConn:            make(map[string]openAIWSSessionConnBinding, 256),
+		sessionInvalidEncrypted:  make(map[string]openAIWSInvalidEncryptedBinding),
+		sessionDeltaChain:        make(map[string]openAIWSDeltaChainBinding, 128),
 	}
 	store.lastCleanupUnixNano.Store(time.Now().UnixNano())
 	return store
@@ -135,49 +157,31 @@ func (s *defaultOpenAIWSStateStore) BindHTTPResponseOwner(ctx context.Context, g
 		return nil
 	}
 	ttl = normalizeOpenAIWSTTL(ttl)
-	if shared, ok := s.cache.(OpenAIHTTPResponseOwnerCache); ok {
-		cacheCtx, cancel := withOpenAIResponseBindingWriteTimeout(ctx)
-		defer cancel()
-		// Do not authorize from local memory before shared publication succeeds.
-		return shared.SetHTTPResponseOwner(cacheCtx, groupID, id, userID, apiKeyID, ttl)
-	}
 	s.maybeCleanup()
-	expiresAt := time.Now().Add(ttl)
 
-	if s.cache != nil {
-		cacheCtx, cancel := withOpenAIResponseBindingWriteTimeout(ctx)
-		defer cancel()
-		if err := s.cache.SetSessionAccountID(cacheCtx, groupID, openAIHTTPResponseOwnerCacheKey(openAIHTTPResponseOwnerUserPrefix, id), userID, ttl); err != nil {
-			return err
-		}
-		if err := s.cache.SetSessionAccountID(cacheCtx, groupID, openAIHTTPResponseOwnerCacheKey(openAIHTTPResponseOwnerKeyPrefix, id), apiKeyID, ttl); err != nil {
-			return err
-		}
-	}
-	// Legacy adapters publish two records rather than the shared atomic owner.
-	// A failed publication must not install a grant only this process can see.
 	mapKey := openAIWSResponseAccountMapKey(groupID, id)
 	s.responseOwnerMu.Lock()
 	ensureBindingCapacity(s.responseOwners, mapKey, openAIWSStateStoreMaxEntriesPerMap)
 	s.responseOwners[mapKey] = openAIHTTPResponseOwnerBinding{
-		userID: userID, apiKeyID: apiKeyID, expiresAt: expiresAt,
+		userID: userID, apiKeyID: apiKeyID, expiresAt: time.Now().Add(ttl),
 	}
 	s.responseOwnerMu.Unlock()
 
-	return nil
+	if s.cache == nil {
+		return nil
+	}
+	cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
+	defer cancel()
+	if err := s.cache.SetSessionAccountID(cacheCtx, groupID, openAIHTTPResponseOwnerCacheKey(openAIHTTPResponseOwnerUserPrefix, id), userID, ttl); err != nil {
+		return err
+	}
+	return s.cache.SetSessionAccountID(cacheCtx, groupID, openAIHTTPResponseOwnerCacheKey(openAIHTTPResponseOwnerKeyPrefix, id), apiKeyID, ttl)
 }
 
 func (s *defaultOpenAIWSStateStore) GetHTTPResponseOwner(ctx context.Context, groupID int64, responseID string) (int64, int64, bool, error) {
 	id := normalizeOpenAIWSResponseID(responseID)
 	if id == "" {
 		return 0, 0, false, nil
-	}
-	if shared, ok := s.cache.(OpenAIHTTPResponseOwnerCache); ok {
-		cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
-		defer cancel()
-		// Shared expiry, deletion and availability must apply to this node too.
-		// A local hot hit must not extend Redis's authorization lifetime.
-		return shared.GetHTTPResponseOwner(cacheCtx, groupID, id)
 	}
 	s.maybeCleanup()
 
@@ -232,7 +236,7 @@ func (s *defaultOpenAIWSStateStore) BindResponseAccount(ctx context.Context, gro
 		return nil
 	}
 	cacheKey := openAIWSResponseAccountCacheKey(id)
-	cacheCtx, cancel := withOpenAIResponseBindingWriteTimeout(ctx)
+	cacheCtx, cancel := withOpenAIWSStateStoreRedisTimeout(ctx)
 	defer cancel()
 	return s.cache.SetSessionAccountID(cacheCtx, groupID, cacheKey, accountID, ttl)
 }
@@ -509,6 +513,50 @@ func (s *defaultOpenAIWSStateStore) HasAnySessionInvalidEncryptedContent() bool 
 	return len(s.sessionInvalidEncrypted) > 0
 }
 
+func (s *defaultOpenAIWSStateStore) BindSessionDeltaChain(groupID int64, sessionHash string, state *openAIWSDeltaChainState, ttl time.Duration) {
+	key := openAIWSSessionTurnStateKey(groupID, sessionHash)
+	if key == "" || state == nil || strings.TrimSpace(state.ResponseID) == "" {
+		return
+	}
+	ttl = normalizeOpenAIWSTTL(ttl)
+	s.maybeCleanup()
+
+	s.sessionDeltaChainMu.Lock()
+	ensureBindingCapacity(s.sessionDeltaChain, key, openAIWSStateStoreMaxEntriesPerMap)
+	s.sessionDeltaChain[key] = openAIWSDeltaChainBinding{
+		state:     state,
+		expiresAt: time.Now().Add(ttl),
+	}
+	s.sessionDeltaChainMu.Unlock()
+}
+
+func (s *defaultOpenAIWSStateStore) GetSessionDeltaChain(groupID int64, sessionHash string) (*openAIWSDeltaChainState, bool) {
+	key := openAIWSSessionTurnStateKey(groupID, sessionHash)
+	if key == "" {
+		return nil, false
+	}
+	s.maybeCleanup()
+
+	now := time.Now()
+	s.sessionDeltaChainMu.RLock()
+	binding, ok := s.sessionDeltaChain[key]
+	s.sessionDeltaChainMu.RUnlock()
+	if !ok || now.After(binding.expiresAt) || binding.state == nil {
+		return nil, false
+	}
+	return binding.state, true
+}
+
+func (s *defaultOpenAIWSStateStore) DeleteSessionDeltaChain(groupID int64, sessionHash string) {
+	key := openAIWSSessionTurnStateKey(groupID, sessionHash)
+	if key == "" {
+		return
+	}
+	s.sessionDeltaChainMu.Lock()
+	delete(s.sessionDeltaChain, key)
+	s.sessionDeltaChainMu.Unlock()
+}
+
 func (s *defaultOpenAIWSStateStore) maybeCleanup() {
 	if s == nil {
 		return
@@ -529,6 +577,8 @@ func (s *defaultOpenAIWSStateStore) maybeCleanup() {
 
 	s.responseOwnerMu.Lock()
 	cleanupExpiredHTTPResponseOwnerBindings(s.responseOwners, now, openAIWSStateStoreCleanupMaxPerMap)
+	cleanupExpiredResponseAuthOwners(s.responseAuthOwners, now, openAIWSStateStoreCleanupMaxPerMap)
+	cleanupExpiredResponseAuthOwnerPending(s.responseAuthOwnerPending, now, openAIWSStateStoreCleanupMaxPerMap)
 	s.responseOwnerMu.Unlock()
 
 	s.responseToConnMu.Lock()
@@ -546,6 +596,26 @@ func (s *defaultOpenAIWSStateStore) maybeCleanup() {
 	s.sessionInvalidEncryptedMu.Lock()
 	cleanupExpiredInvalidEncryptedBindings(s.sessionInvalidEncrypted, now, openAIWSStateStoreCleanupMaxPerMap)
 	s.sessionInvalidEncryptedMu.Unlock()
+
+	s.sessionDeltaChainMu.Lock()
+	cleanupExpiredDeltaChainBindings(s.sessionDeltaChain, now, openAIWSStateStoreCleanupMaxPerMap)
+	s.sessionDeltaChainMu.Unlock()
+}
+
+func cleanupExpiredDeltaChainBindings(bindings map[string]openAIWSDeltaChainBinding, now time.Time, maxScan int) {
+	if len(bindings) == 0 || maxScan <= 0 {
+		return
+	}
+	scanned := 0
+	for key, binding := range bindings {
+		if now.After(binding.expiresAt) {
+			delete(bindings, key)
+		}
+		scanned++
+		if scanned >= maxScan {
+			break
+		}
+	}
 }
 
 func cleanupExpiredInvalidEncryptedBindings(bindings map[string]openAIWSInvalidEncryptedBinding, now time.Time, maxScan int) {
@@ -674,17 +744,6 @@ func openAIWSSessionTurnStateKey(groupID int64, sessionHash string) string {
 		return ""
 	}
 	return fmt.Sprintf("%d:%s", groupID, hash)
-}
-
-// Completed response bindings must outlive downstream cancellation: the caller
-// may already have received the response ID and use it to continue elsewhere.
-// Keep tracing values, but give only these writes their own bounded lifetime.
-// Reads, deletion and the model request itself still honor caller cancellation.
-func withOpenAIResponseBindingWriteTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithTimeout(context.WithoutCancel(ctx), openAIWSStateStoreRedisTimeout)
 }
 
 func withOpenAIWSStateStoreRedisTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

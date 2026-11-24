@@ -55,10 +55,9 @@ INSERT INTO ops_error_logs (
   response_latency_ms,
   time_to_first_token_ms,
   created_at,
-  api_key_prefix,
-  duration_ms
+  api_key_prefix
 ) VALUES (
-  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38
 )`
 
 func NewOpsRepository(db *sql.DB) service.OpsRepository {
@@ -168,7 +167,6 @@ func opsInsertErrorLogArgs(input *service.OpsInsertErrorLogInput) []any {
 		opsNullInt64(input.TimeToFirstTokenMs),
 		input.CreatedAt,
 		opsNullString(input.APIKeyPrefix),
-		opsNullableDurationMs(input.DurationMs),
 	}
 }
 
@@ -269,7 +267,8 @@ SELECT
   COALESCE(e.user_agent, ''),
   e.request_type,
   COALESCE(ak.name, ''),
-  ak.deleted_at
+  ak.deleted_at,
+  (e.upstream_status_code IS NOT NULL OR COALESCE(e.upstream_error_message, '') <> '')
 FROM ops_error_logs e
 LEFT JOIN accounts a ON e.account_id = a.id
 LEFT JOIN groups g ON e.group_id = g.id
@@ -340,6 +339,7 @@ LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
 			&requestType,
 			&apiKeyName,
 			&apiKeyDeletedAt,
+			&item.HasUpstreamError,
 		); err != nil {
 			return nil, err
 		}
@@ -943,7 +943,7 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 	}
 	if phase := phaseFilter; phase != "" {
 		args = append(args, phase)
-		clauses = append(clauses, opsEffectivePhaseSQL("e")+" = $"+itoa(len(args)))
+		clauses = append(clauses, "e.error_phase = $"+itoa(len(args)))
 	}
 	if filter != nil {
 		if owner := strings.TrimSpace(strings.ToLower(filter.Owner)); owner != "" {
@@ -967,16 +967,20 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 	if filter != nil {
 		view = strings.ToLower(strings.TrimSpace(filter.View))
 	}
+	businessLimited := opsBusinessLimitedSQL("e")
+	if filter.IncludeRecoveredUpstream {
+		businessLimited = "COALESCE(e.is_business_limited,false)"
+	}
 	switch view {
 	case "", "errors":
-		clauses = append(clauses, "NOT "+opsBusinessLimitedSQL("e"))
+		clauses = append(clauses, "NOT "+businessLimited)
 	case "excluded":
-		clauses = append(clauses, opsBusinessLimitedSQL("e"))
+		clauses = append(clauses, businessLimited)
 	case "all":
 		// no-op
 	default:
 		// treat unknown as default 'errors'
-		clauses = append(clauses, "NOT "+opsBusinessLimitedSQL("e"))
+		clauses = append(clauses, "NOT "+businessLimited)
 	}
 	if len(filter.StatusCodes) > 0 {
 		args = append(args, pq.Array(filter.StatusCodes))
@@ -1034,11 +1038,11 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 	}
 	if len(filter.ErrorPhasesAny) > 0 {
 		args = append(args, pq.Array(filter.ErrorPhasesAny))
-		clauses = append(clauses, opsEffectivePhaseSQL("e")+" = ANY($"+itoa(len(args))+")")
+		clauses = append(clauses, "e.error_phase = ANY($"+itoa(len(args))+")")
 	}
 	if len(filter.ErrorTypesAny) > 0 {
 		args = append(args, pq.Array(filter.ErrorTypesAny))
-		clauses = append(clauses, opsEffectiveTypeSQL("e")+" = ANY($"+itoa(len(args))+")")
+		clauses = append(clauses, "e.error_type = ANY($"+itoa(len(args))+")")
 	}
 
 	return "WHERE " + strings.Join(clauses, " AND "), args
@@ -1185,14 +1189,6 @@ func opsNullString(v any) any {
 	default:
 		return sql.NullString{}
 	}
-}
-
-// Zero milliseconds is a measured duration, not an absent value.
-func opsNullableDurationMs(v *int64) any {
-	if v == nil || *v < 0 {
-		return sql.NullInt64{}
-	}
-	return sql.NullInt64{Int64: *v, Valid: true}
 }
 
 func opsNullInt64(v *int64) any {

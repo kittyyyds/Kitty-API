@@ -48,10 +48,8 @@ func (h *DashboardHandler) GetOperationsDashboard(c *gin.Context) {
 		groupID = parsed
 	}
 	trendStart := todayStart.AddDate(0, 0, -(trendDays - 1))
-	// Persistent usage counters and balance changes are bucketed in the
-	// application/database timezone; compare complete days in that same zone.
-	accountingTodayStart := todayStart
-	accountingTodayEnd := accountingTodayStart.AddDate(0, 0, 1)
+	// Today cards and recharge ranking share the existing site calendar day.
+	accountingTodayStart, accountingTodayEnd := operationsAccountingDay()
 
 	data, err := h.dashboardService.GetOperationsDashboardData(c.Request.Context(), accountingTodayStart, accountingTodayEnd, startTime, endTime, trendStart, todayEnd, userTimezone, groupID)
 	if err != nil {
@@ -59,6 +57,9 @@ func (h *DashboardHandler) GetOperationsDashboard(c *gin.Context) {
 		response.Error(c, 500, "Failed to get operations dashboard data")
 		return
 	}
+	data.TodayDate = accountingTodayStart.Format("2006-01-02")
+	data.TodayStart = accountingTodayStart
+	data.SiteTimezone = operationsSiteTimezone()
 	response.Success(c, data)
 }
 
@@ -108,4 +109,28 @@ func (h *DashboardHandler) GetOperationsUserSuggestions(c *gin.Context) {
 		return
 	}
 	response.Success(c, users)
+}
+
+func operationsAccountingDay() (time.Time, time.Time) {
+	start := timezone.StartOfDay(timezone.Now())
+	return start, start.AddDate(0, 0, 1)
+}
+func operationsSiteTimezone() string {
+	if name := timezone.Name(); name != "Local" {
+		return name
+	}
+	return "UTC" + timezone.UTCOffset()
+}
+func (h *DashboardHandler) GetOperationsRechargeRanking(c *gin.Context) {
+	start, end := operationsAccountingDay()
+	data, err := h.dashboardService.GetOperationsRechargeRanking(c.Request.Context(), start, end, 50)
+	if err != nil {
+		response.Error(c, 500, "Failed to get operations recharge ranking")
+		return
+	}
+	data.Date = start.Format("2006-01-02")
+	data.StartTime = start
+	data.EndTime = end
+	data.SiteTimezone = operationsSiteTimezone()
+	response.Success(c, data)
 }

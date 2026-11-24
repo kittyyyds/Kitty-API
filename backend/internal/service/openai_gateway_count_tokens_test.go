@@ -29,6 +29,28 @@ type countTokensRuntimeStateRepo struct {
 	setErrorCalls    int
 }
 
+func TestPrepareOpenAIInputTokensCountRequestIgnoresOutputEffort(t *testing.T) {
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	for _, preference := range []string{
+		`"thinking":{"type":"disabled"}`,
+		`"output_config":{"effort":"none"}`,
+		`"output_config":{"effort":"minimal"}`,
+	} {
+		t.Run(preference, func(t *testing.T) {
+			body := []byte(`{"model":"gpt-6.1-sol","messages":[{"role":"user","content":"hello"}],` + preference + `}`)
+			prepared, err := prepareOpenAIInputTokensCountRequest(body, account, "")
+			require.NoError(t, err)
+			encoded, err := json.Marshal(prepared.Request)
+			require.NoError(t, err)
+			require.Equal(t, "gpt-6.1-sol", prepared.Request.Model)
+			require.Contains(t, string(prepared.Request.Input), "hello")
+			for _, field := range []string{"reasoning", "reasoning_effort", "output_config", "thinking"} {
+				require.False(t, gjson.GetBytes(encoded, field).Exists(), field)
+			}
+		})
+	}
+}
+
 func (r *countTokensRuntimeStateRepo) SetTempUnschedulable(_ context.Context, _ int64, _ time.Time, _ string) error {
 	r.tempUnschedCalls++
 	return nil
@@ -355,7 +377,7 @@ func TestEstimateOpenAIInputTokens_CompareWithOpenAIAPI(t *testing.T) {
 				// This is an optional live-API comparison. Credential and transient
 				// network failures must not make the deterministic unit suite fail.
 				var netErr net.Error
-				if strings.Contains(err.Error(), "status=") ||
+				if strings.Contains(err.Error(), "status=401") ||
 					strings.Contains(err.Error(), "invalid_api_key") ||
 					errors.As(err, &netErr) {
 					t.Skipf("OpenAI live comparison unavailable: %v", err)

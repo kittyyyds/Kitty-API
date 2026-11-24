@@ -30,9 +30,14 @@ const (
 	// 格式: concurrency:account:{accountID}
 	accountSlotKeyPrefix = "concurrency:account:"
 	// 格式: concurrency:user:{userID}
-	userSlotKeyPrefix = "concurrency:user:"
+	userSlotKeyPrefix      = "concurrency:user:"
+	userGroupSlotKeyPrefix = "concurrency:user_group:"
 	// 格式: concurrency:api_key:{apiKeyID}
-	apiKeySlotKeyPrefix = "concurrency:api_key:"
+	apiKeySlotKeyPrefix        = "concurrency:api_key:"
+	liveAccountSlotKeyPrefix   = "concurrency:live:account:"
+	liveUserSlotKeyPrefix      = "concurrency:live:user:"
+	liveUserGroupSlotKeyPrefix = "concurrency:live:user_group:"
+	liveAPIKeySlotKeyPrefix    = "concurrency:live:api_key:"
 	// Key 级等待 ZSET：member=attemptID，score=Redis 毫秒截止时间。
 	apiKeyWaitKeyPrefix = "concurrency:wait:api_key:"
 	// Key 级等待阶段结束标记：member=attemptID，score=固定截止毫秒。
@@ -42,9 +47,6 @@ const (
 	apiKeyQueueCleanupGraceSeconds = 5
 	// Live 精确交接的中止栅栏：member=leaseID，score=拒绝迟到交接的毫秒期限。
 	liveTransferFenceKeyPrefix = "concurrency:live_transfer_closed:api_key:"
-	liveAccountSlotKeyPrefix   = "concurrency:live:account:"
-	liveUserSlotKeyPrefix      = "concurrency:live:user:"
-	liveAPIKeySlotKeyPrefix    = "concurrency:live:api_key:"
 	// API-key-scoped client WebSocket ingress leases use a shorter TTL than
 	// ordinary request slots, because idle ingress sessions do not hold a turn slot.
 	openAIWSIngressLeaseKeyPrefix  = "concurrency:openai_ws_ingress:api_key:"
@@ -112,6 +114,45 @@ var (
 		end
 
 		return {0, now}
+	`)
+
+	// acquireUserGroupScript reserves both dimensions in one Lua operation.
+	// The same request ID is written to both sets, so a failed acquisition can
+	// never leave a partial reservation behind and release remains idempotent.
+	acquireUserGroupScript = redis.NewScript(`
+		redis.replicate_commands()
+		local userKey = KEYS[1]
+		local userLiveKey = KEYS[2]
+		local groupKey = KEYS[3]
+		local groupLiveKey = KEYS[4]
+		local userMax = tonumber(ARGV[1])
+		local groupMax = tonumber(ARGV[2])
+		local ttl = tonumber(ARGV[3])
+		local requestID = ARGV[4]
+		local now = tonumber(redis.call('TIME')[1])
+		local expireBefore = now - ttl
+		redis.call('ZREMRANGEBYSCORE', userKey, '-inf', expireBefore)
+		redis.call('ZREMRANGEBYSCORE', userLiveKey, '-inf', now - 60)
+		redis.call('ZREMRANGEBYSCORE', groupKey, '-inf', expireBefore)
+		redis.call('ZREMRANGEBYSCORE', groupLiveKey, '-inf', now - 60)
+		if redis.call('ZSCORE', userKey, requestID) ~= false then
+			redis.call('ZADD', userKey, now, requestID)
+			redis.call('ZADD', groupKey, now, requestID)
+			redis.call('EXPIRE', userKey, ttl)
+			redis.call('EXPIRE', groupKey, ttl)
+			return {1, now}
+		end
+		if userMax > 0 and (redis.call('ZCARD', userKey) + redis.call('ZCARD', userLiveKey)) >= userMax then
+			return {0, now}
+		end
+		if groupMax > 0 and (redis.call('ZCARD', groupKey) + redis.call('ZCARD', groupLiveKey)) >= groupMax then
+			return {0, now}
+		end
+		redis.call('ZADD', userKey, now, requestID)
+		redis.call('ZADD', groupKey, now, requestID)
+		redis.call('EXPIRE', userKey, ttl)
+		redis.call('EXPIRE', groupKey, ttl)
+		return {1, now}
 	`)
 
 	// getCountScript 统计有序集合中的槽位数量并清理过期条目
@@ -297,6 +338,52 @@ var (
 		redis.call('ZADD', apiLive, now, leaseID)
 		redis.call('EXPIRE', accountLive, ttl)
 		redis.call('EXPIRE', userLive, ttl)
+		redis.call('EXPIRE', apiLive, ttl)
+		return 1
+	`)
+
+	// Group-aware Live lease variant. A live session replaces the regular
+	// request slot, so replacing=1 grants the same temporary allowance in all
+	// constrained dimensions.
+	acquireLiveLeaseForGroupScript = redis.NewScript(`
+		redis.replicate_commands()
+		local accountRegular = KEYS[1]
+		local accountLive = KEYS[2]
+		local userRegular = KEYS[3]
+		local userLive = KEYS[4]
+		local groupRegular = KEYS[5]
+		local groupLive = KEYS[6]
+		local apiLive = KEYS[7]
+		local accountMax = tonumber(ARGV[1])
+		local userMax = tonumber(ARGV[2])
+		local groupMax = tonumber(ARGV[3])
+		local ttl = tonumber(ARGV[4])
+		local leaseID = ARGV[5]
+		local replacing = tonumber(ARGV[6])
+		local now = tonumber(redis.call('TIME')[1])
+		local liveExpireBefore = now - ttl
+		redis.call('ZREMRANGEBYSCORE', accountLive, '-inf', liveExpireBefore)
+		redis.call('ZREMRANGEBYSCORE', userLive, '-inf', liveExpireBefore)
+		redis.call('ZREMRANGEBYSCORE', groupLive, '-inf', liveExpireBefore)
+		redis.call('ZREMRANGEBYSCORE', apiLive, '-inf', liveExpireBefore)
+		if redis.call('ZSCORE', accountLive, leaseID) ~= false then
+			return 1
+		end
+		local accountCount = redis.call('ZCARD', accountRegular) + redis.call('ZCARD', accountLive)
+		local userCount = redis.call('ZCARD', userRegular) + redis.call('ZCARD', userLive)
+		local groupCount = redis.call('ZCARD', groupRegular) + redis.call('ZCARD', groupLive)
+		local allowance = 0
+		if replacing == 1 then allowance = 1 end
+		if accountMax > 0 and accountCount >= accountMax + allowance then return 0 end
+		if userMax > 0 and userCount >= userMax + allowance then return 0 end
+		if groupMax > 0 and groupCount >= groupMax + allowance then return 0 end
+		redis.call('ZADD', accountLive, now, leaseID)
+		redis.call('ZADD', userLive, now, leaseID)
+		redis.call('ZADD', groupLive, now, leaseID)
+		redis.call('ZADD', apiLive, now, leaseID)
+		redis.call('EXPIRE', accountLive, ttl)
+		redis.call('EXPIRE', userLive, ttl)
+		redis.call('EXPIRE', groupLive, ttl)
 		redis.call('EXPIRE', apiLive, ttl)
 		return 1
 	`)
@@ -544,18 +631,26 @@ var (
 )
 
 type concurrencyCache struct {
+	rdb                  *redis.Client
+	slotTTLSeconds       int // 槽位过期时间（秒）
+	waitQueueTTLSeconds  int // 等待队列过期时间（秒）
+	apiKeySlotTTLSeconds int // 普通 API Key 槽位独立过期时间（秒）；<=0 继承 slotTTLSeconds
 	managedMu           sync.Mutex
 	managedSlots        map[managedSlot]struct{}
 	managedHealthy      bool
-	rdb                 *redis.Client
-	slotTTLSeconds      int // 槽位过期时间（秒）
-	waitQueueTTLSeconds int // 等待队列过期时间（秒）
 }
 
 // NewConcurrencyCache 创建并发控制缓存
 // slotTTLMinutes: 槽位过期时间（分钟），0 或负数使用默认值 15 分钟
 // waitQueueTTLSeconds: 等待队列过期时间（秒），0 或负数使用 slot TTL
 func NewConcurrencyCache(rdb *redis.Client, slotTTLMinutes int, waitQueueTTLSeconds int) service.ConcurrencyCache {
+	return NewConcurrencyCacheWithAPIKeyTTL(rdb, slotTTLMinutes, waitQueueTTLSeconds, 0)
+}
+
+// NewConcurrencyCacheWithAPIKeyTTL 在 NewConcurrencyCache 的基础上，为普通
+// API Key 槽位指定独立过期时间（秒）。apiKeySlotTTLSeconds <= 0 表示继承共享
+// slot TTL，保持既有调用方（含 regional authority 的 base 缓存）行为不变。
+func NewConcurrencyCacheWithAPIKeyTTL(rdb *redis.Client, slotTTLMinutes int, waitQueueTTLSeconds int, apiKeySlotTTLSeconds int) service.ConcurrencyCache {
 	if slotTTLMinutes <= 0 {
 		slotTTLMinutes = defaultSlotTTLMinutes
 	}
@@ -563,6 +658,7 @@ func NewConcurrencyCache(rdb *redis.Client, slotTTLMinutes int, waitQueueTTLSeco
 		waitQueueTTLSeconds = slotTTLMinutes * 60
 	}
 	c := &concurrencyCache{
+		apiKeySlotTTLSeconds: apiKeySlotTTLSeconds,
 		rdb:                 rdb,
 		slotTTLSeconds:      slotTTLMinutes * 60,
 		waitQueueTTLSeconds: waitQueueTTLSeconds,
@@ -593,6 +689,14 @@ func liveAccountSlotKey(accountID int64) string {
 
 func liveUserSlotKey(userID int64) string {
 	return fmt.Sprintf("%s%d", liveUserSlotKeyPrefix, userID)
+}
+
+func userGroupSlotKey(userID, groupID int64) string {
+	return fmt.Sprintf("%s%d:%d", userGroupSlotKeyPrefix, userID, groupID)
+}
+
+func liveUserGroupSlotKey(userID, groupID int64) string {
+	return fmt.Sprintf("%s%d:%d", liveUserGroupSlotKeyPrefix, userID, groupID)
 }
 
 func liveAPIKeySlotKey(apiKeyID int64) string {
@@ -944,6 +1048,39 @@ func (c *concurrencyCache) ReleaseUserSlot(ctx context.Context, userID int64, re
 	return nil
 }
 
+func (c *concurrencyCache) AcquireUserGroupSlot(ctx context.Context, userID, groupID int64, userMax, groupMax int, requestID string) (bool, error) {
+	if c == nil || c.rdb == nil || userID <= 0 || groupID <= 0 || requestID == "" || groupMax <= 0 {
+		return false, nil
+	}
+	result, now, err := runScriptInt64Pair(ctx, c.rdb, acquireUserGroupScript, []string{
+		userSlotKey(userID),
+		liveUserSlotKey(userID),
+		userGroupSlotKey(userID, groupID),
+		liveUserGroupSlotKey(userID, groupID),
+	}, userMax, groupMax, c.slotTTLSeconds, requestID)
+	if err != nil {
+		return false, err
+	}
+	if result == 1 {
+		c.touchActiveIndexAt(ctx, userActiveIndexKey, userID, now+int64(c.slotTTLSeconds))
+	}
+	return result == 1, nil
+}
+
+func (c *concurrencyCache) ReleaseUserGroupSlot(ctx context.Context, userID, groupID int64, requestID string) error {
+	if c == nil || c.rdb == nil || userID <= 0 || groupID <= 0 || requestID == "" {
+		return nil
+	}
+	pipe := c.rdb.TxPipeline()
+	pipe.ZRem(ctx, userSlotKey(userID), requestID)
+	pipe.ZRem(ctx, userGroupSlotKey(userID, groupID), requestID)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return err
+	}
+	c.refreshUserActiveIndex(ctx, userID)
+	return nil
+}
+
 func (c *concurrencyCache) GetUserConcurrency(ctx context.Context, userID int64) (int, error) {
 	key := userSlotKey(userID)
 	// 时间戳在 Lua 脚本内使用 Redis TIME 命令获取
@@ -1241,7 +1378,7 @@ func (c *concurrencyCache) GetAPIKeyQueueStatsBatch(ctx context.Context, apiKeyI
 
 func (c *concurrencyCache) TrackAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error {
 	key := apiKeySlotKey(apiKeyID)
-	_, err := trackSlotScript.Run(ctx, c.rdb, []string{key}, c.slotTTLSeconds, requestID).Result()
+	_, err := trackSlotScript.Run(ctx, c.rdb, []string{key}, c.effectiveAPIKeySlotTTLSeconds(), requestID).Result()
 	if err == nil {
 		c.trackManagedSlot(key, requestID)
 	}
@@ -1252,32 +1389,6 @@ func (c *concurrencyCache) ReleaseAPIKeySlot(ctx context.Context, apiKeyID int64
 	key := apiKeySlotKey(apiKeyID)
 	c.untrackManagedSlot(key, requestID)
 	return c.rdb.ZRem(ctx, key, requestID).Err()
-}
-
-func (c *concurrencyCache) APIKeySlotRefreshInterval() time.Duration {
-	return time.Duration(c.slotTTLSeconds) * time.Second / 3
-}
-
-func (c *concurrencyCache) APIKeySlotTTL() time.Duration {
-	return time.Duration(c.slotTTLSeconds) * time.Second
-}
-
-// Refresh only an existing member, atomically with its key TTL. In particular,
-// admin deletion must not be undone by a late heartbeat.
-var refreshAPIKeySlotScript = redis.NewScript(`
-	redis.replicate_commands()
-	if redis.call('ZSCORE', KEYS[1], ARGV[2]) == false then
-		return 0
-	end
-	local now = redis.call('TIME')
-	redis.call('ZADD', KEYS[1], 'XX', tonumber(now[1]), ARGV[2])
-	redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
-	return 1
-`)
-
-func (c *concurrencyCache) RefreshAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) (bool, error) {
-	n, err := refreshAPIKeySlotScript.Run(ctx, c.rdb, []string{apiKeySlotKey(apiKeyID)}, c.slotTTLSeconds, requestID).Int()
-	return n == 1, err
 }
 
 func (c *concurrencyCache) AcquireOpenAIWSIngressLease(ctx context.Context, apiKeyID int64, maxConnections int, leaseID string) (bool, error) {
@@ -1329,103 +1440,24 @@ func (c *concurrencyCache) AcquireLiveLease(
 	userID int64,
 	userMax int,
 	apiKeyID int64,
-	apiKeyMax int,
 	leaseID string,
 	replacingRegularSlots bool,
 ) (bool, error) {
 	if c == nil || c.rdb == nil || accountID <= 0 || userID <= 0 || apiKeyID <= 0 || leaseID == "" {
 		return false, nil
 	}
-	return c.acquireLiveLease(ctx, accountID, accountMax, userID, userMax, apiKeyID, apiKeyMax, "", leaseID, replacingRegularSlots)
+	return c.acquireLiveLease(ctx, accountID, accountMax, userID, userMax, apiKeyID, 0, "", leaseID, replacingRegularSlots)
 }
 
 // AcquireLiveLeaseTransferring atomically moves the exact regular account,
 // user and key reservations into the joint Live lease, so no dimension is
 // counted twice. A missing required source or an aborted handoff fails closed
 // instead of inventing capacity.
-func (c *concurrencyCache) AcquireLiveLeaseTransferring(ctx context.Context, request service.LiveLeaseTransferRequest) (bool, error) {
-	if c == nil || c.rdb == nil || request.AccountID <= 0 || request.UserID <= 0 || request.APIKeyID <= 0 || request.LeaseID == "" {
-		return false, nil
-	}
-	result, err := transferLiveLeaseScript.Run(ctx, c.rdb, []string{
-		accountSlotKey(request.AccountID),
-		liveAccountSlotKey(request.AccountID),
-		userSlotKey(request.UserID),
-		liveUserSlotKey(request.UserID),
-		apiKeySlotKey(request.APIKeyID),
-		liveAPIKeySlotKey(request.APIKeyID),
-		liveTransferFenceKey(request.APIKeyID),
-	},
-		request.AccountMax,
-		request.UserMax,
-		request.APIKeyMax,
-		request.AccountRequestID,
-		request.UserRequestID,
-		request.KeyRequestID,
-		request.LeaseID,
-		liveLeaseTTLSeconds,
-		c.slotTTLSeconds,
-	).Int()
-	if err != nil {
-		// The script may have executed even if the reply was lost; the caller
-		// must abort with the exact identities instead of assuming failure.
-		return false, fmt.Errorf("%w: %v", service.ErrLiveLeaseTransferUncertain, err)
-	}
-	switch result {
-	case 1:
-		return true, nil
-	case 2:
-		return false, service.ErrAPIKeyConcurrencyLimit
-	case 3:
-		return false, service.ErrAPIKeyReservationLost
-	case 4, 6:
-		return false, service.ErrLiveConcurrencyFull
-	case 5, 7:
-		return false, service.ErrLiveLeaseSourceLost
-	case 8:
-		return false, service.ErrLiveLeaseTransferFenced
-	case 9:
-		return false, fmt.Errorf("%w: partial Live lease state for %s", service.ErrLiveUnavailable, request.LeaseID)
-	default:
-		return false, fmt.Errorf("%w: unexpected Live transfer result %d", service.ErrLiveUnavailable, result)
-	}
-}
 
 // MigrateLiveLeaseAccount keeps the joint Key/user Live members and atomically
 // replaces the failed account member with a new ordinary account reservation.
 // A missing joint member or account source fails closed; the new ordinary
 // member is removed only on success, so the caller's release path stays exact.
-func (c *concurrencyCache) MigrateLiveLeaseAccount(ctx context.Context, request service.LiveLeaseTransferRequest) (bool, error) {
-	if c == nil || c.rdb == nil || request.AccountID <= 0 || request.UserID <= 0 || request.APIKeyID <= 0 || request.LeaseID == "" {
-		return false, nil
-	}
-	result, err := migrateLiveLeaseAccountScript.Run(ctx, c.rdb, []string{
-		accountSlotKey(request.AccountID),
-		liveAccountSlotKey(request.AccountID),
-		liveAccountSlotKey(request.ReplacedAccountID),
-		liveUserSlotKey(request.UserID),
-		liveAPIKeySlotKey(request.APIKeyID),
-	},
-		request.AccountMax,
-		request.AccountRequestID,
-		request.LeaseID,
-		liveLeaseTTLSeconds,
-		c.slotTTLSeconds,
-	).Int()
-	if err != nil {
-		return false, fmt.Errorf("%w: %v", service.ErrLiveLeaseTransferUncertain, err)
-	}
-	switch result {
-	case 1:
-		return true, nil
-	case 2, 3:
-		return false, service.ErrLiveLeaseSourceLost
-	case 4:
-		return false, service.ErrLiveConcurrencyFull
-	default:
-		return false, fmt.Errorf("%w: unexpected Live migration result %d", service.ErrLiveUnavailable, result)
-	}
-}
 
 // ReleaseLiveLeaseAccount removes only this account's Live member so the joint
 // Key/user members survive across SDP retry attempts.
@@ -1440,26 +1472,6 @@ func (c *concurrencyCache) ReleaseLiveLeaseAccount(ctx context.Context, accountI
 // removes exactly this transfer's members. The fence deadline is independent
 // of the Key wait deadline: it only has to outlive the in-flight transfer
 // command, after which the deleted sources fail closed on any late replay.
-func (c *concurrencyCache) AbortLiveLeaseTransfer(ctx context.Context, request service.LiveLeaseTransferRequest) error {
-	if c == nil || c.rdb == nil || request.LeaseID == "" {
-		return nil
-	}
-	return abortLiveLeaseTransferScript.Run(ctx, c.rdb, []string{
-		accountSlotKey(request.AccountID),
-		userSlotKey(request.UserID),
-		apiKeySlotKey(request.APIKeyID),
-		liveAccountSlotKey(request.AccountID),
-		liveUserSlotKey(request.UserID),
-		liveAPIKeySlotKey(request.APIKeyID),
-		liveTransferFenceKey(request.APIKeyID),
-	},
-		request.AccountRequestID,
-		request.UserRequestID,
-		request.KeyRequestID,
-		request.LeaseID,
-		liveLeaseTTLSeconds,
-	).Err()
-}
 
 func (c *concurrencyCache) acquireLiveLease(
 	ctx context.Context,
@@ -1494,6 +1506,37 @@ func (c *concurrencyCache) acquireLiveLease(
 	return result == 1, err
 }
 
+func (c *concurrencyCache) AcquireLiveLeaseForGroup(
+	ctx context.Context,
+	accountID int64,
+	accountMax int,
+	userID int64,
+	userMax int,
+	groupID int64,
+	groupMax int,
+	apiKeyID int64,
+	leaseID string,
+	replacingRegularSlots bool,
+) (bool, error) {
+	if c == nil || c.rdb == nil || accountID <= 0 || userID <= 0 || groupID <= 0 || apiKeyID <= 0 || leaseID == "" || groupMax <= 0 {
+		return false, nil
+	}
+	replacing := 0
+	if replacingRegularSlots {
+		replacing = 1
+	}
+	result, err := acquireLiveLeaseForGroupScript.Run(ctx, c.rdb, []string{
+		accountSlotKey(accountID),
+		liveAccountSlotKey(accountID),
+		userSlotKey(userID),
+		liveUserSlotKey(userID),
+		userGroupSlotKey(userID, groupID),
+		liveUserGroupSlotKey(userID, groupID),
+		liveAPIKeySlotKey(apiKeyID),
+	}, accountMax, userMax, groupMax, liveLeaseTTLSeconds, leaseID, replacing).Int()
+	return result == 1, err
+}
+
 func (c *concurrencyCache) RefreshLiveLease(ctx context.Context, accountID, userID, apiKeyID int64, leaseID string) (bool, error) {
 	if c == nil || c.rdb == nil || leaseID == "" {
 		return false, nil
@@ -1501,6 +1544,19 @@ func (c *concurrencyCache) RefreshLiveLease(ctx context.Context, accountID, user
 	result, err := refreshLiveLeaseScript.Run(ctx, c.rdb, []string{
 		liveAccountSlotKey(accountID),
 		liveUserSlotKey(userID),
+		liveAPIKeySlotKey(apiKeyID),
+	}, liveLeaseTTLSeconds, leaseID).Int()
+	return result == 1, err
+}
+
+func (c *concurrencyCache) RefreshLiveLeaseForGroup(ctx context.Context, accountID, userID, groupID, apiKeyID int64, leaseID string) (bool, error) {
+	if c == nil || c.rdb == nil || groupID <= 0 || leaseID == "" {
+		return false, nil
+	}
+	result, err := refreshLiveLeaseScript.Run(ctx, c.rdb, []string{
+		liveAccountSlotKey(accountID),
+		liveUserSlotKey(userID),
+		liveUserGroupSlotKey(userID, groupID),
 		liveAPIKeySlotKey(apiKeyID),
 	}, liveLeaseTTLSeconds, leaseID).Int()
 	return result == 1, err
@@ -1518,6 +1574,19 @@ func (c *concurrencyCache) ReleaseLiveLease(ctx context.Context, accountID, user
 	return err
 }
 
+func (c *concurrencyCache) ReleaseLiveLeaseForGroup(ctx context.Context, accountID, userID, groupID, apiKeyID int64, leaseID string) error {
+	if c == nil || c.rdb == nil || groupID <= 0 || leaseID == "" {
+		return nil
+	}
+	pipe := c.rdb.TxPipeline()
+	pipe.ZRem(ctx, liveAccountSlotKey(accountID), leaseID)
+	pipe.ZRem(ctx, liveUserSlotKey(userID), leaseID)
+	pipe.ZRem(ctx, liveUserGroupSlotKey(userID, groupID), leaseID)
+	pipe.ZRem(ctx, liveAPIKeySlotKey(apiKeyID), leaseID)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
 func (c *concurrencyCache) GetAPIKeyConcurrencyBatch(ctx context.Context, apiKeyIDs []int64) (map[int64]int, error) {
 	if len(apiKeyIDs) == 0 {
 		return map[int64]int{}, nil
@@ -1527,7 +1596,7 @@ func (c *concurrencyCache) GetAPIKeyConcurrencyBatch(ctx context.Context, apiKey
 	if err != nil {
 		return nil, fmt.Errorf("redis TIME: %w", err)
 	}
-	cutoffTime := now.Unix() - int64(c.slotTTLSeconds)
+	cutoffTime := now.Unix() - int64(c.effectiveAPIKeySlotTTLSeconds())
 
 	pipe := c.rdb.Pipeline()
 	type apiKeyCmd struct {
@@ -1816,4 +1885,41 @@ func (c *concurrencyCache) reconcileExpiredIndexCandidates(ctx context.Context, 
 // by activeIndexCleanupBatchSize and the periodic worker finishes the backlog.
 func (c *concurrencyCache) CleanupStaleProcessSlots(ctx context.Context, _ string) error {
 	return c.CleanupExpiredAccountSlotKeys(ctx)
+}
+
+func (c *concurrencyCache) APIKeySlotRefreshInterval() time.Duration {
+	return time.Duration(c.effectiveAPIKeySlotTTLSeconds()) * time.Second / 3
+}
+
+func (c *concurrencyCache) APIKeySlotTTL() time.Duration {
+	return time.Duration(c.effectiveAPIKeySlotTTLSeconds()) * time.Second
+}
+
+// Refresh only an existing member, atomically with its key TTL. In particular,
+// admin deletion must not be undone by a late heartbeat.
+var refreshAPIKeySlotScript = redis.NewScript(`
+	redis.replicate_commands()
+	local now = redis.call('TIME')
+ redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', tonumber(now[1])-tonumber(ARGV[1]))
+ if redis.call('ZSCORE', KEYS[1], ARGV[2]) == false then
+		return 0
+	end
+	redis.call('ZADD', KEYS[1], 'XX', tonumber(now[1]), ARGV[2])
+	redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
+	return 1
+`)
+
+func (c *concurrencyCache) RefreshAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) (bool, error) {
+	n, err := refreshAPIKeySlotScript.Run(ctx, c.rdb, []string{apiKeySlotKey(apiKeyID)}, c.effectiveAPIKeySlotTTLSeconds(), requestID).Int()
+	return n == 1, err
+}
+
+// effectiveAPIKeySlotTTLSeconds 返回普通 API Key 槽位使用的有效过期时间。
+// 未配置专用值（<=0）时回退共享 slot TTL，避免把 0 传给 Redis EXPIRE。
+// 仅适用于普通 API Key 成员；account/user 与 Live 租约继续使用各自期限。
+func (c *concurrencyCache) effectiveAPIKeySlotTTLSeconds() int {
+	if c.apiKeySlotTTLSeconds > 0 {
+		return c.apiKeySlotTTLSeconds
+	}
+	return c.slotTTLSeconds
 }

@@ -6,7 +6,7 @@
           <button v-for="tab in managementTabs" :key="tab.key" type="button"
             class="btn" :class="activeManagementTab === tab.key ? 'btn-primary' : 'btn-secondary'"
             :aria-pressed="activeManagementTab === tab.key" @click="selectManagementTab(tab.key)">
-            {{ tab.key === 'binding' ? '账号 IP 规则' : t(tab.label) }}
+            {{ t(tab.label) }}
           </button>
         </div>
       </template>
@@ -98,8 +98,7 @@
 
       <template #table>
         <div v-if="activeManagementTab !== 'proxies'" class="min-h-0 flex-1 overflow-y-auto p-4">
-          <ProxyBindingSettings v-if="activeManagementTab === 'binding'" />
-          <MihomoSettings v-else :section="activeManagementTab" @static-proxies-added="loadProxies" />
+          <MihomoSettings :section="activeManagementTab" @static-proxies-added="loadProxies" />
         </div>
         <div v-show="activeManagementTab === 'proxies'" ref="proxyTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
@@ -227,16 +226,6 @@
             >
               {{ t('admin.groups.accountsCount', { count: 0 }) }}
             </span>
-            <p v-if="bindingSummary[row.id]" class="mt-1 text-xs text-gray-500">规则内历史 {{bindingSummary[row.id].history}} / {{bindingSummary[row.id].limit}} · 当前出口占用 {{bindingSummary[row.id].current}}</p>
-            <p v-else-if="bindingSummaryError" class="mt-1 text-xs text-red-600">历史读取失败</p>
-            <template v-if="bindingRulesEnabled && bindingSummary[row.id] && bindingSummary[row.id].history>=bindingSummary[row.id].limit">
-             <p class="text-xs text-amber-600">{{bindingSummary[row.id].extra_allowed?'已额外放行 1 个':'规则内新增已停用'}}</p>
-             <button v-if="!bindingSummary[row.id].extra_allowed" class="text-xs text-primary-600 underline" @click="allowBindingTarget=row.id">再次启用一个名额</button>
-             <div v-if="allowBindingTarget===row.id" class="mt-2 max-w-xs space-y-2 rounded-lg border border-amber-300 p-2 text-xs" role="alert">
-              <p>根据 IP 规则，此 IP 已累计绑定 {{bindingSummary[row.id].history}} 个适用账号。确定额外放行 1 个新账号吗？绑定成功后再次停止新增，已有账号继续使用。</p>
-              <button class="btn btn-primary" @click="confirmAllowBinding">确认放行 1 个</button><button class="btn btn-secondary" @click="allowBindingTarget=null">取消</button>
-             </div>
-            </template>
           </template>
 
           <template #cell-latency="{ row }">
@@ -546,7 +535,6 @@
             { label: t('admin.proxies.fallbackProxy'), value: 'proxy' },
             { label: t('admin.proxies.fallbackDirect'), value: 'direct' },
           ]" />
-          <p class="input-hint mt-2">{{ t('admin.proxies.fallbackModeHint') }}</p>
         </div>
         <div v-if="createForm.fallback_mode === 'proxy'">
           <label class="input-label">{{ t('admin.proxies.backupProxy') }}</label>
@@ -559,13 +547,6 @@
       <div v-else class="space-y-5">
         <div>
           <label class="input-label">{{ t('admin.proxies.batchInput') }}</label>
-          <div class="mb-2 flex items-center gap-3">
-            <label class="input-label mb-0 whitespace-nowrap">{{ t('admin.proxies.batchDefaultProtocol') }}</label>
-            <div class="w-36">
-              <Select v-model="batchDefaultProtocol" :options="batchProtocolOptions" @update:model-value="parseBatchInput" />
-            </div>
-          </div>
-          <p class="input-hint mb-2">{{ t('admin.proxies.batchDefaultProtocolHint') }}</p>
           <textarea
             v-model="batchInput"
             rows="10"
@@ -790,7 +771,6 @@
             { label: t('admin.proxies.fallbackProxy'), value: 'proxy' },
             { label: t('admin.proxies.fallbackDirect'), value: 'direct' },
           ]" />
-          <p class="input-hint mt-2">{{ t('admin.proxies.fallbackModeHint') }}</p>
         </div>
         <div v-if="editForm.fallback_mode === 'proxy'">
           <label class="input-label">{{ t('admin.proxies.backupProxy') }}</label>
@@ -931,14 +911,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import MihomoSettings from './settings/MihomoSettings.vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
 import type { Proxy, ProxyAccountSummary, ProxyProtocol, ProxyQualityCheckResult } from '@/types'
-import { parseProxyInput } from '@/utils/proxyParser'
 import type { Column } from '@/components/common/types'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
@@ -948,8 +927,6 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import ImportDataModal from '@/components/admin/proxy/ImportDataModal.vue'
-import ProxyBindingSettings from '@/components/admin/proxy/ProxyBindingSettings.vue'
-import { getProxyBindingPolicy,getProxyBindingSummaries,allowOneProxyBinding,type ProxyBindingSummary } from '@/api/admin/proxyBinding'
 import ProxyQualityReportDialog from '@/components/admin/proxy/ProxyQualityReportDialog.vue'
 import Select from '@/components/common/Select.vue'
 import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
@@ -963,29 +940,29 @@ import { formatDateTime } from '@/utils/format'
 import { proxyExpiryBadgeClass, proxyExpiryLabelKey } from '@/utils/proxyExpiry'
 import { proxyQualityOverallClass, proxyQualityOverallLabelKey, summarizeProxyQuality } from '@/utils/proxyQuality'
 
+const appStore = useAppStore()
 const route = useRoute()
 const router = useRouter()
-const managementTabs = [
+const allManagementTabs = [
   { key: 'proxies', label: 'admin.proxies.proxyList' },
   { key: 'subscriptions', label: 'admin.proxies.subscriptions' },
   { key: 'dynamic', label: 'admin.proxies.dynamicProxies' },
   { key: 'nodes', label: 'admin.proxies.nodes' },
-  { key: 'kernel', label: 'admin.proxies.kernelRules' },
-  { key: 'binding', label: '' }
+  { key: 'kernel', label: 'admin.proxies.kernelRules' }
 ] as const
-type ManagementTab = typeof managementTabs[number]['key']
+type ManagementTab = typeof allManagementTabs[number]['key']
+const managementTabs = allManagementTabs
 function tabFromHash(hash?: string): ManagementTab {
   if (hash === '#mihomo') return 'subscriptions'
   return managementTabs.find(tab => '#' + tab.key === hash)?.key || 'proxies'
 }
 const activeManagementTab = ref<ManagementTab>(tabFromHash(route?.hash))
-watch(() => route?.hash, hash => { activeManagementTab.value = tabFromHash(hash) })
+watch(() => route?.hash, (hash) => { activeManagementTab.value = tabFromHash(hash) })
 function selectManagementTab(tab: ManagementTab) {
   activeManagementTab.value = tab
   if (router) void router.replace({ hash: tab === 'proxies' ? '' : '#' + tab })
 }
 const { t } = useI18n()
-const appStore = useAppStore()
 const { copyToClipboard } = useClipboard()
 
 const columns = computed<Column[]>(() => [
@@ -1102,12 +1079,6 @@ const qualityReport = ref<ProxyQualityCheckResult | null>(null)
 // Batch import state
 const createMode = ref<'standard' | 'batch'>('standard')
 const batchInput = ref('')
-const batchDefaultProtocol = ref<ProxyProtocol>('http')
-const batchProtocolOptions = computed(() => [
-  { value: 'http' as const, label: 'HTTP' },
-  { value: 'https' as const, label: 'HTTPS' },
-  { value: 'socks5' as const, label: 'SOCKS5' },
-])
 const batchParseResult = reactive({
   total: 0,
   valid: 0,
@@ -1188,14 +1159,7 @@ const buildProxyQueryFilters = () => ({
   sort_order: sortState.sort_order
 })
 
-const bindingSummary = ref<Record<number,ProxyBindingSummary>>({})
-const bindingSummaryError = ref(false)
-const bindingRulesEnabled=ref(false)
-const allowBindingTarget = ref<number|null>(null)
-async function refreshBindingSummary(){try{const [rows,policy]=await Promise.all([getProxyBindingSummaries(),getProxyBindingPolicy()]);bindingRulesEnabled.value=policy.enabled;bindingSummary.value=Object.fromEntries(rows.map(r=>[r.proxy_id,r]));bindingSummaryError.value=false}catch{bindingSummaryError.value=true}}
-async function confirmAllowBinding(){if(!allowBindingTarget.value)return;try{await allowOneProxyBinding(allowBindingTarget.value);allowBindingTarget.value=null;await refreshBindingSummary()}catch(e){appStore.showError((e as Error).message||'放行失败')}}
 const loadProxies = async () => {
-  void refreshBindingSummary()
   if (abortController) {
     abortController.abort()
   }
@@ -1276,7 +1240,6 @@ const closeCreateModal = () => {
   createForm.expiry_warn_days = 7
   createPasswordVisible.value = false
   batchInput.value = ''
-  batchDefaultProtocol.value = 'http'
   batchParseResult.total = 0
   batchParseResult.valid = 0
   batchParseResult.invalid = 0
@@ -1289,6 +1252,46 @@ const handleDataImported = () => {
   loadProxies()
 }
 
+// Parse proxy URL: protocol://user:pass@host:port or protocol://host:port
+// Host may be a domain, IPv4, or bracketed IPv6 ([2001:db8::1]).
+const parseProxyUrl = (
+  line: string
+): {
+  protocol: ProxyProtocol
+  host: string
+  port: number
+  username: string
+  password: string
+} | null => {
+  const trimmed = line.trim()
+  if (!trimmed) return null
+
+  // Regex to parse proxy URL (supports http, https, socks5, socks5h).
+  // Host alternatives: [bracketed-IPv6] | hostname/IPv4 (colon-free, so the
+  // match stops before the final :port).
+  const regex =
+    /^(https?|socks5h?):\/\/(?:([^:@\[\]]+):([^@\[\]]+)@)?(\[[0-9a-f:.]+\]|[^:\[\]]+):(\d+)$/i
+  const match = trimmed.match(regex)
+
+  if (!match) return null
+
+  const [, protocol, username, password, rawHost, port] = match
+  const portNum = parseInt(port, 10)
+
+  if (portNum < 1 || portNum > 65535) return null
+
+  // Strip brackets from IPv6 literals; the backend re-brackets via net.JoinHostPort.
+  const host = rawHost.replace(/^\[|\]$/g, '').trim()
+
+  return {
+    protocol: protocol.toLowerCase() as ProxyProtocol,
+    host,
+    port: portNum,
+    username: username?.trim() || '',
+    password: password?.trim() || ''
+  }
+}
+
 const parseBatchInput = () => {
   const lines = batchInput.value.split('\n').filter((l) => l.trim())
   const seen = new Set<string>()
@@ -1297,7 +1300,7 @@ const parseBatchInput = () => {
   let duplicate = 0
 
   for (const line of lines) {
-    const parsed = parseProxyInput(line, batchDefaultProtocol.value)
+    const parsed = parseProxyUrl(line)
     if (!parsed) {
       invalid++
       continue
@@ -1450,14 +1453,6 @@ const handleUpdateProxy = async () => {
       updateData.password = editForm.password.trim()
     }
 
-    if(editForm.status==='active' && editingProxy.value.status!=='active') {
-      const [policy,rows]=await Promise.all([getProxyBindingPolicy(),getProxyBindingSummaries()])
-      const summary=rows.find(row=>row.proxy_id===editingProxy.value?.id)
-      if(policy.enabled && summary && summary.history>=summary.limit && !summary.extra_allowed) {
-        if(!window.confirm(`根据 IP 设置，此 IP 已绑定过 ${summary.history} 个历史账号（上限 ${summary.limit}）。确定再次启用并仅额外放行 1 个新账号吗？已有账号不受影响。`))return
-        await allowOneProxyBinding(editingProxy.value.id)
-      }
-    }
     await adminAPI.proxies.update(editingProxy.value.id, updateData)
     appStore.showSuccess(t('admin.proxies.proxyUpdated'))
     closeEditModal()

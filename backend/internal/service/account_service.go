@@ -23,10 +23,13 @@ const AccountPrivacyModeUnsetFilter = "__unset__"
 // accounts. Candidate platforms are supplied by TokenRefreshService's refresher
 // registry so repository eligibility cannot drift from registered providers.
 type OAuthRefreshPageOptions struct {
-	Platforms            []string
-	AfterID              int64
-	Limit                int
-	ActiveOnly           bool
+	Platforms  []string
+	AfterID    int64
+	Limit      int
+	ActiveOnly bool
+	// IncludeQualityPaused keeps credentials alive while quality protection
+	// blocks gateway traffic; it never changes scheduling eligibility.
+	IncludeQualityPaused bool
 	IncludeSetupToken    bool
 	RequireRefreshToken  bool
 	ExcludeRetryCooldown bool
@@ -83,8 +86,6 @@ type AccountRepository interface {
 	SetSchedulable(ctx context.Context, id int64, schedulable bool) error
 	AutoPauseExpiredAccounts(ctx context.Context, now time.Time) (int64, error)
 	BindGroups(ctx context.Context, accountID int64, groupIDs []int64) error
-	// SetGroupAllowedModels 覆盖账号在各已绑定分组内的模型限制，未列出的分组恢复为不限制。
-	SetGroupAllowedModels(ctx context.Context, accountID int64, allowed map[int64][]string) error
 
 	ListSchedulable(ctx context.Context) ([]Account, error)
 	ListSchedulableByGroupID(ctx context.Context, groupID int64) ([]Account, error)
@@ -129,18 +130,21 @@ type AccountRepository interface {
 	ListShadowsByParent(ctx context.Context, parentID int64) ([]*Account, error)
 }
 
-// AccountGroupPriorityListRepository is an optional account-list capability
-// used by the admin UI when a concrete group is filtered and the group
-// priority feature is enabled. Keeping it separate preserves compatibility
-// with lightweight AccountRepository test doubles and non-Ent implementations.
-type AccountGroupPriorityListRepository interface {
-	ListWithFiltersUsingGroupPriority(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]Account, *pagination.PaginationResult, error)
-}
-
 type AccountDuplicateRepository interface {
 	// CreateWithAccountGroups atomically persists an account, its exact group priorities,
 	// and the scheduler outbox event for the new routing snapshot.
 	CreateWithAccountGroups(ctx context.Context, account *Account, groups []AccountGroup) error
+}
+
+// AccountPlatformCount describes all non-deleted accounts on a platform,
+// regardless of their status or the current list filters.
+type AccountPlatformCount struct {
+	Platform string `json:"platform"`
+	Count    int64  `json:"count"`
+}
+
+type AccountPlatformCountRepository interface {
+	ListPlatformCounts(ctx context.Context) ([]AccountPlatformCount, error)
 }
 
 // AccountBillingSettingsRepository applies an admin edit without overwriting a
@@ -167,18 +171,19 @@ type AdminAccountRepository interface {
 // AccountBulkUpdate describes the fields that can be updated in a bulk operation.
 // Nil pointers mean "do not change".
 type AccountBulkUpdate struct {
-	Name                *string
-	ProxyID             *int64
-	Concurrency         *int
-	Priority            *int
-	RateMultiplier      *float64
+	ProxyIDs       *[]int64
+	Name           *string
+	ProxyID        *int64
+	Concurrency    *int
+	Priority       *int
+	RateMultiplier *float64
+	LoadFactor     *int
+	Status         *string
+	Schedulable    *bool
+	Credentials    map[string]any
+	Extra          map[string]any
+	ProbeEnabled   *bool
 	GroupRateMultiplier *float64
-	LoadFactor          *int
-	Status              *string
-	Schedulable         *bool
-	Credentials         map[string]any
-	Extra               map[string]any
-	ProbeEnabled        *bool
 	// EnsureCodexFingerprintSeed asks the repository to atomically preserve an
 	// existing valid Codex fingerprint seed or create one for eligible rows.
 	EnsureCodexFingerprintSeed bool
@@ -268,6 +273,9 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 		Status:      StatusActive,
 		ExpiresAt:   req.ExpiresAt,
 	}
+	if err := ValidateAccountCostMultiplierExtra(account.Extra); err != nil {
+		return nil, err
+	}
 	if req.AutoPauseOnExpired != nil {
 		account.AutoPauseOnExpired = *req.AutoPauseOnExpired
 	} else {
@@ -292,28 +300,6 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 	}
 
 	return account, nil
-}
-
-// Production repositories already provide the atomic duplicate-account writer.
-// Reuse it for a new account and its initial bindings so a race or binding error
-// cannot leave an orphan account after the caller receives an error.
-func createAccountAndBindGroups(ctx context.Context, repo AccountRepository, account *Account, groupIDs []int64) error {
-	if creator, ok := repo.(interface {
-		CreateWithAccountGroups(context.Context, *Account, []AccountGroup) error
-	}); ok && len(groupIDs) > 0 {
-		groups := make([]AccountGroup, 0, len(groupIDs))
-		for i, id := range groupIDs {
-			groups = append(groups, AccountGroup{GroupID: id, Priority: i + 1})
-		}
-		return creator.CreateWithAccountGroups(ctx, account, groups)
-	}
-	if err := repo.Create(ctx, account); err != nil {
-		return err
-	}
-	if len(groupIDs) > 0 {
-		return repo.BindGroups(ctx, account.ID, groupIDs)
-	}
-	return nil
 }
 
 // GetByID 根据ID获取账号
@@ -368,15 +354,9 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 	}
 
 	if req.Credentials != nil {
-		if err := ValidateModelMappingMode(*req.Credentials); err != nil {
-			return nil, err
-		}
-		account.Credentials = SanitizeStoredCredentials(account.Platform, *req.Credentials)
+		account.Credentials = SanitizeStoredCredentials(account.Platform, MergePreservingSensitiveCreds(account.Credentials, *req.Credentials))
 	}
 
-	if err := ValidateVideoAccount(account.Platform, account.Type, account.Credentials); err != nil {
-		return nil, err
-	}
 	if req.Extra != nil {
 		extra := make(map[string]any, len(*req.Extra))
 		for key, value := range *req.Extra {
@@ -388,6 +368,9 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 		account.Extra = prepareCodexFingerprintExtraForUpdate(account, extra)
 	} else {
 		account.Extra = prepareCodexFingerprintExtraForUpdate(account, account.Extra)
+	}
+	if err := ValidateAccountCostMultiplierExtra(account.Extra); err != nil {
+		return nil, err
 	}
 
 	if req.ProxyID != nil {
@@ -415,9 +398,6 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 	// 先验证分组是否存在（在任何写操作之前）
 	if req.GroupIDs != nil {
 		if err := s.validateGroupIDsExist(ctx, *req.GroupIDs); err != nil {
-			return nil, err
-		}
-		if err := validateVideoAccountGroupPlatforms(ctx, s.groupRepo, account.Platform, *req.GroupIDs); err != nil {
 			return nil, err
 		}
 	}
@@ -560,7 +540,7 @@ func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 	case PlatformGemini:
 		// TODO: 测试Gemini API凭证
 		return nil
-	case PlatformVideo, PlatformGrok:
+	case PlatformGrok:
 		// Grok OAuth credentials are validated via token exchange/refresh and request-path probes.
 		return nil
 	case PlatformTypeSafe:
@@ -574,4 +554,23 @@ func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 		}
 		return fmt.Errorf("unsupported platform: %s", account.Platform)
 	}
+}
+
+func createAccountAndBindGroups(ctx context.Context, repo AccountRepository, account *Account, groupIDs []int64) error {
+	if creator, ok := repo.(interface {
+		CreateWithAccountGroups(context.Context, *Account, []AccountGroup) error
+	}); ok && len(groupIDs) > 0 {
+		groups := make([]AccountGroup, 0, len(groupIDs))
+		for i, id := range groupIDs {
+			groups = append(groups, AccountGroup{GroupID: id, Priority: i + 1})
+		}
+		return creator.CreateWithAccountGroups(ctx, account, groups)
+	}
+	if err := repo.Create(ctx, account); err != nil {
+		return err
+	}
+	if len(groupIDs) > 0 {
+		return repo.BindGroups(ctx, account.ID, groupIDs)
+	}
+	return nil
 }

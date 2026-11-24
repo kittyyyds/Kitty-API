@@ -332,11 +332,11 @@ func TestCommandCodeGatewayPassesThroughCatalogProtocols(t *testing.T) {
 		url  string
 		body []byte
 	}
-	sequence := 0
+	callSequence := 0
 	forward := func(t *testing.T, ingress routingMatrixIngress, model string, catalog map[string][]string) observation {
 		t.Helper()
-		sequence++
-		base := fmt.Sprintf("http://cc-%s-%d-%d.example", strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano(), sequence)
+		callSequence++
+		base := fmt.Sprintf("http://cc-%s-%d.example", strings.ReplaceAll(t.Name(), "/", "-"), callSequence)
 		account := commandCodeTestAccount(12)
 		account.Credentials["api_base_urls"] = map[string]any{
 			APIProtocolChatCompletions: base + "/provider/v1",

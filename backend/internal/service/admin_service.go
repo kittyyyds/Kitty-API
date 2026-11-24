@@ -23,6 +23,10 @@ type AdminService interface {
 	UpdateUserBalance(ctx context.Context, userID int64, balance float64, operation string, notes string) (*User, error)
 	BatchUpdateConcurrency(ctx context.Context, userIDs []int64, value int, mode string) (int, error)
 	BatchUpdateLimits(ctx context.Context, userIDs []int64, concurrency, rpmLimit *int) (int, error)
+	// FindActiveUsersByBlacklistedEmails 按收件箱身份查找命中给定邮箱的未禁用普通用户。
+	FindActiveUsersByBlacklistedEmails(ctx context.Context, emails []string) ([]User, error)
+	// BatchDisableUsers 批量禁用普通用户，返回实际禁用的人数。
+	BatchDisableUsers(ctx context.Context, userIDs []int64) (int, error)
 	GetUserAPIKeys(ctx context.Context, userID int64, page, pageSize int, sortBy, sortOrder string) ([]APIKey, int64, error)
 	GetUserUsageStats(ctx context.Context, userID int64, period string) (any, error)
 	GetUserRPMStatus(ctx context.Context, userID int64) (*UserRPMStatus, error)
@@ -75,6 +79,7 @@ type AdminService interface {
 	ReplaceUserGroup(ctx context.Context, userID, oldGroupID, newGroupID int64) (*ReplaceUserGroupResult, error)
 
 	// Account management
+	ListAccountPlatformCounts(ctx context.Context) ([]AccountPlatformCount, error)
 	ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, privacyMode string, sortBy, sortOrder string) ([]Account, int64, error)
 	// ListAccountsForSchedulerScoreFilter 返回符合过滤条件的全部账号（不分页），
 	// 作为账号列表页计算 OpenAI 调度分数的过滤范围池。
@@ -109,6 +114,10 @@ type AdminService interface {
 	// ForceAntigravityPrivacy 强制重新设置 Antigravity OAuth 账号隐私，无论当前状态。
 	ForceAntigravityPrivacy(ctx context.Context, account *Account) string
 	SetAccountSchedulable(ctx context.Context, id int64, schedulable bool) (*Account, error)
+	// SetOpenAICreditsEnabled 切换 OpenAI OAuth/SetupToken 账号"额度用尽后消耗点数"开关。
+	// 开启时解除当前限流，让账号立即恢复调度并由上游消耗点数。
+	SetOpenAICreditsEnabled(ctx context.Context, id int64, enabled bool) (*Account, error)
+	SetOpenAIAutoResetCreditEnabled(ctx context.Context, id int64, enabled bool) (*Account, error)
 	BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error)
 	CheckMixedChannelRisk(ctx context.Context, currentAccountID int64, currentAccountPlatform string, groupIDs []int64) error
 	// RevertAccountProxyFallback 将账号的 proxy_id 切回 proxy_fallback_origin_id，并清空 origin 字段。
@@ -133,9 +142,6 @@ type AdminService interface {
 	CheckProxyExists(ctx context.Context, host string, port int, username, password string) (bool, error)
 	TestProxy(ctx context.Context, id int64) (*ProxyTestResult, error)
 	CheckProxyQuality(ctx context.Context, id int64) (*ProxyQualityCheckResult, error)
-	TestMihomoNode(ctx context.Context, kernel MihomoNodeProber, name string) (*ProxyTestResult, error)
-	CheckMihomoNodeQuality(ctx context.Context, kernel MihomoNodeProber, name string) (*ProxyQualityCheckResult, error)
-	CreateMihomoNodeProxies(ctx context.Context, kernel MihomoStaticNodeBinder, names []string) (*MihomoNodeProxyImportResult, error)
 
 	// Redeem code management
 	ListRedeemCodes(ctx context.Context, page, pageSize int, codeType, status, search string, sortBy, sortOrder string) ([]RedeemCode, int64, error)
@@ -295,9 +301,11 @@ type CreateGroupInput struct {
 	FallbackGroupID              *int64 // 降级分组 ID
 	// 无效请求兜底分组 ID（仅 anthropic 平台使用）
 	FallbackGroupIDOnInvalidRequest *int64
-	StreamOnly                      bool // 仅允许流式请求
-	CodexCLIOnly                    bool // 仅允许 Codex 客户端
-	BlockSubagents                  bool // 禁止子代理请求
+	// Account fallback preserves the original group for billing.
+	FallbackGroupIDOnUnavailable *int64
+	StreamOnly                   bool // 仅允许流式请求
+	CodexCLIOnly                 bool // 仅允许 Codex 客户端
+	BlockSubagents               bool // 禁止子代理请求
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64
 	ModelRoutingEnabled bool // 是否启用模型路由
@@ -308,6 +316,7 @@ type CreateGroupInput struct {
 	AllowMessagesDispatch       bool
 	AllowLive                   bool
 	ForceOpenAIFast             bool
+	ForceOpenAIServiceTier      *string // Forced OpenAI tier: empty, priority, or ultrafast.
 	FreeOpenAIFast              bool
 	DefaultMappedModel          string
 	RequireOAuthOnly            bool
@@ -316,9 +325,12 @@ type CreateGroupInput struct {
 	ModelAllowlist              GroupModelAllowlist
 	// CodexModelsManifestConfig 固定账号 manifest 配置；创建路径禁止开启，仅编辑可配置。
 	CodexModelsManifestConfig GroupCodexModelsManifestConfig
+	StrictFailover            StrictFailoverConfig
 	// RPMLimit 分组 RPM 上限（0 = 不限制）
 	RPMLimit int
-	// MaxReasoningEffort Anthropic/OpenAI 请求的推理强度上限，空字符串表示不限制。
+	// UserConcurrencyLimit 分组内每个用户的并发上限（0 = 不限制）
+	UserConcurrencyLimit int
+	// MaxReasoningEffort OpenAI/Codex 请求的推理强度上限，空字符串表示不限制。
 	MaxReasoningEffort string
 	// MaxReasoningEffortOverLimit 超过上限时的访问控制：downgrade（默认）或 deny。
 	MaxReasoningEffortOverLimit string
@@ -387,9 +399,11 @@ type UpdateGroupInput struct {
 	FallbackGroupID              *int64 // 降级分组 ID
 	// 无效请求兜底分组 ID（仅 anthropic 平台使用）
 	FallbackGroupIDOnInvalidRequest *int64
-	StreamOnly                      *bool // 仅允许流式请求
-	CodexCLIOnly                    *bool // 仅允许 Codex 客户端
-	BlockSubagents                  *bool // 禁止子代理请求
+	// Account fallback preserves the original group for billing.
+	FallbackGroupIDOnUnavailable *int64
+	StreamOnly                   *bool // 仅允许流式请求
+	CodexCLIOnly                 *bool // 仅允许 Codex 客户端
+	BlockSubagents               *bool // 禁止子代理请求
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64
 	ModelRoutingEnabled *bool // 是否启用模型路由
@@ -400,6 +414,7 @@ type UpdateGroupInput struct {
 	AllowMessagesDispatch       *bool
 	AllowLive                   *bool
 	ForceOpenAIFast             *bool
+	ForceOpenAIServiceTier      *string // Forced OpenAI tier: empty, priority, or ultrafast.
 	FreeOpenAIFast              *bool
 	DefaultMappedModel          *string
 	RequireOAuthOnly            *bool
@@ -408,8 +423,11 @@ type UpdateGroupInput struct {
 	ModelAllowlist              *GroupModelAllowlist
 	// CodexModelsManifestConfig nil 表示不修改；非 openai 平台会被归一化为关闭。
 	CodexModelsManifestConfig *GroupCodexModelsManifestConfig
+	StrictFailover            *StrictFailoverConfig
 	// RPMLimit 分组 RPM 上限（0 = 不限制），nil 表示未提供不改动。
 	RPMLimit *int
+	// UserConcurrencyLimit 分组内每个用户的并发上限（0 = 不限制），nil 表示未提供不改动。
+	UserConcurrencyLimit *int
 	// MaxReasoningEffort 空字符串表示清除上限；nil 表示未提供不改动。
 	MaxReasoningEffort *string
 	// MaxReasoningEffortOverLimit 空字符串视为 downgrade；nil 表示未提供不改动。
@@ -426,29 +444,25 @@ type UpdateGroupInput struct {
 }
 
 type CreateAccountInput struct {
-	ProxyMode            string             // 受限写入在验权后选择代理。
-	InitialOpenAITwoFA   bool               `json:"-"`
-	InitialAdmissionPlan *ScheduledTestPlan `json:"-"`
-	ImportTicket         string
-	VerifiedImportSource string             `json:"-"`
-	InitialIQBootstrap   *IQBootstrap       `json:"-"`
-	InitialQualityPlan   *ScheduledTestPlan `json:"-"`
-	Name                 string
-	Notes                *string
-	Platform             string
-	Type                 string
-	Credentials          map[string]any
-	Extra                map[string]any
-	ProxyID              *int64
-	Concurrency          int
-	Priority             int
-	RateMultiplier       *float64 // 账号计费倍率（>=0，允许 0）
-	GroupRateMultiplier  *float64 // 账号级分组计费倍率（>=0，默认 1）
-	LoadFactor           *int
-	GroupIDs             []int64
-	ExpiresAt            *int64
-	AutoPauseOnExpired   *bool
-	ProbeEnabled         *bool
+	ProxyMode          string // 受限写入在验权后选择代理。
+	Name               string
+	Notes              *string
+	Platform           string
+	Type               string
+	Credentials        map[string]any
+	Extra              map[string]any
+	ProxyID            *int64
+	ProxyIDs           []int64
+	Concurrency        int
+	Priority           int
+	RateMultiplier     *float64 // 账号计费倍率（>=0，允许 0）
+	LoadFactor         *int
+	GroupIDs           []int64
+	ExpiresAt          *int64
+	AutoPauseOnExpired *bool
+	ProbeEnabled       *bool
+
+	GroupRateMultiplier *float64 // 账号级分组计费倍率（>=0，默认 1）
 	// SkipDefaultGroupBind prevents auto-binding to platform default group when GroupIDs is empty.
 	SkipDefaultGroupBind bool
 	// SkipMixedChannelCheck skips the mixed channel risk check when binding groups.
@@ -473,13 +487,14 @@ type UpdateAccountInput struct {
 	Credentials         map[string]any
 	Extra               map[string]any
 	ProxyID             *int64
+	ProxyIDs            *[]int64
 	Concurrency         *int     // 使用指针区分"未提供"和"设置为0"
 	Priority            *int     // 使用指针区分"未提供"和"设置为0"
 	RateMultiplier      *float64 // 账号计费倍率（>=0，允许 0）
-	GroupRateMultiplier *float64 // 账号级分组计费倍率（>=0，默认 1）
 	LoadFactor          *int
 	Status              string
 	GroupIDs            *[]int64
+	GroupRateMultiplier *float64 // 账号级分组计费倍率（>=0，默认 1）
 	// GroupAllowedModels 按分组 ID 覆盖账号在各分组内可用的模型；nil 表示不改，
 	// 非 nil 时没有列出的分组恢复为不限制。
 	GroupAllowedModels    map[int64][]string
@@ -492,6 +507,7 @@ type UpdateAccountInput struct {
 
 // BulkUpdateAccountsInput describes the payload for bulk updating accounts.
 type BulkUpdateAccountsInput struct {
+	ProxyIDs            *[]int64
 	AccountIDs          []int64
 	Filters             *BulkUpdateAccountFilters
 	Name                string
@@ -499,7 +515,6 @@ type BulkUpdateAccountsInput struct {
 	Concurrency         *int
 	Priority            *int
 	RateMultiplier      *float64 // 账号计费倍率（>=0，允许 0）
-	GroupRateMultiplier *float64 // 账号级分组计费倍率（>=0，默认 1）
 	LoadFactor          *int
 	Status              string
 	Schedulable         *bool
@@ -507,6 +522,7 @@ type BulkUpdateAccountsInput struct {
 	Credentials         map[string]any
 	Extra               map[string]any
 	ProbeEnabled        *bool
+	GroupRateMultiplier *float64 // 账号级分组计费倍率（>=0，默认 1）
 	// SkipMixedChannelCheck skips the mixed channel risk check when binding groups.
 	// This should only be set when the caller has explicitly confirmed the risk.
 	SkipMixedChannelCheck bool
@@ -519,6 +535,7 @@ type BulkUpdateAccountFilters struct {
 	Group       string
 	Search      string
 	PrivacyMode string
+	PlanType    string
 }
 
 // BulkUpdateAccountResult captures the result for a single account update.
@@ -833,4 +850,11 @@ func NewAdminService(
 
 		channelCacheInvalidator: channelCacheInvalidator,
 	}
+}
+
+// Optional capability keeps narrow AdminService implementations compatible.
+type MihomoNodeAdminService interface {
+	TestMihomoNode(context.Context, MihomoNodeProber, string) (*ProxyTestResult, error)
+	CheckMihomoNodeQuality(context.Context, MihomoNodeProber, string) (*ProxyQualityCheckResult, error)
+	CreateMihomoNodeProxies(context.Context, MihomoStaticNodeBinder, []string) (*MihomoNodeProxyImportResult, error)
 }

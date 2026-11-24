@@ -13,16 +13,16 @@ function translate(messages: unknown, key: string): string {
 }
 
 describe('settings feature search', () => {
-  it('finds risk switches in both languages even when the business page is absent', () => {
+  it('finds retained support-ticket switches in both languages', () => {
     for (const [locale, messages, queries] of [
-      ['zh', zh, ['风控', 'cyber', '会话自动屏蔽', '屏蔽时长', '严格要求明确会话身份']],
-      ['en', en, ['risk', 'cyber']]
+      ['zh', zh, ['网站工单']],
+      ['en', en, ['Support tickets']]
     ] as const) {
       const entries = buildFeatureSearchEntries(withSettingsSearch([
         { path: '/admin/settings', label: '系统设置' }
       ], key => translate(messages, key), locale))
       for (const query of queries) {
-        expect(searchFeatures(entries, query).some(item => item.path === '/admin/settings?tab=features#settings-section-features-risk-control'), query).toBe(true)
+        expect(searchFeatures(entries, query).some(item => item.path === '/admin/settings?tab=features#settings-section-features-support-tickets'), query).toBe(true)
       }
       expect(entries.some(item => item.path === '/admin/risk-control')).toBe(false)
       expect(withSettingsSearch([{ path: '/admin/users', label: '用户' }], key => translate(messages, key), locale)[0]?.children).toBeUndefined()
@@ -35,7 +35,7 @@ describe('settings feature search', () => {
     const anchors = new Map<string, string>()
     function visit(node: Node, tab = '') {
       if (node.type !== 1) return
-      const show = node.props.find(prop => prop.type === 7 && prop.name === 'show')
+      const show = node.props.find(prop => prop.type === 7 && (prop.name === 'show' || prop.name === 'if'))
       if (show?.type === 7 && show.exp?.type === 4) tab = show.exp.content.match(/activeTab === '([^']+)'/)?.[1] ?? tab
       const id = node.props.find(prop => prop.type === 6 && prop.name === 'id')
       if (id?.type === 6 && id.value?.content.startsWith('settings-section-')) {
@@ -62,7 +62,7 @@ describe('settings feature search', () => {
   })
 
   it('validates locations and prefers the target card tab over a conflicting query', () => {
-    expect(settingsLocation('security', '#settings-section-features-risk-control').tab).toBe('features')
+    expect(settingsLocation('security', '#settings-section-features-support-tickets').tab).toBe('features')
     expect(settingsLocation(['features'], '#unknown')).toEqual({ tab: 'general', anchor: undefined, linked: false })
     expect(settingsLocation('email', '')).toEqual({ tab: 'email', anchor: undefined, linked: true })
   })

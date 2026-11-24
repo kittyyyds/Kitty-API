@@ -115,16 +115,18 @@ const STATUS_ZH_MESSAGES: Record<number, string> = {
 }
 
 const PATTERN_ZH_MESSAGES: Array<[RegExp, string]> = [
+  [/^capture quota must be positive mib within int64 range$/i, '请求记录的存储容量配置无效。'],
+  [/^capture retention must be 1-30 days$/i, '请求记录保留时间必须为 1～30 天。'],
   [/^request failed with status code (\d{3})$/i, '请求失败，请稍后重试。'],
   [/^timeout of \d+ms exceeded$/i, '请求超时，请稍后重试。'],
   [/^invalid .*credential/i, '账号或密码错误。'],
   [/^user .*not found/i, '用户不存在。'],
-  [/^invalid .*(verification|code)/i, '验证码错误。'],
+  [/^invalid .*\b(verification|code)\b/i, '验证码错误。'],
   [/^.*(already exists|already registered)/i, '该内容已存在。'],
   [/^.*(not found)/i, '请求的资源不存在。'],
   [/^.*(permission|forbidden|not allowed)/i, '没有权限执行此操作。'],
   [/^.*(rate limit|too many requests)/i, '请求过于频繁，请稍后再试。'],
-  [/^.*(balance|quota)/i, '余额或配额不足。'],
+  [/\b(?:insufficient|exhausted|depleted)\b.*\b(?:balance|quota)\b|\b(?:balance|quota)\b.*\b(?:insufficient|exhausted|exceeded|depleted|not enough)\b/i, '余额或配额不足。'],
   [/^.*(api key).*(invalid|not found)/i, 'API Key 无效或不存在。'],
   [/^.*(required|missing)/i, '必填项未填写。'],
   [/^.*(invalid|malformed)/i, '输入内容无效。'],

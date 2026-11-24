@@ -14,7 +14,9 @@ func TestNormalizeOpenAIResponsesLegacyIngressMessagesOnly(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.False(t, gjson.GetBytes(normalized, "messages").Exists())
-	require.False(t, gjson.GetBytes(normalized, "previous_response_id").Exists())
+	// Converting the supplied messages does not prove that the stored earlier
+	// history is redundant, even when the visible tool call/result pair matches.
+	require.Equal(t, "resp_stale", gjson.GetBytes(normalized, "previous_response_id").String())
 	require.Equal(t, "system", gjson.GetBytes(normalized, "input.0.role").String())
 	require.Equal(t, "repo policy", gjson.GetBytes(normalized, "input.0.content").String())
 	require.Equal(t, "function_call", gjson.GetBytes(normalized, "input.1.type").String())
@@ -43,25 +45,6 @@ func TestNormalizeOpenAIResponsesLegacyIngressConvertsChatTopLevelFields(t *test
 	require.Equal(t, "flex", gjson.GetBytes(normalized, "service_tier").String())
 	require.False(t, gjson.GetBytes(normalized, "max_tokens").Exists())
 	require.False(t, gjson.GetBytes(normalized, "reasoning_effort").Exists())
-}
-
-func TestNormalizeOpenAIResponsesLegacyIngressPreservesNativeReasoning(t *testing.T) {
-	for _, reasoning := range []string{
-		`{"effort":"high","summary":"detailed"}`,
-		`{"effort":"high","summary":"concise"}`,
-		`{"effort":"high"}`,
-		`{"effort":"high","summary":null}`,
-	} {
-		t.Run(reasoning, func(t *testing.T) {
-			body := []byte(`{"model":"gpt-6-sol","messages":[{"role":"user","content":"hello"}],"reasoning":` + reasoning + `}`)
-			normalized, changed, err := normalizeOpenAIResponsesLegacyIngress(body)
-			require.NoError(t, err)
-			require.True(t, changed)
-			require.False(t, gjson.GetBytes(normalized, "messages").Exists())
-			require.Equal(t, "hello", gjson.GetBytes(normalized, "input.0.content").String())
-			require.JSONEq(t, reasoning, gjson.GetBytes(normalized, "reasoning").Raw)
-		})
-	}
 }
 
 func TestNormalizeOpenAIResponsesLegacyIngressNativeInputRemainsAuthoritative(t *testing.T) {

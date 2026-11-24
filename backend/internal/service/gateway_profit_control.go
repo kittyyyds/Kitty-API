@@ -37,6 +37,9 @@ func (s *GatewayService) withGatewayProfitControlGate(ctx context.Context, group
 		}
 	}
 
+	if original := accountFallbackBillingGroup(ctx); original != nil {
+		billingGroup = original
+	}
 	downstream := billingGroup.RateMultiplier
 	if userID, _ := ctx.Value(ctxkey.UserID).(int64); userID > 0 {
 		downstream = s.ResolveUserGroupRateMultiplier(ctx, userID, billingGroup.ID, billingGroup.RateMultiplier)
@@ -95,6 +98,11 @@ func profitControlVetoLatest(ctx context.Context, selected *Account, snapshot *S
 			// 选号路径可能已做过 DB recheck，selected 比缓存快照更新鲜；只有
 			// 快照不落后时才替换，避免终检把新鲜账号换回较旧的缓存对象。
 			latest = refreshed
+			if selected.SelectedProxyID > 0 {
+				routed := *refreshed
+				routed.ProxyID, routed.Proxy, routed.SelectedProxyID = selected.ProxyID, selected.Proxy, selected.SelectedProxyID
+				latest = &routed
+			}
 		}
 	}
 	vetoed, reason := openAIProfitControlVetoReason(ctx, latest)

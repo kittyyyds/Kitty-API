@@ -368,8 +368,10 @@ func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account 
 	return s.TestConnectionWithPrompt(ctx, account, modelID, "")
 }
 
-// TestConnectionWithPrompt 测试 Antigravity 账号连接，支持为图片生成模型指定测试提示词。
-func (s *AntigravityGatewayService) TestConnectionWithPrompt(ctx context.Context, account *Account, modelID string, prompt string) (*TestConnectionResult, error) {
+// TestConnectionWithPrompt runs the same lightweight Antigravity probe while
+// using a caller-supplied test prompt. Configurable scheduled tests use this
+// path so the upstream receives the administrator's actual test payload.
+func (s *AntigravityGatewayService) TestConnectionWithPrompt(ctx context.Context, account *Account, modelID, prompt string) (*TestConnectionResult, error) {
 
 	// 获取 token
 	if s.tokenProvider == nil {
@@ -394,12 +396,16 @@ func (s *AntigravityGatewayService) TestConnectionWithPrompt(ctx context.Context
 	// 构建请求体
 	var requestBody []byte
 	if shouldUseAntigravityGeminiTestRequest(modelID, mappedModel) {
-		requestBody, err = s.buildGeminiTestRequestWithPrompt(projectID, mappedModel, prompt)
+		requestBody, err = s.buildGeminiTestRequestWithPrompt(projectID, mappedModel, prompt, accountTestOutputTokenLimit(ctx))
 	} else {
-		requestBody, err = s.buildClaudeTestRequest(projectID, mappedModel)
+		requestBody, err = s.buildClaudeTestRequest(projectID, mappedModel, prompt, accountTestOutputTokenLimit(ctx))
 	}
 	if err != nil {
 		return nil, fmt.Errorf("构建请求失败: %w", err)
+	}
+	requestBody, err = applyScheduledTestGeminiContentInstructions(ctx, requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("构建内容检测请求失败: %w", err)
 	}
 
 	// 代理 URL
@@ -425,6 +431,7 @@ func (s *AntigravityGatewayService) TestConnectionWithPrompt(ctx context.Context
 		requestedModel: modelID,
 		handleError:    testConnectionHandleError,
 	}
+
 	result, err := s.antigravityRetryLoop(p)
 	if err != nil {
 		// AccountSwitchError → 测试时不切换账号，返回友好提示
@@ -441,7 +448,6 @@ func (s *AntigravityGatewayService) TestConnectionWithPrompt(ctx context.Context
 	defer func() { _ = result.resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(io.LimitReader(result.resp.Body, s.upstreamErrorBodyReadLimit()))
-	recordPelicanTestSSE(ctx, "gemini", mappedModel, respBody)
 	if err != nil {
 		return nil, fmt.Errorf("读取响应失败: %w", err)
 	}
@@ -450,7 +456,10 @@ func (s *AntigravityGatewayService) TestConnectionWithPrompt(ctx context.Context
 		return nil, fmt.Errorf("API 返回 %d: %s", result.resp.StatusCode, string(respBody))
 	}
 
-	text, images := extractContentFromSSEResponse(respBody)
+	text, images, err := extractAntigravityTestContent(respBody)
+	if err != nil {
+		return nil, err
+	}
 	return &TestConnectionResult{Text: text, Images: images, MappedModel: mappedModel}, nil
 }
 
@@ -468,8 +477,8 @@ func testConnectionHandleError(
 }
 
 // buildGeminiTestRequestWithPrompt 构建 Gemini 格式测试请求
-// 文本模型使用最小 token 消耗：输入 "." + maxOutputTokens: 1；图片模型使用图片生成配置
-func (s *AntigravityGatewayService) buildGeminiTestRequestWithPrompt(projectID, model, prompt string) ([]byte, error) {
+// 文本模型发送管理员提示词并使用 256 token 默认预算；显式测试预算优先，图片模型使用图片配置。
+func (s *AntigravityGatewayService) buildGeminiTestRequestWithPrompt(projectID, model, prompt string, maxOutputTokens ...int) ([]byte, error) {
 	if isImageGenerationModel(model) {
 		imagePrompt := strings.TrimSpace(prompt)
 		if imagePrompt == "" {
@@ -505,7 +514,7 @@ func (s *AntigravityGatewayService) buildGeminiTestRequestWithPrompt(projectID, 
 			{
 				"role": "user",
 				"parts": []map[string]any{
-					{"text": "."},
+					{"text": antigravityTestPrompt(prompt)},
 				},
 			},
 		},
@@ -516,7 +525,9 @@ func (s *AntigravityGatewayService) buildGeminiTestRequestWithPrompt(projectID, 
 			},
 		},
 		"generationConfig": map[string]any{
-			"maxOutputTokens": 1,
+			"maxOutputTokens": func() int {
+				return accountTestMaxOutputTokens("", antigravityTestMaxOutputTokens, maxOutputTokens...)
+			}(),
 		},
 		"toolConfig": map[string]any{
 			"functionCallingConfig": map[string]any{
@@ -528,18 +539,29 @@ func (s *AntigravityGatewayService) buildGeminiTestRequestWithPrompt(projectID, 
 	return s.wrapV1InternalRequest(projectID, model, payloadBytes)
 }
 
+func (s *AntigravityGatewayService) buildGeminiTestRequest(projectID, model, prompt string) ([]byte, error) {
+	return s.buildGeminiTestRequestWithPrompt(projectID, model, prompt)
+}
+
 // buildClaudeTestRequest 构建 Claude 格式测试请求并转换为 Gemini 格式
-// 使用最小 token 消耗：输入 "." + MaxTokens: 1
-func (s *AntigravityGatewayService) buildClaudeTestRequest(projectID, mappedModel string) ([]byte, error) {
+// 默认发送 hi 并留出回答空间；定时测试显式配置的输出预算仍优先。
+
+func (s *AntigravityGatewayService) buildClaudeTestRequest(projectID, mappedModel, prompt string, maxOutputTokens ...int) ([]byte, error) {
+	testPrompt := antigravityTestPrompt(prompt)
+	maxTokens := accountTestMaxOutputTokens("", antigravityTestMaxOutputTokens, maxOutputTokens...)
+	promptJSON, err := json.Marshal(testPrompt)
+	if err != nil {
+		return nil, err
+	}
 	claudeReq := &antigravity.ClaudeRequest{
 		Model: mappedModel,
 		Messages: []antigravity.ClaudeMessage{
 			{
 				Role:    "user",
-				Content: json.RawMessage(`"."`),
+				Content: json.RawMessage(promptJSON),
 			},
 		},
-		MaxTokens: 1,
+		MaxTokens: maxTokens,
 		Stream:    false,
 	}
 	return antigravity.TransformClaudeToGemini(claudeReq, projectID, mappedModel)
@@ -555,10 +577,28 @@ func (s *AntigravityGatewayService) getClaudeTransformOptions(ctx context.Contex
 	return opts
 }
 
-// extractContentFromSSEResponse 从 SSE 流式响应中提取文本和内联图片
-func extractContentFromSSEResponse(respBody []byte) (string, []TestConnectionImage) {
+// antigravityTestMaxOutputTokens leaves a thinking model room to think and still answer a short
+// test prompt. It was 1, so gemini-4-argon / gemini-3.8-flash returned no text at all.
+const antigravityTestMaxOutputTokens = 256
+
+// antigravityTestPrompt is the admin's test prompt, or "hi" like the other platforms' tests.
+func antigravityTestPrompt(prompt string) string {
+	if trimmed := strings.TrimSpace(prompt); trimmed != "" {
+		return trimmed
+	}
+	return defaultGeminiTextTestPrompt
+}
+
+// extractAntigravityTestContent extracts model text and images and verifies that the
+// upstream emitted an explicit terminal result. Antigravity usually returns
+// SSE, but some compatible gateways return one JSON response despite
+// streamGenerateContent; both forms are accepted only when a non-truncating
+// finishReason is present (or an explicit [DONE] marker is received).
+func extractAntigravityTestContent(respBody []byte) (string, []TestConnectionImage, error) {
 	var texts []string
 	var images []TestConnectionImage
+	completed := false
+	seenJSON := false
 	lines := bytes.Split(respBody, []byte("\n"))
 
 	for _, line := range lines {
@@ -572,6 +612,10 @@ func extractContentFromSSEResponse(respBody []byte) (string, []TestConnectionIma
 			line = bytes.TrimPrefix(line, []byte("data:"))
 			line = bytes.TrimSpace(line)
 		}
+		if bytes.Equal(line, []byte("[DONE]")) {
+			completed = true
+			continue
+		}
 
 		// 跳过非 JSON 行
 		if len(line) == 0 || line[0] != '{' {
@@ -582,6 +626,13 @@ func extractContentFromSSEResponse(respBody []byte) (string, []TestConnectionIma
 		var data map[string]any
 		if err := json.Unmarshal(line, &data); err != nil {
 			continue
+		}
+		seenJSON = true
+		if errData, ok := data["error"].(map[string]any); ok {
+			if message, _ := errData["message"].(string); strings.TrimSpace(message) != "" {
+				return "", nil, errors.New(message)
+			}
+			return "", nil, errors.New("Antigravity response contained an error")
 		}
 
 		// 尝试从 response.candidates[0].content.parts[] 提取
@@ -599,6 +650,12 @@ func extractContentFromSSEResponse(respBody []byte) (string, []TestConnectionIma
 		candidate, ok := candidates[0].(map[string]any)
 		if !ok {
 			continue
+		}
+		if finishReason, _ := candidate["finishReason"].(string); strings.TrimSpace(finishReason) != "" {
+			if isAccountTestTruncationFinishReason(finishReason) || strings.EqualFold(strings.TrimSpace(finishReason), "max_tokens") {
+				return "", nil, fmt.Errorf("Antigravity response truncated (finishReason=%s)", finishReason)
+			}
+			completed = true
 		}
 
 		content, ok := candidate["content"].(map[string]any)
@@ -630,7 +687,13 @@ func extractContentFromSSEResponse(respBody []byte) (string, []TestConnectionIma
 		}
 	}
 
-	return strings.Join(texts, ""), images
+	if !completed {
+		if !seenJSON {
+			return "", nil, errors.New("Antigravity response was not valid SSE or JSON")
+		}
+		return "", nil, errors.New("Antigravity response ended without a terminal finishReason")
+	}
+	return strings.Join(texts, ""), images, nil
 }
 
 // injectIdentityPatchToGeminiRequest 为 Gemini 格式请求注入身份提示词
@@ -641,20 +704,32 @@ func injectIdentityPatchToGeminiRequest(body []byte) ([]byte, error) {
 		return nil, fmt.Errorf("解析 Gemini 请求失败: %w", err)
 	}
 
+	identityFound := false
+	systemChanged := false
 	// 检查现有 systemInstruction 是否已包含身份提示词
 	if sysInst, ok := request["systemInstruction"].(map[string]any); ok {
 		if parts, ok := sysInst["parts"].([]any); ok {
 			for _, part := range parts {
 				if partMap, ok := part.(map[string]any); ok {
 					if text, ok := partMap["text"].(string); ok {
-						if strings.Contains(text, "You are Antigravity") {
-							// 已包含身份提示词，直接返回原始请求
-							return body, nil
+						neutral := antigravity.NeutralizeSystemIdentity(text)
+						if neutral != text {
+							partMap["text"] = neutral
+							systemChanged = true
+						}
+						if strings.Contains(neutral, "You are Antigravity") {
+							identityFound = true
 						}
 					}
 				}
 			}
 		}
+	}
+	if identityFound {
+		if systemChanged {
+			return json.Marshal(request)
+		}
+		return body, nil
 	}
 
 	// 获取默认身份提示词

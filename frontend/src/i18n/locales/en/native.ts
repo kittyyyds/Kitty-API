@@ -108,6 +108,8 @@ export default {
         advanced: 'Advanced billing items',
         cacheWrite5m: 'Cache write tokens · 5m',
         cacheWrite1h: 'Cache write tokens · 1h',
+        cacheWrite30m: 'Cache write tokens · 30m',
+        cacheWrite12h: 'Cache write tokens · 12h',
         cacheRead: 'Cache read tokens',
         serviceTier: 'Service tier',
         tierStandard: 'Standard',

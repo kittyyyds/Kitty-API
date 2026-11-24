@@ -1,6 +1,8 @@
 package qqbot
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"github.com/stretchr/testify/require"
 	"strings"
@@ -66,8 +68,63 @@ func TestAutonomousNamesAndLocalFilters(t *testing.T) {
 	c.Autonomous.SamplePercent = 100
 	require.True(t, sampledMessage(c, Event{ID: "a"}))
 }
+
+func TestAutonomousImageCandidatesKeepContentFilters(t *testing.T) {
+	image := Attachment{URL: "https://image.example/reaction.gif", ContentType: "image/gif"}
+	for _, tc := range []struct {
+		name string
+		e    Event
+		text string
+	}{
+		{"picture", Event{Attachments: []Attachment{image}}, ""},
+		{"short caption", Event{Content: "哈哈", Attachments: []Attachment{image}}, "哈哈"},
+		{"parallel picture", Event{MsgElements: []MessageElement{{Content: "看看", MsgElements: []MessageElement{{Attachments: []Attachment{image}}}}}}, "看看"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text, reason := autonomousText(tc.e)
+			require.Empty(t, reason)
+			require.Equal(t, tc.text, text)
+		})
+	}
+	for _, tc := range []struct {
+		name   string
+		e      Event
+		reason string
+	}{
+		{"other mention", Event{Content: "@张三", Attachments: []Attachment{image}}, "addressed_elsewhere"},
+		{"nested mention", Event{MsgElements: []MessageElement{{Content: "@张三", Attachments: []Attachment{image}}}}, "addressed_elsewhere"},
+		{"nested command", Event{MsgElements: []MessageElement{{Content: "签到", Attachments: []Attachment{image}}}}, "addressed_elsewhere"},
+		{"nested quote", Event{MsgElements: []MessageElement{{MessageType: 103, Attachments: []Attachment{image}}}}, "addressed_elsewhere"},
+		{"link caption", Event{Content: "https://example.com", Attachments: []Attachment{image}}, "filtered_content"},
+		{"nested credentials", Event{MsgElements: []MessageElement{{Content: "密码12345", Attachments: []Attachment{image}}}}, "filtered_content"},
+		{"long caption", Event{Content: strings.Repeat("字", 1001), Attachments: []Attachment{image}}, "too_long"},
+		{"non-image", Event{Content: "这个怎么处理", Attachments: []Attachment{{ContentType: "video/mp4"}}}, "non_text"},
+		{"mixed media", Event{Attachments: []Attachment{image, {ContentType: "audio/ogg"}}}, "non_text"},
+		{"too many pictures", Event{Attachments: []Attachment{image, image, image, image, image}}, "non_text"},
+		{"unavailable sticker", Event{MsgElements: []MessageElement{{MessageType: 3}}}, "non_text"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, reason := autonomousText(tc.e)
+			require.Equal(t, tc.reason, reason)
+		})
+	}
+}
+
+func TestAutonomousImageRepetitionUsesAttachmentIdentity(t *testing.T) {
+	first := Event{Attachments: []Attachment{{URL: "https://image.example/first", ContentType: "image/png"}}}
+	second := Event{Attachments: []Attachment{{URL: "https://image.example/second", ContentType: "image/png"}}}
+	require.NotEqual(t, autonomousContentHash(first, "哈哈"), autonomousContentHash(second, "哈哈"))
+	require.Equal(t, autonomousContentHash(first, " 哈哈 "), autonomousContentHash(first, "哈哈"))
+	first.Attachments[0].URL = "//image.example/second"
+	require.Equal(t, autonomousContentHash(first, ""), autonomousContentHash(second, ""))
+	require.Equal(t, codeHash("hello"), autonomousContentHash(Event{}, " HELLO "))
+}
+
 func TestAutonomousActiveBeijingWindow(t *testing.T) {
 	a := DefaultAutonomousConfig()
+	require.Equal(t, 9, a.StartHour)
+	require.Equal(t, 23, a.EndHour)
+	a.StartHour, a.EndHour = 9, 23
 	at := time.Date(2026, 10, 20, 1, 0, 0, 0, time.UTC)
 	require.True(t, autonomousActive(a, at))
 	require.False(t, autonomousActive(a, at.Add(-time.Second)))
@@ -89,4 +146,71 @@ func TestAutonomousStrictOutput(t *testing.T) {
 		_, err = parseAutonomousReply(raw, 100)
 		require.Error(t, err, raw)
 	}
+}
+
+func TestAutonomousOneSwitchDefaultsPreserveOverrides(t *testing.T) {
+	old := DefaultAutonomousConfig()
+	next := old
+	next.Enabled = true
+	got := normalizeAutonomous(old, next)
+	require.False(t, got.InheritGroups)
+	require.Equal(t, 60, got.FollowupSeconds)
+	next.Groups = []string{"only-this-group"}
+	next.DailyCalls = 0
+	next.StartHour = 9
+	got = normalizeAutonomous(old, next)
+	require.False(t, got.InheritGroups)
+	require.Equal(t, next.Groups, got.Groups)
+	require.Zero(t, got.DailyCalls)
+	require.Equal(t, 9, got.StartHour)
+	legacy := AutonomousConfig{Enabled: true, Groups: []string{"group"}, Names: []string{"custom"}, SamplePercent: 15, CooldownSeconds: 120, MinMessages: 6, MemberCooldownSeconds: 600, HourlyReplies: 3, DailyReplies: 20, DailyCalls: 40, StartHour: 9, EndHour: 23, FollowupSeconds: 60, MaxChars: 100}
+	got = normalizeAutonomous(old, legacy)
+	require.Equal(t, 6, got.MinMessages)
+	require.Equal(t, legacy.Names, got.Names)
+	require.Equal(t, legacy.Groups, got.Groups)
+	require.Equal(t, legacy, normalizeAutonomous(legacy, legacy), "loading/saving an enabled profile must not silently raise budgets")
+	legacy.DailyCalls = 0
+	require.Zero(t, normalizeAutonomous(old, legacy).DailyCalls)
+}
+func TestAutonomousFollowupAdmission(t *testing.T) {
+	c := DefaultConfig()
+	now := time.Now()
+	st := autonomousState{LastReply: sql.NullTime{Time: now, Valid: true}, ReplyKind: "chat", ReplyMember: "alice"}
+	require.True(t, canAutonomousFollowup(c, st, "alice", now, false))
+	require.False(t, canAutonomousFollowup(c, st, "bob", now, false))
+	require.False(t, canAutonomousFollowup(c, st, "alice", now.Add(2*time.Minute), false))
+	st.Followups = 3
+	require.False(t, canAutonomousFollowup(c, st, "alice", now, false))
+	st.ReplyTrigger = "followup_claimed"
+	require.True(t, canAutonomousFollowup(c, st, "alice", now, true))
+	require.False(t, canAutonomousFollowup(c, st, "alice", now, false))
+	c.Autonomous.FollowupSeconds = 0
+	require.False(t, canAutonomousFollowup(c, st, "alice", now, true))
+	for _, text := range []string{"真的？", "离谱", "没看懂", "不太对吧", "是这样啊"} {
+		require.True(t, followupText(text), text)
+	}
+	for _, text := range []string{"好的", "谢谢！", "嗯", "哈哈哈", "OK", "？？", "😂😂"} {
+		require.False(t, followupText(text), text)
+	}
+}
+
+func TestAutonomousNaturalToneUsesExistingChatAndRespectsSwitch(t *testing.T) {
+	c := DefaultConfig()
+	c.Enabled = true
+	c.AllowedGroups = []string{"group"}
+	c.HistoryMessages = 0
+	c.SystemPrompt = "站长原有人设"
+	c.Autonomous.InheritGroups = true
+	c.Autonomous.ReplyMode = "natural"
+	c.ChatDisabled = false
+	s := &Service{}
+	messages := s.history(context.Background(), c, Job{GroupID: "group", MemberID: "alice"})
+	require.NotContains(t, messages[1].Content, naturalConversationInstructions)
+	c.Autonomous.Enabled = true
+	messages = s.history(context.Background(), c, Job{GroupID: "group", MemberID: "alice"})
+	require.Equal(t, c.SystemPrompt, messages[0].Content)
+	require.Contains(t, messages[1].Content, naturalConversationInstructions)
+	c.ChatDisabled = true
+	messages = s.history(context.Background(), c, Job{GroupID: "group", MemberID: "alice"})
+	require.NotContains(t, messages[1].Content, naturalConversationInstructions)
 }

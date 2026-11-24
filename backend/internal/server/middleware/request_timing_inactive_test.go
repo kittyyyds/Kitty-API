@@ -4,6 +4,9 @@ package middleware
 
 import (
 	"context"
+	"net/http/httptest"
+	"testing"
+
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/iprisk"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
@@ -12,8 +15,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
-	"net/http/httptest"
-	"testing"
 )
 
 func TestRequestTimingInactiveCredentialIsObservationOnly(t *testing.T) {
@@ -107,4 +108,12 @@ func TestRequestTimingUnattributedUserInactiveNeverTriggersAnonymousBan(t *testi
 	ban, err := guard.AnonymousFailure(context.Background(), "8.8.8.8", "unknown")
 	require.NoError(t, err)
 	require.Nil(t, ban, "the 13 USER_INACTIVE observations must not consume even one anonymous failure")
+}
+
+type anonymousSettingsStore struct{ cfg iprisk.Config }
+
+func (s *anonymousSettingsStore) Load(context.Context) (iprisk.Config, error) { return s.cfg, nil }
+func (s *anonymousSettingsStore) Save(_ context.Context, cfg iprisk.Config) error {
+	s.cfg = cfg
+	return nil
 }

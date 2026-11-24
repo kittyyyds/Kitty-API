@@ -7,6 +7,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -15,8 +16,11 @@ import (
 )
 
 type usageBillingRepository struct {
-	db    *sql.DB
-	bonus *rechargeBonusRepository
+	db          *sql.DB
+	bonus       *rechargeBonusRepository
+	laneMu      sync.Mutex
+	lanes       map[int64]*kittyUsageBillingLane
+	lanePending int
 }
 
 func NewUsageBillingRepository(_ *dbent.Client, sqlDB *sql.DB) service.UsageBillingRepository {

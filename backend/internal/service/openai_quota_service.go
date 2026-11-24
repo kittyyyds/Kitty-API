@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/imroc/req/v3"
 )
@@ -43,32 +45,52 @@ const (
 // /wham/usage. The upstream returns an explicit `null` window when the slot
 // is unused, so consumers should treat a nil pointer as "no data".
 type OpenAIRateLimitWindow struct {
-	UsedPercent        float64 `json:"used_percent"`
-	LimitWindowSeconds int64   `json:"limit_window_seconds"`
-	ResetAfterSeconds  int64   `json:"reset_after_seconds"`
-	ResetAt            int64   `json:"reset_at"`
-	decoded            bool
-	usedPresent        bool
-	resetAfterPresent  bool
-	observedAt         time.Time
+	UsedPercent            float64 `json:"used_percent"`
+	LimitWindowSeconds     int64   `json:"limit_window_seconds"`
+	ResetAfterSeconds      int64   `json:"reset_after_seconds"`
+	ResetAt                int64   `json:"reset_at"`
+	usedPercentUnavailable bool
 }
 
+// Keep a missing/null measurement distinct from an explicit zero. Struct
+// literals remain known observations for existing internal callers.
 func (w *OpenAIRateLimitWindow) UnmarshalJSON(data []byte) error {
 	type plain OpenAIRateLimitWindow
-	var value plain
-	if err := json.Unmarshal(data, &value); err != nil {
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
+	var presence struct {
+		UsedPercent *float64 `json:"used_percent"`
+	}
+	if err := json.Unmarshal(data, &presence); err != nil {
 		return err
 	}
-	*w = OpenAIRateLimitWindow(value)
-	w.decoded = true
-	w.observedAt = time.Now()
-	w.usedPresent = len(fields["used_percent"]) > 0 && string(fields["used_percent"]) != "null"
-	w.resetAfterPresent = len(fields["reset_after_seconds"]) > 0 && string(fields["reset_after_seconds"]) != "null"
+	*w = OpenAIRateLimitWindow(decoded)
+	w.usedPercentUnavailable = presence.UsedPercent == nil
 	return nil
+}
+
+func openAIQuotaObservedAt(usage *OpenAIQuotaUsage, fallback time.Time) time.Time {
+	if usage != nil && usage.FetchedAt > 0 {
+		return time.Unix(usage.FetchedAt, 0).UTC()
+	}
+	return fallback.UTC()
+}
+
+func applyOpenAIQuotaWindow(snapshot *OpenAICodexUsageSnapshot, w *OpenAIRateLimitWindow, primary bool, observed time.Time) {
+	if w == nil || w.usedPercentUnavailable || math.IsNaN(w.UsedPercent) || math.IsInf(w.UsedPercent, 0) || w.UsedPercent < 0 {
+		return
+	}
+	used, reset, minutes := w.UsedPercent, int(w.ResetAfterSeconds), int(w.LimitWindowSeconds/60)
+	if w.ResetAt > 0 {
+		reset = max(0, int(w.ResetAt-observed.Unix()))
+	}
+	if primary {
+		snapshot.PrimaryUsedPercent, snapshot.PrimaryResetAfterSeconds, snapshot.PrimaryWindowMinutes = &used, &reset, &minutes
+	} else {
+		snapshot.SecondaryUsedPercent, snapshot.SecondaryResetAfterSeconds, snapshot.SecondaryWindowMinutes = &used, &reset, &minutes
+	}
 }
 
 // OpenAIRateLimit is a rate-limit envelope (primary + optional secondary window).
@@ -127,10 +149,7 @@ type OpenAIQuotaUsage struct {
 	RateLimitResetCredits *OpenAIRateLimitResetCredits `json:"rate_limit_reset_credits,omitempty"`
 	Credits               *OpenAICredits               `json:"credits,omitempty"`
 	FetchedAt             int64                        `json:"fetched_at"`
-	UsageCachePersisted   bool                         `json:"usage_cache_persisted"`
 	autoResetCandidates   []openAIAutoResetCreditCandidate
-	schedulingUpdates     map[string]any
-	schedulingObserved    bool
 }
 
 // OpenAIQuotaResetCredit captures the redeemed credit metadata returned by the
@@ -203,13 +222,6 @@ func (s *OpenAIQuotaService) QueryUsage(ctx context.Context, accountID int64) (*
 	callCtx, cancel := context.WithTimeout(ctx, openaiQuotaUpstreamTimeout)
 	defer cancel()
 	agentIdentity := s.isAgentIdentityAccount(ctx, accountID)
-	// Observe before querying upstream; a concurrent 429 must survive recovery.
-	var observed *openAIQuotaRecoveryObservation
-	var queriedAccount *Account
-	if account, readErr := s.accountRepo.GetByID(callCtx, accountID); readErr == nil {
-		queriedAccount = account
-		observed = observeOpenAIQuotaRecovery(account, time.Now())
-	}
 
 	var payload OpenAIQuotaUsage
 	for recovered := false; ; {
@@ -217,7 +229,6 @@ func (s *OpenAIQuotaService) QueryUsage(ctx context.Context, accountID int64) (*
 		if headerErr != nil {
 			return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_QUOTA_AUTH_FAILED", "failed to build upstream authentication: %v", headerErr)
 		}
-		queryStartedAt := time.Now()
 		resp, err := client.R().
 			SetContext(callCtx).
 			SetHeaders(quotaHeaders).
@@ -242,28 +253,6 @@ func (s *OpenAIQuotaService) QueryUsage(ctx context.Context, accountID int64) (*
 			body := truncate(s.redactQuotaErrorBody(ctx, accountID, resp.String()), 240)
 			slog.Warn("openai_quota_query_failed", "account_id", accountID, "status", status, "body", body)
 			return nil, infraerrors.Newf(mapUpstreamStatus(status), "OPENAI_QUOTA_UPSTREAM_ERROR", "upstream returned %d: %s", status, body)
-		}
-		payload.schedulingObserved = true
-		payload.UsageCachePersisted = false
-		// A failed row read cannot safely choose global vs Spark windows.
-		var updates map[string]any
-		if queriedAccount != nil && !identityValuesConflict(queriedAccount.GetCredential("email"), payload.Email) {
-			updates = openAIQuotaSchedulingUpdates(resp.Bytes(), queriedAccount.IsShadow(), chatGPTAccountID, time.Now())
-		}
-		if len(updates) > 0 {
-			// Order by request observation, so a slow earlier query cannot undo
-			// a later response/header snapshot. Resets use response receipt time.
-			updates["codex_usage_updated_at"] = queryStartedAt.UTC().Format(time.RFC3339Nano)
-			payload.schedulingUpdates = updates
-			written, writeErr := persistCodexUsageUpdates(callCtx, s.accountRepo, accountID, updates)
-			payload.UsageCachePersisted = written && writeErr == nil
-			if writeErr != nil {
-				slog.Warn("openai_quota_usage_snapshot_failed", "account_id", accountID, "error_code", "snapshot_persistence_failed")
-			} else if written && !queriedAccount.IsShadow() {
-				// Recovery still requires the original complete-zero payload and
-				// observed generation; nonzero/partial data never clears a 429.
-				recoverOpenAIQuotaRateLimit(callCtx, s.accountRepo, observed, openAIQuotaRecoveryUsageUpdates(resp.Bytes(), time.Now()))
-			}
 		}
 		break
 	}
@@ -308,6 +297,9 @@ func (s *OpenAIQuotaService) CacheResetCreditsSnapshot(ctx context.Context, acco
 // of reset-credit expiration details. A successful read with absent credits
 // replaces the previous balance with unknown, never with a fabricated zero.
 func (s *OpenAIQuotaService) CacheCreditsSnapshot(ctx context.Context, accountID int64, usage *OpenAIQuotaUsage) error {
+	if err := scopedAccountIDAccess(ctx, s.accountRepo, accountID, scopedAccountOperation(ctx, "openai.quota.read"), true); err != nil {
+		return err
+	}
 	if usage == nil {
 		return infraerrors.New(http.StatusBadGateway, "OPENAI_QUOTA_EMPTY_USAGE", "openai quota query returned an empty result")
 	}
@@ -321,6 +313,9 @@ func (s *OpenAIQuotaService) CacheCreditsSnapshot(ctx context.Context, accountID
 
 // CachePostResetSnapshot persists the credits and usage windows observed after a reset.
 func (s *OpenAIQuotaService) CachePostResetSnapshot(ctx context.Context, accountID int64, usage *OpenAIQuotaUsage) error {
+	if err := scopedAccountIDAccess(ctx, s.accountRepo, accountID, scopedAccountOperation(ctx, "openai.quota.reset"), true); err != nil {
+		return err
+	}
 	if usage == nil {
 		return s.cacheResetCreditsSnapshot(ctx, accountID, nil, nil)
 	}
@@ -338,6 +333,9 @@ func (s *OpenAIQuotaService) CachePostResetSnapshot(ctx context.Context, account
 }
 
 func (s *OpenAIQuotaService) cacheResetCreditsSnapshot(ctx context.Context, accountID int64, credits *OpenAIRateLimitResetCredits, updates map[string]any) error {
+	if err := scopedAccountIDAccess(ctx, s.accountRepo, accountID, scopedAccountOperation(ctx, "openai.quota.read"), true); err != nil {
+		return err
+	}
 	if credits == nil || (credits.AvailableCount > 0 && len(credits.Credits) == 0) {
 		return infraerrors.New(
 			http.StatusBadGateway,
@@ -349,7 +347,7 @@ func (s *OpenAIQuotaService) cacheResetCreditsSnapshot(ctx context.Context, acco
 		updates = make(map[string]any, 1)
 	}
 	updates[openaiQuotaResetCreditsKey] = credits
-	if _, err := persistCodexUsageUpdates(ctx, s.accountRepo, accountID, updates); err != nil {
+	if err := s.accountRepo.UpdateExtra(ctx, accountID, updates); err != nil {
 		return infraerrors.New(
 			http.StatusInternalServerError,
 			"OPENAI_QUOTA_CACHE_WRITE_FAILED",
@@ -414,6 +412,10 @@ func (s *OpenAIQuotaService) ResetCreditTargeted(ctx context.Context, accountID 
 }
 
 func (s *OpenAIQuotaService) resetCredit(ctx context.Context, accountID int64, creditID, redeemRequestID string, targeted bool) (*OpenAIQuotaResetResult, error) {
+	ctx = WithScopedAdminAccountOperation(ctx, "openai.quota.reset")
+	if err := scopedAccountIDAccess(ctx, s.accountRepo, accountID, "openai.quota.reset", false); err != nil {
+		return nil, err
+	}
 	// Shadow guard: resetting credits via a shadow account would silently
 	// operate on the parent's quota; that is surprising and unwanted. Callers
 	// must reset the parent account directly.
@@ -427,8 +429,16 @@ func (s *OpenAIQuotaService) resetCredit(ctx context.Context, accountID int64, c
 		if loadErr != nil {
 			return nil, infraerrors.Newf(http.StatusNotFound, "OPENAI_QUOTA_ACCOUNT_NOT_FOUND", "account not found: %v", loadErr)
 		}
+		if acc == nil {
+			return nil, ErrAccountNotFound
+		}
 		if acc.IsShadow() {
 			return nil, ErrSparkShadowResetNotSupported
+		}
+		if !targeted {
+			if err := validateOpenAIManualReset(acc, time.Now()); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -509,11 +519,18 @@ func (s *OpenAIQuotaService) prepareUpstreamCall(ctx context.Context, accountID 
 	if account == nil {
 		return "", "", "", false, infraerrors.New(http.StatusNotFound, "OPENAI_QUOTA_ACCOUNT_NOT_FOUND", "account not found")
 	}
+	if err := scopedAccountAccess(ctx, s.accountRepo, account, scopedAccountOperation(ctx, "openai.quota.read"), true); err != nil {
+		return "", "", "", false, err
+	}
 	if account.Platform != PlatformOpenAI {
 		return "", "", "", false, infraerrors.New(http.StatusBadRequest, "OPENAI_QUOTA_INVALID_PLATFORM", "account is not an OpenAI account")
 	}
 	if account.Type != AccountTypeOAuth {
 		return "", "", "", false, infraerrors.New(http.StatusBadRequest, "OPENAI_QUOTA_INVALID_TYPE", "account is not an OAuth account")
+	}
+	// Usage and reset credits of a managed account are read from its slot.
+	if account.IsOpenAIVMManaged() {
+		return "", "", "", false, errOpenAIVMManagedNoToken
 	}
 
 	// Spark shadow accounts do not hold their own credentials; resolve to the
@@ -525,6 +542,9 @@ func (s *OpenAIQuotaService) prepareUpstreamCall(ctx context.Context, accountID 
 			return "", "", "", false, infraerrors.Newf(http.StatusBadGateway, "OPENAI_QUOTA_SHADOW_RESOLVE_FAILED", "failed to resolve shadow account: %v", rerr)
 		}
 		account = resolved
+		if err := scopedAccountAccess(ctx, s.accountRepo, account, scopedAccountOperation(ctx, "openai.quota.read"), false); err != nil {
+			return "", "", "", false, err
+		}
 	}
 
 	chatGPTAccountID = strings.TrimSpace(account.GetCredential("chatgpt_account_id"))
@@ -550,25 +570,11 @@ func (s *OpenAIQuotaService) prepareUpstreamCall(ctx context.Context, accountID 
 	}
 	fedRAMP = account.IsChatGPTAccountFedRAMP()
 
-	// account.Proxy is eager-loaded by accountRepo.GetByID (see
-	// repository.accountsToService), so we can read the proxy URL directly
-	// instead of round-tripping the DB again. Fall back to proxyRepo only
-	// when Proxy isn't pre-populated (defensive — e.g. callers that built
-	// the Account by hand).
-	if account.ProxyID != nil {
-		var proxy *Proxy
-		switch {
-		case account.Proxy != nil:
-			proxy = account.Proxy
-		case s.proxyRepo != nil:
-			if resolved, perr := s.proxyRepo.GetByID(ctx, *account.ProxyID); perr == nil {
-				proxy = resolved
-			}
-		}
-		if proxy == nil {
-			return "", "", "", false, infraerrors.New(http.StatusServiceUnavailable, "OPENAI_QUOTA_PROXY_UNAVAILABLE", "configured proxy is unavailable")
-		}
-		proxyURL = proxy.URL()
+	// Revalidate managed proxies before issuing quota requests so an unavailable
+	// account route cannot silently fall back to direct egress.
+	proxyURL, err = resolveOpenAIAccountProxyURL(ctx, s.proxyRepo, account)
+	if err != nil {
+		return "", "", "", false, err
 	}
 
 	return accessToken, chatGPTAccountID, proxyURL, fedRAMP, nil
@@ -582,11 +588,17 @@ func (s *OpenAIQuotaService) recoverAgentIdentityTask(ctx context.Context, accou
 	if err != nil || account == nil {
 		return fmt.Errorf("account is unavailable")
 	}
+	if scopeErr := scopedAccountAccess(ctx, s.accountRepo, account, scopedAccountOperation(ctx, "openai.quota.read"), true); scopeErr != nil {
+		return scopeErr
+	}
 	if account.IsShadow() {
 		account, err = resolveCredentialAccount(ctx, s.accountRepo, account)
 		if err != nil || account == nil {
 			return fmt.Errorf("credential account is unavailable")
 		}
+	}
+	if scopeErr := scopedAccountAccess(ctx, s.accountRepo, account, scopedAccountOperation(ctx, "openai.quota.read"), false); scopeErr != nil {
+		return scopeErr
 	}
 	if !account.IsOpenAIAgentIdentity() {
 		return nil
@@ -614,10 +626,19 @@ func (s *OpenAIQuotaService) isAgentIdentityAccount(ctx context.Context, account
 func (s *OpenAIQuotaService) buildCodexQuotaHeaders(ctx context.Context, accountID int64, accessToken, chatGPTAccountID string, fedRAMP bool) (map[string]string, string, error) {
 	headers := buildCodexCommonHeaders(accessToken, chatGPTAccountID, fedRAMP)
 	if s == nil || s.accountRepo == nil {
+		if adminaccess.RestrictedFromContext(ctx) != nil {
+			return nil, "", infraerrors.NotFound("SCOPED_ACCOUNT_NOT_FOUND", "账户不存在")
+		}
 		return headers, "", nil
 	}
 	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if scopeErr := scopedAccountAccess(ctx, s.accountRepo, account, scopedAccountOperation(ctx, "openai.quota.read"), true); scopeErr != nil {
+		return nil, "", scopeErr
+	}
 	if err != nil || account == nil {
+		if adminaccess.RestrictedFromContext(ctx) != nil {
+			return nil, "", infraerrors.NotFound("SCOPED_ACCOUNT_NOT_FOUND", "账户不存在")
+		}
 		if strings.TrimSpace(accessToken) == "" {
 			return nil, "", fmt.Errorf("agent identity account credentials are unavailable")
 		}
@@ -626,6 +647,11 @@ func (s *OpenAIQuotaService) buildCodexQuotaHeaders(ctx context.Context, account
 	if account.IsShadow() {
 		if resolved, resolveErr := resolveCredentialAccount(ctx, s.accountRepo, account); resolveErr == nil && resolved != nil {
 			account = resolved
+			if scopeErr := scopedAccountAccess(ctx, s.accountRepo, account, scopedAccountOperation(ctx, "openai.quota.read"), false); scopeErr != nil {
+				return nil, "", scopeErr
+			}
+		} else if adminaccess.RestrictedFromContext(ctx) != nil {
+			return nil, "", infraerrors.NotFound("SCOPED_ACCOUNT_NOT_FOUND", "账户不存在")
 		} else if strings.TrimSpace(accessToken) == "" {
 			return nil, "", fmt.Errorf("agent identity shadow credentials are unavailable")
 		}
@@ -716,26 +742,13 @@ func buildCodexSparkWindowExtraUpdates(usage *OpenAIQuotaUsage, now time.Time) m
 	if spark == nil {
 		return nil
 	}
+	now = openAIQuotaObservedAt(usage, now)
 
 	// Reuse OpenAICodexUsageSnapshot / Normalize to map primary/secondary windows
 	// to canonical 5h/7d buckets (same logic as probeOpenAICodexSnapshot).
 	snap := &OpenAICodexUsageSnapshot{}
-	if w := spark.PrimaryWindow; w != nil {
-		p := w.UsedPercent
-		snap.PrimaryUsedPercent = &p
-		ra := int(w.ResetAfterSeconds)
-		snap.PrimaryResetAfterSeconds = &ra
-		wm := int(w.LimitWindowSeconds / 60)
-		snap.PrimaryWindowMinutes = &wm
-	}
-	if w := spark.SecondaryWindow; w != nil {
-		p := w.UsedPercent
-		snap.SecondaryUsedPercent = &p
-		ra := int(w.ResetAfterSeconds)
-		snap.SecondaryResetAfterSeconds = &ra
-		wm := int(w.LimitWindowSeconds / 60)
-		snap.SecondaryWindowMinutes = &wm
-	}
+	applyOpenAIQuotaWindow(snap, spark.PrimaryWindow, true, now)
+	applyOpenAIQuotaWindow(snap, spark.SecondaryWindow, false, now)
 
 	normalized := snap.Normalize()
 	if normalized == nil {

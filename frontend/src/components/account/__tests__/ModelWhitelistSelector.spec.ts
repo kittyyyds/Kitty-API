@@ -29,10 +29,7 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string, params?: Record<string, unknown>) => (
-        key === 'common.copy' ? '复制' : key === 'admin.accounts.syncUpstreamModelsError'
-          ? `${key}: ${params?.message}` : key === 'admin.accounts.modelMappingConflict' ? `Model mapping conflict: ${params?.from} → ${params?.to}` : key
-      )
+      t: (key: string, params?: Record<string, string>) => key === 'common.copy' ? '复制' : key === 'admin.accounts.modelMappingConflict' ? `Model mapping conflict: ${params?.from} → ${params?.to}` : key === 'admin.accounts.syncUpstreamModelsError' ? `${key}: ${params?.message}` : key
     })
   }
 })
@@ -111,99 +108,6 @@ describe('ModelWhitelistSelector', () => {
     showWarning.mockReset()
     syncUpstreamModels.mockReset()
     syncUpstreamModelsPreview.mockReset()
-  })
-
-  it('previews video upstream models and appends unique IDs without an empty local-fill action', async () => {
-    const credentials = {
-      platform: 'video', type: 'apikey', base_url: 'https://video.example/v1', api_key: 'test-key',
-    }
-    syncUpstreamModelsPreview.mockResolvedValue({ models: [' existing ', '特价/官方h3-2k', '', '特价/官方h3-2k'] })
-    const wrapper = mountSelector({ platform: 'video', modelValue: ['existing'], syncCredentials: credentials })
-    expect(wrapper.findAll('button').some(button => button.text() === 'admin.accounts.fillRelatedModels')).toBe(false)
-    const syncButton = wrapper.findAll('button').find(button => button.text() === 'admin.accounts.syncUpstreamModels')!
-    expect(syncButton).toBeDefined()
-    await syncButton.trigger('click')
-    await flushPromises()
-    expect(syncUpstreamModelsPreview).toHaveBeenCalledWith(credentials)
-    expect(syncUpstreamModels).not.toHaveBeenCalled()
-    expect(wrapper.emitted('update:modelValue')).toEqual([[['existing', '特价/官方h3-2k']]])
-    expect(wrapper.emitted('upstream-synced')).toEqual([[]])
-    expect(showSuccess).toHaveBeenCalledWith('admin.accounts.syncUpstreamModelsSuccess')
-  })
-
-  it('syncs an existing video account by ID and restores the button after a failed request', async () => {
-    syncUpstreamModels.mockRejectedValueOnce(new Error('upstream unavailable'))
-    const wrapper = mountSelector({ platform: 'video', accountId: 205, modelValue: ['existing'] })
-    const syncButton = wrapper.findAll('button').find(button => button.text() === 'admin.accounts.syncUpstreamModels')!
-    expect(syncButton).toBeDefined()
-    await syncButton.trigger('click')
-    await flushPromises()
-    expect(showError).toHaveBeenCalledWith('admin.accounts.syncUpstreamModelsError: upstream unavailable')
-    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
-    expect(syncButton.attributes('disabled')).toBeUndefined()
-
-    syncUpstreamModels.mockResolvedValueOnce({ models: ['existing', '特价/sd-2.5'] })
-    await syncButton.trigger('click')
-    await flushPromises()
-    expect(syncUpstreamModels).toHaveBeenLastCalledWith(205)
-    expect(syncUpstreamModelsPreview).not.toHaveBeenCalled()
-    expect(wrapper.emitted('update:modelValue')).toEqual([[['existing', '特价/sd-2.5']]])
-    expect(wrapper.emitted('upstream-synced')).toBeUndefined()
-  })
-
-  it('previews with newly entered credentials before an existing account is saved', async () => {
-    syncUpstreamModelsPreview.mockResolvedValueOnce({ models: ['fresh-video-model'] })
-    const wrapper = mountSelector({
-      platform: 'video',
-      accountId: 205,
-      syncCredentials: {
-        platform: 'video',
-        type: 'apikey',
-        base_url: 'https://suanliai.top',
-        api_key: 'entered-only-in-form'
-      }
-    })
-
-    const syncButton = wrapper.findAll('button').find(button => button.text() === 'admin.accounts.syncUpstreamModels')!
-    await syncButton.trigger('click')
-    await flushPromises()
-
-    expect(syncUpstreamModelsPreview).toHaveBeenCalledWith({
-      platform: 'video',
-      type: 'apikey',
-      base_url: 'https://suanliai.top',
-      api_key: 'entered-only-in-form'
-    })
-    expect(syncUpstreamModels).not.toHaveBeenCalled()
-    expect(wrapper.emitted('update:modelValue')).toEqual([[['fresh-video-model']]])
-  })
-
-  it('shows a structured API error message from the client', async () => {
-    syncUpstreamModels.mockRejectedValueOnce({ status: 400, message: 'API key is invalid' })
-    const wrapper = mountSelector({ platform: 'video', accountId: 205 })
-    const syncButton = wrapper.findAll('button').find(button => button.text() === 'admin.accounts.syncUpstreamModels')!
-
-    await syncButton.trigger('click')
-    await flushPromises()
-
-    expect(showError).toHaveBeenCalledWith('admin.accounts.syncUpstreamModelsError: API key is invalid')
-    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
-  })
-
-  it('does not send a preview or silently sync saved credentials when connection settings need saving', async () => {
-    const wrapper = mountSelector({
-      platform: 'video', accountId: 205,
-      syncBlockedReason: 'Save the connection settings first',
-      syncCredentials: { platform: 'video', type: 'apikey', base_url: 'https://video.example', api_key: 'fresh-key' }
-    })
-    const syncButton = wrapper.findAll('button').find(button => button.text() === 'admin.accounts.syncUpstreamModels')!
-    await syncButton.trigger('click')
-    await flushPromises()
-    expect(showError).toHaveBeenCalledWith('Save the connection settings first')
-    expect(syncUpstreamModelsPreview).not.toHaveBeenCalled()
-    expect(syncUpstreamModels).not.toHaveBeenCalled()
-    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
-    expect(syncButton.attributes('disabled')).toBeUndefined()
   })
 
   afterEach(() => {
@@ -439,34 +343,6 @@ describe('ModelWhitelistSelector', () => {
     expect(syncUpstreamModelsPreview).toHaveBeenCalledOnce()
     expect(wrapper.emitted('upstream-synced')).toEqual([[]])
     expect(wrapper.emitted('update:modelValue')).toEqual([[['x-preview-f-free']]])
-  })
-
-  it('shows structured API errors and retries with the latest unsaved credentials', async () => {
-    syncUpstreamModelsPreview.mockRejectedValueOnce({
-      status: 502,
-      message: 'Upstream model list request failed with HTTP 401',
-    }).mockResolvedValueOnce({ models: ['draft-model'] })
-    const wrapper = mountSelector({
-      syncCredentials: { platform: 'openai', type: 'apikey', base_url: 'https://first.example/v1', api_key: 'first-test-key' },
-    })
-    const syncButton = wrapper.findAll('button').find(button => button.text() === 'admin.accounts.syncUpstreamModels')!
-    await syncButton.trigger('click')
-    await flushPromises()
-
-    expect(showError).toHaveBeenCalledWith('admin.accounts.syncUpstreamModelsError: Upstream model list request failed with HTTP 401')
-    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
-    expect(wrapper.emitted('upstream-synced')).toBeUndefined()
-    expect(syncButton.attributes('disabled')).toBeUndefined()
-
-    const editedCredentials = { platform: 'openai', type: 'apikey', base_url: 'https://second.example/v1', api_key: 'second-test-key', proxy_id: 7 }
-    await wrapper.setProps({ syncCredentials: editedCredentials })
-    await syncButton.trigger('click')
-    await flushPromises()
-
-    expect(syncUpstreamModelsPreview).toHaveBeenLastCalledWith(editedCredentials)
-    expect(syncUpstreamModels).not.toHaveBeenCalled()
-    expect(wrapper.emitted('update:modelValue')).toEqual([[['draft-model']]])
-    expect(wrapper.emitted('upstream-synced')).toEqual([[]])
   })
 
   it('does not append configured fallback IDs', async () => {

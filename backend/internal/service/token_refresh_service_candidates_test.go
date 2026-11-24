@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +24,44 @@ type tokenRefreshCandidateRepo struct {
 	clearTempCalls        int
 	lastTempUnschedReason string
 	listActiveCalls       int
+}
+
+func (r *tokenRefreshCandidateRepo) GetByID(_ context.Context, id int64) (*Account, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.accounts {
+		if r.accounts[i].ID == id {
+			return snapshotOAuthRefreshAccount(&r.accounts[i]), nil
+		}
+	}
+	return nil, errors.New("test account not found")
+}
+
+func (r *tokenRefreshCandidateRepo) UpdateOpenAIOAuthCredentialsIfUnchanged(_ context.Context, id int64, expected map[string]any, proxy *int64, credentials map[string]any) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.accounts {
+		a := &r.accounts[i]
+		if a.ID == id && reflect.DeepEqual(a.Credentials, expected) && reflect.DeepEqual(a.ProxyID, proxy) {
+			a.Credentials = snapshotOAuthRefreshAccount(&Account{Credentials: credentials}).Credentials
+			r.updatedCredentialIDs = append(r.updatedCredentialIDs, id)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (r *tokenRefreshCandidateRepo) SetOpenAIOAuthRefreshErrorIfUnchanged(_ context.Context, id int64, expected map[string]any, proxy *int64, _ string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.accounts {
+		a := &r.accounts[i]
+		if a.ID == id && reflect.DeepEqual(a.Credentials, expected) && reflect.DeepEqual(a.ProxyID, proxy) {
+			r.setErrorCalls++
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *tokenRefreshCandidateRepo) ListActive(context.Context) ([]Account, error) {
@@ -50,7 +89,7 @@ func (r *tokenRefreshCandidateRepo) ListOAuthRefreshCandidatePage(_ context.Cont
 				break
 			}
 		}
-		if options.ActiveOnly && account.Status != StatusActive ||
+		if options.ActiveOnly && account.Status != StatusActive && !(options.IncludeQualityPaused && account.Status == StatusQualityPaused) ||
 			account.Type != AccountTypeOAuth ||
 			!platformAllowed ||
 			options.RequireRefreshToken && strings.TrimSpace(refreshToken) == "" ||
@@ -101,6 +140,8 @@ func (r *tokenRefreshCandidateRepo) ClearTempUnschedulable(context.Context, int6
 type tokenRefreshTestRefresher struct {
 	err error
 }
+
+func (r *tokenRefreshTestRefresher) CacheKey(a *Account) string { return OpenAITokenCacheKey(a) }
 
 func (r *tokenRefreshTestRefresher) CanRefresh(*Account) bool { return true }
 
@@ -177,13 +218,36 @@ func TestTokenRefreshService_ProcessRefreshUsesOAuthRefreshCandidates(t *testing
 				Schedulable: false,
 				Credentials: map[string]any{"refresh_token": "paused-account-token"},
 			},
+			{
+				ID:          8,
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeOAuth,
+				Status:      StatusQualityPaused,
+				Schedulable: true,
+				Credentials: map[string]any{"refresh_token": "quality-paused-token"},
+			},
+			{
+				ID:          9,
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeOAuth,
+				Status:      StatusQualityPaused,
+				Schedulable: false,
+				Credentials: map[string]any{"refresh_token": "quality-paused-manual-stop-token"},
+			},
+			{
+				ID:          10,
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeOAuth,
+				Status:      StatusError,
+				Credentials: map[string]any{"refresh_token": "error-account-token"},
+			},
 		},
 	}
 	svc := &TokenRefreshService{
 		accountRepo:    repo,
 		candidatePager: repo,
 		registrations: []tokenRefreshRegistration{
-			{platform: PlatformOpenAI, refresher: &tokenRefreshTestRefresher{}},
+			{platform: PlatformOpenAI, refresher: &tokenRefreshTestRefresher{}, executor: &tokenRefreshTestRefresher{}},
 			{platform: PlatformGemini, refresher: &tokenRefreshTestRefresher{}},
 			{platform: PlatformAntigravity, refresher: &tokenRefreshTestRefresher{}},
 		},
@@ -191,12 +255,14 @@ func TestTokenRefreshService_ProcessRefreshUsesOAuthRefreshCandidates(t *testing
 		cfg:           &config.TokenRefreshConfig{RefreshBeforeExpiryHours: 1, MaxRetries: 1},
 	}
 
+	svc.SetRefreshAPI(NewOAuthRefreshAPI(repo, nil))
 	svc.processRefresh()
 
 	require.Zero(t, repo.listActiveCalls, "TokenRefreshService should not use the broad active-account query")
 	// Account 7 is paused (schedulable=false) but active: it must still be
 	// refreshed so its stored access_token does not silently expire.
-	require.ElementsMatch(t, []int64{1, 6, 7}, repo.updatedCredentialIDs)
+	// Quality pauses also preserve credentials, including when manually stopped.
+	require.ElementsMatch(t, []int64{1, 6, 7, 8, 9}, repo.updatedCredentialIDs)
 	require.Equal(t, 1, repo.clearTempCalls, "successful refresh should clear the OAuth 401 temp-unschedulable state")
 }
 
@@ -231,7 +297,11 @@ func TestTokenRefreshService_RefreshFailureDoesNotCallPrivacy(t *testing.T) {
 				},
 			}
 
-			err := svc.refreshWithRetry(context.Background(), account, &tokenRefreshTestRefresher{err: tt.err}, nil, time.Hour)
+			account.Status = StatusActive
+			repo.accounts = []Account{*snapshotOAuthRefreshAccount(account)}
+			svc.SetRefreshAPI(NewOAuthRefreshAPI(repo, nil))
+			refresher := &tokenRefreshTestRefresher{err: tt.err}
+			err := svc.refreshWithRetry(context.Background(), account, refresher, refresher, time.Hour)
 
 			require.Error(t, err)
 			if isNonRetryableRefreshError(tt.err) {

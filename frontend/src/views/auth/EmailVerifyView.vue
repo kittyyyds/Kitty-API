@@ -189,8 +189,7 @@ import {
   sendVerifyCode,
 } from '@/api/auth'
 import { apiClient } from '@/api/client'
-import { buildAuthErrorMessage } from '@/utils/authError'
-import { extractApiErrorCode } from '@/utils/apiError'
+import { extractApiErrorCode, extractI18nErrorMessage } from '@/utils/apiError'
 import {
   formatRegistrationEmailSuffixWhitelistForMessage,
   isRegistrationEmailSuffixAllowed,
@@ -242,6 +241,7 @@ const email = ref<string>('')
 const password = ref<string>('')
 const initialTurnstileToken = ref<string>('')
 const registrationTurnstileProof = ref<string>('')
+const turnstileRequiredForRegistration = ref<boolean>(false)
 const initialTencentCaptchaRandstr = ref<string>('')
 const promoCode = ref<string>('')
 const invitationCode = ref<string>('')
@@ -349,6 +349,8 @@ onMounted(async () => {
   // Load public settings
   try {
     const settings = await getPublicSettings()
+    turnstileRequiredForRegistration.value =
+      settings.turnstile_enabled === true && Boolean(settings.turnstile_site_key) && !isPendingOAuthFlow()
     tencentCaptchaEnabled.value = settings.tencent_captcha_enabled === true
     tencentCaptchaAppId.value = settings.tencent_captcha_app_id || ''
     tencentCaptchaRegion.value = settings.tencent_captcha_region || 'cn'
@@ -576,6 +578,9 @@ async function sendCode(): Promise<void> {
       if (proof) {
         registrationTurnstileProof.value = proof
         initialTurnstileToken.value = ''
+        // Keep the reusable proof and drop the spent one-time Turnstile token, so a page
+        // refresh or a later resend does not replay a token Cloudflare already consumed.
+        persistRegistrationTurnstileProof(proof)
       }
     }
 
@@ -586,6 +591,12 @@ async function sendCode(): Promise<void> {
 
     appStore.showError(errorMessage.value)
   } finally {
+    // A failed first send under Turnstile spends the stored token without returning a proof;
+    // clear it so the next try does not replay it, and the page asks for a fresh check instead.
+    if (!registrationTurnstileProof.value && initialTurnstileToken.value && turnstileEnabledForRegistration()) {
+      clearStoredCaptchaProof()
+      initialTurnstileToken.value = ''
+    }
     if (captchaProofUsed) {
       clearStoredCaptchaProof()
       initialTurnstileToken.value = ''
@@ -596,6 +607,25 @@ async function sendCode(): Promise<void> {
     }
     isSendingCode.value = false
   }
+}
+
+function persistRegistrationTurnstileProof(proof: string): void {
+  const registerDataStr = sessionStorage.getItem('register_data')
+  if (!registerDataStr) return
+
+  try {
+    const registerData = JSON.parse(registerDataStr) as Record<string, unknown>
+    registerData.turnstile_proof = proof
+    delete registerData.turnstile_token
+    sessionStorage.setItem('register_data', JSON.stringify(registerData))
+  } catch {
+    // Invalid registration state is handled by the existing onMounted parser.
+  }
+}
+
+// Turnstile (not an action captcha) is the only provider whose token the registration page hands over.
+function turnstileEnabledForRegistration(): boolean {
+  return turnstileRequiredForRegistration.value
 }
 
 function clearStoredCaptchaProof(): void {
@@ -616,6 +646,14 @@ function clearStoredCaptchaProof(): void {
 // ==================== Handlers ====================
 
 async function handleResendCode(): Promise<void> {
+  // Under Turnstile this page has no widget of its own: without a reusable proof or an unspent
+  // token a resend cannot pass, so send the visitor back for a fresh check instead of failing again.
+  if (turnstileRequiredForRegistration.value && !registrationTurnstileProof.value && !initialTurnstileToken.value) {
+    appStore.showWarning(t('auth.verifyAgainToResend'))
+    handleBack()
+    return
+  }
+
   if (!(await acquireResendActionProof())) {
     return
   }
@@ -770,25 +808,17 @@ function buildEmailSuffixNotAllowedMessage(): string {
 }
 
 function buildRegistrationErrorMessage(error: unknown, fallback: string): string {
-  if (extractApiErrorCode(error) === 'EMAIL_ALIAS_NOT_ALLOWED') {
+  const code = extractApiErrorCode(error)
+  if (code === 'EMAIL_ALIAS_NOT_ALLOWED') {
     return t('auth.emailAliasNotAllowed')
   }
-  if (extractApiErrorCode(error) === 'EMAIL_DOMAIN_REGISTRATION_LIMIT') {
+  if (code === 'EMAIL_DOMAIN_REGISTRATION_LIMIT') {
     return t('auth.emailDomainRegistrationLimit')
   }
-  return buildAuthErrorMessage(error, { fallback })
+  if (code === 'EMAIL_SUFFIX_NOT_ALLOWED') {
+    return buildEmailSuffixNotAllowedMessage()
+  }
+  // Other backend reasons are translated from auth.errors; the English text is only a fallback.
+  return extractI18nErrorMessage(error, t, 'auth.errors', fallback)
 }
 </script>
-
-<style scoped>
-.fade-enter-active,
-.fade-leave-active {
-  transition: all 0.3s ease;
-}
-
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-  transform: translateY(-8px);
-}
-</style>

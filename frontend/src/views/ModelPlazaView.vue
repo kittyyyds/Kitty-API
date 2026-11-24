@@ -20,7 +20,7 @@
   <!-- 独立形态:自带导航条(logo/站名 + 登录/回后台) -->
   <div v-else class="kitty-media-page relative z-10 min-h-screen">
     <PlazaNavBar />
-    <main class="mx-auto w-full max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+    <main class="w-full min-w-0 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
       <CatalogViewSwitch v-model="view" />
       <MediaPricingCatalog v-if="view === 'media'" :response="data" :loading="loading" :error="loadFailed"
         :catalog-policy="suanliMediaCatalog" :received-at="receivedAt" :personal="authStore.isAuthenticated" :initial-kind="initialKind" :initial-query="initialQuery" :initial-group-id="initialGroupId" :initial-detail="initialDetail" @refresh="loadData" />

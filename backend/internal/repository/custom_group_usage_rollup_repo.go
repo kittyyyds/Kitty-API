@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
 	"fmt"
 	"time"
 
@@ -67,6 +69,22 @@ func (r *usageLogRepository) readGroupUsageRollupSnapshot(ctx context.Context, t
 }
 
 func (r *usageLogRepository) getAllGroupUsageSummaryFromRollups(ctx context.Context, todayStart time.Time) (results []usagestats.GroupUsageSummary, err error) {
+	if db, ok := r.sql.(*sql.DB); ok {
+		tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = tx.Rollback() }()
+		reader := &usageLogRepository{sql: tx}
+		rows, err := reader.getAllGroupUsageSummaryFromRollups(ctx, todayStart)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return rows, nil
+	}
 	todayStart = service.GroupUsageTodayStart(todayStart)
 	yesterdayStart := service.GroupUsageYesterdayStart(todayStart)
 	timezoneName := service.GroupUsageTimezoneName()
@@ -162,94 +180,274 @@ func (r *usageLogRepository) getAllGroupUsageSummaryFromRollups(ctx context.Cont
 	return results, nil
 }
 
+const (
+	groupUsageRollupBuildLockSQL   = "SELECT pg_try_advisory_lock(hashtext('usage_group_daily_rollups:build'))"
+	groupUsageRollupBuildUnlockSQL = "SELECT pg_advisory_unlock(hashtext('usage_group_daily_rollups:build'))"
+	// groupUsageRollupBuildMaxRounds 限定一次同步内因并发变更重算脏区间的轮数；
+	// 未收敛的部分保持未发布，由下一次同步继续。
+	groupUsageRollupBuildMaxRounds = 3
+)
+
+var errGroupUsageRollupBuildPreempted = errors.New("分组用量汇总重建登记已被替换")
+
+// groupUsageRollupBuildPlan 是一轮日桶重建：用 [rowsFrom, rowsBefore) 的 usage_logs
+// 重算 [startDate, targetDate) 的日桶，并清理 retainedDate 之前的日桶。
+type groupUsageRollupBuildPlan struct {
+	startDate    string
+	targetDate   string
+	retainedDate string
+	rowsFrom     time.Time
+	rowsBefore   time.Time
+	timezoneName string
+}
+
+// groupUsageRollupTxRunner 在一个事务里执行 fn。
+type groupUsageRollupTxRunner func(ctx context.Context, fn func(q sqlExecutor) error) error
+
 // SyncGroupUsageRollups 将服务端配置时区今日以前的用量发布为分组日桶。
+//
+// 每轮分三个事务：登记（FOR UPDATE，写入 building_until）、计算（FOR KEY SHARE，重算日桶）、
+// 发布（FOR UPDATE，水位推进到 build_dirty_from 或目标日期）。usage_logs 写入与失效触发器只持
+// FOR KEY SHARE，因此只与登记、发布这两个短事务串行，计算阶段不阻塞写入。
+// 以 *sql.DB 构造时，整个过程持有会话级 advisory lock，同一时刻只有一个重建；
+// 以事务构造时，三个阶段在调用方事务内顺序执行。
 func (r *dashboardAggregationRepository) SyncGroupUsageRollups(ctx context.Context, todayStart time.Time) error {
 	if r == nil || r.sql == nil {
 		return nil
 	}
 	todayStart = service.GroupUsageTodayStart(todayStart)
-	if db, ok := r.sql.(*sql.DB); ok {
-		tx, err := db.BeginTx(ctx, nil)
+	db, ok := r.sql.(*sql.DB)
+	if !ok {
+		return syncGroupUsageRollupRounds(ctx, func(ctx context.Context, fn func(q sqlExecutor) error) error {
+			return fn(r.sql)
+		}, todayStart)
+	}
+
+	upToDate, err := groupUsageRollupsUpToDate(ctx, db, todayStart)
+	if err != nil {
+		return err
+	}
+	if upToDate {
+		return nil
+	}
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	var locked bool
+	if err := scanSingleRow(ctx, conn, groupUsageRollupBuildLockSQL, nil, &locked); err != nil {
+		// 查询出错时服务端可能已授予锁，丢弃该物理连接以免锁随连接回到连接池。
+		discardGroupUsageRollupBuildConn(conn)
+		return fmt.Errorf("获取分组用量汇总重建锁: %w", err)
+	}
+	if !locked {
+		return conn.Close()
+	}
+	defer releaseGroupUsageRollupBuildLock(conn)
+
+	return syncGroupUsageRollupRounds(ctx, func(ctx context.Context, fn func(q sqlExecutor) error) error {
+		tx, err := conn.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
-		txRepo := newDashboardAggregationRepositoryWithSQL(tx)
-		if err := txRepo.syncGroupUsageRollupsInTx(ctx, todayStart); err != nil {
+		if err := fn(tx); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
 		return tx.Commit()
-	}
-	return r.syncGroupUsageRollupsInTx(ctx, todayStart)
+	}, todayStart)
 }
 
-func (r *dashboardAggregationRepository) syncGroupUsageRollupsInTx(ctx context.Context, todayStart time.Time) error {
+// releaseGroupUsageRollupBuildLock 释放重建锁；释放失败时丢弃该物理连接，由服务端随会话结束释放锁，
+// 避免锁随连接回到连接池。
+func releaseGroupUsageRollupBuildLock(conn *sql.Conn) {
+	unlockCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var unlocked bool
+	if err := scanSingleRow(unlockCtx, conn, groupUsageRollupBuildUnlockSQL, nil, &unlocked); err != nil || !unlocked {
+		discardGroupUsageRollupBuildConn(conn)
+		return
+	}
+	_ = conn.Close()
+}
+
+// discardGroupUsageRollupBuildConn 关闭底层物理连接而不是归还连接池，会话级锁随会话结束释放。
+func discardGroupUsageRollupBuildConn(conn *sql.Conn) {
+	_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	_ = conn.Close()
+}
+
+// groupUsageRollupsUpToDate 不加锁地判断今日以前的日桶是否已全部发布。
+func groupUsageRollupsUpToDate(ctx context.Context, q sqlQueryer, todayStart time.Time) (bool, error) {
 	var closedBefore string
-	var previousRetainedFrom time.Time
 	var stateTimezoneName string
-	if err := scanSingleRow(ctx, r.sql, `
-		SELECT closed_before::text, retained_from, timezone_name
+	var idle bool
+	err := scanSingleRow(ctx, q, `
+		SELECT closed_before::text, timezone_name, building_until IS NULL
+		FROM usage_group_rollup_state
+		WHERE id = 1
+	`, nil, &closedBefore, &stateTimezoneName, &idle)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("读取分组用量汇总水位: %w", err)
+	}
+	return idle &&
+		closedBefore == service.GroupUsageDate(todayStart) &&
+		stateTimezoneName == service.GroupUsageTimezoneName(), nil
+}
+
+func syncGroupUsageRollupRounds(ctx context.Context, run groupUsageRollupTxRunner, todayStart time.Time) error {
+	for range groupUsageRollupBuildMaxRounds {
+		var plan *groupUsageRollupBuildPlan
+		if err := run(ctx, func(q sqlExecutor) error {
+			var err error
+			plan, err = beginGroupUsageRollupBuild(ctx, q, todayStart)
+			return err
+		}); err != nil {
+			return err
+		}
+		if plan == nil {
+			return nil
+		}
+		if err := run(ctx, func(q sqlExecutor) error {
+			return buildGroupUsageRollups(ctx, q, plan)
+		}); err != nil {
+			return err
+		}
+		var dirty bool
+		if err := run(ctx, func(q sqlExecutor) error {
+			var err error
+			dirty, err = publishGroupUsageRollups(ctx, q, plan)
+			return err
+		}); err != nil {
+			return err
+		}
+		if !dirty {
+			return nil
+		}
+	}
+	return nil
+}
+
+// beginGroupUsageRollupBuild 在 FOR UPDATE 下确定重建区间并登记 building_until。
+// 日桶已发布到今日时返回 nil。
+func beginGroupUsageRollupBuild(ctx context.Context, q sqlExecutor, todayStart time.Time) (*groupUsageRollupBuildPlan, error) {
+	var closedBefore string
+	var retainedFrom time.Time
+	var stateTimezoneName string
+	var buildingUntil sql.NullString
+	if err := scanSingleRow(ctx, q, `
+		SELECT closed_before::text, retained_from, timezone_name, building_until::text
 		FROM usage_group_rollup_state
 		WHERE id = 1
 		FOR UPDATE
-	`, nil, &closedBefore, &previousRetainedFrom, &stateTimezoneName); err != nil {
-		return fmt.Errorf("读取分组用量汇总水位: %w", err)
+	`, nil, &closedBefore, &retainedFrom, &stateTimezoneName, &buildingUntil); err != nil {
+		return nil, fmt.Errorf("读取分组用量汇总水位: %w", err)
 	}
 
 	todayDate := service.GroupUsageDate(todayStart)
 	timezoneName := service.GroupUsageTimezoneName()
 	timezoneChanged := stateTimezoneName != timezoneName
-	var closedTime time.Time
 	if !timezoneChanged {
-		var err error
-		closedTime, err = service.ParseGroupUsageDate(closedBefore)
+		closedTime, err := service.ParseGroupUsageDate(closedBefore)
 		if err != nil {
-			return fmt.Errorf("解析分组用量汇总水位 %q: %w", closedBefore, err)
+			return nil, fmt.Errorf("解析分组用量汇总水位 %q: %w", closedBefore, err)
 		}
 		todayDateTime, err := service.ParseGroupUsageDate(todayDate)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if closedTime.After(todayDateTime) {
-			return fmt.Errorf("分组用量汇总水位位于未来: %s", closedBefore)
+			return nil, fmt.Errorf("分组用量汇总水位位于未来: %s", closedBefore)
 		}
 		if closedBefore == todayDate {
-			return nil
+			if buildingUntil.Valid {
+				if _, err := q.ExecContext(ctx, `
+					UPDATE usage_group_rollup_state
+					SET building_until = NULL,
+						build_dirty_from = NULL,
+						updated_at = NOW()
+					WHERE id = 1
+				`); err != nil {
+					return nil, fmt.Errorf("清除分组用量汇总重建登记: %w", err)
+				}
+			}
+			return nil, nil
 		}
 	}
 
+	// Preserve Kitty's retention semantics: use the earliest still-present
+	// source row; do not add a new logical expiry floor.
 	var earliest sql.NullTime
-	if err := scanSingleRow(ctx, r.sql, "SELECT MIN(created_at) FROM usage_logs", nil, &earliest); err != nil {
-		return fmt.Errorf("读取最早用量记录: %w", err)
+	if err := scanSingleRow(ctx, q, "SELECT MIN(created_at) FROM usage_logs", nil, &earliest); err != nil {
+		return nil, fmt.Errorf("读取最早用量记录: %w", err)
 	}
-	retainedFrom := todayStart
+	retainedFrom = todayStart
 	if earliest.Valid {
 		retainedFrom = earliest.Time.UTC()
 	}
 	retainedDate := service.GroupUsageDate(retainedFrom)
-	retainedDateTime, err := service.ParseGroupUsageDate(retainedDate)
-	if err != nil {
-		return err
-	}
-	rebuildStartDate := retainedDate
-	if !timezoneChanged && closedTime.After(retainedDateTime) {
-		rebuildStartDate = closedBefore
-	}
-	rebuildStart, err := service.ParseGroupUsageDate(rebuildStartDate)
-	if err != nil {
-		return err
+	startDate := retainedDate
+	if !timezoneChanged && closedBefore > startDate {
+		startDate = closedBefore
 	}
 
-	if _, err := r.sql.ExecContext(ctx, `
+	if _, err := q.ExecContext(ctx, `
+		UPDATE usage_group_rollup_state
+		SET closed_before = $1::date,
+			retained_from = $2,
+			timezone_name = $3,
+			building_until = $4::date,
+			build_dirty_from = NULL,
+			updated_at = NOW()
+		WHERE id = 1
+	`, startDate, retainedFrom.UTC(), timezoneName, todayDate); err != nil {
+		return nil, fmt.Errorf("登记分组用量汇总重建: %w", err)
+	}
+
+	startTime, err := service.ParseGroupUsageDate(startDate)
+	if err != nil {
+		return nil, err
+	}
+	return &groupUsageRollupBuildPlan{
+		startDate:    startDate,
+		targetDate:   todayDate,
+		retainedDate: retainedDate,
+		rowsFrom:     startTime.UTC(),
+		rowsBefore:   todayStart.UTC(),
+		timezoneName: timezoneName,
+	}, nil
+}
+
+// buildGroupUsageRollups 重算 [startDate, targetDate) 的日桶，只写入本地日期不早于 startDate 的桶。
+// 状态行只持 FOR KEY SHARE，与 usage_logs 写入和失效触发器兼容；登记与发布的 FOR UPDATE 须等待本事务结束。
+func buildGroupUsageRollups(ctx context.Context, q sqlExecutor, plan *groupUsageRollupBuildPlan) error {
+	var buildingUntil sql.NullString
+	var stateTimezoneName string
+	if err := scanSingleRow(ctx, q, `
+		SELECT building_until::text, timezone_name
+		FROM usage_group_rollup_state
+		WHERE id = 1
+		FOR KEY SHARE
+	`, nil, &buildingUntil, &stateTimezoneName); err != nil {
+		return fmt.Errorf("读取分组用量汇总重建登记: %w", err)
+	}
+	if !buildingUntil.Valid || buildingUntil.String != plan.targetDate || stateTimezoneName != plan.timezoneName {
+		return errGroupUsageRollupBuildPreempted
+	}
+
+	if _, err := q.ExecContext(ctx, `
 		DELETE FROM usage_group_daily_rollups
 		WHERE bucket_date < $1::date
-			OR (bucket_date >= $2::date AND bucket_date < $3::date)
-			OR bucket_date >= $3::date
-	`, retainedDate, rebuildStartDate, todayDate); err != nil {
+			OR bucket_date >= $2::date
+	`, plan.retainedDate, plan.startDate); err != nil {
 		return fmt.Errorf("清理分组用量日桶: %w", err)
 	}
 
-	if _, err := r.sql.ExecContext(ctx, `
+	if _, err := q.ExecContext(ctx, `
 		INSERT INTO usage_group_daily_rollups (bucket_date, group_id, actual_cost, computed_at)
 		SELECT
 			(created_at AT TIME ZONE $3::text)::date AS bucket_date,
@@ -260,26 +458,67 @@ func (r *dashboardAggregationRepository) syncGroupUsageRollupsInTx(ctx context.C
 		WHERE group_id IS NOT NULL
 			AND created_at >= $1
 			AND created_at < $2
+			AND (created_at AT TIME ZONE $3::text)::date >= $4::date
 		GROUP BY 1, 2
 		ON CONFLICT (bucket_date, group_id)
 		DO UPDATE SET
 			actual_cost = EXCLUDED.actual_cost,
 			computed_at = EXCLUDED.computed_at
-	`, rebuildStart.UTC(), todayStart.UTC(), timezoneName); err != nil {
+	`, plan.rowsFrom, plan.rowsBefore, plan.timezoneName, plan.startDate); err != nil {
 		return fmt.Errorf("重建分组用量日桶: %w", err)
 	}
+	return nil
+}
 
-	if _, err := r.sql.ExecContext(ctx, `
+// publishGroupUsageRollups 在 FOR UPDATE 下发布本轮结果并清除登记，返回是否存在需要重算的脏区间。
+//
+// 登记之后 [startDate, targetDate) 内的源记录变更都记入了 build_dirty_from，[startDate, build_dirty_from)
+// 的日桶与计算快照一致；水位低于 startDate 说明有未记脏的失效，此时发布不越过当前水位。
+func publishGroupUsageRollups(ctx context.Context, q sqlExecutor, plan *groupUsageRollupBuildPlan) (bool, error) {
+	var closedBefore string
+	var buildingUntil sql.NullString
+	var dirtyFrom sql.NullString
+	if err := scanSingleRow(ctx, q, `
+		SELECT closed_before::text, building_until::text, build_dirty_from::text
+		FROM usage_group_rollup_state
+		WHERE id = 1
+		FOR UPDATE
+	`, nil, &closedBefore, &buildingUntil, &dirtyFrom); err != nil {
+		return false, fmt.Errorf("读取分组用量汇总重建登记: %w", err)
+	}
+	if !buildingUntil.Valid || buildingUntil.String != plan.targetDate {
+		return false, errGroupUsageRollupBuildPreempted
+	}
+
+	publishBefore := plan.targetDate
+	dirty := false
+	if dirtyFrom.Valid && dirtyFrom.String < publishBefore {
+		publishBefore = dirtyFrom.String
+		dirty = true
+	}
+	if closedBefore < plan.startDate && closedBefore < publishBefore {
+		publishBefore = closedBefore
+		dirty = true
+	}
+
+	if _, err := q.ExecContext(ctx, `
 		UPDATE usage_group_rollup_state
 		SET closed_before = $1::date,
-			retained_from = $2,
-			timezone_name = $3,
+			building_until = NULL,
+			build_dirty_from = NULL,
 			updated_at = NOW()
 		WHERE id = 1
-	`, todayDate, retainedFrom, timezoneName); err != nil {
-		return fmt.Errorf("更新分组用量汇总水位: %w", err)
+	`, publishBefore); err != nil {
+		return false, fmt.Errorf("发布分组用量汇总水位: %w", err)
 	}
-	return nil
+	return dirty, nil
+}
+
+// Explicit historical maintenance already owns the encompassing transaction.
+func (r *dashboardAggregationRepository) syncGroupUsageRollupsInTx(ctx context.Context, todayStart time.Time) error {
+	return syncGroupUsageRollupRounds(ctx, func(_ context.Context, fn func(sqlExecutor) error) error {
+		return fn(r.sql)
+	}, service.GroupUsageTodayStart(todayStart))
 }
 
 func lockGroupUsageRollupState(ctx context.Context, tx *sql.Tx) error {
@@ -295,16 +534,10 @@ func lockGroupUsageRollupState(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
-func invalidateGroupUsageRollupsAt(ctx context.Context, tx *sql.Tx, affectedAt time.Time) error {
-	timezoneName := service.GroupUsageTimezoneName()
-	_, err := tx.ExecContext(ctx, `
-		UPDATE usage_group_rollup_state
-		SET closed_before = LEAST(
-			closed_before,
-			($1::timestamptz AT TIME ZONE $2::text)::date
-		),
-			updated_at = NOW()
-		WHERE id = 1
-	`, affectedAt.UTC(), timezoneName)
+func invalidateGroupUsageRollupsAt(ctx context.Context, q sqlExecutor, affectedAt time.Time) error {
+	_, err := q.ExecContext(ctx,
+		"SELECT invalidate_group_usage_rollups_at($1, $2)",
+		affectedAt.UTC(), service.GroupUsageTimezoneName(),
+	)
 	return err
 }

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -87,6 +88,9 @@ func NewEmailCache(rdb *redis.Client) service.EmailCache {
 func (c *emailCache) getCode(ctx context.Context, key string) (*service.VerificationCodeData, error) {
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, errors.Join(service.ErrEmailCacheEntryNotFound, err)
+		}
 		return nil, err
 	}
 	var data service.VerificationCodeData
@@ -151,6 +155,9 @@ func (c *emailCache) GetPasswordResetToken(ctx context.Context, email string) (*
 	key := passwordResetKey(email)
 	val, err := c.rdb.Get(ctx, key).Result()
 	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, errors.Join(service.ErrEmailCacheEntryNotFound, err)
+		}
 		return nil, err
 	}
 	var data service.PasswordResetTokenData

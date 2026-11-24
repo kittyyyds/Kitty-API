@@ -3,8 +3,6 @@ import providerImport from './providerImport'
 import operations from './operations'
 import moderationUsers from './moderationUsers'
 import groupCacheTest from './groupCacheTest'
-import requestCapture from './requestCapture'
-import astraGateway from './astraGateway'
 import overview from './overview'
 import channels from './channels'
 import accounts from './accounts'
@@ -12,9 +10,10 @@ import resources from './resources'
 import ops from './ops'
 import settings from './settings'
 import audit from './audit'
+import plugins from './plugins'
 import promptAudit from './promptAudit'
 import safetyPromptAudit from './safetyPromptAudit'
-import plugins from './plugins'
+import riskControl from './riskControl'
 
 export default {
   ...upstream,
@@ -22,8 +21,6 @@ export default {
   ...operations,
   ...moderationUsers,
   ...groupCacheTest,
-  ...requestCapture,
-  ...astraGateway,
   ...overview,
   ...channels,
   ...accounts,
@@ -31,7 +28,8 @@ export default {
   ...ops,
   ...settings,
   ...audit,
+  ...plugins,
   ...promptAudit,
   ...safetyPromptAudit,
-  ...plugins,
+  ...riskControl,
 }

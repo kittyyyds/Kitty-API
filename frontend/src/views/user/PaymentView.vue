@@ -101,6 +101,7 @@
                   />
                   <p v-if="amountError" class="checkout-message checkout-message--warning" role="alert">{{ amountError }}</p>
                 </section>
+                <RechargeCouponPicker :amount="validAmount" :method="selectedMethod" :currency="selectedCurrency" :disabled="submitting" :initial-id="initialCouponId" @change="onCouponChange" />
               </div>
 
               <aside class="checkout-sidebar">
@@ -119,6 +120,9 @@
                     <dt>{{ t('payment.rechargeBonus.discountLabelWithPercent', { percent: bonusQuote.percent }) }}</dt>
                     <dd>-{{ formatSelectedPaymentAmount(discountAmount) }}</dd>
                   </div>
+                  <div v-if="couponQuote && couponQuote.discount_amount > 0" class="checkout-breakdown__accent">
+                    <dt>{{ t('coupon.discount') }}</dt><dd>-{{ formatSelectedPaymentAmount(couponQuote.discount_amount) }}</dd>
+                  </div>
                   <div v-if="feeRate > 0">
                     <dt>{{ t('payment.fee') }} ({{ feeRate }}%)</dt>
                     <dd>{{ formatSelectedPaymentAmount(feeAmount) }}</dd>
@@ -129,6 +133,9 @@
                   </div>
                   <div v-if="showBonusRow" class="checkout-breakdown__accent">
                     <dt>{{ t('payment.siteRechargeBonus') }}</dt><dd>+${{ bonusQuote.bonus.toFixed(2) }}</dd>
+                  </div>
+                  <div v-if="couponQuote && couponQuote.coupon_bonus > 0" class="checkout-breakdown__accent">
+                    <dt>{{ t('coupon.couponBonus') }}</dt><dd>+${{ couponQuote.coupon_bonus.toFixed(2) }}</dd>
                   </div>
                   <div v-if="activeBonusRule" class="checkout-breakdown__accent">
                     <dt>{{ t('payment.siteRechargeBonus') }} / {{ activeBonusRule.validity_days === 0 ? t('payment.neverExpires') : activeBonusRule.validity_days + ' ' + t('payment.days') }}</dt>
@@ -518,6 +525,8 @@ import type { SubscriptionPlan, CheckoutInfoResponse, CreateOrderResult, OrderTy
 import { normalizeRechargeBonusMode, normalizeRechargeBonusTiers, quoteRechargeBonus } from '@/utils/rechargeBonus'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import RechargePackages from '@/components/payment/RechargePackages.vue'
+import RechargeCouponPicker from '@/components/payment/RechargeCouponPicker.vue'
+import type { CouponQuote } from '@/api/coupons'
 import CheckoutSupport from '@/components/payment/CheckoutSupport.vue'
 import PaymentMethodSelector from '@/components/payment/PaymentMethodSelector.vue'
 import { METHOD_ORDER, getPaymentPopupFeatures, isBuiltInAlipayMethod, isBuiltInWxpayMethod } from '@/components/payment/providerConfig'
@@ -603,6 +612,15 @@ function syncCheckoutRoute() {
 }
 watch(() => [route.query.checkout, route.query.amount], syncCheckoutRoute)
 const selectedMethod = ref('')
+const initialCouponId = Number(route.query.coupon || route.query.coupon_id) || undefined
+const selectedCouponId = ref(initialCouponId || 0)
+const couponQuote = ref<CouponQuote | null>(null)
+const couponQuotePending = ref(!!initialCouponId)
+function onCouponChange(id: number, quote: CouponQuote | null, pending: boolean) {
+  selectedCouponId.value = id
+  couponQuote.value = quote
+  couponQuotePending.value = pending
+}
 const selectedPlan = ref<SubscriptionPlan | null>(null)
 const renewalMode = ref<SubscriptionRenewalMode>('extend')
 const previewImage = ref('')
@@ -622,6 +640,7 @@ const selectedActiveSubscription = computed(() => {
 const paymentPhase = ref<'select' | 'paying'>('select')
 
 interface CreateOrderOptions {
+  couponId?: number
   openid?: string
   wechatResumeToken?: string
   paymentType?: string
@@ -733,7 +752,7 @@ async function redirectToPaymentResult(state: PaymentRecoverySnapshot): Promise<
 
 function buildWechatOAuthAuthorizeUrl(
   authorizeUrl: string,
-  context: { paymentType: string; orderType: OrderType; planId?: number; orderAmount: number; renewalMode?: SubscriptionRenewalMode },
+  context: { paymentType: string; orderType: OrderType; planId?: number; orderAmount: number; renewalMode?: SubscriptionRenewalMode; couponId?: number },
 ): string {
   const normalizedUrl = authorizeUrl.trim()
   if (!normalizedUrl || typeof window === 'undefined') {
@@ -761,6 +780,11 @@ function buildWechatOAuthAuthorizeUrl(
       redirectUrl.searchParams.delete('renewal_mode')
     }
 
+    if (context.orderType === 'balance' && context.couponId) {
+      redirectUrl.searchParams.set('coupon_id', String(context.couponId))
+    } else {
+      redirectUrl.searchParams.delete('coupon_id')
+    }
     if (context.orderAmount > 0) {
       redirectUrl.searchParams.set('amount', String(context.orderAmount))
     } else {
@@ -843,7 +867,8 @@ const balanceRechargeMultiplier = computed(() => {
   const multiplier = checkout.value.balance_recharge_multiplier
   return Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1
 })
-const activeBonusRule = computed(() => checkout.value.recharge_bonus_rules.find(rule => Math.abs(rule.recharge_amount - validAmount.value) < 0.00000001) || null)
+const matchingBonusRule = computed(() => checkout.value.recharge_bonus_rules.find(rule => Math.abs(rule.recharge_amount - validAmount.value) < 0.00000001) || null)
+const activeBonusRule = computed(() => selectedCouponId.value && !couponQuote.value?.stackable ? null : matchingBonusRule.value)
 const rechargeAmounts = [5, 10, 30, 50, 100, 500, 1000, 5000]
 
 // 订阅 CNY 换算汇率（1 USD = X CNY）。0 = 未配置，订阅保持 price 直付（与后端 opt-in 条件严格镜像）。
@@ -944,14 +969,14 @@ function formatSelectedSubscriptionPaymentAmount(value: number): string {
 
 // 充值优惠：阈值按输入金额命中；赠金模式按到账基数（输入 × 倍率）加赠送，折扣模式按百分比减实付。
 // 与后端 quoteRechargeBonus 一致；渠道限额、手续费、实付都按折后基数（payBaseAmount）计算，提交仍发送输入金额。
-const bonusQuote = computed(() => quoteRechargeBonus(activeBonusRule.value ? [] : rechargeBonusTiers.value, validAmount.value, {
+const bonusQuote = computed(() => quoteRechargeBonus(matchingBonusRule.value || (selectedCouponId.value && !couponQuote.value?.stackable) ? [] : rechargeBonusTiers.value, validAmount.value, {
   multiplier: balanceRechargeMultiplier.value,
   mode: rechargeBonusMode.value,
   currencyDigits: currencyFractionDigits(selectedCurrency.value),
 }))
-const payBaseAmount = computed(() => bonusQuote.value.payBase)
-const discountAmount = computed(() => roundPaymentAmount(validAmount.value - payBaseAmount.value, selectedCurrency.value))
-const creditedAmount = computed(() => Math.round((bonusQuote.value.credited + (activeBonusRule.value?.bonus_amount || 0)) * 100) / 100)
+const payBaseAmount = computed(() => couponQuote.value?.pay_base ?? bonusQuote.value.payBase)
+const discountAmount = computed(() => roundPaymentAmount(validAmount.value - payBaseAmount.value - (couponQuote.value?.discount_amount || 0), selectedCurrency.value))
+const creditedAmount = computed(() => couponQuote.value ? Math.round((couponQuote.value.credited + couponQuote.value.package_bonus) * 100) / 100 : Math.round((bonusQuote.value.credited + (activeBonusRule.value?.bonus_amount || 0)) * 100) / 100)
 const showBonusRow = computed(() => bonusQuote.value.mode !== 'discount' && bonusQuote.value.bonus > 0)
 
 const methodOptions = computed<PaymentMethodOption[]>(() =>
@@ -967,15 +992,15 @@ const methodOptions = computed<PaymentMethodOption[]>(() =>
 )
 
 const feeRate = computed(() => checkout.value?.recharge_fee_rate ?? 0)
-const feeAmount = computed(() =>
+const feeAmount = computed(() => couponQuote.value ? roundPaymentAmount(couponQuote.value.pay_amount - couponQuote.value.pay_base, selectedCurrency.value) :
   feeRate.value > 0 && payBaseAmount.value > 0
     ? Math.ceil(((payBaseAmount.value * feeRate.value) / 100) * 100) / 100
     : 0
 )
-const totalAmount = computed(() =>
+const totalAmount = computed(() => couponQuote.value?.pay_amount ?? (
   feeRate.value > 0 && payBaseAmount.value > 0
     ? Math.round((payBaseAmount.value + feeAmount.value) * 100) / 100
-    : payBaseAmount.value
+    : payBaseAmount.value)
 )
 
 const amountError = computed(() => {
@@ -994,7 +1019,8 @@ const amountError = computed(() => {
 })
 
 const canSubmit = computed(() =>
-  validAmount.value > 0
+  (!selectedCouponId.value || (!couponQuotePending.value && !!couponQuote.value))
+    && validAmount.value > 0
     && amountFitsMethod(payBaseAmount.value, selectedMethod.value)
     && selectedLimit.value?.available !== false
 )
@@ -1150,6 +1176,7 @@ async function createOrder(orderAmount: number, orderType: OrderType, planId?: n
   errorMessage.value = ''
   errorHintMessage.value = ''
   const requestType = normalizeVisibleMethod(options.paymentType || selectedMethod.value) || options.paymentType || selectedMethod.value
+  const effectiveCouponId = orderType === 'balance' ? (options.couponId ?? selectedCouponId.value) : undefined
   const effectiveRenewalMode = orderType === 'subscription'
     ? (options.renewalMode ?? renewalMode.value)
     : undefined
@@ -1160,6 +1187,7 @@ async function createOrder(orderAmount: number, orderType: OrderType, planId?: n
       orderType,
       planId,
       renewalMode: effectiveRenewalMode,
+      couponId: effectiveCouponId,
       origin: typeof window !== 'undefined' ? window.location.origin : '',
       isMobile: isMobileDevice(),
       isWechatBrowser: typeof window !== 'undefined' && /MicroMessenger/i.test(window.navigator.userAgent),
@@ -1225,6 +1253,7 @@ async function createOrder(orderAmount: number, orderType: OrderType, planId?: n
         planId,
         orderAmount,
         renewalMode: effectiveRenewalMode,
+        couponId: effectiveCouponId,
       })
       return
     }
@@ -1266,6 +1295,7 @@ async function createOrder(orderAmount: number, orderType: OrderType, planId?: n
               orderType,
               planId,
               renewalMode: effectiveRenewalMode,
+              couponId: effectiveCouponId,
               paymentType: visibleMethod,
               attempted: options.mobileQrFallbackAttempted === true,
             },
@@ -1285,6 +1315,7 @@ async function createOrder(orderAmount: number, orderType: OrderType, planId?: n
           orderType,
           planId,
           renewalMode: effectiveRenewalMode,
+          couponId: effectiveCouponId,
           paymentType: visibleMethod,
           attempted: options.mobileQrFallbackAttempted === true,
         })
@@ -1315,6 +1346,7 @@ async function createOrder(orderAmount: number, orderType: OrderType, planId?: n
       orderType,
       planId,
       renewalMode: effectiveRenewalMode,
+      couponId: effectiveCouponId,
       paymentType: requestType,
       attempted: options.mobileQrFallbackAttempted === true,
     })) {
@@ -1339,6 +1371,7 @@ async function createOrder(orderAmount: number, orderType: OrderType, planId?: n
 }
 
 interface MobileQrFallbackContext {
+  couponId?: number
   orderAmount: number
   orderType: OrderType
   planId?: number
@@ -1393,6 +1426,7 @@ async function attemptMobileQrFallback(err: unknown, context: MobileQrFallbackCo
       orderType: context.orderType,
       planId: context.planId,
       renewalMode: context.renewalMode,
+      couponId: context.couponId,
       origin: typeof window !== 'undefined' ? window.location.origin : '',
       isMobile: false,
       isWechatBrowser: false,
@@ -1457,6 +1491,7 @@ async function resumeWechatPaymentFromQuery() {
     return
   }
 
+  selectedCouponId.value = resume.couponId || 0
   selectedMethod.value = resume.paymentType
   if (resume.orderType === 'balance' && resume.orderAmount > 0) {
     amount.value = resume.orderAmount
@@ -1474,6 +1509,7 @@ async function resumeWechatPaymentFromQuery() {
       paymentType: resume.paymentType,
       isResume: true,
       renewalMode: resume.renewalMode,
+      couponId: resume.couponId,
     })
     return
   }
@@ -1484,6 +1520,7 @@ async function resumeWechatPaymentFromQuery() {
       paymentType: resume.paymentType,
       isResume: true,
       renewalMode: resume.renewalMode,
+      couponId: resume.couponId,
     })
   }
 }

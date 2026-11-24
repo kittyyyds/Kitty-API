@@ -44,6 +44,7 @@
           <span class="usage-summary-cache">{{ t('usage.cacheTotal') }} {{ formatTokens(stats?.total_cache_tokens || 0) }}</span>
         </p>
         <p class="usage-summary-value">{{ formatTokens(stats?.total_tokens || 0) }}</p>
+        <p class="usage-summary-sub" data-testid="total-cache-hit-rate">{{ t('usage.cacheHitRate') }}: {{ cacheHitRate }}</p>
         <div class="usage-summary-bar" role="img" :aria-label="tokenMixLabel">
           <span
             v-for="part in visibleParts"
@@ -82,6 +83,11 @@ const props = withDefaults(defineProps<{
 })
 
 const { t } = useI18n()
+const cacheHitRate = computed(() => {
+  const value = props.stats?.cache_hit_rate
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+    ? `${(value * 100).toFixed(1)}%` : '-'
+})
 
 const totalAccountCost = computed(() => {
   const stats = props.stats as (AdminUsageStatsResponse & { total_account_cost?: number }) | null

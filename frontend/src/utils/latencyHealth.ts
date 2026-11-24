@@ -1,3 +1,4 @@
+import type { UsageLog } from '@/types'
 /**
  * 请求延迟健康度分档（用于用量明细"延迟"列的纵向健康扫视）。
  *
@@ -82,3 +83,24 @@ export const LATENCY_BAR_TO_CLASSES: Record<LatencySeverity, string> = {
   slow: 'to-orange-500',
   critical: 'to-red-500',
 }
+
+export const LATENCY_BAR_CLASSES: Record<LatencySeverity, string> = {
+  good: 'bg-emerald-500',
+  warn: 'bg-amber-400',
+  slow: 'bg-orange-500',
+  critical: 'bg-red-500',
+}
+
+export const formatUsageOutputRate = (row: Pick<UsageLog,
+  'output_tokens' | 'duration_ms' | 'image_count' | 'image_output_tokens' | 'billing_mode' | 'request_type'
+>): string => {
+  const { output_tokens: outputTokens, duration_ms: durationMs } = row
+  if (row.image_count > 0 || row.image_output_tokens > 0 || row.billing_mode === 'image'
+    || (row.request_type && !['sync', 'stream', 'ws_v2', 'cyber'].includes(row.request_type))
+    || !Number.isFinite(outputTokens) || outputTokens <= 0
+    || durationMs == null || !Number.isFinite(durationMs) || durationMs <= 0) {
+    return '—'
+  }
+  return `${(outputTokens * 1000 / durationMs).toFixed(1)} tok/s`
+}
+

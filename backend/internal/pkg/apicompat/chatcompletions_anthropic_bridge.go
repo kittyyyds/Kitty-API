@@ -60,6 +60,13 @@ func AnthropicToChatCompletionsRequestWithMinOutputTokens(req *AnthropicRequest,
 		Messages: messages,
 		Stream:   req.Stream,
 	}
+	if req.OutputConfig != nil {
+		format, err := anthropicOutputFormatToResponsesTextFormat(req.OutputConfig.Format)
+		if err != nil {
+			return nil, err
+		}
+		out.ResponseFormat = responsesTextFormatToChatResponseFormat(format)
+	}
 
 	// Sampling params: reasoning models (gpt-5.x) reject temperature/top_p.
 	if !isReasoningModel(req.Model) {
@@ -411,6 +418,7 @@ func ChatCompletionsResponseToAnthropic(resp *ChatCompletionsResponse, model str
 		Type:  "message",
 		Role:  "assistant",
 		Model: model,
+		Usage: chatUsageToAnthropicUsage(nil),
 	}
 
 	if resp != nil {
@@ -517,21 +525,13 @@ func chatFinishReasonToAnthropicStopReason(reason string, blocks []AnthropicCont
 // usage shape. Mirrors ChatUsageToResponsesUsage + anthropicUsageFromResponsesUsage.
 func chatUsageToAnthropicUsage(usage *ChatUsage) AnthropicUsage {
 	if usage == nil {
-		return AnthropicUsage{}
+		return AnthropicUsage{CacheCreationInputTokensPresent: true, CacheReadInputTokensPresent: true}
 	}
 
 	cachedTokens := 0
-	cacheCreationTokens := 0
+	cacheCreationTokens := usage.PromptTokensDetails.cacheCreationInputTokens()
 	if usage.PromptTokensDetails != nil {
 		cachedTokens = usage.PromptTokensDetails.CachedTokens
-		// cache_write_tokens and cache_creation_tokens are alternate spellings of
-		// the same quantity, not additive; the double-conversion path
-		// (ChatUsageToResponsesUsage) prefers write and falls back to creation.
-		if usage.PromptTokensDetails.CacheWriteTokens > 0 {
-			cacheCreationTokens = usage.PromptTokensDetails.CacheWriteTokens
-		} else {
-			cacheCreationTokens = usage.PromptTokensDetails.CacheCreationTokens
-		}
 	}
 
 	inputTokens := usage.PromptTokens - cachedTokens - cacheCreationTokens
@@ -540,10 +540,13 @@ func chatUsageToAnthropicUsage(usage *ChatUsage) AnthropicUsage {
 	}
 
 	return AnthropicUsage{
-		InputTokens:              inputTokens,
-		OutputTokens:             usage.CompletionTokens,
-		CacheReadInputTokens:     cachedTokens,
-		CacheCreationInputTokens: cacheCreationTokens,
+		InputTokens:                     inputTokens,
+		OutputTokens:                    usage.CompletionTokens,
+		CacheReadInputTokens:            cachedTokens,
+		CacheCreationInputTokens:        cacheCreationTokens,
+		CacheCreation:                   chatCacheCreation(usage.PromptTokensDetails),
+		CacheCreationInputTokensPresent: true,
+		CacheReadInputTokensPresent:     true,
 	}
 }
 
@@ -577,7 +580,7 @@ type ChatCompletionsToAnthropicStreamState struct {
 	toolAnnounced     map[int]bool
 	toolName          map[int]string
 	pendingToolCallID map[int]string
-	pendingToolArgs   map[int]string
+	pendingToolArgs   map[int]*strings.Builder
 
 	// Reasoning (DeepSeek-style): reasoning_content streamed before content.
 	// No separate reasoning block index — it uses ContentBlockIndex like the
@@ -590,6 +593,8 @@ type ChatCompletionsToAnthropicStreamState struct {
 	OutputTokens             int
 	CacheReadInputTokens     int
 	CacheCreationInputTokens int
+	CacheCreation            *AnthropicCacheCreation
+	promptTokens             int
 
 	ResponseID string
 	Model      string
@@ -606,7 +611,7 @@ func NewChatCompletionsToAnthropicStreamState(model string) *ChatCompletionsToAn
 		toolAnnounced:     make(map[int]bool),
 		toolName:          make(map[int]string),
 		pendingToolCallID: make(map[int]string),
-		pendingToolArgs:   make(map[int]string),
+		pendingToolArgs:   make(map[int]*strings.Builder),
 	}
 }
 
@@ -630,10 +635,24 @@ func ChatCompletionsChunkToAnthropicEvents(
 	// often with empty choices. Capture it for the finalize message_delta.
 	if chunk.Usage != nil {
 		u := chatUsageToAnthropicUsage(chunk.Usage)
-		state.InputTokens = u.InputTokens
-		state.OutputTokens = u.OutputTokens
-		state.CacheReadInputTokens = u.CacheReadInputTokens
-		state.CacheCreationInputTokens = u.CacheCreationInputTokens
+		if chunk.Usage.PromptTokens > 0 {
+			state.promptTokens = chunk.Usage.PromptTokens
+		}
+		if u.OutputTokens > 0 {
+			state.OutputTokens = u.OutputTokens
+		}
+		if d := chunk.Usage.PromptTokensDetails; d != nil {
+			if d.cachedTokensPresent || d.CachedTokens != 0 {
+				state.CacheReadInputTokens = max(u.CacheReadInputTokens, 0)
+			}
+			if d.cacheWriteTokensPresent || d.cacheCreationTokensPresent || d.CacheWriteTokens != 0 || d.CacheCreationTokens != 0 || d.CacheCreation != nil {
+				state.CacheCreationInputTokens = u.CacheCreationInputTokens
+			}
+			if d.CacheCreation != nil {
+				state.CacheCreation = cloneAnthropicCacheCreation(d.CacheCreation)
+			}
+		}
+		state.InputTokens = max(state.promptTokens-state.CacheReadInputTokens-state.CacheCreationInputTokens, 0)
 	}
 
 	var events []AnthropicStreamEvent
@@ -714,10 +733,13 @@ func FinalizeChatCompletionsAnthropicStream(state *ChatCompletionsToAnthropicStr
 				StopReason: stopReason,
 			},
 			Usage: &AnthropicUsage{
-				InputTokens:              state.InputTokens,
-				OutputTokens:             state.OutputTokens,
-				CacheReadInputTokens:     state.CacheReadInputTokens,
-				CacheCreationInputTokens: state.CacheCreationInputTokens,
+				InputTokens:                     state.InputTokens,
+				OutputTokens:                    state.OutputTokens,
+				CacheReadInputTokens:            state.CacheReadInputTokens,
+				CacheCreationInputTokens:        state.CacheCreationInputTokens,
+				CacheCreation:                   cloneAnthropicCacheCreation(state.CacheCreation),
+				CacheCreationInputTokensPresent: true,
+				CacheReadInputTokensPresent:     true,
 			},
 		},
 		AnthropicStreamEvent{Type: "message_stop"},
@@ -741,7 +763,7 @@ func ensureCCAnthropicMessageStart(state *ChatCompletionsToAnthropicStreamState)
 			Content:    []AnthropicContentBlock{},
 			Model:      state.Model,
 			StopReason: nil, // JSON null; never ""
-			Usage:      AnthropicUsage{InputTokens: 0, OutputTokens: 0},
+			Usage:      chatUsageToAnthropicUsage(nil),
 		},
 	}}
 }
@@ -841,7 +863,12 @@ func handleCCAnthropicToolCall(state *ChatCompletionsToAnthropicStreamState, too
 				},
 			})
 		} else {
-			state.pendingToolArgs[idx] += toolCall.Function.Arguments
+			buffer := state.pendingToolArgs[idx]
+			if buffer == nil {
+				buffer = &strings.Builder{}
+				state.pendingToolArgs[idx] = buffer
+			}
+			_, _ = buffer.WriteString(toolCall.Function.Arguments)
 		}
 	}
 
@@ -872,7 +899,8 @@ func announceCCAnthropicToolBlock(state *ChatCompletionsToAnthropicStreamState, 
 			Input: json.RawMessage("{}"),
 		},
 	}}
-	if pending := state.pendingToolArgs[idx]; pending != "" {
+	if buffer := state.pendingToolArgs[idx]; buffer != nil && buffer.Len() > 0 {
+		pending := buffer.String()
 		delete(state.pendingToolArgs, idx)
 		state.CurrentToolHadDelta = true
 		events = append(events, AnthropicStreamEvent{

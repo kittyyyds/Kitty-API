@@ -33,8 +33,6 @@ interface Props {
   pricingSummaries: HomePricingSummary[]
   pricingLoading: boolean
   pricingFailed: boolean
-  groupCount: number
-  modelCount: number
 }
 
 const props = defineProps<Props>()
@@ -51,6 +49,7 @@ const supportDialogOpen = shallowRef(false)
 const isHeroActive = computed(() => activeSection.value === 'hr-hero')
 const dashboardTarget = computed(() => props.isAuthenticated ? props.dashboardPath : '/login')
 const ratios = new Map<string, number>()
+const navSectionIds = computed(() => new Set(props.copy.nav.sections.map((section) => section.id)))
 let observer: IntersectionObserver | null = null
 let visibilityObserver: IntersectionObserver | null = null
 let desktopQuery: MediaQueryList | null = null
@@ -61,6 +60,8 @@ function updateActiveSection(): void {
   let bestId = activeSection.value
   let bestRatio = 0
   ratios.forEach((ratio, id) => {
+    // Sections without a nav entry (scenarios, final CTA) keep the last nav label instead of "Home".
+    if (!navSectionIds.value.has(id)) return
     if (ratio > bestRatio) {
       bestRatio = ratio
       bestId = id
@@ -146,7 +147,7 @@ onBeforeUnmount(() => {
     class="heyroute-preview"
     :data-theme="isDark ? 'dark' : 'light'"
   >
-    <a class="hr-skip-link" href="#hr-main">Skip to content</a>
+    <a class="hr-skip-link" href="#hr-main">{{ copy.nav.skipToContent }}</a>
     <HeyRouteHeader
       :copy="copy.nav"
       :site-name="siteName"
@@ -309,46 +310,11 @@ onBeforeUnmount(() => {
   letter-spacing: 0;
 }
 
-.heyroute-preview [data-hr-tilt] {
-  --hr-card-x: 50%;
-  --hr-card-y: 50%;
-  --hr-card-rotate-x: 0deg;
-  --hr-card-rotate-y: 0deg;
-  --hr-card-glare: 0;
-  transform: perspective(1200px) rotateX(var(--hr-card-rotate-x)) rotateY(var(--hr-card-rotate-y));
-  transform-origin: center;
-  transform-style: preserve-3d;
-  transition: transform 260ms cubic-bezier(.16, 1, .3, 1), box-shadow 260ms ease, border-color 220ms ease;
-}
-
-.heyroute-preview [data-hr-tilt]::after {
-  position: absolute;
-  inset: 0;
-  z-index: 8;
-  border-radius: inherit;
-  background: radial-gradient(260px circle at var(--hr-card-x) var(--hr-card-y), rgba(255, 255, 255, 0.42), transparent 68%);
-  content: '';
-  opacity: var(--hr-card-glare);
-  pointer-events: none;
-  transition: opacity 220ms ease;
-}
-
-.heyroute-preview [data-hr-tilt].is-pointer-active {
-  transform: perspective(1200px) rotateX(var(--hr-card-rotate-x)) rotateY(var(--hr-card-rotate-y)) translateY(-5px) scale(1.008);
-}
-
 .heyroute-preview [data-hr-section][data-hr-visible='false'],
 .heyroute-preview [data-hr-section][data-hr-visible='false'] *,
 .heyroute-preview [data-hr-section][data-hr-visible='false'] *::before,
 .heyroute-preview [data-hr-section][data-hr-visible='false'] *::after {
   animation-play-state: paused !important;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .heyroute-preview [data-hr-tilt]:hover,
-  .heyroute-preview [data-hr-tilt].is-pointer-active {
-    will-change: transform;
-  }
 }
 
 .heyroute-preview button:not(:disabled),
@@ -400,11 +366,6 @@ onBeforeUnmount(() => {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
-  }
-
-  .heyroute-preview [data-hr-tilt],
-  .heyroute-preview [data-hr-tilt].is-pointer-active {
-    transform: none !important;
   }
 }
 </style>

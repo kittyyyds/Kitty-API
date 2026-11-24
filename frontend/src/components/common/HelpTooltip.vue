@@ -4,7 +4,7 @@ import { onBeforeUnmount, onMounted, ref, useTemplateRef, nextTick } from 'vue'
 
 const props = withDefaults(defineProps<{
   content?: string
-  trigger?: 'hover' | 'click'
+  trigger?: 'hover' | 'click' | 'both'
   widthClass?: string
 }>(), {
   trigger: 'hover',
@@ -32,7 +32,7 @@ function closeTooltip() {
 }
 
 function onEnter() {
-  if (props.trigger !== 'hover' || touchInteraction.value) return
+  if ((props.trigger !== 'hover' && props.trigger !== 'both') || touchInteraction.value) return
   openTooltip()
 }
 
@@ -42,19 +42,19 @@ function isInside(container: HTMLElement | null, target: EventTarget | null): bo
 
 // 悬停模式下指针在触发图标与提示框之间往返时保持打开，便于选中提示里的文字。
 function onLeave(event: MouseEvent) {
-  if (props.trigger !== 'hover' || touchInteraction.value) return
+  if ((props.trigger !== 'hover' && props.trigger !== 'both') || touchInteraction.value) return
   if (isInside(tooltipRef.value, event.relatedTarget)) return
   closeTooltip()
 }
 
 function onTooltipLeave(event: MouseEvent) {
-  if (props.trigger !== 'hover' || touchInteraction.value) return
+  if ((props.trigger !== 'hover' && props.trigger !== 'both') || touchInteraction.value) return
   if (isInside(triggerRef.value, event.relatedTarget)) return
   closeTooltip()
 }
 
 function onClick(event: MouseEvent) {
-  if (props.trigger !== 'click' && !touchInteraction.value) return
+  if (props.trigger !== 'click' && props.trigger !== 'both' && !touchInteraction.value) return
   event.stopPropagation()
   if (show.value) {
     closeTooltip()

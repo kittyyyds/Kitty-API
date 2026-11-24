@@ -40,9 +40,6 @@ func profitAuthTestAPIKey() *APIKey {
 			ProfitControlEnabled: true,
 			ProfitMinMargin:      0.2,
 			ProfitSafetyBuffer:   0.05,
-			ImageModelPrices: map[string]map[string]float64{
-				"grok-imagine": {ImageBillingSize2K: 0.031},
-			},
 		},
 	}
 }
@@ -56,7 +53,7 @@ func TestAPIKeyAuthSnapshotProfitControlRoundtrip(t *testing.T) {
 	snapshot := svc.snapshotFromAPIKey(context.Background(), apiKey)
 	require.NotNil(t, snapshot)
 	require.Equal(t, apiKeyAuthSnapshotVersion, snapshot.Version)
-	require.GreaterOrEqual(t, snapshot.Version, 24, "v24 起淘汰缺少合并后分组字段的旧认证快照；后续版本保留此保证")
+	require.GreaterOrEqual(t, snapshot.Version, 24, "v24 起认证快照携带兜底计费与官方 Fast 分组字段")
 
 	// 模拟 L2 缓存的完整 JSON 往返（与 apiKeyCache.SetAuthCache/GetAuthCache 同构）。
 	payload, err := json.Marshal(&APIKeyAuthCacheEntry{Snapshot: snapshot})
@@ -73,7 +70,6 @@ func TestAPIKeyAuthSnapshotProfitControlRoundtrip(t *testing.T) {
 	require.InDelta(t, 0.2, materialized.Group.ProfitMinMargin, 1e-12)
 	require.InDelta(t, 0.05, materialized.Group.ProfitSafetyBuffer, 1e-12)
 	require.InDelta(t, 0.06, materialized.Group.RateMultiplier, 1e-12)
-	require.Equal(t, apiKey.Group.ImageModelPrices, materialized.Group.ImageModelPrices)
 
 	// 中间件语义：materialized.Group 进请求 ctx → 门必须按快照配置装上。
 	ctx := context.WithValue(context.Background(), ctxkey.Group, materialized.Group)
@@ -93,34 +89,5 @@ func TestAPIKeyAuthSnapshotOldVersionEvicted(t *testing.T) {
 	materialized, used, err := svc.applyAuthCacheEntry("sk-old", &APIKeyAuthCacheEntry{Snapshot: snapshot})
 	require.NoError(t, err)
 	require.False(t, used, "版本不匹配的缓存条目必须淘汰并回源重建")
-	require.Nil(t, materialized)
-}
-
-// Kitty and upstream independently used snapshot v31 for different projections.
-// The merged cache must retain both image policies and invalidate either v31.
-func TestAPIKeyAuthSnapshotMergedImagePoliciesRoundtrip(t *testing.T) {
-	svc := &APIKeyService{}
-	apiKey := profitAuthTestAPIKey()
-	apiKey.Group.ImageCountBilling = true
-	snapshot := svc.snapshotFromAPIKey(context.Background(), apiKey)
-	require.NotNil(t, snapshot)
-	require.Greater(t, snapshot.Version, 31)
-
-	payload, err := json.Marshal(&APIKeyAuthCacheEntry{Snapshot: snapshot})
-	require.NoError(t, err)
-	var restored APIKeyAuthCacheEntry
-	require.NoError(t, json.Unmarshal(payload, &restored))
-
-	materialized, used, err := svc.applyAuthCacheEntry(apiKey.Key, &restored)
-	require.NoError(t, err)
-	require.True(t, used)
-	require.NotNil(t, materialized.Group)
-	require.True(t, materialized.Group.ImageCountBilling)
-	require.Equal(t, apiKey.Group.ImageModelPrices, materialized.Group.ImageModelPrices)
-
-	restored.Snapshot.Version = 31
-	materialized, used, err = svc.applyAuthCacheEntry(apiKey.Key, &restored)
-	require.NoError(t, err)
-	require.False(t, used, "either incompatible v31 projection must be rebuilt")
 	require.Nil(t, materialized)
 }

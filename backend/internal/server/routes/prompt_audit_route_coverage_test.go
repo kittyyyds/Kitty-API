@@ -53,12 +53,12 @@ func TestEveryGatewayPOSTRouteIsClassifiedForPromptAuditCoverage(t *testing.T) {
 		"/x_search":                 {"gateway_web_search.go"},
 	}
 	excluded := map[string]string{
-		"/v1/video-references":       "reference media upload only; generation prompts are checked by the video request handler",
-		"/v1/videos/quote":           "video pricing quote only; it does not execute a model request",
 		"/messages/count_tokens":     "tokenization only; it does not execute a model request",
 		"/images/batches/:id/cancel": "control-plane cancellation with no user prompt",
 		"/stt":                       "speech transcription is not a text-generation prompt",
 		"/custom-voices":             "voice profile management has no model prompt",
+		"/v1/video-references":       "uploads reference media for a later video request; carries no prompt (the video request itself is audited)",
+		"/v1/videos/quote":           "price quote only; it does not execute a model request",
 	}
 
 	unclassified := make([]string, 0)
@@ -104,12 +104,11 @@ func TestResponsesWebSocketHasFirstAndSubsequentTurnPromptGates(t *testing.T) {
 	require.NotEqual(t, -1, wsStart)
 	wsSource := string(handlerSource)[wsStart:]
 	firstGate := strings.Index(wsSource, `"first_turn"`)
-	// Per-turn admission runs through admitOpenAIWSTurn, which performs the Key
-	// wait (WaitOpenAIWSKeyAdmission) before any user slot.
-	firstSlot := strings.Index(wsSource, `admitOpenAIWSTurn(`)
+	// Kitty acquires the connection's user/key slot directly (ranxi routes it through
+	// admitOpenAIWSTurn); either way the first-turn gate must come first.
+	firstSlot := strings.Index(wsSource, `TryAcquireUserSlotForAPIKeyWithGroup(`)
 	require.NotEqual(t, -1, firstGate, "first-turn prompt gate must exist")
 	require.NotEqual(t, -1, firstSlot, "WS user/key slot acquisition must exist")
-	require.Contains(t, string(handlerSource), `WaitOpenAIWSKeyAdmission`)
 	require.Contains(t, string(handlerSource), `TryAcquireUserSlot`)
 	require.Less(t,
 		firstGate,

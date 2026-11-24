@@ -15,11 +15,12 @@ func scopedBillingFixture(model string, m float64, gid int64) ModelBillingConfig
 }
 func modelBillingSettings(t *testing.T, cfg ModelBillingConfig) *SettingService {
 	t.Helper()
-	c := DefaultOAuthAutoConfig()
-	c.ModelBilling = cfg
+	c := struct {
+		ModelBilling ModelBillingConfig `json:"model_billing"`
+	}{cfg}
 	raw, err := json.Marshal(c)
 	require.NoError(t, err)
-	return NewSettingService(&accountOpsSettingsStub{raw: string(raw)}, nil)
+	return NewSettingService(&modelBillingRepoStub{raw: string(raw)}, nil)
 }
 func TestModelBillingLegacyRetiredAndExplicitScope(t *testing.T) {
 	var c ModelBillingConfig
@@ -278,21 +279,6 @@ func TestModelBillingFreeFastChargesOnceAndBillsAtomicCommand(t *testing.T) {
 	}
 }
 
-func TestGroupBillingSaveRequiresExistingGroup(t *testing.T) {
-	repo := &accountOpsSettingsStub{raw: "{}"}
-	s := NewAccountOpsService(repo, nil, nil)
-	cfg := DefaultOAuthAutoConfig()
-	cfg.ModelBilling = scopedBillingFixture("gpt-test", 2, 2)
-	s.autoGroups = autoConfigGroups{}
-	_, err := s.SaveOAuthAutoConfig(t.Context(), cfg)
-	require.Error(t, err)
-	s.autoGroups = autoConfigGroups{group: &Group{ID: 2, Status: StatusActive}}
-	_, err = s.SaveOAuthAutoConfig(t.Context(), cfg)
-	require.NoError(t, err)
-	loaded, err := GetOAuthAutoConfig(t.Context(), repo)
-	require.NoError(t, err)
-	require.Equal(t, cfg.ModelBilling, loaded.ModelBilling)
-}
 func TestGroupBillingProviderRequiresContextRuleDatabase(t *testing.T) {
 	s, err := ProvideBillingService(&config.Config{}, nil, modelBillingSettings(t, DefaultModelBillingConfig()), nil)
 	require.Error(t, err)

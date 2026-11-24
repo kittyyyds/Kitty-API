@@ -28,7 +28,6 @@ const cardTones = ['light', 'soft', 'dark'] as const
           class="hr-security-card"
           :data-card="cardKeys[index]"
           :data-tone="cardTones[index]"
-          data-hr-tilt="5"
         >
           <span class="hr-security-mark" aria-hidden="true">
             <span />

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -1021,6 +1022,9 @@ func maskOpaqueIdentity(value string) string {
 // ChangePassword 修改密码
 // Security: Increments TokenVersion to invalidate all existing JWT tokens
 func (s *UserService) ChangePassword(ctx context.Context, userID int64, req ChangePasswordRequest) error {
+	if err := ValidatePasswordMaxLength(req.NewPassword); err != nil {
+		return err
+	}
 	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("get user: %w", err)
@@ -1219,7 +1223,13 @@ func (s *UserService) Delete(ctx context.Context, userID int64) error {
 
 // SendNotifyEmailCode sends a verification code to the extra notification email.
 func (s *UserService) SendNotifyEmailCode(ctx context.Context, userID int64, email string, emailService *EmailService, cache EmailCache, locale ...string) error {
+	if emailService == nil || cache == nil {
+		return ErrServiceUnavailable
+	}
 	if err := checkNotifyCodeRateLimit(ctx, cache, userID, email); err != nil {
+		return err
+	}
+	if err := reserveEmailCodeUserRate(ctx, cache, userID); err != nil {
 		return err
 	}
 
@@ -1228,35 +1238,30 @@ func (s *UserService) SendNotifyEmailCode(ctx context.Context, userID int64, ema
 		return fmt.Errorf("generate code: %w", err)
 	}
 
-	// Send email first — if SMTP fails, don't write cache or increment counters,
-	// so the user is not locked out by cooldown/rate-limit for a code they never received.
-	if err := s.sendNotifyVerifyEmail(ctx, emailService, userID, email, code, firstEmailLocale(locale)); err != nil {
-		return err
-	}
-
+	// A delivered code must already be verifiable. If delivery fails, remove only
+	// this code, preserving a newer concurrent request's code and attempt counter.
 	if err := saveNotifyVerifyCode(ctx, cache, email, code); err != nil {
 		return err
 	}
-
-	// Increment user-level counter after successful save
-	if _, err := cache.IncrNotifyCodeUserRate(ctx, userID, notifyCodeUserRateWindow); err != nil {
-		slog.Error("failed to increment notify code user rate", "user_id", userID, "error", err)
+	if err := s.sendNotifyVerifyEmail(ctx, emailService, userID, email, code, firstEmailLocale(locale)); err != nil {
+		clearUndeliveredEmailCode(ctx, cache, email, code, true)
+		return err
 	}
 
 	return nil
 }
 
-// checkNotifyCodeRateLimit checks both email cooldown and user-level rate limit.
+// checkNotifyCodeRateLimit checks the recipient cooldown. User capacity is
+// reserved atomically by the caller before sending, using the existing limit.
 func checkNotifyCodeRateLimit(ctx context.Context, cache EmailCache, userID int64, email string) error {
 	existing, err := cache.GetNotifyVerifyCode(ctx, email)
+	if err != nil && !errors.Is(err, ErrEmailCacheEntryNotFound) {
+		return fmt.Errorf("check notify email cooldown: %w", err)
+	}
 	if err == nil && existing != nil {
 		if time.Since(existing.CreatedAt) < verifyCodeCooldown {
 			return ErrVerifyCodeTooFrequent
 		}
-	}
-	count, err := cache.GetNotifyCodeUserRate(ctx, userID)
-	if err == nil && count >= notifyCodeUserRateLimit {
-		return ErrNotifyCodeUserRateLimit
 	}
 	return nil
 }

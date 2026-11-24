@@ -45,7 +45,6 @@
           <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" />
 
       </UsageAnalysisPanel>
-      <LatencyObservabilityPanel v-if="activeTab === 'usage'" :start-date="startDate" :end-date="endDate" :model="filters.model" :user-id="filters.user_id" :api-key-id="filters.api_key_id" :account-id="filters.account_id" :group-id="filters.group_id" :refresh-token="connectionRefreshKey" />
       <!-- 明细区：tab 栏 + 筛选 + 内容收进同一张卡片，消除割裂感 -->
       <div class="card usage-records">
         <div class="flex flex-wrap items-center border-b border-gray-200 px-2 dark:border-dark-700 sm:px-4">
@@ -199,7 +198,6 @@ import { formatCacheHitRate } from '@/utils/usageCacheHitRate'
 import AppLayout from '@/components/layout/AppLayout.vue'; import Pagination from '@/components/common/Pagination.vue'; import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'; import UsageFilters from '@/components/admin/usage/UsageFilters.vue'
 import UsageTable from '@/components/admin/usage/UsageTable.vue'; import UsageExportProgress from '@/components/admin/usage/UsageExportProgress.vue'
 import UsageConnections from '@/components/admin/usage/UsageConnections.vue'
-import LatencyObservabilityPanel from '@/components/admin/usage/LatencyObservabilityPanel.vue'
 import TrafficPanel from '@/components/usage/TrafficPanel.vue'
 import UserTokenRanking from '@/components/admin/usage/UserTokenRanking.vue'
 import UsageAuditPanel from '@/components/admin/usage/UsageAuditPanel.vue'
@@ -778,7 +776,6 @@ const allColumns = computed(() => [
   { key: 'stream', label: t('usage.type'), sortable: false },
   { key: 'billing_mode', label: t('admin.usage.billingMode'), sortable: false },
   { key: 'tokens', label: t('usage.tokens'), sortable: false },
-  { key: 'cache_hit_rate', label: t('admin.usage.cacheHitRate'), sortable: false },
   { key: 'cost', label: t('usage.cost'), sortable: false },
   { key: 'latency', label: t('usage.latency'), sortable: false },
   { key: 'created_at', label: t('usage.time'), sortable: true },

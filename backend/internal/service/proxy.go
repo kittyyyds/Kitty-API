@@ -19,9 +19,9 @@ type Proxy struct {
 	Protocol       string
 	Host           string
 	Port           int
-	MihomoNodeID   string
 	Username       string
 	Password       string
+	MihomoNodeID   string
 	Status         string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -45,15 +45,8 @@ func (p *Proxy) URL() string {
 		Scheme: p.Protocol,
 		Host:   net.JoinHostPort(p.Host, strconv.Itoa(p.Port)),
 	}
-	switch {
-	case p.Username != "" && p.Password != "":
+	if p.Username != "" && p.Password != "" {
 		u.User = url.UserPassword(p.Username, p.Password)
-	case p.Username != "":
-		// Preserve credentials when a proxy only requires a username.
-		u.User = url.User(p.Username)
-	case p.Password != "":
-		// A few proxy providers use an empty username with a password.
-		u.User = url.UserPassword("", p.Password)
 	}
 	return u.String()
 }

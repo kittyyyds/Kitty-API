@@ -372,7 +372,7 @@
       <p class="text-gray-500 dark:text-dark-400">
         {{ t('auth.alreadyHaveAccount') }}
         <router-link
-          to="/login"
+          :to="{ path: '/login', query: redirectQuery(route.query.redirect) }"
           class="font-medium text-primary-600 transition-colors hover:text-primary-500 dark:text-primary-400 dark:hover:text-primary-300"
         >
           {{ t('auth.signIn') }}
@@ -403,8 +403,8 @@ import {
   validatePromoCode,
   validateInvitationCode
 } from '@/api/auth'
-import { buildAuthErrorMessage } from '@/utils/authError'
 import { extractApiErrorCode, extractI18nErrorMessage } from '@/utils/apiError'
+import { redirectQuery, sanitizeRedirectPath } from '@/utils/authRedirect'
 import {
   formatRegistrationEmailSuffixWhitelistForMessage,
   isRegistrationEmailSuffixAllowed,
@@ -1048,12 +1048,37 @@ function validateForm(): boolean {
 
 // ==================== Form Handlers ====================
 
+// errorMessage is not rendered on this page, so every blocked submit must also toast.
+function blockRegistration(message: string): void {
+  errorMessage.value = message
+  appStore.showError(message)
+}
+
+// Set for the whole submit, including the invitation re-check and the captcha popup, so a
+// second click cannot start a second registration with the same one-time ticket.
+const registerSubmitting = ref(false)
+
 async function handleRegister(): Promise<void> {
+  if (registerSubmitting.value || isLoading.value) return
+  registerSubmitting.value = true
+  try {
+    await submitRegistration()
+  } finally {
+    registerSubmitting.value = false
+  }
+}
+
+async function submitRegistration(): Promise<void> {
   // Clear previous error
   errorMessage.value = ''
 
   // Validate form
+  const previousValidationMessage = validationToastMessage.value
   if (!validateForm()) {
+    // The validation watcher only toasts when the message changes; repeat it for a repeated submit.
+    if (validationToastMessage.value && validationToastMessage.value === previousValidationMessage) {
+      appStore.showError(validationToastMessage.value)
+    }
     return
   }
 
@@ -1061,12 +1086,12 @@ async function handleRegister(): Promise<void> {
   if (formData.promo_code.trim()) {
     // If promo code is being validated, wait
     if (promoValidating.value) {
-      errorMessage.value = t('auth.promoCodeValidating')
+      blockRegistration(t('auth.promoCodeValidating'))
       return
     }
     // If promo code is invalid, block submission
     if (promoValidation.invalid) {
-      errorMessage.value = t('auth.promoCodeInvalidCannotRegister')
+      blockRegistration(t('auth.promoCodeInvalidCannotRegister'))
       return
     }
   }
@@ -1075,12 +1100,12 @@ async function handleRegister(): Promise<void> {
   if (invitationCodeEnabled.value) {
     // If still validating, wait
     if (invitationValidating.value) {
-      errorMessage.value = t('auth.invitationCodeValidating')
+      blockRegistration(t('auth.invitationCodeValidating'))
       return
     }
     // If invitation code is invalid, block submission
     if (invitationValidation.invalid) {
-      errorMessage.value = t('auth.invitationCodeInvalidCannotRegister')
+      blockRegistration(t('auth.invitationCodeInvalidCannotRegister'))
       return
     }
     // If invitation code is required but not validated yet
@@ -1089,7 +1114,7 @@ async function handleRegister(): Promise<void> {
       // Trigger validation
       await validateInvitationCodeDebounced(formData.invitation_code.trim())
       if (!invitationValidation.valid) {
-        errorMessage.value = t('auth.invitationCodeInvalidCannotRegister')
+        blockRegistration(t('auth.invitationCodeInvalidCannotRegister'))
         return
       }
     }
@@ -1106,6 +1131,9 @@ async function handleRegister(): Promise<void> {
     if (affCode) {
       formData.aff_code = affCode
     }
+    // The validate endpoint trims; submit the same value it accepted.
+    const invitationCode = formData.invitation_code.trim()
+    const redirectAfterRegister = sanitizeRedirectPath(route.query.redirect, '')
 
     // If email verification is enabled, redirect to verification page
     if (emailVerifyEnabled.value) {
@@ -1120,7 +1148,8 @@ async function handleRegister(): Promise<void> {
           tencent_captcha_ticket: tencentCaptchaEnabled.value ? turnstileToken.value : undefined,
           tencent_captcha_randstr: tencentCaptchaEnabled.value ? tencentCaptchaRandstr.value : undefined,
           promo_code: formData.promo_code || undefined,
-          invitation_code: formData.invitation_code || undefined,
+          invitation_code: invitationCode || undefined,
+          ...(redirectAfterRegister ? { pending_redirect: redirectAfterRegister } : {}),
           ...(affCode ? { aff_code: affCode } : {})
         })
       )
@@ -1139,7 +1168,7 @@ async function handleRegister(): Promise<void> {
       tencent_captcha_ticket: tencentCaptchaEnabled.value ? turnstileToken.value : undefined,
       tencent_captcha_randstr: tencentCaptchaEnabled.value ? tencentCaptchaRandstr.value : undefined,
       promo_code: formData.promo_code || undefined,
-      invitation_code: formData.invitation_code || undefined,
+      invitation_code: invitationCode || undefined,
       ...(affCode ? { aff_code: affCode } : {})
     })
     clearAffiliateReferralCode()
@@ -1147,8 +1176,8 @@ async function handleRegister(): Promise<void> {
     // Show success toast
     appStore.showSuccess(t('auth.accountCreatedSuccess', { siteName: siteName.value }))
 
-    // Redirect to dashboard
-    await router.push('/dashboard')
+    // Continue to the page the visitor came for (MCP authorize, purchase, ...), else the dashboard
+    await router.push(redirectAfterRegister || '/dashboard')
   } catch (error: unknown) {
     // Handle registration error
     errorMessage.value = buildRegistrationErrorMessage(error, t('auth.registrationFailed'))
@@ -1164,13 +1193,18 @@ async function handleRegister(): Promise<void> {
 }
 
 function buildRegistrationErrorMessage(error: unknown, fallback: string): string {
-  if (extractApiErrorCode(error) === 'EMAIL_ALIAS_NOT_ALLOWED') {
+  const code = extractApiErrorCode(error)
+  if (code === 'EMAIL_ALIAS_NOT_ALLOWED') {
     return t('auth.emailAliasNotAllowed')
   }
-  if (extractApiErrorCode(error) === 'EMAIL_DOMAIN_REGISTRATION_LIMIT') {
+  if (code === 'EMAIL_DOMAIN_REGISTRATION_LIMIT') {
     return t('auth.emailDomainRegistrationLimit')
   }
-  return buildAuthErrorMessage(error, { fallback })
+  if (code === 'EMAIL_SUFFIX_NOT_ALLOWED') {
+    return buildEmailSuffixNotAllowedMessage()
+  }
+  // Other backend reasons are translated from auth.errors; the English text is only a fallback.
+  return extractI18nErrorMessage(error, t, 'auth.errors', fallback)
 }
 </script>
 

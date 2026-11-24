@@ -34,8 +34,8 @@ function mountView() {
         <button class="thirty" @click="$emit('update:window', '30d')">30d</button>
         <button class="refresh" @click="$emit('refresh')">Refresh</button>
       </div>` },
-      MonitorCardGrid: false,
-      MonitorCard: { props: ['availabilityValue'], template: '<output>{{ availabilityValue }}</output>' }
+      MonitorStatusBoard: false,
+      MonitorStatusRow: { props: ['availabilityValue'], template: '<output>{{ availabilityValue }}</output>' }
     } }
   })
 }

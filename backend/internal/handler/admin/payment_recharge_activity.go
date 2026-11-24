@@ -24,45 +24,12 @@ func (h *PaymentHandler) RechargeActivity(c *gin.Context) {
 		}
 		page = parsed
 	}
-	status := c.Query("status")
-	if status != "" && status != "paid" && status != "unpaid" {
-		response.BadRequest(c, "Invalid status")
+	filter, ok := rechargeActivityFilter(c)
+	if !ok {
 		return
 	}
-	channel := c.Query("channel")
-	if channel != "" && channel != "direct" && channel != "redeem" && channel != "manual" {
-		response.BadRequest(c, "Invalid channel")
-		return
-	}
-	var start, end time.Time
-	if raw := c.Query("start_time"); raw != "" {
-		parsed, err := time.Parse(time.RFC3339, raw)
-		if err != nil {
-			response.BadRequest(c, "Invalid start_time")
-			return
-		}
-		start = parsed
-	}
-	if raw := c.Query("end_time"); raw != "" {
-		parsed, err := time.Parse(time.RFC3339, raw)
-		if err != nil {
-			response.BadRequest(c, "Invalid end_time")
-			return
-		}
-		end = parsed
-	}
-	if !start.IsZero() && !end.IsZero() && !end.After(start) {
-		response.BadRequest(c, "end_time must be after start_time")
-		return
-	}
-	email := strings.TrimSpace(c.Query("email"))
-	if len([]rune(email)) > 100 {
-		response.BadRequest(c, "Email search is too long")
-		return
-	}
-	items, total, err := h.paymentService.AdminRechargeActivity(c.Request.Context(), service.RechargeActivityFilter{
-		Page: page, Email: email, Status: status, Channel: channel, StartTime: start, EndTime: end,
-	})
+	filter.Page = page
+	items, total, err := h.paymentService.AdminRechargeActivity(c.Request.Context(), filter)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -79,4 +46,56 @@ func (h *PaymentHandler) RechargeRisks(c *gin.Context) {
 		return
 	}
 	response.Success(c, events)
+}
+
+func rechargeActivityFilter(c *gin.Context) (service.RechargeActivityFilter, bool) {
+	status := c.Query("status")
+	if status != "" && status != "paid" && status != "unpaid" {
+		response.BadRequest(c, "Invalid status")
+		return service.RechargeActivityFilter{}, false
+	}
+	channel := c.Query("channel")
+	if channel != "" && channel != "direct" && channel != "redeem" && channel != "manual" {
+		response.BadRequest(c, "Invalid channel")
+		return service.RechargeActivityFilter{}, false
+	}
+	var start, end time.Time
+	if raw := c.Query("start_time"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			response.BadRequest(c, "Invalid start_time")
+			return service.RechargeActivityFilter{}, false
+		}
+		start = parsed
+	}
+	if raw := c.Query("end_time"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			response.BadRequest(c, "Invalid end_time")
+			return service.RechargeActivityFilter{}, false
+		}
+		end = parsed
+	}
+	if !start.IsZero() && !end.IsZero() && !end.After(start) {
+		response.BadRequest(c, "end_time must be after start_time")
+		return service.RechargeActivityFilter{}, false
+	}
+	email := strings.TrimSpace(c.Query("email"))
+	if len([]rune(email)) > 100 {
+		response.BadRequest(c, "Email search is too long")
+		return service.RechargeActivityFilter{}, false
+	}
+	return service.RechargeActivityFilter{Email: email, Status: status, Channel: channel, StartTime: start, EndTime: end}, true
+}
+func (h *PaymentHandler) RechargeActivitySummary(c *gin.Context) {
+	filter, ok := rechargeActivityFilter(c)
+	if !ok {
+		return
+	}
+	summary, err := h.paymentService.AdminRechargeActivitySummary(c.Request.Context(), filter)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, summary)
 }

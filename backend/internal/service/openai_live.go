@@ -15,19 +15,12 @@ import (
 	"strings"
 	"time"
 
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	coderws "github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
-
-var ErrLiveBillingUnavailable = infraerrors.ServiceUnavailable("LIVE_BILLING_UNAVAILABLE", "实时会话暂不可用：费用结算尚未接入")
-
-// Re-enable only together with reservation, interruption and idempotent
-// settlement support. A group flag must not bypass the missing billing path.
-func LiveBillingAvailable() bool { return false }
 
 const (
 	defaultLiveMaxSessionDuration = time.Hour
@@ -53,6 +46,17 @@ type liveFrameConn interface {
 	Close() error
 }
 
+// liveCodexWireConn closes the Live sideband like the official client: a
+// normal close code without a reason.
+type liveCodexWireConn struct{ *codexWireClientConn }
+
+func (c *liveCodexWireConn) Close() error {
+	if c == nil || c.codexWireClientConn == nil || c.conn == nil {
+		return nil
+	}
+	return c.conn.CloseNormal()
+}
+
 func liveSidebandReadError(err error) error {
 	if coderws.CloseStatus(err) == coderws.StatusNormalClosure {
 		return ErrLiveCallNotFound
@@ -70,6 +74,56 @@ func liveGroupID(groupID *int64) int64 {
 		return 0
 	}
 	return *groupID
+}
+
+// resolveLiveSubscriptionID returns the subscription that belongs to the
+// effective group for this call. The HTTP handler resolves a subscription
+// before account selection, so it necessarily sees the API key's primary
+// group. When account selection activates API-key fallback, re-resolve the
+// subscription by (user, routed group) instead of carrying the primary
+// subscription into the long-lived LiveCallRecord. A standard fallback group
+// intentionally returns zero and is billed as balance-based, just like the
+// regular usage paths.
+func (s *OpenAIGatewayService) resolveLiveSubscriptionID(ctx context.Context, identity LiveCallIdentity) (int64, error) {
+	groupID := liveGroupID(identity.GroupID)
+	candidateID := liveGroupID(identity.SubscriptionID)
+	routing, fallbackActive := apiKeyFallbackRoutingForGroup(ctx, groupID)
+	if !fallbackActive {
+		return candidateID, nil
+	}
+	if routing.fallbackGroup == nil || !routing.fallbackGroup.IsSubscriptionType() {
+		return 0, nil
+	}
+	if routing.billingAdmitted && routing.subscription != nil {
+		return routing.subscription.ID, nil
+	}
+	if s == nil || s.userSubRepo == nil || identity.UserID <= 0 || groupID <= 0 {
+		return 0, ErrSubscriptionInvalid
+	}
+	subscription, err := s.userSubRepo.GetActiveByUserIDAndGroupID(ctx, identity.UserID, groupID)
+	if err != nil || subscription == nil || subscription.ID <= 0 || subscription.GroupID != groupID {
+		logger.FromContext(ctx).Warn(
+			"OpenAI Live 兜底分组订阅解析失败",
+			zap.Int64("user_id", identity.UserID),
+			zap.Int64("group_id", groupID),
+			zap.Int64("primary_subscription_id", candidateID),
+			zap.Error(err),
+		)
+		return 0, ErrSubscriptionInvalid
+	}
+	return subscription.ID, nil
+}
+
+// liveGroupConcurrencyLimit returns the limit for the group that actually
+// selected the account. The handler computes the primary group's limit before
+// selection; after API-key fallback activation the routed group's value must
+// be used for the Live lease as well.
+func liveGroupConcurrencyLimit(ctx context.Context, identity LiveCallIdentity, primaryLimit int) int {
+	routing, active := apiKeyFallbackRoutingForGroup(ctx, liveGroupID(identity.GroupID))
+	if !active || routing.fallbackGroup == nil {
+		return primaryLimit
+	}
+	return routing.fallbackGroup.UserConcurrencyLimit
 }
 
 func liveOptionalID(value int64) *int64 {
@@ -128,19 +182,18 @@ func ValidateLiveCallRequest(request *LiveCallRequest) error {
 
 // CreateLiveCall 创建 Frameless 会话。调用方须在调用期间持有普通用户槽位；
 // 调度器持有的普通账号槽位会被同一个 Live 租约原子接替。
+// groupMaxConcurrency 为可选参数，用于让 Live 长连接也计入分组内每用户并发。
 func (s *OpenAIGatewayService) CreateLiveCall(
 	ctx context.Context,
 	request *LiveCallRequest,
 	identity LiveCallIdentity,
 	userMaxConcurrency int,
+	groupMaxConcurrencyOpt ...int,
 ) (*LiveCallCreated, error) {
-	if !LiveBillingAvailable() {
-		return nil, ErrLiveBillingUnavailable
+	groupMaxConcurrency := 0
+	if len(groupMaxConcurrencyOpt) > 0 {
+		groupMaxConcurrency = groupMaxConcurrencyOpt[0]
 	}
-	return s.createLiveCallAfterBillingGate(ctx, request, identity, userMaxConcurrency)
-}
-
-func (s *OpenAIGatewayService) createLiveCallAfterBillingGate(ctx context.Context, request *LiveCallRequest, identity LiveCallIdentity, userMaxConcurrency int) (*LiveCallCreated, error) {
 	if err := ValidateLiveCallRequest(request); err != nil {
 		return nil, err
 	}
@@ -162,24 +215,10 @@ func (s *OpenAIGatewayService) createLiveCallAfterBillingGate(ctx context.Contex
 	// 防御性装门按文本 D 过滤 Live 账号池且门与计费时刻不同源。
 	ctx = WithOpenAIProfitControlSuppressed(ctx)
 	var lastErr error
-	// joint tracks the Key/user Live members that survive across SDP retry
-	// attempts: accountID is the account member currently held (0 after it was
-	// released for a failover selection). The Key and user members are never
-	// released or re-queued between attempts.
-	type liveJointLease struct {
-		leaseID   string
-		accountID int64
-	}
-	var joint liveJointLease
-	releaseJoint := func() {
-		if joint.leaseID == "" {
-			return
+	for attempt := 0; attempt <= 3 || StrictFailoverRequestActive(ctx); attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		s.releaseLiveLease(joint.accountID, identity.UserID, identity.APIKeyID, joint.leaseID)
-		joint = liveJointLease{}
-	}
-
-	for attempt := 0; attempt <= 3; attempt++ {
 		selection, _, selectErr := s.SelectAccountWithSchedulerForCapability(
 			ctx,
 			identity.GroupID,
@@ -194,7 +233,10 @@ func (s *OpenAIGatewayService) createLiveCallAfterBillingGate(ctx context.Contex
 			false,
 		)
 		if selectErr != nil {
-			releaseJoint()
+			var admission *APIKeyFallbackAdmissionError
+			if errors.As(selectErr, &admission) {
+				return nil, selectErr
+			}
 			if lastErr != nil {
 				return nil, lastErr
 			}
@@ -204,113 +246,50 @@ func (s *OpenAIGatewayService) createLiveCallAfterBillingGate(ctx context.Contex
 			if selection != nil && selection.ReleaseFunc != nil {
 				selection.ReleaseFunc()
 			}
-			releaseJoint()
 			return nil, ErrLiveConcurrencyFull
 		}
 
 		account := selection.Account
-		if joint.leaseID == "" {
-			leaseID := generateRequestID()
-			acquireCtx, cancelAcquire := context.WithTimeout(ctx, liveRedisOperationTimeout)
-			acquired, acquireErr := acquireLiveLeaseForIdentity(
-				acquireCtx,
-				liveCache,
-				identity,
-				account.ID,
-				account.Concurrency,
-				selection.AccountRequestID,
-				identity.UserID,
-				userMaxConcurrency,
-				identity.UserRequestID,
-				identity.APIKeyID,
-				identity.APIKeyConcurrencyLimit,
-				leaseID,
-			)
-			cancelAcquire()
-			if acquireErr != nil || !acquired {
-				selection.ReleaseFunc()
-				if acquireErr != nil {
-					s.releaseLiveLease(account.ID, identity.UserID, identity.APIKeyID, leaseID)
-					if identity.KeyReservation != nil {
-						identity.KeyReservation.Release()
-						identity.KeyReservation = nil
-					}
-					if errors.Is(acquireErr, ErrAPIKeyConcurrencyLimit) {
-						return nil, acquireErr
-					}
-					return nil, fmt.Errorf("%w: acquire Live lease: %w", ErrLiveUnavailable, acquireErr)
-				}
-				return nil, ErrLiveConcurrencyFull
-			}
-			joint = liveJointLease{leaseID: leaseID, accountID: account.ID}
-		} else {
-			// Retried SDP: keep the joint Key/user members and migrate only the
-			// account member to the newly selected account. The new ordinary
-			// account reservation is consumed atomically, never double counted.
-			migrateCtx, cancelMigrate := context.WithTimeout(ctx, liveRedisOperationTimeout)
-			migrated, migrateErr := migrateLiveLeaseAccount(
-				migrateCtx,
-				liveCache,
-				identity,
-				account,
-				selection.AccountRequestID,
-				joint.leaseID,
-				joint.accountID,
-			)
-			cancelMigrate()
-			if migrateErr != nil || !migrated {
-				selection.ReleaseFunc()
-				if migrateErr != nil {
-					if errors.Is(migrateErr, ErrLiveConcurrencyFull) {
-						excluded[account.ID] = struct{}{}
-						lastErr = migrateErr
-						continue
-					}
-					releaseJoint()
-					return nil, fmt.Errorf("%w: migrate Live account: %w", ErrLiveUnavailable, migrateErr)
-				}
-				releaseJoint()
-				return nil, ErrLiveConcurrencyFull
-			}
-			joint.accountID = account.ID
+		if _, alreadyFailed := excluded[account.ID]; alreadyFailed {
+			selection.ReleaseFunc()
+			return nil, ErrStrictFailoverUnconfirmed
 		}
-		leaseID := joint.leaseID
+		effectiveSubscriptionID, subscriptionErr := s.resolveLiveSubscriptionID(ctx, identity)
+		if subscriptionErr != nil {
+			selection.ReleaseFunc()
+			return nil, fmt.Errorf("resolve live subscription: %w", subscriptionErr)
+		}
+		effectiveGroupMaxConcurrency := liveGroupConcurrencyLimit(ctx, identity, groupMaxConcurrency)
+		leaseID := generateRequestID()
+		acquired, acquireErr := s.acquireLiveLease(
+			ctx,
+			liveCache,
+			account.ID,
+			account.Concurrency,
+			identity,
+			userMaxConcurrency,
+			effectiveGroupMaxConcurrency,
+			leaseID,
+			true,
+		)
+		if acquireErr != nil || !acquired {
+			selection.ReleaseFunc()
+			if acquireErr != nil {
+				return nil, acquireErr
+			}
+			return nil, ErrLiveConcurrencyFull
+		}
 
-		// SDP establishment already owns the Live member. Renew it before the
-		// observer/sideband controller exists, and stop the POST on lease loss.
-		pendingCtx, cancelPending := context.WithCancelCause(ctx)
-		pendingDone := make(chan struct{})
-		go func() {
-			defer close(pendingDone)
-			ticker := time.NewTicker(liveLeaseRefreshInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-pendingCtx.Done():
-					return
-				case <-ticker.C:
-					if !s.refreshLiveLease(&LiveCallRecord{AccountID: account.ID, UserID: identity.UserID, APIKeyID: identity.APIKeyID, LeaseID: leaseID}) {
-						cancelPending(ErrAPIKeySlotLeaseLost)
-						return
-					}
-				}
-			}
-		}()
-		created, createErr := s.createUpstreamLiveCall(pendingCtx, account, request, attestation)
-		if errors.Is(context.Cause(pendingCtx), ErrAPIKeySlotLeaseLost) {
-			createErr = ErrAPIKeySlotLeaseLost
-		}
-		cancelPending(context.Canceled)
-		<-pendingDone
+		created, createErr := s.createUpstreamLiveCall(ctx, account, request, attestation)
 		selection.ReleaseFunc()
 		if createErr != nil {
-			// Release only the failed account member; the joint Key/user members
-			// stay owned by this creation until the SDP retries are exhausted.
-			s.releaseLiveLeaseAccount(account.ID, leaseID)
-			joint.accountID = 0
+			s.releaseLiveLease(account.ID, identity.UserID, liveGroupID(identity.GroupID), identity.APIKeyID, leaseID)
 			if !s.shouldFailoverLiveCreateError(account, createErr) {
-				releaseJoint()
 				return nil, createErr
+			}
+			var failure *UpstreamFailoverError
+			if errors.As(createErr, &failure) {
+				RecordStrictFailoverFailure(ctx, account.ID, failure)
 			}
 			excluded[account.ID] = struct{}{}
 			lastErr = createErr
@@ -329,7 +308,8 @@ func (s *OpenAIGatewayService) createLiveCallAfterBillingGate(ctx context.Contex
 			APIKeyID:              identity.APIKeyID,
 			UserID:                identity.UserID,
 			GroupID:               liveGroupID(identity.GroupID),
-			SubscriptionID:        liveGroupID(identity.SubscriptionID),
+			GroupConcurrencyLimit: effectiveGroupMaxConcurrency,
+			SubscriptionID:        effectiveSubscriptionID,
 			LeaseID:               leaseID,
 			Model:                 model,
 			CreatedAt:             now,
@@ -342,184 +322,79 @@ func (s *OpenAIGatewayService) createLiveCallAfterBillingGate(ctx context.Contex
 		}
 		mappingTTL := s.liveMaxSessionDuration() + 5*time.Minute
 		if saveErr := store.SaveLiveCall(ctx, record, mappingTTL); saveErr != nil {
-			releaseJoint()
+			s.releaseLiveLease(account.ID, identity.UserID, liveGroupID(identity.GroupID), identity.APIKeyID, leaseID)
 			return nil, fmt.Errorf("save live call mapping: %w", saveErr)
 		}
 		created.Account = account
 		go s.observeLiveCall(record)
 		return created, nil
 	}
-	// Retryable failures released only each attempt's account member; the joint
-	// Key/user members are owned until the creation reaches a terminal state.
-	// Exhausting the attempts must release them now instead of waiting for TTL.
-	releaseJoint()
 	if lastErr != nil {
 		return nil, lastErr
 	}
 	return nil, ErrLiveUnavailable
 }
 
-// acquireLiveLeaseForIdentity atomically moves the exact ordinary account,
-// user and key members into one joint Live lease, so no dimension is counted
-// twice. A cache without transfer support falls back to the legacy allowance
-// acquire; the production cache always supports the exact transfer. A retried
-// SDP attempt never re-enters here: the joint Key/user members are retained and
-// only the account member is migrated.
-func acquireLiveLeaseForIdentity(
-	ctx context.Context,
-	liveCache LiveConcurrencyCache,
-	identity LiveCallIdentity,
-	accountID int64,
-	accountMax int,
-	accountRequestID string,
-	userID int64,
-	userMax int,
-	userRequestID string,
-	apiKeyID int64,
-	apiKeyMax int,
-	leaseID string,
-) (bool, error) {
-	transfer, transferOK := liveCache.(LiveLeaseTransferCache)
-	keyReservation := identity.KeyReservation
-	if transferOK {
-		keyRequestID := ""
-		if keyReservation != nil {
-			keyRequestID = keyReservation.RequestID()
-		}
-		if apiKeyMax > 0 && keyRequestID == "" {
-			// A limited key must own its exact waited member. A consumed or
-			// missing reservation must fail closed: the handoff cannot invent
-			// capacity or lean on the legacy allowance. A retried SDP keeps its
-			// joint lease and never needs this path again.
-			if keyReservation != nil {
-				keyReservation.Consume()
-			}
-			return false, ErrAPIKeyReservationLost
-		}
-		request := LiveLeaseTransferRequest{
-			AccountID:        accountID,
-			AccountMax:       accountMax,
-			AccountRequestID: accountRequestID,
-			UserID:           userID,
-			UserMax:          userMax,
-			UserRequestID:    userRequestID,
-			APIKeyID:         apiKeyID,
-			APIKeyMax:        apiKeyMax,
-			KeyRequestID:     keyRequestID,
-			LeaseID:          leaseID,
-		}
-		// Stop the ordinary key watchdog before the atomic transfer: once the
-		// regular member is gone it must not be reported as a lost lease.
-		if keyRequestID != "" {
-			keyReservation.PauseRenewal()
-		}
-		acquired, err := transfer.AcquireLiveLeaseTransferring(ctx, request)
-		if err == nil && acquired {
-			if keyRequestID != "" {
-				keyReservation.Consume()
-			}
-			return true, nil
-		}
-		if errors.Is(err, ErrLiveLeaseTransferUncertain) {
-			// The transfer may or may not have reached Redis. Do not start SDP;
-			// fence and remove exactly this transfer's members under a bounded,
-			// detached context, then mark the key reservation as belonging to
-			// the (aborted) successor so the original release cannot delete the
-			// successor state.
-			cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), liveRedisOperationTimeout)
-			abortErr := transfer.AbortLiveLeaseTransfer(cleanupCtx, request)
-			cancelCleanup()
-			if keyRequestID != "" {
-				keyReservation.Consume()
-			}
-			if abortErr != nil {
-				return false, fmt.Errorf("%w: abort Live transfer: %v", ErrLiveUnavailable, abortErr)
-			}
-			return false, fmt.Errorf("%w: %v", ErrLiveUnavailable, err)
-		}
-		// Definite refusal: the ordinary sources still exist and stay owned by
-		// the caller's release paths.
-		return false, err
-	}
-	if keyReservation != nil {
-		keyReservation.Release()
-	}
-	return liveCache.AcquireLiveLease(ctx, accountID, accountMax, userID, userMax, apiKeyID, apiKeyMax, leaseID, true)
-}
-
-// migrateLiveLeaseAccount keeps the joint Key/user members of an existing Live
-// lease and atomically replaces its account member with the new selection. The
-// Key is never released or re-queued, and the new ordinary account member is
-// consumed by the same Redis operation.
-func migrateLiveLeaseAccount(
-	ctx context.Context,
-	liveCache LiveConcurrencyCache,
-	identity LiveCallIdentity,
-	account *Account,
-	accountRequestID string,
-	leaseID string,
-	replacedAccountID int64,
-) (bool, error) {
-	transfer, ok := liveCache.(LiveLeaseTransferCache)
-	if !ok || account == nil {
-		return false, ErrLiveUnavailable
-	}
-	request := LiveLeaseTransferRequest{
-		AccountID:         account.ID,
-		AccountMax:        account.Concurrency,
-		AccountRequestID:  accountRequestID,
-		UserID:            identity.UserID,
-		APIKeyID:          identity.APIKeyID,
-		LeaseID:           leaseID,
-		ReplacedAccountID: replacedAccountID,
-	}
-	acquired, err := transfer.MigrateLiveLeaseAccount(ctx, request)
-	if err != nil {
-		if errors.Is(err, ErrLiveLeaseTransferUncertain) {
-			cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), liveRedisOperationTimeout)
-			abortErr := transfer.AbortLiveLeaseTransfer(cleanupCtx, request)
-			cancelCleanup()
-			if abortErr != nil {
-				return false, fmt.Errorf("%w: abort Live migration: %v", ErrLiveUnavailable, abortErr)
-			}
-			return false, fmt.Errorf("%w: %v", ErrLiveUnavailable, err)
-		}
-		return false, err
-	}
-	return acquired, nil
-}
-
-// releaseLiveLeaseAccount frees only the failed account's Live member; the
-// joint Key/user members survive for the next SDP retry attempt.
-func (s *OpenAIGatewayService) releaseLiveLeaseAccount(accountID int64, leaseID string) {
-	cache, err := s.liveConcurrencyCache()
-	if err != nil {
-		return
-	}
-	release, ok := cache.(LiveLeaseTransferCache)
-	if !ok || accountID <= 0 || leaseID == "" {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), liveRedisOperationTimeout)
-	defer cancel()
-	if err := release.ReleaseLiveLeaseAccount(ctx, accountID, leaseID); err != nil {
-		logger.L().Warn("openai_live_release_account_lease_failed",
-			zap.Int64("account_id", accountID),
-			zap.Error(err),
-		)
-	}
-}
-
 func (s *OpenAIGatewayService) shouldFailoverLiveCreateError(account *Account, err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var pluginErr *PluginTransportError
+	if errors.As(err, &pluginErr) && pluginErr.RequestSent {
+		return false
+	}
 	var upstreamErr *UpstreamFailoverError
 	if !errors.As(err, &upstreamErr) {
 		// 凭证读取和网络传输错误都可能只影响当前账号或代理。
 		return true
 	}
+	if !upstreamErr.ShouldRetryNextAccount() {
+		return false
+	}
 	return s.shouldFailoverOpenAIUpstreamResponse(account,
 		upstreamErr.StatusCode,
 		"",
 		upstreamErr.ResponseBody,
+	)
+}
+
+func (s *OpenAIGatewayService) acquireLiveLease(
+	ctx context.Context,
+	cache LiveConcurrencyCache,
+	accountID int64,
+	accountMax int,
+	identity LiveCallIdentity,
+	userMax int,
+	groupMax int,
+	leaseID string,
+	replacingRegularSlots bool,
+) (bool, error) {
+	groupID := liveGroupID(identity.GroupID)
+	if groupID > 0 && groupMax > 0 {
+		if grouped, ok := cache.(LiveUserGroupConcurrencyCache); ok {
+			return grouped.AcquireLiveLeaseForGroup(
+				ctx,
+				accountID,
+				accountMax,
+				identity.UserID,
+				userMax,
+				groupID,
+				groupMax,
+				identity.APIKeyID,
+				leaseID,
+				replacingRegularSlots,
+			)
+		}
+	}
+	return cache.AcquireLiveLease(
+		ctx,
+		accountID,
+		accountMax,
+		identity.UserID,
+		userMax,
+		identity.APIKeyID,
+		leaseID,
+		replacingRegularSlots,
 	)
 }
 
@@ -567,12 +442,12 @@ func (s *OpenAIGatewayService) createUpstreamLiveCall(
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("Accept", "application/sdp")
 	upstreamReq.Header.Set(liveAttestationHeader, attestation)
-	applyLiveUpstreamIdentityHeaders(upstreamReq.Header)
+	s.applyLiveUpstreamIdentityHeaders(upstreamReq.Header, account)
 
 	resp, err := s.doOpenAIUpstream(upstreamReq, resolveAccountProxyURL(account), account)
 	if err != nil {
 		logLiveCreateStageFailure(ctx, account.ID, "upstream_transport", err)
-		return nil, err
+		return nil, s.handleOpenAIUpstreamTransportError(ctx, nil, account, err, false)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, liveUpstreamBodyLimit+1))
@@ -585,9 +460,10 @@ func (s *OpenAIGatewayService) createUpstreamLiveCall(
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		logLiveUpstreamFailure(ctx, account.ID, resp.StatusCode, resp.Header, responseBody)
 		return nil, &UpstreamFailoverError{
-			StatusCode:      resp.StatusCode,
-			ResponseBody:    responseBody,
-			ResponseHeaders: resp.Header.Clone(),
+			ObservedUpstreamStatus: resp.StatusCode,
+			StatusCode:             resp.StatusCode,
+			ResponseBody:           responseBody,
+			ResponseHeaders:        resp.Header.Clone(),
 		}
 	}
 	callID, err := liveCallIDFromLocation(resp.Header.Get("Location"))
@@ -664,7 +540,32 @@ func liveCallIDFromLocation(location string) (string, error) {
 	return callID, nil
 }
 
-func applyLiveUpstreamIdentityHeaders(headers http.Header) {
+// applyLiveUpstreamIdentityHeaders 写入 Live（Realtime）出站身份。Codex 身份通道
+// 账号使用账号设备画像（tui/exec/vscode + 平台），会话 ID 与官方一致为 UUIDv7，
+// thread-id / x-session-id 与 session-id 同值（0.166.0 Realtime 实抓）。VM 路由
+// 与其它账号保持原行为。
+func (s *OpenAIGatewayService) applyLiveUpstreamIdentityHeaders(headers http.Header, account *Account) {
+	if !codexIdentityLaneAccount(account) {
+		applyLiveUpstreamIdentityHeadersLegacy(headers)
+		return
+	}
+	headers.Set("OpenAI-Alpha", "quicksilver=v2")
+	ensureCodexIdentityHeaders(headers)
+	enforceCodexIdentityHeadersWithUA(headers, s.codexIdentityOverrideUA(account))
+	if strings.TrimSpace(headers.Get("session-id")) == "" {
+		headers.Set("session-id", uuid.Must(uuid.NewV7()).String())
+	}
+	if strings.TrimSpace(headers.Get("thread-id")) == "" {
+		headers.Set("thread-id", headers.Get("session-id"))
+	}
+	if strings.TrimSpace(headers.Get("x-session-id")) == "" {
+		headers.Set("x-session-id", headers.Get("session-id"))
+	}
+	// Realtime/Live 不使用 Responses 的实验头。
+	headers.Del("OpenAI-Beta")
+}
+
+func applyLiveUpstreamIdentityHeadersLegacy(headers http.Header) {
 	headers.Set("OpenAI-Alpha", "quicksilver=v2")
 	ensureCodexIdentityHeaders(headers)
 	enforceCodexIdentityHeaders(headers)
@@ -699,7 +600,7 @@ func (s *OpenAIGatewayService) liveSidebandHeaders(
 		return nil, err
 	}
 	headers.Set(liveAttestationHeader, attestation)
-	applyLiveUpstreamIdentityHeaders(headers)
+	s.applyLiveUpstreamIdentityHeaders(headers, account)
 	return headers, nil
 }
 
@@ -716,7 +617,11 @@ func (s *OpenAIGatewayService) dialLiveSideband(ctx context.Context, record *Liv
 		return nil, err
 	}
 	target := strings.TrimRight(chatGPTLiveSidebandBaseURL, "/") + "/" + url.PathEscape(record.CallID)
-	conn, status, _, err := s.getOpenAIWSPassthroughDialer().Dial(ctx, target, headers, resolveAccountProxyURL(account))
+	// Codex 身份通道走 codexwire（官方 TLS 与 Realtime 握手头序、无压缩扩展）；
+	// VM 路由、Excel 与关闭保真时回退到原拨号器。
+	conn, status, _, err := dialOpenAIWSForAccount(withoutOpenAIWSCompression(ctx), s.cfg, openAIWSAcquireRequest{
+		WSURL: target, ProxyURL: resolveAccountProxyURL(account), Account: account,
+	}, headers, s.getOpenAIWSPassthroughDialer())
 	if err != nil {
 		return nil, fmt.Errorf("dial live sideband (status %d): %w", status, err)
 	}
@@ -724,6 +629,9 @@ func (s *OpenAIGatewayService) dialLiveSideband(ctx context.Context, record *Liv
 	if !ok {
 		_ = conn.Close()
 		return nil, errors.New("live sideband transport does not support raw frames")
+	}
+	if wire, ok := raw.(*codexWireClientConn); ok {
+		return &liveCodexWireConn{wire}, nil
 	}
 	return raw, nil
 }
@@ -744,13 +652,28 @@ func (s *OpenAIGatewayService) GetLiveCallForIdentity(
 	if record.CallID != callID ||
 		record.APIKeyID != identity.APIKeyID ||
 		record.UserID != identity.UserID ||
-		record.GroupID != liveGroupID(identity.GroupID) {
+		!liveIdentityGroupMatches(record.GroupID, identity) {
 		return nil, ErrLiveIdentityMismatch
 	}
 	if record.Controller == LiveControllerClosed {
 		return nil, ErrLiveCallNotFound
 	}
 	return record, nil
+}
+
+// liveIdentityGroupMatches accepts the primary group and the API key's
+// configured fallback group. The sideband request is authenticated after the
+// initial Live call, so its freshly materialized API key still points at the
+// primary group even when the stored call was created after fallback routing.
+// APIKeyID and UserID are checked by the caller, so permitting this second
+// group does not broaden access to another key or user.
+func liveIdentityGroupMatches(recordGroupID int64, identity LiveCallIdentity) bool {
+	primaryGroupID := liveGroupID(identity.GroupID)
+	if recordGroupID == primaryGroupID {
+		return true
+	}
+	fallbackGroupID := liveGroupID(identity.FallbackGroupID)
+	return fallbackGroupID > 0 && fallbackGroupID != primaryGroupID && recordGroupID == fallbackGroupID
 }
 
 // ProxyLiveSideband 让认证后的客户端接管控制连接；媒体始终不经过这里。
@@ -1045,17 +968,30 @@ func (s *OpenAIGatewayService) refreshLiveLease(record *LiveCallRecord) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), liveRedisOperationTimeout)
 	defer cancel()
+	groupID := record.GroupID
+	if groupID > 0 && record.GroupConcurrencyLimit > 0 {
+		if grouped, ok := cache.(LiveUserGroupConcurrencyCache); ok {
+			refreshed, err := grouped.RefreshLiveLeaseForGroup(ctx, record.AccountID, record.UserID, groupID, record.APIKeyID, record.LeaseID)
+			return err == nil && refreshed
+		}
+	}
 	refreshed, err := cache.RefreshLiveLease(ctx, record.AccountID, record.UserID, record.APIKeyID, record.LeaseID)
 	return err == nil && refreshed
 }
 
-func (s *OpenAIGatewayService) releaseLiveLease(accountID, userID, apiKeyID int64, leaseID string) {
+func (s *OpenAIGatewayService) releaseLiveLease(accountID, userID, groupID, apiKeyID int64, leaseID string) {
 	cache, err := s.liveConcurrencyCache()
 	if err != nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), liveRedisOperationTimeout)
 	defer cancel()
+	if groupID > 0 {
+		if grouped, ok := cache.(LiveUserGroupConcurrencyCache); ok {
+			_ = grouped.ReleaseLiveLeaseForGroup(ctx, accountID, userID, groupID, apiKeyID, leaseID)
+			return
+		}
+	}
 	_ = cache.ReleaseLiveLease(ctx, accountID, userID, apiKeyID, leaseID)
 }
 
@@ -1073,7 +1009,7 @@ func (s *OpenAIGatewayService) finalizeLiveCall(record *LiveCallRecord) {
 	if err != nil || !first {
 		return
 	}
-	s.releaseLiveLease(record.AccountID, record.UserID, record.APIKeyID, record.LeaseID)
+	s.releaseLiveLease(record.AccountID, record.UserID, record.GroupID, record.APIKeyID, record.LeaseID)
 	if s.usageLogRepo == nil {
 		return
 	}

@@ -70,6 +70,7 @@ func TestGetCodingPlanProvider_UnrelatedProvidersUnchanged(t *testing.T) {
 		{PlatformZhipu, "https://api.z.ai/api/coding/paas/v4"},
 		{PlatformMiniMax, "https://api.minimax.io/v1"},
 		{PlatformMiniMax, "https://api.minimaxi.com/v1"},
+		{PlatformMiniMax, "https://api.minimax.com/v1"},
 	} {
 		t.Run(testCase.baseURL, func(t *testing.T) {
 			account := &Account{Platform: testCase.platform, Type: AccountTypeAPIKey, Credentials: map[string]any{

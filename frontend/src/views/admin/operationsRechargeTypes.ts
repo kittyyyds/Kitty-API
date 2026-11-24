@@ -30,3 +30,5 @@ export interface RechargeOrderPage {
   page: number
   pages: number
 }
+
+export interface RechargeSummary { amount: number; count: number }

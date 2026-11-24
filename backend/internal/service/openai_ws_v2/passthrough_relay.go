@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -26,6 +27,8 @@ type FrameConn interface {
 }
 
 type Usage struct {
+	CacheReadMediaObserved   bool
+	CacheReadKnown           bool
 	InputTokens              int
 	ImageInputTokens         int
 	OutputTokens             int
@@ -35,10 +38,6 @@ type Usage struct {
 }
 
 type RelayResult struct {
-	// UnfinishedTurn is the active turn only, observed after both relay readers
-	// join. It is never session-aggregate usage or a synthetic terminal callback.
-	UnfinishedTurn *RelayTurnResult
-
 	RequestModel          string
 	ResponseModel         string
 	ResponseModelConflict bool
@@ -49,9 +48,6 @@ type RelayResult struct {
 	RequestID               string
 	TerminalEventType       string
 	FirstTokenMs            *int
-	FirstUpstreamEventMs    *int
-	FirstActualContentMs    *int
-	FirstActualContentKind  string
 	Duration                time.Duration
 	ClientToUpstreamFrames  int64
 	UpstreamToClientFrames  int64
@@ -59,20 +55,16 @@ type RelayResult struct {
 }
 
 type RelayTurnResult struct {
-	UsageObserved          bool
-	RequestModel           string
-	ResponseModel          string
-	ResponseModelConflict  bool
-	ResponseServiceTier    string
-	Usage                  Usage
-	RequestID              string
-	TerminalEventType      string
-	StartedAt              time.Time
-	Duration               time.Duration
-	FirstTokenMs           *int
-	FirstUpstreamEventMs   *int
-	FirstActualContentMs   *int
-	FirstActualContentKind string
+	RequestModel          string
+	ResponseModel         string
+	ResponseModelConflict bool
+	ResponseServiceTier   string
+	Usage                 Usage
+	RequestID             string
+	TerminalEventType     string
+	StartedAt             time.Time
+	Duration              time.Duration
+	FirstTokenMs          *int
 }
 
 type RelayExit struct {
@@ -83,8 +75,10 @@ type RelayExit struct {
 }
 
 type RelayOptions struct {
-	BeforeUpstreamWrite             func(msgType coderws.MessageType, payload []byte)
-	BeforeWriteUpstream             func(msgType coderws.MessageType, payload []byte) error
+	// VM upstreams acknowledge an abort without a synthetic Responses terminal.
+	// This is opt-in; ordinary OpenAI passthrough semantics remain unchanged.
+	CompleteOnInterruptAccepted     bool
+	AcceptInterruptCompletion       func([]byte) bool
 	WriteTimeout                    time.Duration
 	IdleTimeout                     time.Duration
 	UpstreamDrainTimeout            time.Duration
@@ -96,12 +90,16 @@ type RelayOptions struct {
 	OnUsageParseFailure             func(eventType string, usageRaw string)
 	OnTurnComplete                  func(turn RelayTurnResult)
 	BeforeWriteClient               func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error
+	TransformClientPayload          func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) []byte
 	BeforeClientWrite               func(msgType coderws.MessageType, payload []byte)
 	AfterClientWrite                func(msgType coderws.MessageType, payload []byte, writeErr error)
 	BeforeRelayCancel               func(exit RelayExit)
 	ReadClientFrame                 func(ctx context.Context, clientConn FrameConn) (coderws.MessageType, []byte, error)
 	OnTrace                         func(event RelayTraceEvent)
-	Now                             func() time.Time
+	// IsFirstTokenEvent decides which upstream event marks the first token.
+	// Nil keeps the built-in semantic-output rule.
+	IsFirstTokenEvent func(eventType string, message []byte) bool
+	Now               func() time.Time
 }
 
 type RelayTraceEvent struct {
@@ -115,25 +113,24 @@ type RelayTraceEvent struct {
 }
 
 type relayState struct {
-	turnUsageObserved       bool
-	usage                   Usage
-	turnUsage               Usage
-	turnWroteDownstream     atomic.Pointer[atomic.Bool]
-	requestModelMu          sync.RWMutex
-	requestModel            string
-	pendingTurnStart        atomic.Pointer[time.Time]
-	lastResponseID          string
-	lastResponseModel       string
-	lastResponseServiceTier string
-	responseConflict        bool
-	terminalEventType       string
-	firstTokenMs            *int
-	firstUpstreamEventMs    *int
-	firstActualContentMs    *int
-	firstActualContentKind  string
-	turnTimingByID          map[string]*relayTurnTiming
-	activeTurn              *relayTurnTiming
-	pendingBareError        *observedUpstreamEvent
+	completeOnInterruptAccepted bool
+	acceptInterruptCompletion   func([]byte) bool
+	usage                       Usage
+	turnUsage                   Usage
+	turnWroteDownstream         atomic.Bool
+	requestModelMu              sync.RWMutex
+	requestModel                string
+	pendingTurnStart            atomic.Pointer[time.Time]
+	lastResponseID              string
+	lastResponseModel           string
+	lastResponseServiceTier     string
+	responseConflict            bool
+	terminalEventType           string
+	firstTokenMs                *int
+	turnTimingByID              map[string]*relayTurnTiming
+	activeTurn                  *relayTurnTiming
+	pendingBareError            *observedUpstreamEvent
+	isFirstTokenEvent           func(eventType string, message []byte) bool
 }
 
 type relayExitSignal struct {
@@ -144,31 +141,24 @@ type relayExitSignal struct {
 }
 
 type observedUpstreamEvent struct {
-	usageObserved          bool
-	terminal               bool
-	eventType              string
-	responseID             string
-	usage                  Usage
-	startedAt              time.Time
-	responseModel          string
-	responseConflict       bool
-	responseServiceTier    string
-	duration               time.Duration
-	firstToken             *int
-	firstUpstreamEvent     *int
-	firstActualContent     *int
-	firstActualContentKind string
+	terminal            bool
+	eventType           string
+	responseID          string
+	usage               Usage
+	startedAt           time.Time
+	responseModel       string
+	responseConflict    bool
+	responseServiceTier string
+	duration            time.Duration
+	firstToken          *int
 }
 
 type relayTurnTiming struct {
-	startAt                time.Time
-	firstTokenMs           *int
-	firstUpstreamEventMs   *int
-	firstActualContentMs   *int
-	firstActualContentKind string
-	firstResponseModel     string
-	terminalResponseModel  string
-	responseModelConflict  bool
+	startAt               time.Time
+	firstTokenMs          *int
+	firstResponseModel    string
+	terminalResponseModel string
+	responseModelConflict bool
 	// terminalResponseServiceTier is only taken from terminal events: earlier
 	// events echo the requested tier, not the one the upstream actually used.
 	terminalResponseServiceTier string
@@ -206,8 +196,7 @@ func Relay(
 		firstMessageType = coderws.MessageText
 	}
 	startAt := nowFn()
-	state := &relayState{requestModel: result.RequestModel}
-	state.turnWroteDownstream.Store(&atomic.Bool{})
+	state := &relayState{requestModel: result.RequestModel, completeOnInterruptAccepted: options.CompleteOnInterruptAccepted, acceptInterruptCompletion: options.AcceptInterruptCompletion, isFirstTokenEvent: options.IsFirstTokenEvent}
 	if isClientResponseCreateFrame(firstMessageType, firstClientMessage) {
 		firstTurnStartedAt := options.FirstTurnStartedAt
 		if firstTurnStartedAt.IsZero() {
@@ -233,7 +222,6 @@ func Relay(
 	}
 	writeClientFrameUpstream := func(msgType coderws.MessageType, payload []byte) error {
 		isResponseCreate := isClientResponseCreateFrame(msgType, payload)
-		var turnWroteDownstream *atomic.Bool
 		if isResponseCreate {
 			state.setRequestModel(strings.TrimSpace(gjson.GetBytes(payload, "model").String()))
 			turnStartedAt := time.Time{}
@@ -247,24 +235,13 @@ func Relay(
 			// The policy-enforcing client connection has accepted this turn.
 			// Reset before the write so an immediate upstream response cannot race
 			// with the transport returning from WriteFrame.
-			// Give each turn its own flag: the previous downstream write may
-			// still be returning after the client has received its terminal.
-			turnWroteDownstream = &atomic.Bool{}
-			state.turnWroteDownstream.Store(turnWroteDownstream)
-		}
-		if options.BeforeUpstreamWrite != nil {
-			options.BeforeUpstreamWrite(msgType, payload)
-		}
-		if options.BeforeWriteUpstream != nil {
-			if err := options.BeforeWriteUpstream(msgType, payload); err != nil {
-				return err
-			}
+			state.turnWroteDownstream.Store(false)
 		}
 		err := writeUpstream(msgType, payload)
 		if err != nil && isResponseCreate {
 			// The relay exits on this error, but retain the previous turn's state
 			// for accurate diagnostics while the two relay goroutines settle.
-			turnWroteDownstream.Store(true)
+			state.turnWroteDownstream.Store(true)
 		}
 		return err
 	}
@@ -321,23 +298,18 @@ func Relay(
 	exitCh := make(chan relayExitSignal, 3)
 	dropDownstreamWrites := atomic.Bool{}
 	clientReaderStarted := atomic.Bool{}
-	var readers sync.WaitGroup
 	startClientReader := func() {
 		if !clientReaderStarted.CompareAndSwap(false, true) {
 			return
 		}
-		readers.Add(1)
-		go func() {
-			defer readers.Done()
-			runClientToUpstream(relayCtx, clientConn, options.ReadClientFrame, writeClientFrameUpstream, markActivity, clientToUpstreamFrames, onTrace, exitCh)
-		}()
+		go runClientToUpstream(relayCtx, clientConn, options.ReadClientFrame, writeClientFrameUpstream, markActivity, clientToUpstreamFrames, onTrace, exitCh)
 	}
 	if !options.StartClientAfterFirstDownstream {
 		startClientReader()
 	}
-	readers.Add(1)
+	upstreamDone := make(chan struct{})
 	go func() {
-		defer readers.Done()
+		defer close(upstreamDone)
 		runUpstreamToClient(
 			relayCtx,
 			upstreamConn,
@@ -348,6 +320,7 @@ func Relay(
 			options.OnUsageParseFailure,
 			options.OnTurnComplete,
 			options.BeforeWriteClient,
+			options.TransformClientPayload,
 			options.BeforeClientWrite,
 			options.AfterClientWrite,
 			func(msgType coderws.MessageType, payload []byte) {
@@ -419,15 +392,14 @@ func Relay(
 	// ReadFrame observes relayCtx cancellation and Close is the transport-level
 	// fallback. Join the reader before touching relayState or firing the final
 	// turn callback; otherwise a late read can race Relay's result settlement.
-	readers.Wait()
+	<-upstreamDone
 
 	emitTurnComplete(options.OnTurnComplete, state, finalizePendingBareError(state, nowFn()))
-	result.UnfinishedTurn = snapshotUnfinishedRelayTurn(state, nowFn())
 	enrichResult(&result, state, nowFn().Sub(startAt))
 	result.ClientToUpstreamFrames = clientToUpstreamFrames.Load()
 	result.UpstreamToClientFrames = upstreamToClientFrames.Load()
 	result.DroppedDownstreamFrames = droppedDownstreamFrames.Load()
-	if options.FirstMessageSent && firstExit.stage == "read_client" && firstExit.graceful && (!hasSecondExit || secondExit.graceful) {
+	if options.FirstMessageSent && firstExit.stage == "read_client" && firstExit.graceful {
 		emitRelayTrace(onTrace, RelayTraceEvent{
 			Stage:           "relay_client_closed",
 			Graceful:        true,
@@ -575,6 +547,7 @@ func runUpstreamToClient(
 	onUsageParseFailure func(eventType string, usageRaw string),
 	onTurnComplete func(turn RelayTurnResult),
 	beforeWriteClient func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error,
+	transformClientPayload func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) []byte,
 	beforeClientWrite func(msgType coderws.MessageType, payload []byte),
 	afterClientWrite func(msgType coderws.MessageType, payload []byte, writeErr error),
 	afterWriteClient func(msgType coderws.MessageType, payload []byte),
@@ -615,16 +588,10 @@ func runUpstreamToClient(
 			return
 		}
 		markActivity()
-		// Keep this frame's turn identity across callbacks and WriteFrame. A
-		// new response.create must not receive the prior turn's completion.
-		var turnWroteDownstream *atomic.Bool
-		if state != nil {
-			turnWroteDownstream = state.turnWroteDownstream.Load()
-		}
 		if beforeWriteClient != nil {
 			wroteDownstreamInTurn := wroteDownstream
 			if state != nil {
-				wroteDownstreamInTurn = turnWroteDownstream != nil && turnWroteDownstream.Load()
+				wroteDownstreamInTurn = state.turnWroteDownstream.Load()
 			}
 			if err := beforeWriteClient(msgType, payload, wroteDownstreamInTurn); err != nil {
 				emitRelayTrace(onTrace, RelayTraceEvent{
@@ -661,6 +628,11 @@ func runUpstreamToClient(
 				openAIWSRelayDiscardActiveTurnTiming(state)
 			}
 		}
+		if dropDownstreamWrites != nil && dropDownstreamWrites.Load() {
+			// Drained usage still bills the completed upstream generation, but must
+			// not mark cache statistics as complete after client disconnect.
+			observedEvent.usage.CacheReadKnown = false
+		}
 		emitTurnComplete(onTurnComplete, state, observedEvent)
 		if dropDownstreamWrites != nil && dropDownstreamWrites.Load() {
 			if droppedFrames != nil {
@@ -684,6 +656,13 @@ func runUpstreamToClient(
 			markActivity()
 			continue
 		}
+		wroteDownstreamInTurn := wroteDownstream
+		if state != nil {
+			wroteDownstreamInTurn = state.turnWroteDownstream.Load()
+		}
+		if transformClientPayload != nil {
+			payload = transformClientPayload(msgType, payload, wroteDownstreamInTurn)
+		}
 		if beforeClientWrite != nil {
 			beforeClientWrite(msgType, payload)
 		}
@@ -704,8 +683,8 @@ func runUpstreamToClient(
 			return
 		}
 		wroteDownstream = true
-		if turnWroteDownstream != nil {
-			turnWroteDownstream.Store(true)
+		if state != nil {
+			state.turnWroteDownstream.Store(true)
 		}
 		if afterWriteClient != nil {
 			afterWriteClient(msgType, payload)
@@ -817,23 +796,30 @@ func observeUpstreamMessage(
 		responseID = strings.TrimSpace(values[3].String())
 	}
 	now := nowFn()
-	if state.firstUpstreamEventMs == nil {
-		ms := int(now.Sub(startAt).Milliseconds())
-		if ms >= 0 {
-			state.firstUpstreamEventMs = &ms
+	if state.completeOnInterruptAccepted && eventType == "response.interrupt.accepted" {
+		if state.acceptInterruptCompletion != nil && !state.acceptInterruptCompletion(message) {
+			return observedUpstreamEvent{}
 		}
+		if !state.hasUnfinishedTurn() {
+			return observedUpstreamEvent{}
+		}
+		activeID := openAIWSRelayActiveTurnID(state)
+		targetID := strings.TrimSpace(gjson.GetBytes(message, "previous_response_id").String())
+		if targetID == "" {
+			targetID = strings.TrimSpace(gjson.GetBytes(message, "response_id").String())
+		}
+		if targetID != "" && targetID != activeID {
+			return observedUpstreamEvent{}
+		}
+		state.pendingBareError = nil
+		state.terminalEventType = eventType
+		return finalizeObservedRelayTerminal(state, observedUpstreamEvent{eventType: eventType, responseID: activeID}, now)
 	}
 
-	if state.firstTokenMs == nil && isTokenEvent(eventType) {
+	if state.firstTokenMs == nil && state.startsFirstToken(eventType, message) {
 		ms := int(now.Sub(startAt).Milliseconds())
 		if ms >= 0 {
 			state.firstTokenMs = &ms
-		}
-		if state.activeTurn != nil && state.activeTurn.firstTokenMs == nil {
-			tms := int(now.Sub(state.activeTurn.startAt).Milliseconds())
-			if tms >= 0 {
-				state.activeTurn.firstTokenMs = &tms
-			}
 		}
 	}
 	parsedUsage := parseUsageAndAccumulate(state, message, eventType, onUsageParseFailure)
@@ -845,37 +831,15 @@ func observeUpstreamMessage(
 	var turnTiming *relayTurnTiming
 	if responseID != "" {
 		turnTiming = openAIWSRelayGetOrInitTurnTiming(state, responseID, now)
-		if turnTiming != nil && turnTiming.firstTokenMs == nil && isTokenEvent(eventType) {
-			ms := int(now.Sub(turnTiming.startAt).Milliseconds())
-			if ms >= 0 {
-				turnTiming.firstTokenMs = &ms
-			}
-		}
 	} else {
+		// delta 等 token 事件不携带 response.id，归属当前活跃 turn。
 		turnTiming = state.activeTurn
 	}
-	if turnTiming != nil && turnTiming.firstUpstreamEventMs == nil {
+	// 每个 turn 独立记录首 token；默认保持语义输出口径，可由调用方传入管理端配置。
+	if turnTiming != nil && turnTiming.firstTokenMs == nil && state.startsFirstToken(eventType, message) {
 		ms := int(now.Sub(turnTiming.startAt).Milliseconds())
 		if ms >= 0 {
-			turnTiming.firstUpstreamEventMs = &ms
-		}
-	}
-	if state.firstActualContentMs == nil || (turnTiming != nil && turnTiming.firstActualContentMs == nil) {
-		if kind := openai.ResponseContentKind(message, eventType); kind != "" {
-			if state.firstActualContentMs == nil {
-				ms := int(now.Sub(startAt).Milliseconds())
-				if ms >= 0 {
-					state.firstActualContentMs = &ms
-					state.firstActualContentKind = kind
-				}
-			}
-			if turnTiming != nil && turnTiming.firstActualContentMs == nil {
-				ms := int(now.Sub(turnTiming.startAt).Milliseconds())
-				if ms >= 0 {
-					turnTiming.firstActualContentMs = &ms
-					turnTiming.firstActualContentKind = kind
-				}
-			}
+			turnTiming.firstTokenMs = &ms
 		}
 	}
 	observeRelayTurnResponseModel(turnTiming, firstRelayResponseModel(message), isTerminalEvent(eventType))
@@ -885,8 +849,20 @@ func observeUpstreamMessage(
 	observeRelayTurnResponseServiceTier(turnTiming, firstRelayResponseServiceTier(message))
 	state.terminalEventType = eventType
 	if eventType == "error" {
-		// Some Responses servers emit error immediately before a response terminal.
-		// Defer turn settlement so the authoritative response usage can replace
+		// vm2api's own request validation/replay errors are standalone 4xx
+		// frames. Waiting for response.failed would deadlock its next turn.
+		if state.completeOnInterruptAccepted && gjson.GetBytes(message, "error.type").String() == "invalid_request_error" && gjson.GetBytes(message, "status").Int() == 400 {
+			if !state.hasUnfinishedTurn() {
+				return observedUpstreamEvent{}
+			}
+			if observed.responseID == "" {
+				observed.responseID = openAIWSRelayActiveTurnID(state)
+			}
+			state.pendingBareError = nil
+			return finalizeObservedRelayTerminal(state, observed, now)
+		}
+		// Some Responses servers emit error immediately before response.failed.
+		// Defer turn settlement so the authoritative failed usage can replace
 		// this fallback instead of billing both terminal frames.
 		if observed.responseID == "" {
 			observed.responseID = openAIWSRelayActiveTurnID(state)
@@ -904,28 +880,8 @@ func shouldFinalizePendingBareError(state *relayState, payload []byte, eventType
 		return false
 	}
 	eventType = strings.TrimSpace(eventType)
-	if eventType == "" || eventType == "error" {
+	if eventType == "" || eventType == "error" || eventType == "response.failed" {
 		return false
-	}
-	responseID := strings.TrimSpace(gjson.GetBytes(payload, "response.id").String())
-	if responseID == "" {
-		responseID = strings.TrimSpace(gjson.GetBytes(payload, "response_id").String())
-	}
-	if responseID == "" && isTerminalEvent(eventType) {
-		responseID = strings.TrimSpace(gjson.GetBytes(payload, "id").String())
-	}
-	if isTerminalEvent(eventType) {
-		pendingID := state.pendingBareError.responseID
-		if responseID != "" && pendingID != "" {
-			// A terminal for this response replaces the provisional error before
-			// any callback releases its slot. Different responses settle separately.
-			return responseID != pendingID
-		}
-		// Preserve providers' error -> response.failed association when no ID
-		// is available. An unassociated successful terminal starts another turn.
-		if eventType == "response.failed" {
-			return false
-		}
 	}
 	if isTerminalEvent(eventType) || eventType == "response.created" {
 		return true
@@ -933,6 +889,7 @@ func shouldFinalizePendingBareError(state *relayState, payload []byte, eventType
 	// Auxiliary provider frames may be interleaved between error and its
 	// authoritative response.failed. Only a response event identifying a
 	// different turn closes the pending error.
+	responseID := strings.TrimSpace(gjson.GetBytes(payload, "response.id").String())
 	if responseID == "" || state.pendingBareError.responseID == "" {
 		return false
 	}
@@ -952,8 +909,6 @@ func finalizeObservedRelayTerminal(state *relayState, observed observedUpstreamE
 	if state == nil || strings.TrimSpace(observed.eventType) == "" {
 		return observedUpstreamEvent{}
 	}
-	observed.usageObserved = state.turnUsageObserved
-	state.turnUsageObserved = false
 	observed.usage = finalizeRelayTurnUsage(state)
 	observed.terminal = true
 	responseID := strings.TrimSpace(observed.responseID)
@@ -973,9 +928,6 @@ func finalizeObservedRelayTerminal(state *relayState, observed observedUpstreamE
 			observed.startedAt = turnTiming.startAt
 			observed.duration = duration
 			observed.firstToken = openAIWSRelayCloneIntPtr(turnTiming.firstTokenMs)
-			observed.firstUpstreamEvent = openAIWSRelayCloneIntPtr(turnTiming.firstUpstreamEventMs)
-			observed.firstActualContent = openAIWSRelayCloneIntPtr(turnTiming.firstActualContentMs)
-			observed.firstActualContentKind = turnTiming.firstActualContentKind
 		}
 	} else {
 		state.consumePendingTurnStartedAt()
@@ -993,7 +945,8 @@ func emitTurnComplete(
 		return
 	}
 	responseID := strings.TrimSpace(observed.responseID)
-	if responseID == "" && strings.TrimSpace(observed.eventType) != "error" {
+	isInterruptCompletion := state != nil && state.completeOnInterruptAccepted && observed.eventType == "response.interrupt.accepted"
+	if responseID == "" && strings.TrimSpace(observed.eventType) != "error" && !isInterruptCompletion {
 		return
 	}
 	requestModel := ""
@@ -1001,20 +954,16 @@ func emitTurnComplete(
 		requestModel = state.currentRequestModel()
 	}
 	onTurnComplete(RelayTurnResult{
-		UsageObserved:          observed.usageObserved,
-		RequestModel:           requestModel,
-		ResponseModel:          observed.responseModel,
-		ResponseModelConflict:  observed.responseConflict,
-		ResponseServiceTier:    observed.responseServiceTier,
-		Usage:                  observed.usage,
-		RequestID:              responseID,
-		TerminalEventType:      observed.eventType,
-		StartedAt:              observed.startedAt,
-		Duration:               observed.duration,
-		FirstTokenMs:           openAIWSRelayCloneIntPtr(observed.firstToken),
-		FirstUpstreamEventMs:   openAIWSRelayCloneIntPtr(observed.firstUpstreamEvent),
-		FirstActualContentMs:   openAIWSRelayCloneIntPtr(observed.firstActualContent),
-		FirstActualContentKind: observed.firstActualContentKind,
+		RequestModel:          requestModel,
+		ResponseModel:         observed.responseModel,
+		ResponseModelConflict: observed.responseConflict,
+		ResponseServiceTier:   observed.responseServiceTier,
+		Usage:                 observed.usage,
+		RequestID:             responseID,
+		TerminalEventType:     observed.eventType,
+		StartedAt:             observed.startedAt,
+		Duration:              observed.duration,
+		FirstTokenMs:          openAIWSRelayCloneIntPtr(observed.firstToken),
 	})
 }
 
@@ -1191,7 +1140,13 @@ func parseUsageAndAccumulate(
 	eventType string,
 	onParseFailure func(eventType string, usageRaw string),
 ) Usage {
-	if state == nil || len(message) == 0 || !shouldParseUsage(eventType) || !bytes.Contains(message, []byte(`"usage"`)) {
+	if state == nil || len(message) == 0 || !shouldParseUsage(eventType) {
+		return Usage{}
+	}
+	if isTerminalEvent(strings.TrimSpace(eventType)) {
+		state.turnUsage.CacheReadKnown = false
+	}
+	if !bytes.Contains(message, []byte(`"usage"`)) {
 		return Usage{}
 	}
 	usageResult := gjson.GetBytes(message, "response.usage")
@@ -1207,13 +1162,6 @@ func parseUsageAndAccumulate(
 		if onParseFailure != nil {
 			onParseFailure(eventType, usageRaw)
 		}
-		return Usage{}
-	}
-	// An empty object or an object with only unrelated fields is not evidence
-	// that usage was observed as zero. Leave the turn unknown so EOF/cancel does
-	// not publish a synthetic 0/0 measurement; explicit token fields (including
-	// explicit zeros) remain valid observations below.
-	if !relayUsageHasTokenEvidence(usageResult) {
 		return Usage{}
 	}
 
@@ -1270,16 +1218,25 @@ func parseUsageAndAccumulate(
 			int64(inputTokens), int64(outputTokens), usageResult.Get("total_tokens").Int(), reasoningTokens,
 		))
 	}
-	state.turnUsageObserved = true
 	parsedUsage := Usage{
 		InputTokens:              inputTokens,
 		ImageInputTokens:         int(imageInputTokens),
 		OutputTokens:             outputTokens,
 		CacheCreationInputTokens: openAICacheCreationTokensFromUsage(usageResult),
 		CacheReadInputTokens:     cachedTokens,
+		CacheReadKnown:           cachedResult.Exists() && cachedResult.Type == gjson.Number && cachedResult.Num >= 0 && cachedResult.Num < float64(int(^uint(0)>>1)) && math.Trunc(cachedResult.Num) == cachedResult.Num && (eventType == "response.completed" || eventType == "response.done"),
 		ImageOutputTokens:        int(imageTokens),
 	}
 
+	parsedUsage.CacheReadMediaObserved = state.turnUsage.CacheReadMediaObserved ||
+		state.turnUsage.ImageInputTokens > 0 || state.turnUsage.ImageOutputTokens > 0 ||
+		parsedUsage.ImageInputTokens > 0 || parsedUsage.ImageOutputTokens > 0
+	if parsedUsage.CacheReadMediaObserved {
+		parsedUsage.CacheReadKnown = false
+	}
+	if status := gjson.GetBytes(message, "response.status").String(); status != "" && status != "completed" {
+		parsedUsage.CacheReadKnown = false
+	}
 	if isTerminalEvent(strings.TrimSpace(eventType)) {
 		if relayUsageHasTokens(parsedUsage) || !relayUsageHasTokens(state.turnUsage) {
 			state.turnUsage = parsedUsage
@@ -1289,27 +1246,6 @@ func parseUsageAndAccumulate(
 		return Usage{}
 	}
 	return parsedUsage
-}
-
-// A usage object is evidence only when it carries at least one recognized
-// token field. total_tokens alone cannot be split into input/output billing;
-// empty or unrelated objects must stay unknown rather than become 0/0.
-func relayUsageHasTokenEvidence(usage gjson.Result) bool {
-	for _, field := range []string{
-		"input_tokens", "prompt_tokens", "output_tokens", "completion_tokens",
-		"input_tokens_details.cached_tokens", "prompt_tokens_details.cached_tokens",
-		"input_tokens_details.cache_write_tokens", "prompt_tokens_details.cache_write_tokens",
-		"input_tokens_details.cache_creation_tokens", "prompt_tokens_details.cache_creation_tokens",
-		"input_tokens_details.image_tokens", "prompt_tokens_details.image_tokens",
-		"output_tokens_details.image_tokens", "completion_tokens_details.image_tokens",
-		"cache_write_tokens", "cache_creation_input_tokens", "cache_write_input_tokens",
-		"cache_read_input_tokens", "cache_read_tokens",
-	} {
-		if usage.Get(field).Exists() {
-			return true
-		}
-	}
-	return false
 }
 
 func relayUsageHasTokens(usage Usage) bool {
@@ -1322,6 +1258,7 @@ func mergeRelayUsageNonZero(dst *Usage, src Usage) {
 	if dst == nil {
 		return
 	}
+	dst.CacheReadMediaObserved = dst.CacheReadMediaObserved || src.CacheReadMediaObserved
 	if src.InputTokens > 0 {
 		dst.InputTokens = src.InputTokens
 	}
@@ -1392,31 +1329,6 @@ func openAICacheCreationTokensFromUsage(value gjson.Result) int {
 	return 0
 }
 
-// Called only after reader join and pending bare-error settlement. A normal
-// terminal already consumed its timing/usage; it must not be charged again.
-func snapshotUnfinishedRelayTurn(state *relayState, now time.Time) *RelayTurnResult {
-	if state == nil || !state.hasUnfinishedTurn() {
-		return nil
-	}
-	result := &RelayTurnResult{RequestModel: state.currentRequestModel(), RequestID: openAIWSRelayActiveTurnID(state), UsageObserved: state.turnUsageObserved}
-	// An absent/malformed usage object remains unknown, never a zero estimate.
-	if result.UsageObserved {
-		result.Usage = state.turnUsage
-	}
-	if timing := state.activeTurn; timing != nil {
-		result.StartedAt = timing.startAt
-		result.Duration = max(time.Duration(0), now.Sub(timing.startAt))
-		result.ResponseModel = relayTurnResponseModel(timing)
-		result.ResponseModelConflict = timing.responseModelConflict
-		result.ResponseServiceTier = timing.terminalResponseServiceTier
-		result.FirstTokenMs = openAIWSRelayCloneIntPtr(timing.firstTokenMs)
-		result.FirstUpstreamEventMs = openAIWSRelayCloneIntPtr(timing.firstUpstreamEventMs)
-		result.FirstActualContentMs = openAIWSRelayCloneIntPtr(timing.firstActualContentMs)
-		result.FirstActualContentKind = timing.firstActualContentKind
-	}
-	return result
-}
-
 func enrichResult(result *RelayResult, state *relayState, duration time.Duration) {
 	if result == nil {
 		return
@@ -1433,9 +1345,6 @@ func enrichResult(result *RelayResult, state *relayState, duration time.Duration
 	result.RequestID = state.lastResponseID
 	result.TerminalEventType = state.terminalEventType
 	result.FirstTokenMs = state.firstTokenMs
-	result.FirstUpstreamEventMs = state.firstUpstreamEventMs
-	result.FirstActualContentMs = state.firstActualContentMs
-	result.FirstActualContentKind = state.firstActualContentKind
 }
 
 func (s *relayState) setRequestModel(model string) {
@@ -1493,6 +1402,13 @@ func shouldParseUsage(eventType string) bool {
 		return true
 	}
 	return strings.HasPrefix(eventType, "response.") && !strings.HasSuffix(eventType, ".delta")
+}
+
+func (s *relayState) startsFirstToken(eventType string, message []byte) bool {
+	if s.isFirstTokenEvent != nil {
+		return !isTerminalEvent(eventType) && s.isFirstTokenEvent(eventType, message)
+	}
+	return openai.ResponseStartsSemanticOutput(message, eventType)
 }
 
 func isTokenEvent(eventType string) bool {

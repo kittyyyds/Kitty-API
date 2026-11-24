@@ -14,8 +14,6 @@ ARG POSTGRES_IMAGE=postgres:18-alpine
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.google.cn
 ARG NPM_CONFIG_REGISTRY=
-ARG KITTY_FRONTEND_STAGE=frontend-builder
-ARG KITTY_BACKEND_STAGE=backend-builder
 
 # -----------------------------------------------------------------------------
 # Stage 1: Frontend Builder
@@ -43,14 +41,7 @@ RUN --mount=type=cache,id=sub2api-pnpm-store,target=/root/.local/share/pnpm/stor
 # Copy only that subtree to keep the build dependency minimal.
 COPY frontend/ ./
 COPY docs/legal/ /app/docs/legal/
-# Small release hosts use separately verified frontend artifacts.
-ENV NODE_OPTIONS=--max-old-space-size=3072
 RUN pnpm run build
-
-FROM scratch AS frontend-prebuilt
-COPY --from=kitty_frontend / /app/backend/internal/web/dist/
-
-FROM ${KITTY_FRONTEND_STAGE} AS frontend-output
 
 # -----------------------------------------------------------------------------
 # Stage 2: Backend Builder
@@ -65,6 +56,7 @@ FROM --platform=${BUILDPLATFORM} ${GOLANG_IMAGE} AS backend-builder
 ARG VERSION=
 ARG COMMIT=docker
 ARG DATE
+ARG BUILD_TYPE=source
 ARG GOPROXY
 ARG GOSUMDB
 # Populated by buildx from the --platform target (e.g. linux/amd64).
@@ -73,7 +65,6 @@ ARG TARGETARCH
 
 ENV GOPROXY=${GOPROXY}
 ENV GOSUMDB=${GOSUMDB}
-ENV GOMAXPROCS=1 GOMEMLIMIT=512MiB GOGC=50 GOFLAGS=-p=1
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
@@ -89,32 +80,25 @@ RUN --mount=type=cache,id=sub2api-gomod,target=/go/pkg/mod \
 
 # Copy backend source first
 COPY backend/ ./
+COPY FORK_VERSION /app/FORK_VERSION
 
 # Copy frontend dist from previous stage (must be after backend copy to avoid being overwritten)
-COPY --from=frontend-output /app/backend/internal/web/dist ./internal/web/dist
+COPY --from=frontend-builder /app/backend/internal/web/dist ./internal/web/dist
 
-# Build the binary (BuildType=release for CI builds, embed frontend)
-# Version precedence: build arg VERSION > exact git tag > cmd/server/VERSION
+# Build the binary and embed the frontend. Fork source builds read FORK_VERSION;
+# CI release builds still override VERSION and BUILD_TYPE explicitly.
 RUN --mount=type=cache,id=sub2api-gomod,target=/go/pkg/mod \
     --mount=type=cache,id=sub2api-gobuild,target=/root/.cache/go-build \
     VERSION_VALUE="${VERSION}" && \
+    if [ -z "${VERSION_VALUE}" ] && [ -s /app/FORK_VERSION ]; then VERSION_VALUE="$(tr -d '\r\n' < /app/FORK_VERSION)"; fi && \
     if [ -z "${VERSION_VALUE}" ]; then VERSION_VALUE="$(./scripts/resolve-version.sh)"; fi && \
     DATE_VALUE="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
     -tags embed \
-    -ldflags="-s -w -X main.Version=${VERSION_VALUE} -X main.Commit=${COMMIT} -X main.Date=${DATE_VALUE} -X main.BuildType=release" \
+    -ldflags="-s -w -X main.Version=${VERSION_VALUE} -X main.Commit=${COMMIT} -X main.Date=${DATE_VALUE} -X main.BuildType=${BUILD_TYPE}" \
     -trimpath \
     -o /app/sub2api \
     ./cmd/server
-
-# -----------------------------------------------------------------------------
-# Optional verified Linux binary built outside the production host.
-# The default remains the full source build above.
-# -----------------------------------------------------------------------------
-FROM scratch AS backend-prebuilt
-COPY --from=kitty_backend /sub2api /app/sub2api
-
-FROM ${KITTY_BACKEND_STAGE} AS backend-output
 
 # -----------------------------------------------------------------------------
 # Stage 3: PostgreSQL Client (version-matched with docker-compose)
@@ -127,9 +111,10 @@ FROM ${POSTGRES_IMAGE} AS pg-client
 FROM ${ALPINE_IMAGE}
 
 # Labels
-LABEL maintainer="Wei-Shaw <github.com/Wei-Shaw>"
-LABEL description="Sub2API - AI API Gateway Platform"
-LABEL org.opencontainers.image.source="https://github.com/Wei-Shaw/sub2api"
+LABEL maintainer="DeanZFC <github.com/DeanZFC>"
+LABEL description="sub2api-custom - extensible Sub2API fork with additional provider and quota features"
+LABEL org.opencontainers.image.source="https://github.com/DeanZFC/sub2api-custom"
+LABEL org.opencontainers.image.licenses="LGPL-3.0-or-later"
 
 # Install runtime dependencies
 RUN apk add --no-cache \
@@ -158,15 +143,15 @@ RUN addgroup -g 1000 sub2api && \
 WORKDIR /app
 
 # Copy binary/resources with ownership to avoid extra full-layer chown copy
-COPY --from=backend-output --chown=sub2api:sub2api --chmod=0755 /app/sub2api /app/sub2api
-COPY --chown=sub2api:sub2api backend/resources /app/resources
+COPY --from=backend-builder --chown=sub2api:sub2api /app/sub2api /app/sub2api
+COPY --from=backend-builder --chown=sub2api:sub2api /app/backend/resources /app/resources
 
 # Create data directory
 RUN mkdir -p /app/data && chown sub2api:sub2api /app/data
 
 # Copy entrypoint script (fixes volume permissions then drops to sub2api)
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod 0755 /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 
 # Expose port (can be overridden by SERVER_PORT env var)
 EXPOSE 8080

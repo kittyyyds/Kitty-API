@@ -136,6 +136,25 @@ const row = {
   usage_audit: audit,
 } as unknown as AdminUsageLog
 
+describe('image output evidence', () => {
+  it('shows measured dimensions separately from upstream declarations', () => {
+    const imageRow = { ...row, image_count: 1, usage_audit: { ...audit, image_output_evidence: {
+      version: 1, requested_model: 'public-image', upstream_model: 'actual-image', reported_model: 'actual-image',
+      model_status: 'consistent', requested_size: '1024x1024', size_status: 'different', size_evidence: 'image_header',
+      outputs: [{ declared_size: '1024x1024', measured_size: '64x32' }], postprocessed: false,
+    } } } as AdminUsageLog
+    const wrapper = mount(UsageAuditDetailDialog, { props: { show: true, row: imageRow }, global: { stubs: { BaseDialog: BaseDialogStub, Icon: IconStub } } })
+    const section = wrapper.get('[data-testid="image-output-evidence"]')
+    expect(section.text()).toContain('1024x1024')
+    expect(section.text()).toContain('64x32')
+    expect(section.text()).toContain('admin.usage.imageEvidence.sizeStatus.different')
+  })
+  it('does not manufacture evidence for older image records', () => {
+    const wrapper = mount(UsageAuditDetailDialog, { props: { show: true, row: { ...row, image_count: 1 } as AdminUsageLog }, global: { stubs: { BaseDialog: BaseDialogStub, Icon: IconStub } } })
+    expect(wrapper.get('[data-testid="image-output-evidence"]').text()).toContain('admin.usage.imageEvidence.noEvidence')
+  })
+})
+
 describe('UsageAuditTable', () => {
   it('renders the audit comparison and emits inspect/user actions', async () => {
     const wrapper = mount(UsageAuditTable, {

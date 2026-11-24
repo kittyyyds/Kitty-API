@@ -9,7 +9,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/Wei-Shaw/sub2api/internal/managedinstance"
 	"log"
 	"net"
 	"net/http"
@@ -19,10 +18,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/managedinstance"
+
 	_ "github.com/Wei-Shaw/sub2api/ent/runtime"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
-	"github.com/Wei-Shaw/sub2api/internal/mihomo"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/server"
@@ -68,29 +68,7 @@ func main() {
 	setupMode := flag.Bool("setup", false, "Run setup wizard in CLI mode")
 	migrateOnly := flag.Bool("migrate-only", false, "Apply database migrations and exit")
 	showVersion := flag.Bool("version", false, "Show version information")
-	migrateMihomo := flag.String("migrate-mihomo", "", "Stage legacy Mihomo into the specified Sub2API data directory (root deployment only)")
-	checkMihomo := flag.String("check-managed-mihomo", "", "Check managed Mihomo in the specified data directory")
 	flag.Parse()
-	if *checkMihomo != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := mihomo.CheckManaged(ctx, *checkMihomo); err != nil {
-			log.Fatal(err)
-		}
-		return
-	}
-	if *migrateMihomo != "" {
-		if os.Geteuid() != 0 {
-			log.Fatal("Mihomo migration requires root")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		if err := mihomo.PrepareLegacy(ctx, *migrateMihomo, "/etc/mihomo-codex/config.yaml", "/var/lib/mihomo-codex/providers/airport.yaml", "/usr/local/bin/mihomo"); err != nil {
-			log.Fatalf("Mihomo migration failed: %v", err)
-		}
-		log.Print("Mihomo migration staged; original configuration retained")
-		return
-	}
 
 	if *showVersion {
 		log.Printf("Sub2API %s (commit: %s, built: %s)\n", Version, Commit, Date)
@@ -213,7 +191,7 @@ func runMainServer() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-	if err := logger.Init(logger.OptionsFromRuntimeConfig(cfg.Log, cfg.Runtime)); err != nil {
+	if err := logger.Init(logger.OptionsFromConfig(cfg.Log)); err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
 	if cfg.RunMode == config.RunModeSimple {
@@ -255,7 +233,7 @@ func runMainServer() {
 			// Startup continues so unrelated APIs stay up. Fail-closed (unavailable)
 			// applies only when a persisted blocking policy was observed; without
 			// blocking intent, Prompt Audit stays ModeOff so the gateway remains
-			// usable and administrators can still disable the feature (#4560).
+			// usable and administrators can still disable the feature.
 			log.Printf("Prompt Audit started in degraded state: %v", err)
 		}
 	}
@@ -296,6 +274,11 @@ func runMainServer() {
 		ctx = context.Background() // A managed host never turns a deadline into SIGKILL.
 	}
 
+	// Keep the listener available for image downloads belonging to admitted BPS
+	// generations. The lifecycle rejects new business while those handlers drain.
+	if err := app.Lifecycle.Wait(ctx); err != nil {
+		log.Printf("Active request drain deadline reached: %v", err)
+	}
 	if err := app.Server.Shutdown(ctx); err != nil {
 		log.Printf("Server forced to shutdown: %v", err)
 	}
@@ -303,12 +286,8 @@ func runMainServer() {
 	if instance := managedinstance.Current(); instance != nil {
 		_ = instance.WaitDrained(context.Background()) // includes hijacked WebSockets
 	}
-	if err := app.Lifecycle.Wait(ctx); err != nil {
-		log.Printf("Active request drain deadline reached: %v", err)
-	}
 	if err := app.Server.Close(); err != nil {
 		log.Printf("Closing server connections: %v", err)
 	}
 	log.Println("Server exited")
-	mihomo.CloseAll()
 }

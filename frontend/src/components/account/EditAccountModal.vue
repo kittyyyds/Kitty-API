@@ -11,6 +11,9 @@
       @submit.prevent="handleSubmit"
       class="space-y-5"
     >
+      <div v-if="account.retired_reason" class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800/40 dark:bg-amber-900/20 dark:text-amber-200" data-testid="retired-bps-credential">
+        {{ t('admin.accounts.retiredBPSCredential') }}
+      </div>
       <div>
         <label class="input-label">{{ t('common.name') }}</label>
         <input v-model="form.name" type="text" required class="input" data-tour="edit-account-form-name" />
@@ -26,38 +29,12 @@
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
 
-      <OpenAIAuthConnections v-if="account.platform === 'openai' && account.type === 'oauth' && !isSparkShadow"
-        :account-id="account.id" :account-type="account.type" :active="show" />
 
-      <SIWCAccountSettings v-if="account.platform === 'openai' && account.type === 'oauth' && !isSparkShadow"
-        v-model:enabled="siwcEnabled" :account-id="account.id" :active="show" />
-      <div v-if="account.platform === 'openai' && account.type === 'oauth' && !isSparkShadow" class="rounded-lg bg-gray-50 p-3 dark:bg-dark-800">
-        <label class="flex items-center gap-2 text-sm"><input v-model="openaiModelAliases" type="checkbox" data-testid="openai-model-aliases" />{{ t('priorityScheduling.modelAliases') }}</label>
-        <p class="input-hint">{{ t('priorityScheduling.modelAliasesHint') }}</p>
-      </div>
 
-      <div
-        v-if="account.platform === 'openai' && account.type === 'oauth' && !isSparkShadow && globalPrismEnabled"
-        class="rounded-lg border border-gray-200 p-3 dark:border-dark-600"
-        data-testid="openai-prism-browser-oauth-settings"
-      >
-        <label class="flex items-center gap-2 text-sm">
-          <input v-model="prismBrowserEnabled" type="checkbox" data-testid="openai-prism-browser-oauth-toggle" />
-          <span>{{ t('admin.accounts.openai.prismBrowser') }}</span>
-        </label>
-        <p class="input-hint">{{ t('admin.accounts.openai.prismBrowserDesc') }}</p>
-        <fieldset v-if="prismBrowserEnabled" class="mt-3" data-testid="prism-model-scope">
-          <legend class="input-label">{{ t('admin.accounts.openai.prismBrowserModels') }}</legend>
-          <div class="grid grid-cols-2 gap-2">
-            <label v-for="model in prismSupportedModels" :key="model" class="flex items-center gap-2 text-sm">
-              <input v-model="prismBrowserModels" type="checkbox" :value="model" :data-testid="`prism-model-${model}`" />
-              <span>{{ model }}</span>
-            </label>
-          </div>
-          <p class="input-hint">{{ t('admin.accounts.openai.prismBrowserModelsHint') }}</p>
-          <p class="mt-2 text-xs text-primary-600 dark:text-primary-400">{{ t('admin.accounts.openai.prismBrowserManagedEndpoint') }}</p>
-        </fieldset>
-      </div>
+
+
+
+
 
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
@@ -764,26 +741,6 @@
           </div>
         </div>
 
-      </div>
-
-      <div
-        v-if="account.platform === 'grok'"
-        class="border-t border-gray-200 pt-4 dark:border-dark-600"
-      >
-        <div class="flex items-center justify-between gap-4">
-          <div class="min-w-0">
-            <label class="input-label mb-0">{{ t('admin.accounts.grokSkipForbiddenPause.title') }}</label>
-            <p id="grok-skip-forbidden-pause-hint" class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              {{ t('admin.accounts.grokSkipForbiddenPause.hint') }}
-            </p>
-          </div>
-          <Toggle
-            v-model="grokSkipForbiddenPause"
-            data-testid="grok-skip-forbidden-pause-toggle"
-            :aria-label="t('admin.accounts.grokSkipForbiddenPause.title')"
-            aria-describedby="grok-skip-forbidden-pause-hint"
-          />
-        </div>
       </div>
 
       <!-- Grok OAuth client-tool prompt cache opt-in -->
@@ -1515,7 +1472,12 @@
 
           <!-- Whitelist Mode -->
           <div v-if="modelRestrictionMode === 'whitelist'">
-            <ModelWhitelistSelector v-model="allowedModels" :model-mappings="modelMappings" platform="anthropic" />
+            <ModelWhitelistSelector
+              v-model="allowedModels"
+              :model-mappings="modelMappings"
+              platform="anthropic"
+              :account-id="account?.id"
+            />
             <p class="text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
               <span v-if="allowedModels.length === 0 && modelMappings.length === 0">{{ t('admin.accounts.supportsAllModels') }}</span>
@@ -1953,7 +1915,7 @@
 
       <!-- Intercept Warmup Requests (Anthropic/Antigravity) -->
       <div
-        v-if="account?.platform === 'anthropic' || account?.platform === 'antigravity'"
+        v-if="(account?.platform === 'anthropic' || account?.platform === 'antigravity')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -1988,10 +1950,12 @@
           <label class="input-label mb-0">{{ t('admin.accounts.proxy') }}</label>
           <ProxyAdBanner />
         </div>
-        <ProxySelector v-model="form.proxy_id" :proxies="proxies" />
+        <ProxySelector v-model="form.proxy_ids" :proxies="proxies" multiple />
+        <p class="input-hint">{{ t('admin.accounts.proxyPoolHint') }}</p>
       </div>
 
       <UpstreamRequestIdHeaderField
+
         v-model="upstreamRequestIdHeader"
         :platform="account.platform"
         :type="account.type"
@@ -2027,6 +1991,7 @@
             v-model.number="form.rate_multiplier"
             type="number"
             min="0"
+            max="100"
             step="0.001"
             class="input disabled:cursor-not-allowed disabled:opacity-60"
             data-testid="account-rate-multiplier"
@@ -2063,17 +2028,7 @@
           </div>
         </div>
         <div>
-          <div class="mb-2 flex items-center justify-between gap-1">
-            <label class="input-label mb-0" for="account-cost-multiplier">{{ t('admin.accounts.costMultiplier') }}</label>
-            <div v-if="account?.type === 'apikey' && !isModelPriceProbe && !isNewAPIUpstream" class="flex shrink-0 items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
-              <span>{{ t('admin.accounts.costMultiplierAutoSync') }}</span>
-              <Toggle
-                v-model="costMultiplierAutoSync"
-                data-testid="account-cost-auto-sync"
-                :aria-label="t('admin.accounts.costMultiplierAutoSync')"
-              />
-            </div>
-          </div>
+          <label class="input-label" for="account-cost-multiplier">{{ t('admin.accounts.costMultiplier') }}</label>
           <input
             id="account-cost-multiplier"
             v-model.number="costMultiplier"
@@ -2100,18 +2055,6 @@
           <p class="input-hint">{{ t('admin.accounts.groupBillingRateMultiplierHint') }}</p>
         </div>
       </div>
-      <!-- OpenAI OAuth RPM limit -->
-      <div
-        v-if="account?.platform === 'openai' && account?.type === 'oauth'"
-        class="border-t border-gray-200 pt-4 dark:border-dark-600"
-      >
-        <AccountRpmSettings
-          v-model:enabled="rpmLimitEnabled"
-          v-model:base-rpm="baseRpm"
-          strict
-        />
-      </div>
-
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <label class="input-label">{{ t('admin.accounts.expiresAt') }}</label>
         <input v-model="expiresAtInput" type="datetime-local" class="input" />
@@ -2129,14 +2072,6 @@
         </p>
       </div>
 
-      <div v-if="account?.platform === 'openai' && account?.type === 'apikey'" class="border-t border-gray-200 pt-4 dark:border-dark-600">
-        <label class="flex items-center gap-2">
-          <input v-model="copilotSDKEnabled" type="checkbox" data-testid="copilot-sdk-toggle" />
-          <span>Copilot SDK</span>
-        </label>
-        <p class="input-hint">{{ t('admin.accounts.openai.copilotSDKDesc') }}</p>
-      </div>
-
       <!-- OpenAI 自动透传开关（OAuth/API Key） -->
       <div
         v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token' || account?.type === 'apikey')"
@@ -2151,6 +2086,7 @@
           </div>
           <button
             type="button"
+            data-testid="openai-passthrough-toggle"
             @click="openaiPassthroughEnabled = !openaiPassthroughEnabled"
             :class="[
               'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
@@ -2172,6 +2108,11 @@
         v-model:models="extraImageModels"
         v-model:prefixes="extraImageModelPrefixes"
       />
+      <label v-if="account?.platform === 'openai' && openaiPassthroughEnabled" class="flex items-start gap-3 rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+        <input v-model="openaiPassthroughModelFilterEnabled" type="checkbox" data-testid="openai-passthrough-model-filter" class="mt-0.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+        <span><span class="text-sm font-medium">{{ t('admin.accounts.openai.passthroughModelFilter') }}</span><span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.openai.passthroughModelFilterDesc') }}</span></span>
+      </label>
+
       <!-- OpenAI Codex namespace 工具摊平（兼容开关，仅 OAuth） -->
       <div
         v-if="account?.platform === 'openai' && account?.type === 'oauth'"
@@ -2284,23 +2225,6 @@
         </div>
       </div>
 
-      <div
-        v-if="account?.platform === 'openai' && account?.type === 'oauth'"
-        class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600"
-      >
-        <div>
-          <label class="input-label mb-0">{{ t('admin.accounts.openai.wsSseAcceleration') }}</label>
-          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            {{ t('admin.accounts.openai.wsSseAccelerationDesc') }}
-          </p>
-        </div>
-        <Toggle
-          v-model="openaiOAuthWSSSEAcceleration"
-          data-testid="openai-ws-sse-acceleration"
-          :aria-label="t('admin.accounts.openai.wsSseAcceleration')"
-        />
-      </div>
-
       <!-- OpenAI APIKey Responses API support mode -->
       <div
         v-if="account?.platform === 'openai' && account?.type === 'apikey'"
@@ -2386,6 +2310,14 @@
             ]"
           />
         </button>
+      </div>
+
+      <!-- OpenAI images: size tier routing -->
+      <div
+        v-if="account?.platform === 'openai'"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <OpenAIImageSizeTiersField v-model="openAIImageSizeTiers" />
       </div>
 
       <div
@@ -2521,36 +2453,6 @@
               :class="[
                 'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
                 anthropicPassthroughEnabled ? 'translate-x-5' : 'translate-x-0'
-              ]"
-            />
-          </button>
-        </div>
-      </div>
-
-      <!-- Anthropic API Key 抹除 Claude Code 身份开关 -->
-      <div
-        v-if="account?.platform === 'anthropic' && account?.type === 'apikey'"
-        class="border-t border-gray-200 pt-4 dark:border-dark-600"
-      >
-        <div class="flex items-center justify-between">
-          <div>
-            <label class="input-label mb-0">{{ t('admin.accounts.anthropic.stripClaudeCodeIdentity') }}</label>
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              {{ t('admin.accounts.anthropic.stripClaudeCodeIdentityDesc') }}
-            </p>
-          </div>
-          <button
-            type="button"
-            @click="anthropicStripClaudeCodeIdentityEnabled = !anthropicStripClaudeCodeIdentityEnabled"
-            :class="[
-              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
-              anthropicStripClaudeCodeIdentityEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
-            ]"
-          >
-            <span
-              :class="[
-                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
-                anthropicStripClaudeCodeIdentityEnabled ? 'translate-x-5' : 'translate-x-0'
               ]"
             />
           </button>
@@ -2786,6 +2688,38 @@
         </div>
       </div>
 
+      <!-- Tibo 探测（gpt-6-astra 是否降智；OpenAI OAuth / setup-token / API Key） -->
+      <div
+        v-if="tiboRoutes.length"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+        data-testid="tibo-routes"
+      >
+        <label class="input-label mb-0">{{ t('admin.accounts.openai.codexTiboRoutes') }}</label>
+        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+          {{ t('admin.accounts.openai.codexTiboRouteDesc') }}
+        </p>
+        <div class="mt-3 space-y-1.5">
+          <div v-for="route in tiboRoutes" :key="route.route">
+            <TiboRouteSpark
+              model="gpt-6-astra"
+              :verdict="route.verdict"
+              :samples="route.recent_samples"
+              :compact="false"
+            />
+            <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+              {{ t(`admin.accounts.openai.codexTiboRouteVerdict.${route.verdict}`) }}
+              <template v-if="route.checked_at">
+                · {{ t('admin.accounts.openai.codexTiboRouteCheckedAt', { time: formatDateTime(new Date(route.checked_at)) }) }}
+              </template>
+              <template v-if="route.next_probe_at">
+                · {{ t('admin.accounts.openai.codexTiboRouteNextProbeAt', { time: formatDateTime(new Date(route.next_probe_at)) }) }}
+              </template>
+              · {{ t('admin.accounts.openai.codexTiboRouteHourly', { probes: route.probes_hour, flips: route.flips_hour }) }}
+            </p>
+          </div>
+        </div>
+      </div>
+
       <!-- Codex 指纹收敛模式（仅 OpenAI OAuth） -->
       <div
         v-if="account?.platform === 'openai' && account?.type === 'oauth'"
@@ -3001,7 +2935,7 @@
           <button
             type="button"
             data-testid="auto-reset-credit-enabled"
-            @click="autoResetCreditEnabled = !autoResetCreditEnabled"
+            @click="autoResetCreditEnabled ? (autoResetCreditEnabled = false) : (showAutoResetCreditConfirm = true)"
             :class="[
               'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
               autoResetCreditEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
@@ -3021,7 +2955,7 @@
             <input
               v-model.number="autoResetCredit5hThreshold"
               type="number"
-              min="0"
+              min="0.1"
               max="100"
               step="0.1"
               class="input"
@@ -3034,7 +2968,7 @@
             <input
               v-model.number="autoResetCredit7dThreshold"
               type="number"
-              min="0"
+              min="0.1"
               max="100"
               step="0.1"
               class="input"
@@ -3177,12 +3111,95 @@
 
         <!-- RPM Limit -->
         <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
-          <AccountRpmSettings
-            v-model:enabled="rpmLimitEnabled"
-            v-model:base-rpm="baseRpm"
-            v-model:strategy="rpmStrategy"
-            v-model:sticky-buffer="rpmStickyBuffer"
-          />
+          <div class="mb-3 flex items-center justify-between">
+            <div>
+              <label class="input-label mb-0">{{ t('admin.accounts.quotaControl.rpmLimit.label') }}</label>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.quotaControl.rpmLimit.hint') }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="rpmLimitEnabled = !rpmLimitEnabled"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+                rpmLimitEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  rpmLimitEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+
+          <div v-if="rpmLimitEnabled" class="space-y-4">
+            <div>
+              <label class="input-label">{{ t('admin.accounts.quotaControl.rpmLimit.baseRpm') }}</label>
+              <input
+                v-model.number="baseRpm"
+                type="number"
+                min="1"
+                max="1000"
+                step="1"
+                class="input"
+                :placeholder="t('admin.accounts.quotaControl.rpmLimit.baseRpmPlaceholder')"
+              />
+              <p class="input-hint">{{ t('admin.accounts.quotaControl.rpmLimit.baseRpmHint') }}</p>
+            </div>
+
+            <div>
+              <label class="input-label">{{ t('admin.accounts.quotaControl.rpmLimit.strategy') }}</label>
+              <div class="flex gap-2">
+                <button
+                  type="button"
+                  @click="rpmStrategy = 'tiered'"
+                  :class="[
+                    'flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-all',
+                    rpmStrategy === 'tiered'
+                      ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+                  ]"
+                >
+                  <div class="text-center">
+                    <div>{{ t('admin.accounts.quotaControl.rpmLimit.strategyTiered') }}</div>
+                    <div class="mt-0.5 text-[10px] opacity-70">{{ t('admin.accounts.quotaControl.rpmLimit.strategyTieredHint') }}</div>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  @click="rpmStrategy = 'sticky_exempt'"
+                  :class="[
+                    'flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-all',
+                    rpmStrategy === 'sticky_exempt'
+                      ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+                  ]"
+                >
+                  <div class="text-center">
+                    <div>{{ t('admin.accounts.quotaControl.rpmLimit.strategyStickyExempt') }}</div>
+                    <div class="mt-0.5 text-[10px] opacity-70">{{ t('admin.accounts.quotaControl.rpmLimit.strategyStickyExemptHint') }}</div>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            <div v-if="rpmStrategy === 'tiered'">
+              <label class="input-label">{{ t('admin.accounts.quotaControl.rpmLimit.stickyBuffer') }}</label>
+              <input
+                v-model.number="rpmStickyBuffer"
+                type="number"
+                min="1"
+                step="1"
+                class="input"
+                :placeholder="t('admin.accounts.quotaControl.rpmLimit.stickyBufferPlaceholder')"
+              />
+              <p class="input-hint">{{ t('admin.accounts.quotaControl.rpmLimit.stickyBufferHint') }}</p>
+            </div>
+
+          </div>
 
           <!-- 用户消息限速模式（独立于 RPM 开关，始终可见） -->
           <div class="mt-4">
@@ -3342,11 +3359,10 @@
           </div>
         </div>
       </div>
-
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <div>
           <label class="input-label">{{ t('common.status') }}</label>
-          <Select v-model="form.status" :options="statusOptions" />
+          <Select v-model="form.status" :options="statusOptions" data-testid="account-status" />
         </div>
 
         <!-- Mixed Scheduling (only for antigravity accounts, read-only in edit mode) -->
@@ -3464,6 +3480,14 @@
     </template>
   </BaseDialog>
 
+  <ConfirmDialog
+    :show="showAutoResetCreditConfirm"
+    :title="t('admin.accounts.autoResetSafety.confirmTitle')"
+    :message="t('admin.accounts.autoResetSafety.confirmMessage', { threshold5h: autoResetCredit5hThreshold, threshold7d: autoResetCredit7dThreshold })"
+    :confirm-text="t('common.confirm')" :cancel-text="t('common.cancel')" danger
+    @confirm="autoResetCreditEnabled = true; showAutoResetCreditConfirm = false"
+    @cancel="showAutoResetCreditConfirm = false"
+  />
   <!-- Mixed Channel Warning Dialog -->
   <ConfirmDialog
     :show="showMixedChannelWarning"
@@ -3480,12 +3504,12 @@
 <script setup lang="ts">
 import ExtraImageModelsField from '@/components/account/ExtraImageModelsField.vue'
 import { parseExtraImageModels, readExtraImageModels } from '@/utils/extraImageModels'
-import SIWCAccountSettings from './SIWCAccountSettings.vue'
-
-import { usesImagePriceProbe } from "@/utils/modelPriceProbe"
-import OpenAIAuthConnections from './OpenAIAuthConnections.vue'
+import { usesImagePriceProbe } from '@/utils/modelPriceProbe'
 import { DEFAULT_ACCOUNT_COST_MULTIPLIER, isValidAccountCostMultiplier, readAccountCostMultiplier } from '@/utils/accountCost'
-
+import AccountGroupModelLimits from '@/components/account/AccountGroupModelLimits.vue'
+import { buildGroupAllowedModelsPayload, groupAllowedModelsFromAccount, type GroupAllowedModels } from '@/components/account/groupAllowedModels'
+import GrokMediaProviderSelect from '@/components/account/GrokMediaProviderSelect.vue'
+import { applyGrokMediaProvider, readGrokMediaProvider, type GrokMediaProvider } from '@/components/account/grokMediaProvider'
 import { ref, reactive, computed, watch, nextTick, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -3514,25 +3538,23 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
+import OpenAIImageSizeTiersField from '@/components/account/OpenAIImageSizeTiersField.vue'
+import TiboRouteSpark from '@/components/account/TiboRouteSpark.vue'
+import {
+  OPENAI_IMAGE_SIZE_TIERS,
+  applyOpenAIImageSizeTiersToExtra,
+  readOpenAIImageSizeTiers,
+  type OpenAIImageSizeTier
+} from '@/components/account/openaiImageSizeTiers'
 import Toggle from '@/components/common/Toggle.vue'
-import AccountRpmSettings from '@/components/account/AccountRpmSettings.vue'
-import { applyAccountRPMSettings } from '@/components/account/accountRpm'
 import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
-import AccountGroupModelLimits from '@/components/account/AccountGroupModelLimits.vue'
-import {
-  buildGroupAllowedModelsPayload,
-  groupAllowedModelsFromAccount,
-  type GroupAllowedModels
-} from '@/components/account/groupAllowedModels'
 import GrokModelDiagnosticsPanel from '@/components/account/GrokModelDiagnosticsPanel.vue'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
-import GrokMediaProviderSelect from '@/components/account/GrokMediaProviderSelect.vue'
-import { applyGrokMediaProvider, readGrokMediaProvider, type GrokMediaProvider } from '@/components/account/grokMediaProvider'
 import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
 import {
   applyExplicitCacheUpstreamCredentials,
@@ -3623,9 +3645,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const siwcEnabled = ref(false)
 const appStore = useAppStore()
-const globalPrismEnabled = computed(() => appStore.cachedPublicSettings?.prism_browser_enabled === true)
 const browserTimeZone = getBrowserTimeZone()
 
 const selectableGroups = computed(() => {
@@ -3784,7 +3804,7 @@ const editSyncBlockedReason = computed(() => {
   if (!editBaseUrl.value.trim()) return t('videoModule.baseUrlRequired')
   const credentials = account.credentials as Record<string, unknown> | undefined
   const extra = account.extra as Record<string, unknown> | undefined
-  if (account.proxy_id || form.proxy_id || headerOverrideEnabled.value ||
+  if (account.proxy_id || form.proxy_id || account.proxy_ids?.length || form.proxy_ids.length || headerOverrideEnabled.value ||
       credentials?.[HEADER_OVERRIDE_ENABLED_CREDENTIAL_KEY] === true ||
       tlsFingerprintEnabled.value || account.enable_tls_fingerprint || extra?.enable_tls_fingerprint === true) {
     return t('admin.accounts.syncUpstreamPreviewSaveConnectionFirst')
@@ -3806,9 +3826,6 @@ const editSyncCredentials = computed(() => {
     api_key: apiKey
   }
 })
-const prismBrowserEnabled = ref(false)
-const prismSupportedModels = ['gpt-6.1-sol', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-luna']
-const prismBrowserModels = ref<string[]>([...prismSupportedModels])
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）account_mode / api_protocol 编辑 ──
 // account_mode 决定额度/余额监控路径，api_protocol 决定转发端点与格式；
@@ -3988,16 +4005,13 @@ const isBedrockAPIKeyMode = computed(() =>
   (props.account?.credentials as Record<string, unknown>)?.auth_mode === 'apikey'
 )
 const modelMappings = ref<ModelMapping[]>([])
-const openaiModelAliases = ref(false)
 const openAICompactModelMappings = ref<ModelMapping[]>([])
 const modelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const allowedModels = ref<string[]>([])
 const DEFAULT_POOL_MODE_RETRY_COUNT = 3
 const MAX_POOL_MODE_RETRY_COUNT = 10
 const DEFAULT_POOL_MODE_RETRY_STATUS_CODES = [401, 403, 429]
-const GROK_SKIP_FORBIDDEN_PAUSE_EXTRA_KEY = 'grok_skip_forbidden_pause'
 const GROK_CLIENT_TOOL_CACHE_EXTRA_KEY = 'grok_client_tool_cache_enabled'
-
 const poolModeEnabled = ref(false)
 const explicitCacheUpstreamEnabled = ref(false)
 const explicitCacheUpstreamMaxTTL = ref<string | number>('')
@@ -4048,7 +4062,6 @@ const headerOverrideCapable = computed(
 // Grok OAuth 自定义上游地址（仅转发端点；OAuth 授权/令牌刷新不受影响）
 const grokOAuthCustomBaseUrlEnabled = ref(false)
 const grokOAuthBaseUrl = ref('')
-const grokSkipForbiddenPause = ref(false)
 const grokDiagnostics = ref<GrokModelDiagnostics | null>(null)
 const diagnosticsLoading = ref(false)
 const diagnosticsRefreshFailed = ref(false)
@@ -4246,6 +4259,7 @@ const autoPause7dThreshold = ref<number | null>(null)
 const autoPause5hDisabled = ref(false)
 const autoPause7dDisabled = ref(false)
 const autoResetCreditEnabled = ref(false)
+const showAutoResetCreditConfirm = ref(false)
 const autoResetCredit5hThreshold = ref(100)
 const autoResetCredit7dThreshold = ref(100)
 const isModelPriceProbe = computed(() => props.account?.platform === 'video' || usesImagePriceProbe(props.account?.platform, editBaseUrl.value))
@@ -4312,10 +4326,9 @@ const cacheTTLOverrideTarget = ref<string>('5m')
 const customBaseUrlEnabled = ref(false)
 const customBaseUrl = ref('')
 
-const copilotSDKEnabled = ref(false)
-const extraImageModels = ref('')
-const extraImageModelPrefixes = ref('')
+// OpenAI 自动透传开关（OAuth/API Key）
 const openaiPassthroughEnabled = ref(false)
+const openaiPassthroughModelFilterEnabled = ref(false)
 // OpenAI Codex namespace 工具摊平兼容开关（仅 OAuth），缺省关闭即原样保留
 const openaiFlattenNamespacesEnabled = ref(false)
 const openAILongContextBillingEnabled = ref(false)
@@ -4326,9 +4339,9 @@ const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
 // Images 非流式响应缺 b64_json 时由网关下载 url 回填（仅 OpenAI API Key）。
 const openAIImagesUrlToB64JsonEnabled = ref(false)
+const openAIImageSizeTiers = ref<OpenAIImageSizeTier[]>([...OPENAI_IMAGE_SIZE_TIERS])
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
-const openaiOAuthWSSSEAcceleration = ref(false)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAppServerEnabled = ref(false)
@@ -4338,7 +4351,6 @@ type CodexImageToolMode = 'inherit' | 'enabled' | 'disabled' | 'block'
 const codexImageToolMode = ref<CodexImageToolMode>('inherit')
 type AnthropicAPIKeyAuthScheme = 'x_api_key' | 'authorization_bearer'
 const anthropicPassthroughEnabled = ref(false)
-const anthropicStripClaudeCodeIdentityEnabled = ref(false)
 const anthropicAPIKeyAuthScheme = ref<AnthropicAPIKeyAuthScheme>('x_api_key')
 const webSearchEmulationMode = ref('default')
 const webSearchGlobalEnabled = ref(false)
@@ -4366,6 +4378,12 @@ const editWeeklyResetMode = ref<'rolling' | 'fixed' | null>(null)
 const editWeeklyResetDay = ref<number | null>(null)
 const editWeeklyResetHour = ref<number | null>(null)
 const editResetTimezone = ref<string | null>(null)
+// Sent only for OpenAI accounts the gateway probes (never VM accounts) while
+// gateway.openai_tibo_route.enabled is on.
+const tiboRoutes = computed(() =>
+  props.account?.platform === 'openai' ? props.account.openai_tibo_routes ?? [] : []
+)
+
 const codexFingerprintModeOptions = computed(() => [
   { value: 'off' as CodexFingerprintMode, label: t('admin.accounts.openai.codexFingerprintOff') },
   { value: 'device' as CodexFingerprintMode, label: t('admin.accounts.openai.codexFingerprintDevice') },
@@ -4558,7 +4576,7 @@ const normalizeOpenAIResponsesMode = (mode: unknown): OpenAIResponsesMode => {
   return 'auto'
 }
 const isOpenAIModelRestrictionDisabled = computed(() =>
-  props.account?.platform === 'openai' && (openaiPassthroughEnabled.value || copilotSDKEnabled.value)
+  props.account?.platform === 'openai' && openaiPassthroughEnabled.value && !openaiPassthroughModelFilterEnabled.value
 )
 const openAIResponsesStatusKey = computed(() => {
   if (openAIResponsesMode.value === 'force_responses') {
@@ -4661,21 +4679,24 @@ const mixedChannelWarningMessageText = computed(() => {
 })
 
 const costMultiplier = ref(DEFAULT_ACCOUNT_COST_MULTIPLIER)
-const costMultiplierAutoSync = ref(true)
+const extraImageModels = ref('')
+const extraImageModelPrefixes = ref('')
 
 const form = reactive({
   name: '',
   notes: '',
   proxy_id: null as number | null,
+  proxy_ids: [] as number[],
   concurrency: 1,
   load_factor: null as number | null,
   priority: 1,
   rate_multiplier: 1,
   group_rate_multiplier: 1,
-  status: 'active' as 'active' | 'inactive' | 'error',
+  status: 'active' as Account['status'],
   group_ids: [] as number[],
   expires_at: null as number | null
 })
+
 
 const handleUpstreamBillingRateSyncChange = (enabled: boolean) => {
   upstreamBillingRateSyncEnabled.value = enabled
@@ -4698,6 +4719,9 @@ const statusOptions = computed(() => {
   ]
   if (form.status === 'error') {
     options.push({ value: 'error', label: t('admin.accounts.status.error') })
+  }
+  if (props.account?.status === 'quality_paused') {
+    options.push({ value: 'quality_paused', label: t('admin.accounts.status.qualityPaused') })
   }
   return options
 })
@@ -4738,10 +4762,7 @@ const buildModelRestrictionMapping = () =>
   buildModelMappingObject('combined', allowedModels.value, modelMappings.value)
 
 const applyOpenAIModelMappingCredentials = (credentials: Record<string, unknown>) => {
-  if (props.account?.type === 'oauth' && !isSparkShadow.value) {
-    credentials.model_mapping_mode = openaiModelAliases.value ? 'aliases' : 'whitelist'
-  }
-  const shouldApplyModelMapping = !(openaiPassthroughEnabled.value || copilotSDKEnabled.value)
+  const shouldApplyModelMapping = !isOpenAIModelRestrictionDisabled.value
 
   if (shouldApplyModelMapping) {
     const modelMapping = buildModelRestrictionMapping()
@@ -4766,7 +4787,6 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   if (!newAccount) {
     return
   }
-  openaiModelAliases.value = newAccount.credentials?.model_mapping_mode === 'aliases'
   // 进入回填窗口：抑制 CN 模式/协议 watcher 联动重置 base_url（见 syncingForm 注释）。
   syncingForm.value = true
   void nextTick(() => {
@@ -4779,22 +4799,23 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   mixedChannelWarningAction.value = null
   form.name = newAccount.name
   editGrokMediaProvider.value = (newAccount.platform === 'grok' || newAccount.platform === 'video')
-    ? readGrokMediaProvider(newAccount.credentials as Record<string, unknown> | undefined)
-    : ''
+    ? readGrokMediaProvider(newAccount.credentials as Record<string, unknown> | undefined) : ''
+  costMultiplier.value = readAccountCostMultiplier(newAccount.extra)
+  form.group_rate_multiplier = newAccount.group_rate_multiplier ?? 1
+  groupAllowedModels.value = groupAllowedModelsFromAccount(newAccount)
+  extraImageModels.value = readExtraImageModels(newAccount.extra?.extra_image_models)
+  extraImageModelPrefixes.value = readExtraImageModels(newAccount.extra?.extra_image_model_prefixes)
   form.notes = newAccount.notes || ''
   form.proxy_id = newAccount.proxy_id
+  form.proxy_ids = newAccount.proxy_ids?.length ? [...newAccount.proxy_ids] : (newAccount.proxy_id ? [newAccount.proxy_id] : [])
   form.concurrency = newAccount.concurrency
   form.load_factor = newAccount.load_factor ?? null
   form.priority = newAccount.priority
-  costMultiplier.value = readAccountCostMultiplier(newAccount.extra)
-  costMultiplierAutoSync.value = newAccount.extra?.upstream_billing_provider !== 'new_api' && newAccount.extra?.cost_multiplier_auto_sync !== false
   form.rate_multiplier = newAccount.rate_multiplier ?? 1
-  form.group_rate_multiplier = newAccount.group_rate_multiplier ?? 1
-  form.status = (newAccount.status === 'active' || newAccount.status === 'inactive' || newAccount.status === 'error')
+  form.status = (newAccount.status === 'active' || newAccount.status === 'inactive' || newAccount.status === 'error' || newAccount.status === 'quality_paused')
     ? newAccount.status
     : 'active'
   form.group_ids = newAccount.group_ids || []
-  groupAllowedModels.value = groupAllowedModelsFromAccount(newAccount)
   form.expires_at = newAccount.expires_at ?? null
 
   // Load intercept warmup requests setting (applies to all account types)
@@ -4815,32 +4836,29 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   // Load mixed scheduling setting (only for antigravity accounts)
   mixedScheduling.value = false
   allowOverages.value = false
-  const extra = newAccount.extra as Record<string, unknown> | undefined
+	const extra = newAccount.extra as Record<string, unknown> | undefined
 	mixedScheduling.value = extra?.mixed_scheduling === true
 	allowOverages.value = extra?.allow_overages === true
 	upstreamRequestIdHeader.value = readUpstreamRequestIdHeader(extra)
 	openAIImagesUrlToB64JsonEnabled.value = extra?.images_url_to_b64_json === true
+	openAIImageSizeTiers.value = readOpenAIImageSizeTiers(extra)
 	autoPause5hThreshold.value = typeof extra?.auto_pause_5h_threshold === 'number' ? extra.auto_pause_5h_threshold * 100 : null
 	autoPause7dThreshold.value = typeof extra?.auto_pause_7d_threshold === 'number' ? extra.auto_pause_7d_threshold * 100 : null
 	autoPause5hDisabled.value = extra?.auto_pause_5h_disabled === true
 	autoPause7dDisabled.value = extra?.auto_pause_7d_disabled === true
-	autoResetCreditEnabled.value = extra?.auto_reset_credit_enabled === true
+	showAutoResetCreditConfirm.value = false
+	autoResetCreditEnabled.value = extra?.auto_reset_credit_enabled === true && extra?.auto_reset_credit_opt_in_version === 1
 	autoResetCredit5hThreshold.value =
 		typeof extra?.auto_reset_credit_5h_threshold === 'number' ? extra.auto_reset_credit_5h_threshold * 100 : 100
 	autoResetCredit7dThreshold.value =
 		typeof extra?.auto_reset_credit_7d_threshold === 'number' ? extra.auto_reset_credit_7d_threshold * 100 : 100
 	upstreamBillingAutoProbeEnabled.value = extra?.upstream_billing_probe_enabled === true
   upstreamBillingRateSyncEnabled.value =
-    !usesImagePriceProbe(newAccount.platform, newAccount.credentials?.base_url) && newAccount.platform !== 'video' && extra?.upstream_billing_provider !== 'new_api' && upstreamBillingAutoProbeEnabled.value && extra?.upstream_billing_rate_sync_enabled === true
+    !isModelPriceProbe.value && !isNewAPIUpstream.value && upstreamBillingAutoProbeEnabled.value && extra?.upstream_billing_rate_sync_enabled === true
 
   // Load OpenAI passthrough toggle (OpenAI OAuth/SetupToken/API Key)
-  siwcEnabled.value = false
-  prismBrowserEnabled.value = false
-  prismBrowserModels.value = [...prismSupportedModels]
-  copilotSDKEnabled.value = false
-  extraImageModels.value = ''
-  extraImageModelPrefixes.value = ''
   openaiPassthroughEnabled.value = false
+  openaiPassthroughModelFilterEnabled.value = false
   openaiFlattenNamespacesEnabled.value = false
   openAILongContextBillingEnabled.value = false
   editPlanType.value = ''
@@ -4849,28 +4867,17 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
   openAICompactModelMappings.value = []
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
-  openaiOAuthWSSSEAcceleration.value = false
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   codexCLIOnlyEnabled.value = false
   codexCLIOnlyAppServerEnabled.value = false
   codexFingerprintMode.value = 'off'
   codexImageToolMode.value = 'inherit'
   anthropicPassthroughEnabled.value = false
-  anthropicStripClaudeCodeIdentityEnabled.value = false
   anthropicAPIKeyAuthScheme.value = 'x_api_key'
   webSearchEmulationMode.value = 'default'
   if (newAccount.platform === 'openai' && (newAccount.type === 'oauth' || newAccount.type === 'setup-token' || newAccount.type === 'apikey')) {
-    prismBrowserEnabled.value = newAccount.type === 'oauth' && extra?.openai_prism_browser === true
-    if (Object.prototype.hasOwnProperty.call(extra ?? {}, 'openai_prism_browser_models')) {
-      prismBrowserModels.value = Array.isArray(extra?.openai_prism_browser_models)
-        ? extra.openai_prism_browser_models.filter((model): model is string => typeof model === 'string' && prismSupportedModels.includes(model))
-        : []
-    }
-    siwcEnabled.value = extra?.openai_siwc === true
-    copilotSDKEnabled.value = newAccount.type === 'apikey' && extra?.openai_copilot_sdk === true
-    extraImageModels.value = readExtraImageModels(extra?.extra_image_models)
-    extraImageModelPrefixes.value = readExtraImageModels(extra?.extra_image_model_prefixes)
     openaiPassthroughEnabled.value = extra?.openai_passthrough === true || extra?.openai_oauth_passthrough === true
+    openaiPassthroughModelFilterEnabled.value = extra?.openai_passthrough_model_filter === true
     openaiFlattenNamespacesEnabled.value =
       newAccount.type === 'oauth' && extra?.openai_responses_flatten_namespaces === true
     const longContextBillingValue = extra?.openai_long_context_billing_enabled
@@ -4899,7 +4906,6 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     } else if (codexImageGenerationBridgeValue === false) {
       codexImageToolMode.value = 'disabled'
     }
-    openaiOAuthWSSSEAcceleration.value = newAccount.type === 'oauth' && extra?.openai_oauth_ws_sse_acceleration === true
     openaiOAuthResponsesWebSocketV2Mode.value = resolveOpenAIWSModeFromExtra(extra, {
       modeKey: 'openai_oauth_responses_websockets_v2_mode',
       enabledKey: 'openai_oauth_responses_websockets_v2_enabled',
@@ -4918,7 +4924,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
         extra?.codex_cli_only_allow_app_server === true
     }
     if (newAccount.type === 'oauth') {
-      const fpMode = extra?.codex_fingerprint_mode as string | undefined
+      const storedFPMode = extra?.codex_fingerprint_mode as string | undefined
+      const fpMode = storedFPMode === 'account_device' ? 'device' : storedFPMode
       // 缺省/非法值按 off 呈现，与后端 GetCodexFingerprintMode 的 opt-in 语义一致（#5610）
       codexFingerprintMode.value = (['off', 'device', 'session', 'full'].includes(fpMode || '')
         ? fpMode as CodexFingerprintMode
@@ -4932,7 +4939,6 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   }
   if (newAccount.platform === 'anthropic' && newAccount.type === 'apikey') {
     anthropicPassthroughEnabled.value = extra?.anthropic_passthrough === true
-    anthropicStripClaudeCodeIdentityEnabled.value = extra?.anthropic_strip_claude_code_identity === true
     anthropicAPIKeyAuthScheme.value = extra?.anthropic_apikey_auth_scheme === 'authorization_bearer'
       ? 'authorization_bearer'
       : 'x_api_key'
@@ -5031,8 +5037,6 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   // Load Grok OAuth custom upstream URL state（存储的官方地址视同未定制）
   grokOAuthCustomBaseUrlEnabled.value = false
   grokOAuthBaseUrl.value = ''
-  grokSkipForbiddenPause.value =
-    newAccount.platform === 'grok' && newAccount.extra?.[GROK_SKIP_FORBIDDEN_PAUSE_EXTRA_KEY] === true
   const grokClientToolCacheSetting =
     newAccount.platform === 'grok' && newAccount.type === 'oauth'
       ? newAccount.extra?.[GROK_CLIENT_TOOL_CACHE_EXTRA_KEY]
@@ -5592,15 +5596,6 @@ function loadQuotaControlSettings(account: Account) {
   customBaseUrlEnabled.value = false
   customBaseUrl.value = ''
 
-  // OpenAI OAuth only uses the shared RPM fields; Anthropic uses the full quota controls below.
-  if (account.platform === 'openai' && account.type === 'oauth') {
-    if (account.base_rpm != null && account.base_rpm > 0) {
-      rpmLimitEnabled.value = true
-      baseRpm.value = account.base_rpm
-    }
-    return
-  }
-
   // Remaining quota control settings only apply to Anthropic accounts
   if (account.platform !== 'anthropic') {
     return
@@ -5698,7 +5693,7 @@ function toPositiveNumber(value: unknown) {
   return Math.trunc(num)
 }
 
-const needsMixedChannelCheck = () => props.account?.platform === 'antigravity' || props.account?.platform === 'anthropic'
+const needsMixedChannelCheck = () => (props.account?.platform === 'antigravity' || props.account?.platform === 'anthropic')
 
 const buildMixedChannelDetails = (resp?: CheckMixedChannelResponse) => {
   const details = resp?.details
@@ -5865,24 +5860,32 @@ const submitUpdateAccount = async (accountID: number, updatePayload: Record<stri
 const handleSubmit = async () => {
   if (!props.account) return
   const accountID = props.account.id
-  if (form.status !== 'active' && form.status !== 'inactive' && form.status !== 'error') {
+
+  if (form.status !== 'active' && form.status !== 'inactive' && form.status !== 'error' && form.status !== 'quality_paused') {
     appStore.showError(t('admin.accounts.pleaseSelectStatus'))
     return
   }
 	if (autoResetCreditEnabled.value) {
 		const thresholds = [autoResetCredit5hThreshold.value, autoResetCredit7dThreshold.value]
-		if (thresholds.some((value) => !Number.isFinite(value) || (value !== 0 && value < 0.1) || value > 100)) {
+		if (thresholds.some((value) => !Number.isFinite(value) || value < 0.1 || value > 100)) {
 			appStore.showError(t('admin.accounts.autoResetCredit.thresholdInvalid'))
 			return
 		}
 	}
 
   const updatePayload: Record<string, unknown> = { ...form }
+  // Only an explicit status edit may override an automatic quality pause
+  // that happened while this dialog was open.
+  if (form.status === props.account.status) {
+    delete updatePayload.status
+  }
   try {
     // 后端期望 proxy_id: 0 表示清除代理，而不是 null
     if (updatePayload.proxy_id === null) {
       updatePayload.proxy_id = 0
     }
+    updatePayload.proxy_id = form.proxy_ids[0] ?? 0
+    updatePayload.proxy_ids = [...form.proxy_ids]
     if (form.expires_at === null) {
       updatePayload.expires_at = 0
     }
@@ -5912,7 +5915,7 @@ const handleSubmit = async () => {
       }
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
       const newBaseUrl = editBaseUrl.value.trim() || defaultBaseUrl.value
-      const shouldApplyModelMapping = !(props.account.platform === 'openai' && (openaiPassthroughEnabled.value || copilotSDKEnabled.value))
+      const shouldApplyModelMapping = !isOpenAIModelRestrictionDisabled.value
 
       // Always update credentials for apikey type to handle model mapping changes
       const newCredentials: Record<string, unknown> = {
@@ -6270,14 +6273,6 @@ const handleSubmit = async () => {
       updatePayload.extra = newExtra
     }
 
-    if (props.account.platform === 'grok') {
-      updatePayload.extra = {
-        ...((props.account.extra as Record<string, unknown>) || {}),
-        ...((updatePayload.extra as Record<string, unknown>) || {}),
-        [GROK_SKIP_FORBIDDEN_PAUSE_EXTRA_KEY]: grokSkipForbiddenPause.value
-      }
-    }
-
     // OpenAI: 手动覆盖订阅档位 plan_type（Plus / Pro 20x / Pro 5x / Business Standard / Business Premium / Free）。
     // 仅 OAuth 非影子账号：
     // 影子账号凭据由母账号管理(且后端会 sanitize),setup-token 无订阅调度语义。
@@ -6354,12 +6349,23 @@ const handleSubmit = async () => {
         delete newExtra.session_idle_timeout_minutes
       }
 
-      applyAccountRPMSettings(newExtra, {
-        enabled: rpmLimitEnabled.value,
-        baseRpm: baseRpm.value,
-        strategy: rpmStrategy.value,
-        stickyBuffer: rpmStickyBuffer.value
-      })
+      // RPM limit settings
+      if (rpmLimitEnabled.value) {
+        const DEFAULT_BASE_RPM = 15
+        newExtra.base_rpm = (baseRpm.value != null && baseRpm.value > 0)
+          ? baseRpm.value
+          : DEFAULT_BASE_RPM
+        newExtra.rpm_strategy = rpmStrategy.value
+        if (rpmStickyBuffer.value != null && rpmStickyBuffer.value > 0) {
+          newExtra.rpm_sticky_buffer = rpmStickyBuffer.value
+        } else {
+          delete newExtra.rpm_sticky_buffer
+        }
+      } else {
+        delete newExtra.base_rpm
+        delete newExtra.rpm_strategy
+        delete newExtra.rpm_sticky_buffer
+      }
 
       // UMQ mode（独立于 RPM 保存）
       if (userMsgQueueMode.value) {
@@ -6419,11 +6425,6 @@ const handleSubmit = async () => {
       } else {
         delete newExtra.anthropic_passthrough
       }
-      if (anthropicStripClaudeCodeIdentityEnabled.value) {
-        newExtra.anthropic_strip_claude_code_identity = true
-      } else {
-        delete newExtra.anthropic_strip_claude_code_identity
-      }
       if (anthropicAPIKeyAuthScheme.value === 'authorization_bearer') {
         newExtra.anthropic_apikey_auth_scheme = 'authorization_bearer'
       } else {
@@ -6441,18 +6442,6 @@ const handleSubmit = async () => {
     if (props.account.platform === 'openai' && (props.account.type === 'oauth' || props.account.type === 'setup-token' || props.account.type === 'apikey')) {
       const currentExtra = (props.account.extra as Record<string, unknown>) || {}
       const newExtra: Record<string, unknown> = { ...currentExtra }
-      if (props.account.type === 'oauth' && !isSparkShadow.value) newExtra.openai_siwc = siwcEnabled.value
-      if (props.account.type === 'apikey') {
-        newExtra.extra_image_models = parseExtraImageModels(extraImageModels.value)
-        newExtra.extra_image_model_prefixes = parseExtraImageModels(extraImageModelPrefixes.value)
-      }
-      if (props.account.type === 'oauth') {
-        applyAccountRPMSettings(newExtra, {
-          enabled: rpmLimitEnabled.value,
-          baseRpm: baseRpm.value,
-          strict: true
-        })
-      }
       const hadCodexCLIOnlyEnabled = currentExtra.codex_cli_only === true
       if (props.account.type === 'oauth' || props.account.type === 'setup-token') {
         newExtra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
@@ -6461,24 +6450,16 @@ const handleSubmit = async () => {
         newExtra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
         newExtra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiAPIKeyResponsesWebSocketV2Mode.value)
       }
-      if (props.account.type === 'oauth' && openaiOAuthWSSSEAcceleration.value) {
-        newExtra.openai_oauth_ws_sse_acceleration = true
-      } else {
-        delete newExtra.openai_oauth_ws_sse_acceleration
-      }
       delete newExtra.responses_websockets_v2_enabled
       delete newExtra.openai_ws_enabled
-      if (props.account.type === 'apikey' && copilotSDKEnabled.value) {
-        newExtra.openai_copilot_sdk = true
-      } else {
-        delete newExtra.openai_copilot_sdk
-      }
       if (openaiPassthroughEnabled.value) {
         newExtra.openai_passthrough = true
       } else {
         delete newExtra.openai_passthrough
         delete newExtra.openai_oauth_passthrough
       }
+      if (openaiPassthroughEnabled.value && openaiPassthroughModelFilterEnabled.value) newExtra.openai_passthrough_model_filter = true
+      else delete newExtra.openai_passthrough_model_filter
       // 缺省即保留 namespace，不写空值，避免 extra 里堆积默认项
       if (props.account.type === 'oauth' && openaiFlattenNamespacesEnabled.value) {
         newExtra.openai_responses_flatten_namespaces = true
@@ -6494,15 +6475,6 @@ const handleSubmit = async () => {
         delete newExtra.openai_compact_mode
       } else {
         newExtra.openai_compact_mode = openAICompactMode.value
-      }
-      if (props.account.type === 'oauth') {
-        if (prismBrowserEnabled.value) {
-          newExtra.openai_prism_browser = true
-          newExtra.openai_prism_browser_models = prismSupportedModels.filter(model => prismBrowserModels.value.includes(model))
-        } else {
-          delete newExtra.openai_prism_browser
-          delete newExtra.openai_prism_browser_models
-        }
       }
 		if (props.account.type === 'apikey') {
         if (!openAITextGenerationCapabilityEnabled.value || openAIResponsesMode.value === 'auto') {
@@ -6521,6 +6493,7 @@ const handleSubmit = async () => {
           newExtra.web_search_emulation = webSearchEmulationMode.value
         }
 		}
+		applyOpenAIImageSizeTiersToExtra(newExtra, openAIImageSizeTiers.value)
 		if (autoPause5hThreshold.value != null && autoPause5hThreshold.value > 0) {
 			newExtra.auto_pause_5h_threshold = autoPause5hThreshold.value / 100
 		} else {
@@ -6543,6 +6516,7 @@ const handleSubmit = async () => {
 		}
 		if (props.account.type === 'oauth' && !isSparkShadow.value) {
 			newExtra.auto_reset_credit_enabled = autoResetCreditEnabled.value
+			newExtra.auto_reset_credit_opt_in_version = autoResetCreditEnabled.value ? 1 : null
 			newExtra.auto_reset_credit_5h_threshold = autoResetCredit5hThreshold.value / 100
 			newExtra.auto_reset_credit_7d_threshold = autoResetCredit7dThreshold.value / 100
 		}
@@ -6583,13 +6557,11 @@ const handleSubmit = async () => {
         }
       }
 
-      // 指纹收敛模式：默认 off（不写入）；device/session/full 是显式 opt-in，
-      // 必须落键，否则管理员的选择会被后端当作"未设置"而回落到 off（#5610）。
       if (props.account.type === 'oauth') {
         if (codexFingerprintMode.value !== 'off') {
           newExtra.codex_fingerprint_mode = codexFingerprintMode.value
         } else {
-          delete newExtra.codex_fingerprint_mode
+          newExtra.codex_fingerprint_mode = 'off'
         }
       }
 
@@ -6675,6 +6647,13 @@ const handleSubmit = async () => {
       appStore.showError(t('admin.accounts.costMultiplierInvalid'))
       return
     }
+    if (props.account.platform === 'openai' && props.account.type === 'apikey') {
+      updatePayload.extra = {
+        ...(updatePayload.extra || props.account.extra || {}),
+        extra_image_models: parseExtraImageModels(extraImageModels.value),
+        extra_image_model_prefixes: parseExtraImageModels(extraImageModelPrefixes.value)
+      }
+    }
     const costExtra: Record<string, unknown> = {
       ...((updatePayload.extra as Record<string, unknown>) || props.account.extra || {})
     }
@@ -6683,11 +6662,6 @@ const handleSubmit = async () => {
       costExtra.cost_multiplier = costMultiplier.value
     } else {
       delete costExtra.cost_multiplier
-    }
-    if (props.account.type === 'apikey' && !isModelPriceProbe.value && costMultiplierAutoSync.value !== (props.account.extra?.cost_multiplier_auto_sync !== false)) {
-      costExtra.cost_multiplier_auto_sync = costMultiplierAutoSync.value
-    } else {
-      delete costExtra.cost_multiplier_auto_sync
     }
     updatePayload.extra = costExtra
 

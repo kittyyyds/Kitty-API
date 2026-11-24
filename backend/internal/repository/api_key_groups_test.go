@@ -27,7 +27,7 @@ func TestAPIKeyGroupsPersistenceMembershipAndAtomicRollback(t *testing.T) {
 	require.Len(t, page, 1)
 	keys, err := repo.ListKeysByGroupID(ctx, second.ID)
 	require.NoError(t, err)
-	require.Equal(t, []string{key.Key}, keys)
+	require.Equal(t, []string{service.APIKeyStoredValue(key.Key)}, keys)
 
 	// A failing FK must roll back the primary-key edit and its peer bindings.
 	got.Name, got.GroupIDs = "must-rollback", []int64{first.ID, 999999999}

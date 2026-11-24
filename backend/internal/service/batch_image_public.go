@@ -76,9 +76,11 @@ type BatchImageReferenceInput struct {
 }
 
 type BatchImageOwner struct {
-	UserID   int64
-	APIKeyID int64
-	GroupID  *int64
+	UserID          int64
+	APIKeyID        int64
+	GroupID         *int64
+	FallbackGroupID *int64
+	FallbackGroup   *Group
 }
 
 type BatchImagePublicService struct {
@@ -233,10 +235,13 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 		}
 	}
 
-	provider, account, err := s.selectProviderAndAccount(ctx, owner, normalized.Provider, normalized.Model)
+	provider, account, routedGroupID, err := s.selectProviderAndAccount(ctx, owner, normalized.Provider, normalized.Model)
 	if err != nil {
 		return nil, err
 	}
+	// The selected group is request-local. Keep all subsequent validation,
+	// pricing, parent lookup and the persisted job snapshot on that same group.
+	owner.GroupID = routedGroupID
 	pricingSnapshot, err := s.resolvePricingSnapshot(ctx, owner, normalized, provider.Name(), account)
 	if err != nil {
 		return nil, err
@@ -264,6 +269,7 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 		UserID:                  owner.UserID,
 		APIKeyID:                &apiKeyID,
 		AccountID:               &accountID,
+		RoutedGroupID:           cloneBatchImageInt64Ptr(routedGroupID),
 		Provider:                provider.Name(),
 		Model:                   normalized.Model,
 		TaskName:                normalized.TaskName,
@@ -697,7 +703,7 @@ func (s *BatchImagePublicService) ListItems(ctx context.Context, owner BatchImag
 	}
 	data := make([]BatchImagePublicItem, 0, len(items))
 	for _, item := range items {
-		data = append(data, BatchImageItemToPublic(item))
+		data = append(data, batchImageItemToPublicForContext(ctx, item))
 	}
 	return &BatchImagePublicItemsResponse{
 		Object:  "list",
@@ -935,14 +941,92 @@ func maxBatchImageReferenceImagesForModel(model string) int {
 	return 0
 }
 
-func (s *BatchImagePublicService) selectProviderAndAccount(ctx context.Context, owner BatchImageOwner, requestedProvider, model string) (BatchImageProvider, *Account, error) {
+func (s *BatchImagePublicService) selectProviderAndAccount(ctx context.Context, owner BatchImageOwner, requestedProvider, model string) (BatchImageProvider, *Account, *int64, error) {
+	provider, account, err := s.selectProviderAndAccountInGroup(ctx, owner.GroupID, requestedProvider, model)
+	if err == nil {
+		return provider, account, cloneBatchImageInt64Ptr(owner.GroupID), nil
+	}
+	if errors.Is(err, ErrBatchImageNoAccountAvailable) && owner.GroupID != nil && s.GroupRepo != nil {
+		source, loadErr := s.GroupRepo.GetByIDLite(ctx, *owner.GroupID)
+		if loadErr != nil {
+			return nil, nil, nil, loadErr
+		}
+		if source != nil && source.FallbackGroupIDOnUnavailable != nil && *source.FallbackGroupIDOnUnavailable != source.ID {
+			targetID := *source.FallbackGroupIDOnUnavailable
+			target, loadErr := s.GroupRepo.GetByIDLite(ctx, targetID)
+			if loadErr != nil {
+				return nil, nil, nil, loadErr
+			}
+			if target != nil && target.IsActive() && target.Platform == source.Platform && target.AllowBatchImageGeneration {
+				provider, account, err = s.selectProviderAndAccountInGroup(withAccountFallbackGroup(ctx, source, target), &targetID, requestedProvider, model)
+				if err == nil {
+					// This persisted group is also used by deferred settlement: keep
+					// it on the source billing group even though the account moved.
+					return provider, account, cloneBatchImageInt64Ptr(owner.GroupID), nil
+				}
+				if !errors.Is(err, ErrBatchImageNoAccountAvailable) {
+					return nil, nil, nil, err
+				}
+			}
+		}
+	}
+	// API-key fallback is intentionally limited to the same availability error
+	// used by the regular scheduler. Repository/configuration failures must still
+	// surface instead of silently moving traffic to another billing group.
+	if !errors.Is(err, ErrBatchImageNoAccountAvailable) ||
+		owner.FallbackGroupID == nil || *owner.FallbackGroupID <= 0 ||
+		(owner.GroupID != nil && *owner.FallbackGroupID == *owner.GroupID) {
+		return nil, nil, nil, err
+	}
+	fallbackID := *owner.FallbackGroupID
+	if fallbackErr := s.ensureGroupAllowsBatchImage(ctx, &fallbackID); fallbackErr != nil {
+		return nil, nil, nil, err
+	}
+	fallbackProvider, fallbackAccount, fallbackErr := s.selectProviderAndAccountInGroup(ctx, &fallbackID, requestedProvider, model)
+	if fallbackErr != nil {
+		return nil, nil, nil, fallbackErr
+	}
+	// This also updates the request API key/context when the call came through
+	// the API-key middleware, so downstream paths observe the effective group.
+	activateAPIKeyFallbackRouting(ctx, fallbackID)
+	return fallbackProvider, fallbackAccount, &fallbackID, nil
+}
+
+func (s *BatchImagePublicService) selectProviderAndAccountInGroup(ctx context.Context, groupID *int64, requestedProvider, model string) (BatchImageProvider, *Account, error) {
+	var group *Group
+	if groupID != nil && s.GroupRepo != nil {
+		var err error
+		group, err = s.GroupRepo.GetByIDLite(ctx, *groupID)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 	providers := batchImageProviderSelectionOrder(requestedProvider)
 	for _, providerName := range providers {
 		provider, ok := s.ProviderRegistry.Get(providerName)
 		if !ok || provider == nil {
 			continue
 		}
-		accounts, err := s.listCandidateAccounts(ctx, owner.GroupID, batchImageProviderPlatform(providerName))
+		strictRepo, _ := s.AccountRepo.(AccountRepository)
+		selectionCtx, err := prepareStrictFailover(ctx, group, strictRepo, nil, model, func(account *Account) (string, error) {
+			if account.Platform != batchImageProviderPlatform(providerName) {
+				return "platform_mismatch", nil
+			}
+			if !account.IsModelSupported(model) || !provider.SupportsAccount(account) {
+				return "capability_not_supported", nil
+			}
+			return "", nil
+		})
+		if errors.Is(err, errStrictFailoverAllUnavailable) {
+			continue
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		accounts, strict := strictFailoverAccounts(selectionCtx, groupID)
+		if !strict {
+			accounts, err = s.listCandidateAccounts(selectionCtx, groupID, batchImageProviderPlatform(providerName))
+		}
 		if err != nil {
 			return nil, nil, err
 		}
@@ -955,7 +1039,7 @@ func (s *BatchImagePublicService) selectProviderAndAccount(ctx context.Context, 
 		})
 		for i := range accounts {
 			account := accounts[i]
-			if !account.IsSchedulable() || !account.IsModelSupportedInGroup(owner.GroupID, model) {
+			if !account.IsSchedulable() || !account.IsModelSupportedInGroup(groupID, model) || account.ActiveTestModelBlocked(model) {
 				continue
 			}
 			if provider.SupportsAccount(&account) {
@@ -963,10 +1047,15 @@ func (s *BatchImagePublicService) selectProviderAndAccount(ctx context.Context, 
 			}
 		}
 	}
-	if requestedProvider != "" {
-		return nil, nil, ErrBatchImageNoAccountAvailable
-	}
 	return nil, nil, ErrBatchImageNoAccountAvailable
+}
+
+func cloneBatchImageInt64Ptr(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func (s *BatchImagePublicService) listCandidateAccounts(ctx context.Context, groupID *int64, platform string) ([]Account, error) {
@@ -1213,6 +1302,14 @@ func BatchImageItemToPublic(item *BatchImageItem) BatchImagePublicItem {
 		Code:    batchImageDerefString(item.ErrorCode),
 		Message: sanitizeBatchImagePublicMessage(batchImageDerefString(item.ErrorMessage)),
 		Source:  batchImageItemErrorSource(item),
+	}
+	return out
+}
+
+func batchImageItemToPublicForContext(ctx context.Context, item *BatchImageItem) BatchImagePublicItem {
+	out := BatchImageItemToPublic(item)
+	if out.Error != nil && out.Error.Source != "system" {
+		out.Error.Message = UpstreamErrorClientMessage(ctx, out.Error.Message)
 	}
 	return out
 }

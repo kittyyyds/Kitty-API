@@ -34,24 +34,14 @@ func TestProxyURL(t *testing.T) {
 			want: "socks5://user:pass@socks.example.com:1080",
 		},
 		{
-			name: "username only",
+			name: "username only keeps no auth for compatibility",
 			proxy: Proxy{
 				Protocol: "http",
 				Host:     "proxy.example.com",
 				Port:     8080,
 				Username: "user-only",
 			},
-			want: "http://user-only@proxy.example.com:8080",
-		},
-		{
-			name: "password only",
-			proxy: Proxy{
-				Protocol: "http",
-				Host:     "proxy.example.com",
-				Port:     8080,
-				Password: "pass-only",
-			},
-			want: "http://:pass-only@proxy.example.com:8080",
+			want: "http://proxy.example.com:8080",
 		},
 		{
 			name: "with special characters in credentials",

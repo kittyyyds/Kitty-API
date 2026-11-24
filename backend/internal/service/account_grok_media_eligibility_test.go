@@ -46,16 +46,7 @@ func TestGrokMediaGenerationEligibility(t *testing.T) {
 		{name: "non grok account", account: &Account{Platform: PlatformOpenAI}, want: false, wantReason: "not_grok"},
 		{name: "non oauth grok account stays eligible", account: &Account{Platform: PlatformGrok, Type: AccountTypeAPIKey}, want: true, wantReason: "non_oauth"},
 		{name: "unobserved oauth fails closed", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth}, want: false, wantReason: "billing_unobserved"},
-		{name: "credentials paid subscription tier enables media without billing snapshot", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Credentials: map[string]any{"subscription_tier": "SuperGrok"}}, want: true, wantReason: "paid_subscription_tier"},
-		{name: "credentials plan type is paid evidence", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Credentials: map[string]any{"plan_type": "pro"}}, want: true, wantReason: "paid_subscription_tier"},
-		{name: "extra paid subscription tier enables media", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Extra: map[string]any{"subscription_tier": "SuperGrok Heavy"}}, want: true, wantReason: "paid_subscription_tier"},
-		{name: "extra plan type is paid evidence", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Extra: map[string]any{"plan_type": "pro"}}, want: true, wantReason: "paid_subscription_tier"},
-		{name: "credentials free tier remains blocked", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Credentials: map[string]any{"subscription_tier": "x_basic"}}, want: false, wantReason: "billing_free_tier"},
-		{name: "x premium is explicit paid evidence", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Credentials: map[string]any{"subscription_tier": "x_premium"}}, want: true, wantReason: "paid_subscription_tier"},
-		{name: "x premium plus is explicit paid evidence", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Credentials: map[string]any{"subscription_tier": "x_premium_plus"}}, want: true, wantReason: "paid_subscription_tier"},
-		{name: "JWT paid tier wins over stale free credential and billing", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.eyJ0aWVyIjoxfQ.", "subscription_tier": "free"}, Extra: map[string]any{"grok_billing_snapshot": forbiddenBilling}}, want: true, wantReason: "paid_subscription_tier"},
-		{name: "JWT free tier wins over stale paid credential", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Credentials: map[string]any{"access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.eyJ0aWVyIjowfQ.", "subscription_tier": "SuperGrok"}}, want: false, wantReason: "billing_free_tier"},
-		{name: "inconclusive successful billing fails closed", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Extra: map[string]any{grokBillingExtraKey: &xai.BillingSummary{StatusCode: http.StatusOK, Partial: true}}}, want: false, wantReason: "billing_inconclusive"},
+		{name: "inconclusive successful billing remains eligible", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Extra: map[string]any{grokBillingExtraKey: &xai.BillingSummary{StatusCode: http.StatusOK, Partial: true}}}, want: true, wantReason: "billing_inconclusive"},
 		{name: "weekly paid usage is eligible without inferring from period type", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Extra: map[string]any{grokBillingExtraKey: weeklyAllowance}}, want: true, wantReason: "eligible"},
 		{name: "billing forbidden is rejected", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Extra: map[string]any{grokBillingExtraKey: forbiddenBilling}}, want: false, wantReason: "billing_forbidden"},
 		{name: "weekly billing forbidden is rejected after partial success", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth, Extra: map[string]any{grokBillingExtraKey: weeklyForbidden}}, want: false, wantReason: "billing_forbidden"},
@@ -75,46 +66,7 @@ func TestGrokMediaGenerationEligibility(t *testing.T) {
 	}
 }
 
-func TestGrokPaidSubscriptionTierEvidenceJWTRecognizesXPremium(t *testing.T) {
-	for _, tier := range []string{"x_premium", "x_premium_plus"} {
-		t.Run(tier, func(t *testing.T) {
-			accessToken := map[string]string{
-				"x_premium":      "eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.eyJ0aWVyIjozfQ.",
-				"x_premium_plus": "eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.eyJ0aWVyIjo0fQ.",
-			}[tier]
-			account := &Account{
-				Platform: PlatformGrok,
-				Type:     AccountTypeOAuth,
-				Credentials: map[string]any{
-					"access_token":      accessToken,
-					"subscription_tier": "free",
-				},
-				Extra: map[string]any{"grok_billing_snapshot": &xai.BillingSummary{StatusCode: http.StatusForbidden}},
-			}
-
-			eligible, reason := account.GrokMediaGenerationEligibility()
-			require.True(t, eligible)
-			require.Equal(t, "paid_subscription_tier", reason)
-		})
-	}
-}
-
-func TestGrokPaidSubscriptionTierEvidenceFallsBackForUnknownJWT(t *testing.T) {
-	account := &Account{
-		Platform: PlatformGrok,
-		Type:     AccountTypeOAuth,
-		Credentials: map[string]any{
-			"access_token":      "eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.eyJ0aWVyIjoiVW5rbm93biJ9.",
-			"subscription_tier": "SuperGrok",
-		},
-	}
-
-	eligible, reason := account.GrokMediaGenerationEligibility()
-	require.True(t, eligible)
-	require.Equal(t, "paid_subscription_tier", reason)
-}
-
-func TestGrokMediaCapabilityKeepsUnobservedButRejectsInconclusiveOAuth(t *testing.T) {
+func TestGrokMediaCapabilityKeepsUnobservedAndInconclusiveOAuthAsCandidates(t *testing.T) {
 	unobserved := &Account{Platform: PlatformGrok, Type: AccountTypeOAuth}
 	eligible, reason := unobserved.GrokMediaGenerationEligibility()
 	require.False(t, eligible)
@@ -130,9 +82,9 @@ func TestGrokMediaCapabilityKeepsUnobservedButRejectsInconclusiveOAuth(t *testin
 		}},
 	}
 	eligible, reason = inconclusive.GrokMediaGenerationEligibility()
-	require.False(t, eligible, "a successful but incomplete billing response is not paid-entitlement evidence")
+	require.True(t, eligible)
 	require.Equal(t, "billing_inconclusive", reason)
-	require.False(t, inconclusive.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityGrokMediaGeneration))
+	require.True(t, inconclusive.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityGrokMediaGeneration))
 }
 
 func TestGrokMediaCapabilityFiltersOnlyGeneration(t *testing.T) {
@@ -149,7 +101,7 @@ func TestGrokMediaCapabilityFiltersOnlyGeneration(t *testing.T) {
 	require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityChatCompletions))
 	require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityGrokMediaGeneration))
 	require.False(t, isOpenAICompatibleAccountEligibleForRequest(
-		context.Background(), account, nil, PlatformGrok, "grok-imagine-video", false,
+		context.Background(), account, PlatformGrok, "grok-imagine-video", false,
 		OpenAIEndpointCapabilityGrokMediaGeneration,
 	))
 }
@@ -229,68 +181,4 @@ func TestNormalizeGrokMediaEligibilityUpdateExtra(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, normalized, got)
 	})
-}
-
-func TestGrokMediaEligibilityControlsBuiltInMediaFallback(t *testing.T) {
-	account := &Account{
-		Platform: PlatformGrok,
-		Type:     AccountTypeOAuth,
-		Credentials: map[string]any{
-			"model_mapping": map[string]any{
-				"grok-4.6": "grok-4.6",
-			},
-		},
-		Extra: map[string]any{GrokMediaEligibleExtraKey: true},
-	}
-
-	for _, test := range []struct {
-		requested string
-		mapped    string
-	}{
-		{requested: "grok-imagine-image", mapped: "grok-imagine-image"},
-		{requested: "grok-imagine-edit", mapped: "grok-imagine-image-quality"},
-		{requested: "grok-imagine-video", mapped: "grok-imagine-video"},
-		{requested: "grok-imagine-video-1.5-preview", mapped: "grok-imagine-video-1.5"},
-	} {
-		t.Run("enabled/"+test.requested, func(t *testing.T) {
-			require.True(t, account.IsModelSupported(test.requested))
-			mapped, matched := account.ResolveMappedModel(test.requested)
-			require.True(t, matched)
-			require.Equal(t, test.mapped, mapped)
-		})
-	}
-	require.True(t, account.IsModelSupported("grok-4.6"))
-	require.False(t, account.IsModelSupported("grok-imagine-image-unknown"))
-
-	account.Extra[GrokMediaEligibleExtraKey] = false
-	require.False(t, account.IsModelSupported("grok-imagine-image"))
-	require.False(t, account.IsModelSupported("grok-imagine-edit"))
-	require.False(t, account.IsModelSupported("grok-imagine-video"))
-
-	account.Extra[GrokMediaEligibleExtraKey] = true
-	account.Credentials["model_mapping"] = map[string]any{
-		"grok-imagine-image": "custom-image-model",
-	}
-	mapped, matched := account.ResolveMappedModel("grok-imagine-image")
-	require.True(t, matched)
-	require.Equal(t, "custom-image-model", mapped, "explicit media mapping must win")
-}
-
-func TestGrokMediaEligibilityFallbackKeepsAutomaticModeDynamic(t *testing.T) {
-	account := &Account{
-		Platform: PlatformGrok,
-		Type:     AccountTypeOAuth,
-		Credentials: map[string]any{
-			"model_mapping": map[string]any{"grok-4.6": "grok-4.6"},
-		},
-	}
-
-	require.True(t, account.IsModelSupported("grok-imagine-image"),
-		"automatic accounts with unobserved billing must remain scheduler candidates")
-
-	account.Extra = map[string]any{GrokMediaEligibleExtraKey: false}
-	require.False(t, account.IsModelSupported("grok-imagine-image"))
-
-	account.Extra[GrokMediaEligibleExtraKey] = true
-	require.True(t, account.IsModelSupported("grok-imagine-image"))
 }

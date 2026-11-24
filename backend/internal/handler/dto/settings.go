@@ -34,9 +34,6 @@ type SystemSettings struct {
 	RegistrationEnabled                 bool                     `json:"registration_enabled"`
 	LoginRateLimitEnabled               bool                     `json:"login_rate_limit_enabled"`
 	RegistrationIPLimitEnabled          bool                     `json:"registration_ip_limit_enabled"`
-	PrismBrowserEnabled                 bool                     `json:"prism_browser_enabled"`
-	PrismBrowserBaseURL                 string                   `json:"prism_browser_base_url"`
-	PrismBrowserAPIKeyConfigured        bool                     `json:"prism_browser_api_key_configured"`
 	EmailVerifyEnabled                  bool                     `json:"email_verify_enabled"`
 	RegistrationEmailSuffixWhitelist    []string                 `json:"registration_email_suffix_whitelist"`
 	RegistrationEmailAliasBlockEnabled  bool                     `json:"registration_email_alias_block_enabled"`
@@ -51,6 +48,7 @@ type SystemSettings struct {
 	PasskeyConfigured                   bool                     `json:"passkey_configured"`
 	PasskeyRPID                         string                   `json:"passkey_rp_id"`
 	PasskeyRPOrigins                    []string                 `json:"passkey_rp_origins"`
+	MainlandWebBlockEnabled             bool                     `json:"mainland_web_block_enabled"`
 	SessionBindingEnabled               bool                     `json:"session_binding_enabled"`  // 会话 IP/UA 绑定
 	StepUpEnabled                       bool                     `json:"step_up_enabled"`          // 敏感操作 step-up 2FA
 	AuditLogRetentionDays               int                      `json:"audit_log_retention_days"` // 审计日志保留天数
@@ -213,6 +211,9 @@ type SystemSettings struct {
 	BackendModeEnabled bool `json:"backend_mode_enabled"`
 
 	// Gateway forwarding behavior
+	UpstreamErrorRetry   *service.UpstreamErrorRetrySettings `json:"upstream_error_retry"`
+	UpstreamErrorMessage string                              `json:"upstream_error_message"`
+
 	OpenAITTFTMode                         string `json:"openai_ttft_mode"`
 	EnableFingerprintUnification           bool   `json:"enable_fingerprint_unification"`
 	EnableMetadataPassthrough              bool   `json:"enable_metadata_passthrough"`
@@ -323,6 +324,7 @@ type SystemSettings struct {
 	AccountQuotaNotifyEmails        []NotifyEmailEntry `json:"account_quota_notify_emails"`
 
 	// Channel Monitor feature switch
+	ChannelQualityPublicEnabled          bool   `json:"channel_quality_public_enabled"`
 	ChannelMonitorEnabled                bool   `json:"channel_monitor_enabled"`
 	ChannelMonitorMode                   string `json:"channel_monitor_mode"`
 	ChannelMonitorDefaultIntervalSeconds int    `json:"channel_monitor_default_interval_seconds"`
@@ -340,8 +342,6 @@ type SystemSettings struct {
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
 
 	// Pelican showcase (user-facing gallery of scheduled Pelican HTML results)
-	PelicanShowcaseEnabled bool                          `json:"pelican_showcase_enabled"`
-	PelicanShowcase        service.PelicanShowcaseConfig `json:"pelican_showcase_config"`
 
 	// Subscription feature switch: gates the whole user-facing subscription surface
 	// (sidebar entries, purchase-page subscription tab, header badge, /subscriptions route).
@@ -357,17 +357,17 @@ type SystemSettings struct {
 	SupportTicketEnabled bool                        `json:"support_ticket_enabled"`
 	SupportTicket        service.SupportTicketConfig `json:"support_ticket_config"`
 
+	// Affiliate (邀请返利) feature switch
+	AffiliateEnabled bool `json:"affiliate_enabled"`
+
 	// 风控中心功能开关
 	RiskControlEnabled bool `json:"risk_control_enabled"`
 
-	// cyber 会话屏蔽开关 + TTL
+	// cyber 会话屏蔽开关 + TTL + 用户白名单
 	CyberSessionBlockEnabled          bool   `json:"cyber_session_block_enabled"`
 	CyberSessionBlockTTLSeconds       int    `json:"cyber_session_block_ttl_seconds"`
 	CyberSessionIdentityStrictEnabled bool   `json:"cyber_session_identity_strict_enabled"`
 	CyberPolicyUserAllowlist          string `json:"cyber_policy_user_allowlist"`
-
-	// Affiliate (邀请返利) feature switch
-	AffiliateEnabled bool `json:"affiliate_enabled"`
 
 	// OpenAI fast/flex policy
 	OpenAIFastPolicySettings *OpenAIFastPolicySettings `json:"openai_fast_policy_settings,omitempty"`
@@ -395,6 +395,7 @@ type DefaultSubscriptionSetting struct {
 }
 
 type PublicSettings struct {
+	GPTDirectEnabled                    bool                     `json:"gpt_direct_enabled"`
 	RegistrationEnabled                 bool                     `json:"registration_enabled"`
 	EmailVerifyEnabled                  bool                     `json:"email_verify_enabled"`
 	ForceEmailOnThirdPartySignup        bool                     `json:"force_email_on_third_party_signup"`
@@ -446,6 +447,7 @@ type PublicSettings struct {
 	GitHubOAuthEnabled                  bool                     `json:"github_oauth_enabled"`
 	GoogleOAuthEnabled                  bool                     `json:"google_oauth_enabled"`
 	BackendModeEnabled                  bool                     `json:"backend_mode_enabled"`
+	MCPEnabled                          bool                     `json:"mcp_enabled"`
 	PaymentEnabled                      bool                     `json:"payment_enabled"`
 	// PaymentBalanceDisabled mirrors the payment-config BALANCE_PAYMENT_DISABLED switch so the
 	// user shell can derive the site billing mode (recharge & subscription / recharge only /
@@ -461,7 +463,7 @@ type PublicSettings struct {
 	BalanceLowNotifyThreshold   float64 `json:"balance_low_notify_threshold"`
 	BalanceLowNotifyRechargeURL string  `json:"balance_low_notify_recharge_url"`
 
-	PrismBrowserEnabled bool `json:"prism_browser_enabled"`
+	ChannelQualityPublicEnabled bool `json:"channel_quality_public_enabled"`
 
 	ChannelMonitorEnabled                bool   `json:"channel_monitor_enabled"`
 	ChannelMonitorMode                   string `json:"channel_monitor_mode"`
@@ -471,7 +473,6 @@ type PublicSettings struct {
 	ChannelMonitorHideUserRanking        bool   `json:"channel_monitor_hide_user_ranking"`
 
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
-	PelicanShowcaseEnabled   bool `json:"pelican_showcase_enabled"`
 
 	SubscriptionEnabled bool `json:"subscription_enabled"`
 

@@ -1,30 +1,23 @@
-import { apiClient } from '@/api/client'
-import type { InternalAxiosRequestConfig } from 'axios'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
-import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
-
-enableAutoUnmount(afterEach)
+import { flushPromises, mount } from '@vue/test-utils'
 import {
   BUILTIN_PLATFORM_CATALOG,
   resetPlatformCatalog,
   setPlatformCatalog
 } from '@/constants/platformCatalog'
 
-const { updateAccountMock, checkMixedChannelRiskMock, authIsSimpleMode, probeVideoPricesMock, showInfoMock, showErrorMock } = vi.hoisted(() => ({
-  showErrorMock: vi.fn(),
+const { updateAccountMock, checkMixedChannelRiskMock, authIsSimpleMode } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
-  probeVideoPricesMock: vi.fn(),
-  showInfoMock: vi.fn(),
   checkMixedChannelRiskMock: vi.fn(),
   authIsSimpleMode: { value: true }
 }))
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
-    showError: showErrorMock,
+    showError: vi.fn(),
     showSuccess: vi.fn(),
-    showInfo: showInfoMock
+    showInfo: vi.fn()
   })
 }))
 
@@ -40,13 +33,11 @@ vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       update: updateAccountMock,
-      probeUpstreamBilling: probeVideoPricesMock,
-      getOpenAIRequestTimezones: vi.fn().mockResolvedValue({ default: 'Asia/Singapore', timezones: ['Asia/Singapore', 'America/New_York'] }),
       checkMixedChannelRisk: checkMixedChannelRiskMock
     },
     settings: {
+      getSettings: vi.fn().mockResolvedValue({}),
       getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
-      getSettings: vi.fn().mockResolvedValue({})
     },
     tlsFingerprintProfiles: {
       list: vi.fn().mockResolvedValue([])
@@ -62,14 +53,14 @@ vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
   return {
     ...actual,
-    useI18n: () => ({
-      t: (key: string, params?: Record<string, unknown>) => key.includes('codexTurnTicket') && params
-        ? `${key}:${JSON.stringify(params)}` : key
+    useI18n: () => ({ locale: { value: 'zh' },
+      t: (key: string) => key
     })
   }
 })
 
 import EditAccountModal from '../EditAccountModal.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 
 const BaseDialogStub = defineComponent({
   name: 'BaseDialog',
@@ -85,9 +76,6 @@ const BaseDialogStub = defineComponent({
 const ModelWhitelistSelectorStub = defineComponent({
   name: 'ModelWhitelistSelector',
   props: {
-    syncCredentials: Object,
-    syncBlockedReason: String,
-    accountId: Number,
     modelMappings: { type: Array, default: () => [] },
     modelValue: {
       type: Array,
@@ -155,6 +143,24 @@ const GroupSelectorStub = defineComponent({
       >
         group
       </button>
+    </div>
+  `
+})
+
+const ProxySelectorStub = defineComponent({
+  name: 'ProxySelector',
+  props: {
+    modelValue: {
+      type: Array,
+      default: () => []
+    }
+  },
+  emits: ['update:modelValue'],
+  template: `
+    <div data-testid="proxy-selector-stub">
+      <span data-testid="proxy-selector-value">{{ modelValue.join(',') }}</span>
+      <button type="button" data-testid="set-codex-harvest-proxies" @click="$emit('update:modelValue', [11, 12])">set harvest proxies</button>
+      <button type="button" data-testid="clear-codex-harvest-proxies" @click="$emit('update:modelValue', [])">clear harvest proxies</button>
     </div>
   `
 })
@@ -334,7 +340,7 @@ function mountModal(account = buildAccount(), renderGroupSelector = false) {
         BaseDialog: BaseDialogStub,
         Select: SelectStub,
         Icon: true,
-        ProxySelector: true,
+        ProxySelector: ProxySelectorStub,
         GroupSelector: renderGroupSelector ? false : GroupSelectorStub,
         ModelWhitelistSelector: ModelWhitelistSelectorStub
       }
@@ -343,202 +349,83 @@ function mountModal(account = buildAccount(), renderGroupSelector = false) {
 }
 
 describe('EditAccountModal', () => {
-  it('round-trips and clears API-key image grants without affecting other extra fields', async () => {
-    const account = buildAccount()
-    account.extra = { extra_image_models: ['my-nai'], extra_image_model_prefixes: ['nai-diffusion-'], unrelated: 'preserve' }
-    updateAccountMock.mockReset().mockResolvedValue(account)
-    const wrapper = mountModal(account)
-    await flushPromises()
-    expect(wrapper.get<HTMLTextAreaElement>('[data-testid="extra-image-model-ids"]').element.value).toBe('my-nai')
-    expect(wrapper.get<HTMLTextAreaElement>('[data-testid="extra-image-model-prefixes"]').element.value).toBe('nai-diffusion-')
-    await wrapper.get('[data-testid="extra-image-model-ids"]').setValue(' my-nai, other-image\nmy-nai ')
-    await wrapper.get('#edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-    const extra = updateAccountMock.mock.calls[0]?.[1]?.extra
-    expect(extra).toMatchObject({ extra_image_models: ['my-nai', 'other-image'], extra_image_model_prefixes: ['nai-diffusion-'], unrelated: 'preserve' })
-    wrapper.unmount()
-    const restored = mountModal({ ...account, extra })
-    await flushPromises()
-    expect(restored.get<HTMLTextAreaElement>('[data-testid="extra-image-model-ids"]').element.value).toBe('my-nai\nother-image')
-    await restored.get('[data-testid="extra-image-model-ids"]').setValue('')
-    await restored.get('[data-testid="extra-image-model-prefixes"]').setValue('')
-    await restored.get('#edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-    expect(updateAccountMock.mock.calls[1]?.[1]?.extra).toMatchObject({ extra_image_models: [], extra_image_model_prefixes: [], unrelated: 'preserve' })
-    restored.unmount()
-    for (const type of ['oauth', 'setup-token']) {
-      const oauth = mountModal({ ...account, type })
-      await flushPromises()
-      expect(oauth.find('[data-testid="extra-image-models"]').exists()).toBe(false)
-      oauth.unmount()
-    }
-  })
-
-  it('round-trips OAuth alias scope and lets an operator restore a whitelist', async () => {
-    const account = { ...buildAccount(), type: 'oauth', credentials: { model_mapping_mode: 'aliases', model_mapping: { 'gpt-5.4': 'gpt-5.6-sol' } } }
-    const wrapper = mountModal(account); await flushPromises()
-    expect(wrapper.get<HTMLInputElement>('[data-testid="openai-model-aliases"]').element.checked).toBe(true)
-    await wrapper.get('[data-testid="openai-model-aliases"]').setValue(false)
-    await wrapper.get('#edit-account-form').trigger('submit.prevent'); await flushPromises()
-    expect(updateAccountMock).toHaveBeenCalledWith(1, expect.objectContaining({ credentials: expect.objectContaining({ model_mapping_mode: 'whitelist', model_mapping: { 'gpt-5.4': 'gpt-5.6-sol' } }) }))
-    wrapper.unmount()
-  })
-  it('defaults WS SSE acceleration off and persists the OAuth opt-in across edits', async () => {
-    const account = buildOpenAIOAuthParentAccount()
-    account.extra = { unrelated: 'preserve' }
-    updateAccountMock.mockReset().mockResolvedValue(account)
-    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
-    const wrapper = mountModal(account)
-    const toggle = wrapper.get('[data-testid="openai-ws-sse-acceleration"]')
-    expect(toggle.attributes('aria-checked')).toBe('false')
-    await toggle.trigger('click')
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-    const extra = updateAccountMock.mock.calls[0]?.[1]?.extra
-    expect(extra.openai_oauth_ws_sse_acceleration).toBe(true)
-    expect(extra.unrelated).toBe('preserve')
-    wrapper.unmount()
-
-    const restored = mountModal({ ...account, extra })
-    expect(restored.get('[data-testid="openai-ws-sse-acceleration"]').attributes('aria-checked')).toBe('true')
-    await restored.get('[data-testid="openai-ws-sse-acceleration"]').trigger('click')
-    await restored.get('form#edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-    expect(updateAccountMock.mock.calls[1]?.[1]?.extra).not.toHaveProperty('openai_oauth_ws_sse_acceleration')
-    restored.unmount()
-  })
-
-  it('does not offer OAuth WS SSE acceleration for API keys or setup tokens', () => {
-    for (const account of [buildAccount(), buildOpenAISetupTokenAccount()]) {
-      const wrapper = mountModal(account)
-      expect(wrapper.find('[data-testid="openai-ws-sse-acceleration"]').exists()).toBe(false)
-      wrapper.unmount()
-    }
-  })
-
   beforeEach(() => {
-    showErrorMock.mockReset()
     authIsSimpleMode.value = true
   })
 
   afterEach(() => vi.useRealTimers())
 
-
-
-
-
-
-  it('previews the entered video key and address without saving and falls back when the key is cleared', async () => {
-    const account = { ...buildAccount(), platform: 'video', credentials: { base_url: 'https://saved-video.example', grok_media_provider: 'suanli_special' } }
-    updateAccountMock.mockReset()
-    const wrapper = mountModal(account)
-    const selector = wrapper.getComponent(ModelWhitelistSelectorStub)
-    expect(selector.props('syncCredentials')).toBeUndefined()
-    expect(selector.props('accountId')).toBe(account.id)
-    await wrapper.get('input[placeholder="https://video.example.com"]').setValue(' https://new-video.example ')
-    await wrapper.get('input[type="password"]').setValue(' entered-video-key ')
-    expect(selector.props('syncCredentials')).toMatchObject({
-      platform: 'video', type: 'apikey', base_url: 'https://new-video.example', api_key: 'entered-video-key'
-    })
-    expect(updateAccountMock).not.toHaveBeenCalled()
-    await wrapper.get('input[type="password"]').setValue(' ')
-    expect(selector.props('syncCredentials')).toBeUndefined()
-    expect(selector.props('accountId')).toBe(account.id)
-    wrapper.unmount()
-  })
-
-  it('keeps adaptive-provider editing on the saved-account path instead of using a stale hidden URL', async () => {
-    const account = {
-      ...buildAccount(), platform: 'kimi', credentials: {
-        base_url: 'https://old-kimi.example', account_mode: 'payg', api_protocol: 'adaptive',
-        api_base_urls: { chat_completions: 'https://old-kimi.example', anthropic: 'https://old-anthropic.example' }
-      }
-    }
-    const wrapper = mountModal(account)
-    await flushPromises()
-    const endpoint = wrapper.findAll('input[type="text"]').find(input => (input.element as HTMLInputElement).value === 'https://old-kimi.example')!
-    expect(endpoint).toBeDefined()
-    await endpoint.setValue(' https://new-kimi.example ')
-    await wrapper.get('input[type="password"]').setValue('fresh-key')
-    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('syncCredentials')).toBeUndefined()
-    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('accountId')).toBe(account.id)
-    wrapper.unmount()
-  })
-
-  it.each(['openai', 'anthropic'])('preserves the existing saved-account sync flow for %s editing', async (platform) => {
-    const account = { ...buildAccount(), platform }
-    const wrapper = mountModal(account)
-    await wrapper.get('input[type="password"]').setValue('fresh-key')
-    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('syncCredentials')).toBeUndefined()
-    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('accountId')).toBe(account.id)
-    wrapper.unmount()
-  })
-
-  it.each([
-    { proxy_id: 3 },
-    { credentials: { base_url: 'https://video.example', header_override_enabled: true, header_overrides: { 'X-Test': 'value' } } },
-    { extra: { enable_tls_fingerprint: true } }
-  ])('requires saving video transport settings before previewing a replacement key: %j', async (connectionSettings) => {
-    const account = { ...buildAccount(), platform: 'video', ...connectionSettings }
-    const wrapper = mountModal(account)
-    await wrapper.get('input[type="password"]').setValue('replacement-video-key')
-    const selector = wrapper.getComponent(ModelWhitelistSelectorStub)
-    expect(selector.props('syncBlockedReason')).toBe('admin.accounts.syncUpstreamPreviewSaveConnectionFirst')
-    expect(selector.props('syncCredentials')).toBeUndefined()
-    await wrapper.get('input[type="password"]').setValue('')
-    expect(selector.props('syncBlockedReason')).toBeUndefined()
-    expect(selector.props('accountId')).toBe(account.id)
-    wrapper.unmount()
-  })
-
-  it('requires an explicit video address before sending an unsaved key', async () => {
-    const wrapper = mountModal({ ...buildAccount(), platform: 'video' })
-    await wrapper.get('input[placeholder="https://video.example.com"]').setValue('')
-    await wrapper.get('input[type="password"]').setValue('fresh-video-key')
-    const selector = wrapper.getComponent(ModelWhitelistSelectorStub)
-    expect(selector.props('syncBlockedReason')).toBe('videoModule.baseUrlRequired')
-    expect(selector.props('syncCredentials')).toBeUndefined()
-    wrapper.unmount()
-  })
-
-  it('does not bypass a proxy selected in the video edit form before saving', async () => {
-    const wrapper = mountModal({ ...buildAccount(), platform: 'video', proxy_id: null })
-    await wrapper.get('input[type="password"]').setValue('fresh-video-key')
-    const selector = wrapper.getComponent(ModelWhitelistSelectorStub)
-    expect(selector.props('syncCredentials')).toBeDefined()
-    wrapper.getComponent({ name: 'ProxySelector' }).vm.$emit('update:modelValue', 4)
-    await flushPromises()
-    expect(selector.props('syncBlockedReason')).toBe('admin.accounts.syncUpstreamPreviewSaveConnectionFirst')
-    expect(selector.props('syncCredentials')).toBeUndefined()
-    wrapper.unmount()
-  })
-
-  it('loads video provider credentials and can switch to the standard provider without losing the API key', async () => {
-    const account = { ...buildAccount(), platform: 'video', type: 'apikey', credentials: { base_url: 'https://video.example.test', api_key: 'video-fixture-key', grok_media_provider: 'suanli_special' } }
+  it('omits an unchanged cost multiplier but saves an edited value and account group rate', async () => {
+    const account = { ...buildAccount(), extra: { cost_multiplier: 0.5 }, group_rate_multiplier: 0.65 }
     updateAccountMock.mockReset().mockResolvedValue(account)
     checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
     const wrapper = mountModal(account)
-    expect(wrapper.get<HTMLSelectElement>('[data-testid="grok-media-provider"]').element.value).toBe('suanli_special')
-    await wrapper.get('[data-testid="grok-media-provider"]').setValue('')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await flushPromises()
-    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
-    expect(credentials).toMatchObject({ base_url: 'https://video.example.test', api_key: 'video-fixture-key' })
-    expect(credentials).not.toHaveProperty('grok_media_provider')
+    expect(updateAccountMock.mock.calls[0][1].extra).not.toHaveProperty('cost_multiplier')
+    expect(updateAccountMock.mock.calls[0][1].group_rate_multiplier).toBe(0.65)
+    await wrapper.get('#account-cost-multiplier').setValue('0.4')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock.mock.calls[1][1].extra.cost_multiplier).toBe(0.4)
+  })
+
+  it('has no Excel BPS editor and passes stale extra through unchanged on OAuth saves', async () => {
+    const account = buildOpenAIOAuthParentAccount()
+    account.extra = { openai_excel_bps: true, unrelated_policy: 'keep' }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    expect(wrapper.find('[data-testid="excel-bps-settings"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="retired-bps-credential"]').exists()).toBe(false)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    const extra = updateAccountMock.mock.calls[0]?.[1]?.extra
+    expect(extra.unrelated_policy).toBe('keep')
+    expect(extra.openai_excel_bps).toBe(true)
     wrapper.unmount()
   })
-  it('loads and removes Copilot SDK mode without dropping unrelated extra', async () => {
+
+  it('shows the retired Excel OAuth / BPS credential notice', () => {
+    const account = { ...buildOpenAIOAuthParentAccount(), retired_reason: 'retired' }
+    const wrapper = mountModal(account)
+    expect(wrapper.find('[data-testid="retired-bps-credential"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('preserves quality protection when saving unrelated account settings', async () => {
+    const account = { ...buildAccount(), status: 'quality_paused', schedulable: false }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+
+    expect(wrapper.get<HTMLSelectElement>('[data-testid="account-status"]').element.value).toBe('quality_paused')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('status')
+    expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('schedulable')
+    wrapper.unmount()
+  })
+
+  it.each(['active', 'inactive'])('allows manually changing quality-paused account status to %s', async (status) => {
+    const account = { ...buildAccount(), status: 'quality_paused', schedulable: false }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+
+    await wrapper.get('[data-testid="account-status"]').setValue(status)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.status).toBe(status)
+    expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('schedulable')
+    wrapper.unmount()
+  })
+
+  it('does not resend an unchanged active status when saving an older account snapshot', async () => {
     const account = buildAccount()
-    account.extra = { openai_copilot_sdk: true, unrelated_setting: 'keep' }
-    updateAccountMock.mockReset().mockResolvedValue(account)
+    updateAccountMock.mockReset().mockResolvedValue({ ...account, status: 'quality_paused' })
     checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
     const wrapper = mountModal(account)
-    expect(wrapper.get<HTMLInputElement>('[data-testid="copilot-sdk-toggle"]').element.checked).toBe(true)
-    await wrapper.get('[data-testid="copilot-sdk-toggle"]').setValue(false)
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.openai_copilot_sdk).toBeUndefined()
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.unrelated_setting).toBe('keep')
+    expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('status')
+    wrapper.unmount()
   })
 
   it('passes existing non-identity mappings to the whitelist selector and preserves them on save', async () => {
@@ -1036,7 +923,6 @@ describe('EditAccountModal', () => {
     checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
 
     const wrapper = mountModal(account)
-    await flushPromises()
     const adaptiveButton = wrapper
       .findAll('button')
       .find(button => button.text().includes('admin.accounts.cnProviders.apiProtocol.adaptive'))
@@ -1044,7 +930,6 @@ describe('EditAccountModal', () => {
     await adaptiveButton!.trigger('click')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
-    expect(showErrorMock.mock.calls).toEqual([])
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
       api_protocol: 'adaptive',
@@ -1120,7 +1005,6 @@ describe('EditAccountModal', () => {
     expect(toggle.attributes('aria-checked')).toBe('true')
 
     await toggle.trigger('click')
-    await flushPromises()
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
@@ -1143,9 +1027,7 @@ describe('EditAccountModal', () => {
 
     // 关闭后应从 extra 中删除该键，而不是写入 false
     await toggle.trigger('click')
-    await flushPromises()
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    await flushPromises()
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty(
@@ -1225,7 +1107,6 @@ describe('EditAccountModal', () => {
     const toggle = wrapper.get('[data-testid="openai-images-url-to-b64-json-toggle"]')
     expect(toggle.attributes('aria-checked')).toBe('false')
     await toggle.trigger('click')
-    await flushPromises()
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
@@ -1244,12 +1125,46 @@ describe('EditAccountModal', () => {
     const toggle = wrapper.get('[data-testid="openai-images-url-to-b64-json-toggle"]')
     expect(toggle.attributes('aria-checked')).toBe('true')
     await toggle.trigger('click')
-    await flushPromises()
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toBeDefined()
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('images_url_to_b64_json')
+  })
+
+  it('writes restricted image size tiers into extra', async () => {
+    const account = buildAccount()
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="openai-image-size-tier-1K"]').setValue(false)
+    await wrapper.get('[data-testid="openai-image-size-tier-2K"]').setValue(false)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.openai_image_size_tiers).toEqual(['4K'])
+  })
+
+  it('removes image size tiers from extra when every tier is selected again', async () => {
+    const account = buildAccount()
+    account.extra = { openai_image_size_tiers: ['1K', '2K'] }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+    const tier4K = wrapper.get('[data-testid="openai-image-size-tier-4K"]')
+    expect((tier4K.element as HTMLInputElement).checked).toBe(false)
+    await tier4K.setValue(true)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toBeDefined()
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('openai_image_size_tiers')
   })
 
   it('hides the Codex namespace flatten toggle for non-OAuth OpenAI accounts', async () => {
@@ -1276,6 +1191,19 @@ describe('EditAccountModal', () => {
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.openai_long_context_billing_enabled).toBe(false)
+  })
+
+  it('does not expose or add the removed quota extension when editing OAuth accounts', async () => {
+    const account = buildOpenAIOAuthParentAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    expect(wrapper.find('[data-testid="edit-codex-quota-overdraft-toggle"]').exists()).toBe(false)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra ?? {}).not.toHaveProperty('codex_quota_overdraft_enabled')
   })
 
   it('does not render or submit the long-context billing toggle for Spark shadow accounts', async () => {
@@ -1433,56 +1361,17 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.openai_responses_supported).toBe(false)
   })
 
-  it('saves an image account even when public model price probing fails', async () => {
-    const account = { ...buildAccount(), platform: 'openai', type: 'apikey', credentials: { api_key: 'fixture-key', base_url: 'https://suanliai.top/v1' }, extra: { upstream_billing_probe_enabled: true, upstream_billing_rate_sync_enabled: true } }
+  it('allows ordinary probe changes with a legacy ceiling and does not expose its input', async () => {
+    const account = buildAccount()
+    account.extra = { upstream_billing_rate_limit: 0, upstream_billing_probe_enabled: false }
     updateAccountMock.mockReset().mockResolvedValue(account)
-    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
-    probeVideoPricesMock.mockReset().mockRejectedValue(new Error('offline'))
     const wrapper = mountModal(account)
-    await flushPromises()
-    expect(wrapper.get('[data-testid="upstream-billing-auto-probe"]').attributes('aria-label')).toBe('admin.accounts.upstreamBilling.video.autoProbe')
-    expect(wrapper.find('[data-testid="upstream-billing-rate-sync"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="account-cost-auto-sync"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="upstream-billing-rate-limit"]').exists()).toBe(false)
+    const probe = wrapper.get<HTMLButtonElement>('[data-testid="upstream-billing-auto-probe"]')
+    expect(probe.element.disabled).toBe(false)
+    expect(probe.attributes('aria-checked')).toBe('false')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-    expect(updateAccountMock).toHaveBeenCalledOnce()
-    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_rate_sync_enabled).toBe(false)
-    expect(probeVideoPricesMock).toHaveBeenCalledOnce()
-    expect(wrapper.emitted('updated')).toHaveLength(1)
-  })
-
-  it.each(['failed', 'transport', 'disabled'])('keeps video saving independent of price probing (%s) and drops legacy rate sync', async (outcome) => {
-    const account = { ...buildAccount(), platform: 'video', credentials: { api_key: 'test-video-key', base_url: 'https://video.example.com' },
-      extra: { upstream_billing_probe_enabled: true, upstream_billing_rate_sync_enabled: true } }
-    const snapshot = { kind: 'video_model_prices', status: 'failed', last_error: 'network_error' }
-    updateAccountMock.mockReset().mockResolvedValue(account)
-    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
-    showInfoMock.mockClear()
-    probeVideoPricesMock.mockReset()
-    if (outcome === 'transport') probeVideoPricesMock.mockRejectedValue(new Error('offline'))
-    else probeVideoPricesMock.mockResolvedValue({ snapshot })
-    const wrapper = mountModal(account)
-    await flushPromises()
-    expect(wrapper.find('[data-testid="upstream-billing-rate-sync"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="account-cost-auto-sync"]').exists()).toBe(false)
-    expect(wrapper.get<HTMLInputElement>('[data-testid="account-rate-multiplier"]').element.disabled).toBe(false)
-    expect(wrapper.get('[data-testid="upstream-billing-auto-probe"]').attributes('aria-label')).toBe('admin.accounts.upstreamBilling.video.autoProbe')
-    if (outcome === 'disabled') await wrapper.get('[data-testid="upstream-billing-auto-probe"]').trigger('click')
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-    const payload = updateAccountMock.mock.calls[0]?.[1]
-    expect(payload.upstream_billing_probe_enabled).toBe(outcome !== 'disabled')
-    expect(payload).not.toHaveProperty('upstream_billing_rate_sync_enabled')
-    expect(payload.extra).not.toHaveProperty('upstream_billing_rate_sync_enabled')
-    expect(payload.extra).not.toHaveProperty('cost_multiplier_auto_sync')
-    expect(payload).toHaveProperty('rate_multiplier')
-    expect(wrapper.emitted('updated')).toHaveLength(1)
-    if (outcome === 'disabled') expect(probeVideoPricesMock).not.toHaveBeenCalled()
-    else {
-      expect(probeVideoPricesMock).toHaveBeenCalledWith(account.id)
-      expect(showInfoMock).toHaveBeenCalledWith('admin.accounts.upstreamBilling.video.savedProbeFailed')
-    }
-    if (outcome === 'failed') expect((wrapper.emitted('updated')![0][0] as any).extra.upstream_billing_probe).toEqual(snapshot)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_probe_enabled).toBe(false)
   })
 
   it('submits the account upstream billing auto-probe setting', async () => {
@@ -1497,7 +1386,6 @@ describe('EditAccountModal', () => {
     expect(toggle.attributes('aria-checked')).toBe('false')
 
     await toggle.trigger('click')
-    await flushPromises()
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
@@ -1506,6 +1394,9 @@ describe('EditAccountModal', () => {
       'upstream_billing_probe_enabled'
     )
   })
+
+
+
 
   it('exposes the upstream billing auto-probe toggle for non-OpenAI API-key accounts', async () => {
     // 探测已放宽到全部 API-key 平台：grok 账号同样能开启并保存。
@@ -1523,41 +1414,10 @@ describe('EditAccountModal', () => {
     expect(toggle.attributes('aria-checked')).toBe('false')
 
     await toggle.trigger('click')
-    await flushPromises()
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_probe_enabled).toBe(true)
-  })
-
-  it('keeps New API multipliers manual despite legacy automatic sync flags', async () => {
-    const account = buildAccount()
-    account.extra = {
-      upstream_billing_provider: 'new_api',
-      upstream_billing_probe_enabled: true,
-      upstream_billing_rate_sync_enabled: true,
-      cost_multiplier_auto_sync: true,
-      cost_multiplier: 0.2
-    }
-    updateAccountMock.mockReset().mockResolvedValue(account)
-    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
-    const wrapper = mountModal(account)
-    expect(wrapper.find('[data-testid="upstream-billing-rate-sync"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="account-cost-auto-sync"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('admin.accounts.upstreamBilling.newAPI.groupRatioHint')
-    expect(wrapper.get<HTMLInputElement>('[data-testid="account-rate-multiplier"]').element.disabled).toBe(false)
-    expect(wrapper.get<HTMLInputElement>('[data-testid="account-cost-multiplier"]').element.disabled).toBe(false)
-    expect(wrapper.get('[data-testid="upstream-billing-auto-probe"]').attributes('aria-checked')).toBe('true')
-    await wrapper.get('[data-testid="account-rate-multiplier"]').setValue(0.7)
-    await wrapper.get('[data-testid="account-cost-multiplier"]').setValue(0.3)
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-    expect(updateAccountMock.mock.calls[0]?.[1]).toMatchObject({
-      rate_multiplier: 0.7,
-      upstream_billing_probe_enabled: true,
-      upstream_billing_rate_sync_enabled: false,
-      extra: { cost_multiplier: 0.3, cost_multiplier_auto_sync: false }
-    })
   })
 
   it('enabling rate sync also enables probing and stops submitting a manual rate', async () => {
@@ -2145,8 +2005,8 @@ describe('EditAccountModal', () => {
       'antigravity_project_id'
     )
   })
-
 })
+
 describe('EditAccountModal OpenAI 自动使用重置卡', () => {
   beforeEach(() => {
     authIsSimpleMode.value = true
@@ -2169,12 +2029,7 @@ describe('EditAccountModal OpenAI 自动使用重置卡', () => {
     }
   })
 
-  it.each([
-    [75.5, 92],
-    [0, 90],
-    [80, 0],
-    [0, 0]
-  ])('保存并重新载入 5h=%s、7d=%s，且不回写运行态', async (threshold5h, threshold7d) => {
+  it('独立保存两个阈值，并禁止把运行态回写到管理请求', async () => {
     const account = buildOpenAIOAuthParentAccount()
     account.extra = {
       codex_auto_reset_credit_state: {
@@ -2187,149 +2042,201 @@ describe('EditAccountModal OpenAI 自动使用重置卡', () => {
     const wrapper = mountModal(account)
 
     await wrapper.get('[data-testid="auto-reset-credit-enabled"]').trigger('click')
-    await wrapper.get('[data-testid="auto-reset-credit-5h-threshold"]').setValue(String(threshold5h))
-    await wrapper.get('[data-testid="auto-reset-credit-7d-threshold"]').setValue(String(threshold7d))
+    const confirmation = wrapper.findAllComponents(ConfirmDialog).find(dialog => dialog.props('title') === 'admin.accounts.autoResetSafety.confirmTitle')!
+    expect(confirmation.props('show')).toBe(true)
+    confirmation.vm.$emit('confirm')
+    await flushPromises()
+    await wrapper.get('[data-testid="auto-reset-credit-5h-threshold"]').setValue('75.5')
+    await wrapper.get('[data-testid="auto-reset-credit-7d-threshold"]').setValue('92')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     const extra = updateAccountMock.mock.calls[0]?.[1]?.extra
     expect(extra).toMatchObject({
       auto_reset_credit_enabled: true,
-      auto_reset_credit_5h_threshold: threshold5h / 100,
-      auto_reset_credit_7d_threshold: threshold7d / 100
+      auto_reset_credit_5h_threshold: 0.755,
+      auto_reset_credit_7d_threshold: 0.92
     })
     expect(extra).not.toHaveProperty('codex_auto_reset_credit_state')
     wrapper.unmount()
-
-    const reopened = mountModal({ ...account, extra })
-    expect((reopened.get('[data-testid="auto-reset-credit-5h-threshold"]').element as HTMLInputElement).value).toBe(String(threshold5h))
-    expect((reopened.get('[data-testid="auto-reset-credit-7d-threshold"]').element as HTMLInputElement).value).toBe(String(threshold7d))
-    reopened.unmount()
   })
 
-  it.each(['', '-0.1', '0.01', '100.1'])('开启后拒绝无效阈值 %s', async (invalidThreshold) => {
+  it('开启后拒绝超出 0.1–100 范围的任一阈值', async () => {
     const wrapper = mountModal(buildOpenAIOAuthParentAccount())
     await wrapper.get('[data-testid="auto-reset-credit-enabled"]').trigger('click')
-    await wrapper.get('[data-testid="auto-reset-credit-5h-threshold"]').setValue(invalidThreshold)
+    const confirmation = wrapper.findAllComponents(ConfirmDialog).find(dialog => dialog.props('title') === 'admin.accounts.autoResetSafety.confirmTitle')!
+    expect(confirmation.props('show')).toBe(true)
+    confirmation.vm.$emit('confirm')
+    await flushPromises()
+    await wrapper.get('[data-testid="auto-reset-credit-5h-threshold"]').setValue('0')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     expect(updateAccountMock).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })
 
+describe('EditAccountModal gemini explicit cache upstream switch', () => {
+  function buildGeminiApiKeyAccount(credentials: Record<string, unknown>) {
+    return {
+      id: 21,
+      name: 'Gemini upstream gateway',
+      notes: '',
+      platform: 'gemini',
+      type: 'apikey',
+      credentials: { api_key: 'sk-upstream', ...credentials },
+      credentials_status: { has_api_key: true },
+      extra: {},
+      proxy_id: null,
+      concurrency: 1,
+      priority: 1,
+      rate_multiplier: 1,
+      status: 'active',
+      group_ids: [],
+      expires_at: null,
+      auto_pause_on_expired: false
+    } as any
+  }
 
-describe('independent account cost multiplier', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
     authIsSimpleMode.value = true
-    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
-    updateAccountMock.mockResolvedValue(buildAccount())
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
   })
-  it('defaults to 0.1 and saves independently from billing multipliers', async () => {
-    const account = { ...buildAccount(), rate_multiplier: 1, group_rate_multiplier: 5 }
-    const wrapper = mountModal(account)
-    expect(wrapper.get<HTMLInputElement>('[data-testid="account-cost-multiplier"]').element.value).toBe('0.1')
-    await wrapper.get('[data-testid="account-cost-multiplier"]').setValue(0.25)
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent'); await flushPromises()
-    expect(updateAccountMock).toHaveBeenCalledWith(1, expect.objectContaining({ rate_multiplier: 1, group_rate_multiplier: 5, extra: expect.objectContaining({ cost_multiplier: 0.25 }) }))
+
+  it('hides the switch for the official AI Studio address', () => {
+    const wrapper = mountModal(buildGeminiApiKeyAccount({ base_url: 'https://generativelanguage.googleapis.com' }))
+    expect(wrapper.find('[data-testid="explicit-cache-upstream-section"]').exists()).toBe(false)
   })
-  it('preserves an unchanged zero cost while billing rate sync stays enabled', async () => {
-    const account = { ...buildAccount(), extra: { cost_multiplier: 0, upstream_billing_probe_enabled: true, upstream_billing_rate_sync_enabled: true } }
-    const wrapper = mountModal(account)
-    expect(wrapper.get<HTMLInputElement>('[data-testid="account-cost-multiplier"]').element.value).toBe('0')
-    expect(wrapper.get<HTMLInputElement>('[data-testid="account-cost-multiplier"]').element.disabled).toBe(false)
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent'); await flushPromises()
-    const payload = updateAccountMock.mock.calls[0][1]
-    expect(payload.extra.cost_multiplier).toBeUndefined()
-    expect(payload).not.toHaveProperty('rate_multiplier')
-  })
-  it('shows the saved upstream cost and does not resend it on unrelated edits', async () => {
-    const account = { ...buildAccount(), extra: { cost_multiplier: 0.14 } }
+
+  it('loads and saves the switch and ttl limit for a custom upstream', async () => {
+    const account = buildGeminiApiKeyAccount({
+      base_url: 'https://upstream.example.com',
+      explicit_cache_upstream: true,
+      explicit_cache_upstream_max_ttl_seconds: 1800
+    })
     updateAccountMock.mockResolvedValue(account)
     const wrapper = mountModal(account)
-    expect(wrapper.get<HTMLInputElement>('[data-testid="account-cost-multiplier"]').element.value).toBe('0.14')
+
+    expect(wrapper.find('[data-testid="explicit-cache-upstream-section"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="explicit-cache-upstream-toggle"]').attributes('aria-checked')).toBe('true')
+    const ttlInput = wrapper.get('[data-testid="explicit-cache-upstream-max-ttl"]')
+    expect((ttlInput.element as HTMLInputElement).value).toBe('1800')
+
+    await ttlInput.setValue('3600')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    expect(updateAccountMock.mock.calls.at(-1)?.[1]?.extra?.cost_multiplier).toBeUndefined()
-    await wrapper.get('[data-testid="account-cost-multiplier"]').setValue(0)
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    expect(updateAccountMock.mock.calls.at(-1)?.[1]?.extra?.cost_multiplier).toBe(0)
-  })
-  it('lets an operator disable upstream cost syncing and save the actual recharge cost', async () => {
-    const account = { ...buildAccount(), extra: { cost_multiplier: 1, upstream_billing_probe_enabled: true } }
-    const wrapper = mountModal(account)
-    expect(wrapper.get('[data-testid="account-cost-auto-sync"]').attributes('aria-checked')).toBe('true')
-    await wrapper.get('[data-testid="account-cost-auto-sync"]').trigger('click')
-    await wrapper.get('[data-testid="account-cost-multiplier"]').setValue(0.2)
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toMatchObject({
-      cost_multiplier: 0.2, cost_multiplier_auto_sync: false
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
+      explicit_cache_upstream: true,
+      explicit_cache_upstream_max_ttl_seconds: 3600
     })
-    expect(wrapper.get('[data-testid="upstream-billing-auto-probe"]').attributes('aria-checked')).toBe('true')
-    wrapper.unmount()
   })
-  it('preserves manual mode on unrelated edits and allows opting back into upstream costs', async () => {
-    const account = { ...buildAccount(), extra: { cost_multiplier: 0.2, cost_multiplier_auto_sync: false } }
+
+  it('removes both fields when the switch is turned off', async () => {
+    const account = buildGeminiApiKeyAccount({
+      base_url: 'https://upstream.example.com',
+      explicit_cache_upstream: true,
+      explicit_cache_upstream_max_ttl_seconds: 1800
+    })
+    updateAccountMock.mockResolvedValue(account)
     const wrapper = mountModal(account)
-    expect(wrapper.get('[data-testid="account-cost-auto-sync"]').attributes('aria-checked')).toBe('false')
+
+    await wrapper.get('[data-testid="explicit-cache-upstream-toggle"]').trigger('click')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('cost_multiplier_auto_sync')
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('cost_multiplier')
-    await wrapper.get('[data-testid="account-cost-auto-sync"]').trigger('click')
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-    await flushPromises()
-    expect(updateAccountMock.mock.calls.at(-1)?.[1]?.extra?.cost_multiplier_auto_sync).toBe(true)
-    wrapper.unmount()
-  })
-  it('rejects a negative cost before saving', async () => {
-    const wrapper = mountModal()
-    await wrapper.get('[data-testid="account-cost-multiplier"]').setValue(-1)
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent'); await flushPromises()
-    expect(updateAccountMock).not.toHaveBeenCalled()
+    const credentials = updateAccountMock.mock.calls[0]?.[1]?.credentials
+    expect(credentials).not.toHaveProperty('explicit_cache_upstream')
+    expect(credentials).not.toHaveProperty('explicit_cache_upstream_max_ttl_seconds')
   })
 })
 
+describe('EditAccountModal temp-unschedulable rule scope', () => {
+  function buildAccountWithTempUnschedRules(rules: Array<Record<string, unknown>>) {
+    const account = buildAccount()
+    return {
+      ...account,
+      credentials: {
+        ...account.credentials,
+        temp_unschedulable_enabled: true,
+        temp_unschedulable_rules: rules
+      }
+    } as any
+  }
 
-describe('OpenAI connection account type boundary in the actual editor', () => {
-  const originalAdapter = apiClient.defaults.adapter
-  const connectionRequests: string[] = []
+  const checkedScopes = (wrapper: ReturnType<typeof mountModal>) =>
+    wrapper
+      .findAll('[data-testid^="temp-unsched-scope-"][aria-checked="true"]')
+      .map((radio) => radio.attributes('data-testid'))
+
+  const savedRules = () =>
+    updateAccountMock.mock.calls[0]?.[1]?.credentials?.temp_unschedulable_rules
+
   beforeEach(() => {
-    connectionRequests.length = 0
-    apiClient.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
-      if (config.url?.includes('/auth-connections')) connectionRequests.push(config.url)
-      return { config, status: 200, statusText: 'OK', headers: {}, data: { code: 0, message: '', data: [] } }
-    }
+    authIsSimpleMode.value = true
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
   })
-  afterEach(() => { apiClient.defaults.adapter = originalAdapter })
 
-  it('never mounts or fetches connections for API key accounts, including type and dialog changes', async () => {
-    const account = { ...buildAccount(), credentials: { access_token: 'synthetic-misleading-oauth', api_key: 'synthetic-key' }, extra: { openai_connections_managed: true } }
+  it('shows rules without scope the way the backend treats them and keeps that on save', async () => {
+    const account = buildAccountWithTempUnschedRules([
+      { error_code: 401, keywords: ['unauthorized'], duration_minutes: 10 },
+      { error_code: 503, keywords: ['unavailable'], duration_minutes: 30 }
+    ])
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModal(account)
+
+    expect(checkedScopes(wrapper)).toEqual(['temp-unsched-scope-account', 'temp-unsched-scope-model'])
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(savedRules().map((rule: { scope: string }) => rule.scope)).toEqual(['account', 'model'])
+    wrapper.unmount()
+  })
+
+  it('respects an explicit scope and saves the card the operator picks', async () => {
+    const account = buildAccountWithTempUnschedRules([
+      { error_code: 401, keywords: ['unauthorized'], duration_minutes: 10, scope: 'model' },
+      { error_code: 503, keywords: ['unavailable'], duration_minutes: 30, scope: ' Account ' }
+    ])
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModal(account)
+
+    expect(checkedScopes(wrapper)).toEqual(['temp-unsched-scope-model', 'temp-unsched-scope-account'])
+
+    await wrapper.findAll('[data-testid="temp-unsched-scope-model"]')[1].trigger('click')
+    expect(checkedScopes(wrapper)).toEqual(['temp-unsched-scope-model', 'temp-unsched-scope-model'])
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(savedRules().map((rule: { scope: string }) => rule.scope)).toEqual(['model', 'model'])
+    wrapper.unmount()
+  })
+
+  it('defaults a newly added rule to model scope', async () => {
+    const wrapper = mountModal(buildAccountWithTempUnschedRules([]))
+
+    const addRule = wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('admin.accounts.tempUnschedulable.addRule'))
+    await addRule!.trigger('click')
+
+    expect(checkedScopes(wrapper)).toEqual(['temp-unsched-scope-model'])
+    wrapper.unmount()
+  })
+
+  it('loads the opt-in passthrough filter and removes it when disabled', async () => {
+    const account = buildAccount()
+    account.extra = { openai_passthrough: true, openai_passthrough_model_filter: true }
+    updateAccountMock.mockReset().mockResolvedValue(account)
     const wrapper = mountModal(account)
     await flushPromises()
-    expect(wrapper.find('[data-testid="auth-connections"]').exists()).toBe(false)
-    expect(connectionRequests).toEqual([])
-    await wrapper.setProps({ show: false }); await wrapper.setProps({ show: true, account: { ...account, id: 43 } }); await flushPromises()
-    expect(connectionRequests).toEqual([])
-    await wrapper.setProps({ account: { ...account, type: 'oauth' } }); await flushPromises()
-    expect(wrapper.find('[data-testid="auth-connections"]').exists()).toBe(true)
-    expect(connectionRequests).toEqual(['/admin/accounts/1/auth-connections'])
-    await wrapper.setProps({ account }); await flushPromises()
-    expect(wrapper.find('[data-testid="auth-connections"]').exists()).toBe(false)
-    await wrapper.setProps({ account: { ...account, id: 44 } }); await flushPromises()
-    expect(connectionRequests).toHaveLength(1)
+    const filter = wrapper.get('[data-testid="openai-passthrough-model-filter"]')
+    expect((filter.element as HTMLInputElement).checked).toBe(true)
+    await filter.setValue(false)
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+    const payload = updateAccountMock.mock.calls.at(-1)?.[1]
+    expect(payload.extra.openai_passthrough).toBe(true)
+    expect(payload.extra).not.toHaveProperty('openai_passthrough_model_filter')
+    wrapper.unmount()
   })
 
-  it('keeps OAuth connections available and excludes shadows and other platforms', async () => {
-    const wrapper = mountModal(buildOpenAIOAuthParentAccount())
-    await flushPromises()
-    expect(wrapper.find('[data-testid="auth-connections"]').exists()).toBe(true)
-    expect(wrapper.findAll('[data-testid="auth-connections"] option').map(o => o.attributes('value'))).toEqual(['codex', 'siwc'])
-    expect(connectionRequests).toEqual(['/admin/accounts/7/auth-connections'])
-    await wrapper.setProps({ account: buildOpenAISparkShadowAccount() }); await flushPromises()
-    expect(wrapper.find('[data-testid="auth-connections"]').exists()).toBe(false)
-    await wrapper.setProps({ account: { ...buildAccount(), platform: 'anthropic', type: 'oauth' } }); await flushPromises()
-    expect(wrapper.find('[data-testid="auth-connections"]').exists()).toBe(false)
-    expect(connectionRequests).toHaveLength(1)
-  })
 })

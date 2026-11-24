@@ -28,8 +28,8 @@ func (s *OpenAIGatewayService) fetchNativeOpenAIModelsList(ctx context.Context, 
 	if err != nil {
 		return nil, fmt.Errorf("resolve model list credentials: %w", err)
 	}
-	if credentialAccount.IsExcelOAuth() {
-		return nil, errExcelOAuthRouteUnavailable
+	if credentialAccount.IsRetiredBPSCredential() {
+		return nil, errRetiredBPSCredential
 	}
 	if credentialAccount.IsOpenAIOAuth() {
 		clientVersion := CodexCanonicalClientVersion()
@@ -184,20 +184,16 @@ func projectAccountModelsBody(body []byte, account *Account, group *Group, codex
 // projectAccountModelAliases retains the source entry's metadata, never changes
 // the shared response, and never synthesizes models absent from this account.
 func projectAccountModelAliases(body []byte, account *Account, group *Group, codex bool) ([]byte, error) {
-	var groupID *int64
-	if group != nil {
-		groupID = &group.ID
+	if account.IsOpenAIPassthroughEnabled() {
+		filtered, _, err := filterOpenAIPassthroughCatalog(body, []Account{*account}, codex)
+		return filtered, err
+	}
+	if len(account.GetModelMapping()) == 0 {
+		return body, nil
 	}
 	field, idField := "data", "id"
 	if codex {
 		field, idField = "models", "slug"
-	}
-	if account.IsOpenAIPassthroughEnabled() || len(account.GetModelMapping()) == 0 {
-		if len(account.GroupAllowedModels(derefGroupID(groupID))) == 0 {
-			return body, nil
-		}
-		// 没有映射的账号原样公布上游列表；在本分组被限制时只保留允许的模型。
-		return filterModelsBodyForGroup(body, account, groupID, field, idField)
 	}
 	envelope, entries, err := modelCatalogEntries(body, field)
 	if err != nil {
@@ -251,13 +247,9 @@ func projectAccountModelAliases(body []byte, account *Account, group *Group, cod
 		if _, ok := seen[id]; ok {
 			continue
 		}
-		if !account.IsModelAllowedInGroup(groupID, id) {
-			continue
-		}
 		target, matched := account.ResolveMappedModel(id)
 		raw, available := byID[strings.TrimSpace(target)]
-		allowed := matched || (account.IsOpenAIModelMappingAliases() && account.IsModelSupported(id))
-		if !available || !allowed {
+		if !matched || !available {
 			continue
 		}
 		seen[id] = struct{}{}
@@ -283,34 +275,6 @@ func projectAccountModelAliases(body []byte, account *Account, group *Group, cod
 		return body, nil
 	}
 	envelope[field], err = json.Marshal(projected)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(envelope)
-}
-
-// filterModelsBodyForGroup keeps only the catalog entries the account may serve
-// in the group, preserving every other field of the envelope and the entries.
-func filterModelsBodyForGroup(body []byte, account *Account, groupID *int64, field, idField string) ([]byte, error) {
-	envelope, entries, err := modelCatalogEntries(body, field)
-	if err != nil {
-		return nil, err
-	}
-	kept := make([]json.RawMessage, 0, len(entries))
-	for _, raw := range entries {
-		var entry map[string]json.RawMessage
-		if json.Unmarshal(raw, &entry) != nil {
-			continue
-		}
-		var id string
-		if json.Unmarshal(entry[idField], &id) != nil {
-			continue
-		}
-		if account.IsModelAllowedInGroup(groupID, strings.TrimSpace(id)) {
-			kept = append(kept, raw)
-		}
-	}
-	envelope[field], err = json.Marshal(kept)
 	if err != nil {
 		return nil, err
 	}

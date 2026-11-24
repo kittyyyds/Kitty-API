@@ -35,24 +35,24 @@ const (
 )
 
 var (
-	integrationDB        *sql.DB
-	integrationEntClient *dbent.Client
-	integrationRedis     *redisclient.Client
-	// Container-only connection string for tests that need a separate database.
-	integrationPostgresDSN string
+	integrationDB          *sql.DB
+	integrationDatabaseDSN string
+	integrationEntClient   *dbent.Client
+	integrationRedis       *redisclient.Client
 
 	redisNamespaceSeq uint64
 )
 
 func TestMain(m *testing.M) {
-	if os.Getenv("KITTY_ISOLATED_BILLING_AUDIT") == "1" {
-		os.Exit(kittyIsolatedBillingAuditMain(m))
-	}
 	ctx := context.Background()
 
 	if err := timezone.Init("UTC"); err != nil {
 		log.Printf("failed to init timezone: %v", err)
 		os.Exit(1)
+	}
+
+	if dsn := strings.TrimSpace(os.Getenv("SUB2API_TEST_DATABASE_URL")); dsn != "" {
+		os.Exit(runWithExternalServices(ctx, m, dsn, strings.TrimSpace(os.Getenv("SUB2API_TEST_REDIS_ADDR"))))
 	}
 
 	if !dockerIsAvailable(ctx) {
@@ -80,11 +80,10 @@ func TestMain(m *testing.M) {
 	}
 	defer func() { _ = pgContainer.Terminate(ctx) }()
 
-	redisImage := os.Getenv("SUB2API_TEST_REDIS_IMAGE")
-	if redisImage == "" {
-		redisImage = redisImageTag
-	}
-	redisContainer, err := tcredis.Run(ctx, redisImage)
+	redisContainer, err := tcredis.Run(
+		ctx,
+		redisImageTag,
+	)
 	if err != nil {
 		log.Printf("failed to start redis container: %v", err)
 		os.Exit(1)
@@ -96,7 +95,7 @@ func TestMain(m *testing.M) {
 		log.Printf("failed to get postgres dsn: %v", err)
 		os.Exit(1)
 	}
-	integrationPostgresDSN = dsn
+	integrationDatabaseDSN = dsn
 
 	integrationDB, err = openSQLWithRetry(ctx, dsn, 30*time.Second)
 	if err != nil {
@@ -348,7 +347,7 @@ func (h prefixHook) prefixCmd(cmd redisclient.Cmder) {
 	}
 
 	switch strings.ToLower(cmd.Name()) {
-	case "get", "getset", "set", "setnx", "setex", "psetex", "incr", "decr", "incrby", "expire", "pexpire", "ttl", "pttl",
+	case "get", "set", "setnx", "setex", "psetex", "incr", "decr", "incrby", "expire", "pexpire", "ttl", "pttl",
 		"hgetall", "hget", "hset", "hdel", "hincrbyfloat", "exists",
 		"zadd", "zcard", "zrange", "zrangebyscore", "zrem", "zremrangebyscore", "zrevrange", "zrevrangebyscore", "zscore":
 		prefixOne(1)

@@ -53,7 +53,8 @@ func CORS(cfg config.CORSConfig) gin.HandlerFunc {
 	}
 	allowHeaders := []string{
 		"Content-Type", "Content-Length", "Accept-Encoding", "X-CSRF-Token", "Authorization",
-		"accept", "origin", "Cache-Control", "X-Requested-With", "X-API-Key", "X-Admin-UI-Request", "X-User-UI-Request",
+		"accept", "origin", "Cache-Control", "X-Requested-With", "X-API-Key", "X-Admin-UI-Request", "X-User-UI-Request", "If-Match", "X-QQBot-Section",
+		"MCP-Protocol-Version", "MCP-Session-Id",
 		"Range", "If-Range", "X-Canvas-Key-ID", "Anthropic-Version",
 	}
 	// OpenAI Node SDK 会发送 x-stainless-* 请求头，需在 CORS 中显式放行。
@@ -67,6 +68,27 @@ func CORS(cfg config.CORSConfig) gin.HandlerFunc {
 	allowHeadersValue := strings.Join(allowHeaders, ", ")
 
 	return func(c *gin.Context) {
+		// Public MCP OAuth discovery and client endpoints do not use browser sessions.
+		// Keep this exception exact so account and consent APIs retain configured CORS.
+		if method := publicMCPOAuthMethod(c.Request.URL.EscapedPath()); method != "" &&
+			(c.Request.Method == method || c.Request.Method == http.MethodOptions) {
+			if requested := c.GetHeader("Access-Control-Request-Method"); c.Request.Method == http.MethodOptions && requested != "" && requested != method {
+				c.AbortWithStatus(http.StatusForbidden)
+				return
+			}
+			c.Header("Access-Control-Allow-Origin", "*")
+			c.Writer.Header().Del("Access-Control-Allow-Credentials")
+			c.Header("Access-Control-Allow-Headers", "Content-Type")
+			c.Header("Access-Control-Allow-Methods", method+", OPTIONS")
+			c.Header("Access-Control-Expose-Headers", "WWW-Authenticate")
+			c.Header("Access-Control-Max-Age", "86400")
+			if c.Request.Method == http.MethodOptions {
+				c.AbortWithStatus(http.StatusNoContent)
+				return
+			}
+			c.Next()
+			return
+		}
 		// Published Pelican results use explicit API key headers, never cookies. Handle
 		// its preflight here because this global middleware precedes routes.
 		if isPublicPelicanShowcasePath(c.Request.URL.Path) {
@@ -106,7 +128,7 @@ func CORS(cfg config.CORSConfig) gin.HandlerFunc {
 			}
 			c.Writer.Header().Set("Access-Control-Allow-Headers", allowHeadersValue)
 			c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")
-			c.Writer.Header().Set("Access-Control-Expose-Headers", "ETag, Last-Modified, Server-Timing, Content-Length, Content-Range, Accept-Ranges, Content-Disposition, X-Client-Request-ID")
+			c.Writer.Header().Set("Access-Control-Expose-Headers", "ETag, Last-Modified, Server-Timing, WWW-Authenticate, X-QQBot-Config-Version, X-QQBot-checkin-Version, X-QQBot-tasks-Version, X-QQBot-periodic_tasks-Version, Content-Length, Content-Range, Accept-Ranges, Content-Disposition, X-Client-Request-ID")
 			c.Writer.Header().Set("Access-Control-Max-Age", "86400")
 		}
 		// 处理预检请求
@@ -120,6 +142,17 @@ func CORS(cfg config.CORSConfig) gin.HandlerFunc {
 		}
 
 		c.Next()
+	}
+}
+
+func publicMCPOAuthMethod(path string) string {
+	switch path {
+	case "/.well-known/oauth-protected-resource/api/v1/mcp", "/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server":
+		return http.MethodGet
+	case "/api/v1/mcp/oauth/register", "/api/v1/mcp/oauth/token", "/api/v1/mcp/oauth/revoke":
+		return http.MethodPost
+	default:
+		return ""
 	}
 }
 

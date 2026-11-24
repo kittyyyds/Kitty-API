@@ -35,6 +35,9 @@ func (s *GatewayService) ForwardAsResponses(
 	body []byte,
 	parsed *ParsedRequest,
 ) (*ForwardResult, error) {
+	if err := CheckUpstreamModeration(ctx, c, account); err != nil {
+		return nil, err
+	}
 	startTime := time.Now()
 
 	normalizedBody, normalized, err := normalizeOpenAIResponsesLegacyIngressWithConfig(s.cfg, body)
@@ -74,6 +77,21 @@ func (s *GatewayService) ForwardAsResponses(
 		normalized := claude.NormalizeModelID(originalModel)
 		if normalized != originalModel {
 			mappedModel = normalized
+		}
+	}
+	thinkingBody, thinkingChanged, thinkingErr := normalizeClaude55LegacyThinkingBody(body, mappedModel)
+	if thinkingErr != nil {
+		writeResponsesError(c, http.StatusBadRequest, "invalid_request_error", thinkingErr.Error())
+		return nil, thinkingErr
+	}
+	if thinkingChanged {
+		body = thinkingBody
+		adaptedThinkingBody, _, adaptErr := adaptResponsesClientToolsForAnthropic(body)
+		if adaptErr != nil {
+			return nil, adaptErr
+		}
+		if err := json.Unmarshal(adaptedThinkingBody, &responsesReq); err != nil {
+			return nil, err
 		}
 	}
 	if err := validateClaude55Request(body, mappedModel); err != nil {
@@ -133,29 +151,41 @@ func (s *GatewayService) ForwardAsResponses(
 		proxyURL = account.Proxy.URL()
 	}
 
-	// 10. Build upstream request
-	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
-	upstreamReq, forwardedBody, err := s.buildUpstreamRequest(upstreamCtx, c, account, anthropicBody, token, tokenType, mappedModel, reqStream, shouldMimicClaudeCode)
-	releaseUpstreamCtx()
-	if err != nil {
-		return nil, fmt.Errorf("build upstream request: %w", err)
+	var upstreamReq *http.Request
+	var forwardedBody []byte
+	var resp *http.Response
+	for authAttempt := 0; ; authAttempt++ {
+		// 10. Build upstream request
+		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
+		upstreamReq, forwardedBody, err = s.buildUpstreamRequest(upstreamCtx, c, account, anthropicBody, token, tokenType, mappedModel, reqStream, shouldMimicClaudeCode)
+		releaseUpstreamCtx()
+		if err != nil {
+			return nil, fmt.Errorf("build upstream request: %w", err)
+		}
+		// 11. Send request
+		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+		if err != nil {
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			return nil, s.handleUpstreamTransportError(ctx, c, account, err, OpsUpstreamErrorEvent{
+				UpstreamURL: safeUpstreamURL(upstreamReq.URL.String()),
+			})
+		}
+		if resp.StatusCode == http.StatusUnauthorized && authAttempt == 0 {
+			if rotatedToken := s.rotatedClaudeAccessToken(ctx, account, token); rotatedToken != "" {
+				_ = resp.Body.Close()
+				token = rotatedToken
+				continue
+			}
+		}
+		break
 	}
 	// Bill the final Anthropic effort after conversion and account normalization.
 	// For example, OpenAI xhigh is forwarded as output_config.effort=max.
 	reasoningEffort := NormalizeClaudeOutputEffort(gjson.GetBytes(forwardedBody, "output_config.effort").String())
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, forwardedBody, mappedModel)
 
-	// 11. Send request
-	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
-	s.rateLimitService.observeQualityResponse(upstreamReq.Context(), account, resp, err)
-	if err != nil {
-		if resp != nil && resp.Body != nil {
-			_ = resp.Body.Close()
-		}
-		return nil, s.handleUpstreamTransportError(ctx, c, account, err, OpsUpstreamErrorEvent{
-			UpstreamURL: safeUpstreamURL(upstreamReq.URL.String()),
-		})
-	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// 12. Handle error response with failover
@@ -167,13 +197,13 @@ func (s *GatewayService) ForwardAsResponses(
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 
-		if isAnthropicCompatSafetyRejection(respBody) {
-			writeResponsesError(c, http.StatusForbidden, "permission_error", upstreamMsg)
-			MarkResponseCommitted(c)
-			return nil, fmt.Errorf("upstream safety rejection: %s", upstreamMsg)
+		// Apply account policies even for statuses outside the default failover list.
+		shouldDisable := false
+		if s.rateLimitService != nil {
+			shouldDisable = s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
 		}
-
-		if s.shouldFailoverUpstreamError(resp.StatusCode) {
+		// Billing exhaustion remains an account failover even when encoded as a 400.
+		if shouldDisable || s.shouldFailoverUpstreamError(resp.StatusCode) || IsUpstreamBillingError(resp.StatusCode, respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				ProxyID:            opsUpstreamProxyID(account),
 				ProxyName:          opsUpstreamProxyName(account),
@@ -185,15 +215,10 @@ func (s *GatewayService) ForwardAsResponses(
 				Kind:               "failover",
 				Message:            upstreamMsg,
 			})
-			shouldDisable := false
-			if s.rateLimitService != nil {
-				shouldDisable = s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
+			if IsUpstreamBillingError(resp.StatusCode, respBody) && !isAnthropicPoolQuotaExhausted(account, resp.StatusCode, respBody) {
+				return nil, newUpstreamBillingFailoverError(resp.StatusCode, resp.Header, respBody, false)
 			}
-			return nil, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				RetryableOnSameAccount: !shouldDisable && account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-			}
+			return nil, newGatewayHTTPFailoverError(account, resp, respBody, shouldDisable)
 		}
 
 		// Non-failover error: return Responses-formatted error to client
@@ -399,10 +424,12 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	scanner.Split(newBoundedSSESplit(s.cfg, maxLineSize, nil))
 
 	// Accumulate the final Anthropic response from streaming events
 	var finalResp *apicompat.AnthropicResponse
 	var usage ClaudeUsage
+	streamStatus := &anthropicCompatStream{body: resp.Body}
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -421,7 +448,6 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 			continue
 		}
 
-		observeAnthropicUpstreamResponseModel(c, []byte(payload))
 		var event apicompat.AnthropicStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			logger.L().Warn("forward_as_responses buffered: failed to parse event",
@@ -432,14 +458,12 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 			continue
 		}
 
-		// Stop queued success events after a terminal safety rejection.
-		if event.Type == "error" && isAnthropicCompatSafetyRejection([]byte(payload)) {
-			message := sanitizeUpstreamErrorMessage(gjson.Get(payload, "error.message").String())
-			writeResponsesError(c, http.StatusForbidden, "permission_error", message)
-			MarkResponseCommitted(c)
-			return nil, fmt.Errorf("upstream safety rejection: %s", message)
+		streamStatus.observe(&event, payload)
+		if streamStatus.upstreamErrType != "" {
+			break
 		}
 
+		// message_start carries the initial response structure
 		if event.Type == "message_start" && event.Message != nil {
 			finalResp = event.Message
 			mergeAnthropicUsage(&usage, event.Message.Usage)
@@ -485,6 +509,17 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		}
 	}
 
+	streamStatus.readErr = scanner.Err()
+	if failure := streamStatus.failure(); failure != nil {
+		_ = resp.Body.Close()
+		writeResponsesError(c, http.StatusBadGateway, "server_error", failure.message)
+		return &ForwardResult{
+			RequestID: requestID, UpstreamHeaders: resp.Header, Usage: usage,
+			Model: originalModel, UpstreamModel: mappedModel, ReasoningEffort: reasoningEffort,
+			Duration: time.Since(startTime),
+		}, failure.err
+	}
+
 	if finalResp == nil {
 		writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream stream ended without a response")
 		return nil, fmt.Errorf("upstream stream ended without response")
@@ -527,7 +562,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		c.JSON(http.StatusOK, responsesResp)
 	}
 
-	result := &ForwardResult{
+	return &ForwardResult{
 		RequestID:       requestID,
 		UpstreamHeaders: resp.Header,
 		Usage:           usage,
@@ -536,9 +571,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		ReasoningEffort: reasoningEffort,
 		Stream:          false,
 		Duration:        time.Since(startTime),
-	}
-	applyObservedGatewayResponseModel(c, result)
-	return result, nil
+	}, nil
 }
 
 // handleResponsesStreamingResponse reads Anthropic SSE events from upstream,
@@ -576,7 +609,7 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	defer stream.stop()
 
 	resultWithUsage := func() *ForwardResult {
-		result := &ForwardResult{
+		return &ForwardResult{
 			RequestID:        requestID,
 			UpstreamHeaders:  resp.Header,
 			Usage:            usage,
@@ -588,8 +621,6 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			FirstTokenMs:     firstTokenMs,
 			ClientDisconnect: stream.clientDisconnected,
 		}
-		applyObservedGatewayResponseModel(c, result)
-		return result
 	}
 
 	// processEvent handles a single parsed Anthropic SSE event.
@@ -695,7 +726,6 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 			continue
 		}
 
-		observeAnthropicUpstreamResponseModel(c, []byte(payload))
 		var event apicompat.AnthropicStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			logger.L().Warn("forward_as_responses stream: failed to parse event",

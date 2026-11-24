@@ -37,6 +37,10 @@ func (s *AuthService) BindEmailIdentity(
 	if strings.TrimSpace(password) == "" {
 		return nil, ErrPasswordRequired
 	}
+	// 密码会被重新哈希写回；超过 bcrypt 72 字节上限时必须在消耗邮箱验证码之前拒绝。
+	if err := ValidatePasswordMaxLength(password); err != nil {
+		return nil, err
+	}
 	if err := s.VerifyOAuthEmailCode(ctx, normalizedEmail, verifyCode); err != nil {
 		return nil, err
 	}
@@ -108,7 +112,7 @@ func (s *AuthService) SendEmailIdentityBindCode(ctx context.Context, userID int6
 	if err := s.validateRegistrationEmailPolicy(ctx, normalizedEmail); err != nil {
 		return err
 	}
-	if s.emailService == nil {
+	if s.emailService == nil || s.emailService.cache == nil {
 		return ErrServiceUnavailable
 	}
 	currentUser, err := s.userRepo.GetByID(ctx, userID)
@@ -120,6 +124,9 @@ func (s *AuthService) SendEmailIdentityBindCode(ctx context.Context, userID int6
 	}
 
 	if err := s.ensureEmailIdentityAvailableForUser(ctx, currentUser, normalizedEmail); err != nil {
+		return err
+	}
+	if err := reserveEmailCodeUserRate(ctx, s.emailService.cache, userID); err != nil {
 		return err
 	}
 

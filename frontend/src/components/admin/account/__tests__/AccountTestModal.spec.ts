@@ -29,6 +29,7 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
+      locale: { value: 'zh' },
       t: (key: string, params?: Record<string, string | number>) => {
         if (key === 'admin.accounts.imageReceived' && params?.count) {
           return `received-${params.count}`
@@ -90,6 +91,21 @@ function mountModal(account: Record<string, unknown> = {
 }
 
 describe('AccountTestModal', () => {
+
+  it.each([false, true])('distinguishes truncated streams from final completion without newline: %s', async (complete) => {
+    global.fetch = vi.fn().mockResolvedValue(createStreamResponse([
+      'data: {"type":"status","text":"connected"}\n\n',
+      ...(complete ? ['data: {"type":"test_complete","success":true}'] : [])
+    ]))
+    const wrapper = mountModal()
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    await (wrapper.vm as any).startTest()
+    await flushPromises()
+    expect(wrapper.text().includes('accountTestTiming.delivery.incomplete')).toBe(!complete)
+    expect((wrapper.vm as any).status).toBe(complete ? 'success' : 'error')
+  })
+
   beforeEach(() => {
     getAvailableModels.mockResolvedValue([
       { id: 'gemini-2.0-flash', display_name: 'Gemini 2.0 Flash' },

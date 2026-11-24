@@ -115,7 +115,7 @@ func (u *httpBridgeIsolationUpstream) Do(req *http.Request, _ string, _ int64, _
 	}
 	output := "[]"
 	if turn == 1 {
-		output = fmt.Sprintf(`[{"type":"function_call","id":%q,"call_id":%q,"name":"lookup","arguments":"{}","status":"completed"}]`, "fc_"+id, "call_"+id)
+		output = fmt.Sprintf(`[{"type":"reasoning","id":"rs_test","status":"completed","encrypted_content":"opaque","summary":[],"content":null},{"type":"function_call","id":%q,"call_id":%q,"name":"lookup","arguments":"{}","status":"completed"}]`, "fc_"+id, "call_"+id)
 	}
 	suffix := fmt.Sprintf("data: {\"type\":\"response.completed\",\"response\":{\"id\":%q,\"status\":\"completed\",\"output\":%s,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n", responseID, output)
 	headers := http.Header{"Content-Type": []string{"text/event-stream"}}
@@ -151,7 +151,6 @@ func TestOpenAIWSHTTPBridgeSessionIsolationAcrossSameSessionHash(t *testing.T) {
 		Extra:       map[string]any{"openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeHTTPBridge},
 		Concurrency: 2, Status: StatusActive, Schedulable: true}
 	groupID := int64(7)
-	account.GroupIDs = []int64{groupID}
 	newContext := func(r *http.Request) *gin.Context {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = r.Clone(ctx)

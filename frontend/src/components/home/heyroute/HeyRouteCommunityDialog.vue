@@ -70,7 +70,7 @@ const platforms = computed<HeyRouteContactPlatform[]>(() => [
     @close="emit('close')"
   >
     <template #footer>
-      <RouterLink to="/community" class="mt-4 block rounded-xl border border-primary-300/40 px-4 py-3 text-center text-sm font-semibold text-primary-600 dark:text-primary-300" @click="emit('close')">{{ copy.communityDialogGuide }} ↗</RouterLink>
+      <RouterLink to="/community" class="mt-4 block rounded-xl border border-primary-300/40 px-4 py-3 text-center text-sm font-semibold text-primary-600" @click="emit('close')">{{ copy.communityDialogGuide }} ↗</RouterLink>
     </template>
   </HeyRouteContactDialog>
 </template>

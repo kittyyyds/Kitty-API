@@ -190,6 +190,7 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		SettingKeyHomeContent,
 		SettingKeyCompactHomeEnabled,
 		SettingKeyHideCcsImportButton,
+		SettingKeyGPTDirectConfig,
 		SettingKeyPurchaseSubscriptionEnabled,
 		SettingKeyPurchaseSubscriptionURL,
 		SettingKeyTableDefaultPageSize,
@@ -229,15 +230,14 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		SettingKeyBalanceLowNotifyThreshold,
 		SettingKeyBalanceLowNotifyRechargeURL,
 		SettingKeyAccountQuotaNotifyEnabled,
+		SettingKeyChannelQualityPublicEnabled,
 		SettingKeyChannelMonitorEnabled,
-		SettingKeyPrismBrowserEnabled,
 		SettingKeyChannelMonitorMode,
 		SettingKeyChannelMonitorDefaultIntervalSeconds,
 		SettingKeyChannelMonitorHideThroughput,
 		SettingKeyChannelMonitorShowQuota,
 		SettingKeyChannelMonitorHideUserRanking,
 		SettingKeyAvailableChannelsEnabled,
-		SettingKeyPelicanShowcaseEnabled,
 		SettingKeySubscriptionEnabled,
 		SettingKeyModelPlazaEnabled,
 		SettingKeyModelPlazaRequireAuth,
@@ -308,6 +308,7 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 	}
 
 	return &PublicSettings{
+		GPTDirectEnabled:                    gptDirectEnabled(settings[SettingKeyGPTDirectConfig]),
 		RegistrationEnabled:                 settings[SettingKeyRegistrationEnabled] == "true",
 		EmailVerifyEnabled:                  emailVerifyEnabled,
 		ForceEmailOnThirdPartySignup:        settings[SettingKeyForceEmailOnThirdPartySignup] == "true",
@@ -355,6 +356,7 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		WeChatOAuthMPEnabled:                weChatMPEnabled,
 		WeChatOAuthMobileEnabled:            weChatMobileEnabled,
 		BackendModeEnabled:                  settings[SettingKeyBackendModeEnabled] == "true",
+		MCPEnabled:                          s.cfg != nil && s.cfg.MCP.Enabled(),
 		PaymentEnabled:                      settings[SettingPaymentEnabled] == "true",
 		PaymentBalanceDisabled:              settings[SettingBalancePayDisabled] == "true",
 		OIDCOAuthEnabled:                    oidcEnabled,
@@ -366,8 +368,9 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		BalanceLowNotifyThreshold:           balanceLowNotifyThreshold,
 		BalanceLowNotifyRechargeURL:         settings[SettingKeyBalanceLowNotifyRechargeURL],
 
+		ChannelQualityPublicEnabled: !isFalseSettingValue(settings[SettingKeyChannelQualityPublicEnabled]),
+
 		ChannelMonitorEnabled:                !isFalseSettingValue(settings[SettingKeyChannelMonitorEnabled]),
-		PrismBrowserEnabled:                  settings[SettingKeyPrismBrowserEnabled] == "true",
 		ChannelMonitorMode:                   normalizeChannelMonitorMode(settings[SettingKeyChannelMonitorMode]),
 		ChannelMonitorDefaultIntervalSeconds: parseChannelMonitorInterval(settings[SettingKeyChannelMonitorDefaultIntervalSeconds]),
 		ChannelMonitorHideThroughput:         !isFalseSettingValue(settings[SettingKeyChannelMonitorHideThroughput]),
@@ -375,7 +378,6 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 		ChannelMonitorHideUserRanking:        isTrueSettingValue(settings[SettingKeyChannelMonitorHideUserRanking]),
 
 		AvailableChannelsEnabled: settings[SettingKeyAvailableChannelsEnabled] == "true",
-		PelicanShowcaseEnabled:   settings[SettingKeyPelicanShowcaseEnabled] == "true",
 
 		SubscriptionEnabled: !isFalseSettingValue(settings[SettingKeySubscriptionEnabled]),
 
@@ -625,6 +627,7 @@ func (s *SettingService) IsUserUpstreamResponseModelVisible(ctx context.Context)
 // A unit test diffs this struct's JSON keys against dto.PublicSettings to catch
 // drift automatically (see setting_service_injection_test.go).
 type PublicSettingsInjectionPayload struct {
+	GPTDirectEnabled                    bool                     `json:"gpt_direct_enabled"`
 	RegistrationEnabled                 bool                     `json:"registration_enabled"`
 	EmailVerifyEnabled                  bool                     `json:"email_verify_enabled"`
 	RegistrationEmailSuffixWhitelist    []string                 `json:"registration_email_suffix_whitelist"`
@@ -675,6 +678,7 @@ type PublicSettingsInjectionPayload struct {
 	GitHubOAuthEnabled                  bool                     `json:"github_oauth_enabled"`
 	GoogleOAuthEnabled                  bool                     `json:"google_oauth_enabled"`
 	BackendModeEnabled                  bool                     `json:"backend_mode_enabled"`
+	MCPEnabled                          bool                     `json:"mcp_enabled"`
 	PaymentEnabled                      bool                     `json:"payment_enabled"`
 	PaymentBalanceDisabled              bool                     `json:"payment_balance_disabled"`
 	Version                             string                   `json:"version"`
@@ -689,7 +693,7 @@ type PublicSettingsInjectionPayload struct {
 	// Feature flags — MUST match the opt-in/opt-out registry in
 	// frontend/src/utils/featureFlags.ts. Missing a field here is the bug
 	// that hid the "可用渠道" menu on page refresh.
-	PrismBrowserEnabled                  bool   `json:"prism_browser_enabled"`
+	ChannelQualityPublicEnabled          bool   `json:"channel_quality_public_enabled"`
 	ChannelMonitorEnabled                bool   `json:"channel_monitor_enabled"`
 	ChannelMonitorMode                   string `json:"channel_monitor_mode"`
 	ChannelMonitorDefaultIntervalSeconds int    `json:"channel_monitor_default_interval_seconds"`
@@ -700,17 +704,17 @@ type PublicSettingsInjectionPayload struct {
 	// monitors; fail-closed (absent/false = hidden). Admin UI always shows it.
 	// ChannelMonitorHideUserRanking hides the user ranking tab and /users payload
 	// from non-admin channel-monitor v2 viewers; default false (visible).
-	ChannelMonitorHideUserRanking         bool `json:"channel_monitor_hide_user_ranking"`
-	ChannelMonitorShowQuota               bool `json:"channel_monitor_show_quota"`
-	AvailableChannelsEnabled              bool `json:"available_channels_enabled"`
-	PelicanShowcaseEnabled                bool `json:"pelican_showcase_enabled"`
-	SubscriptionEnabled                   bool `json:"subscription_enabled"`
-	ModelPlazaEnabled                     bool `json:"model_plaza_enabled"`
-	ModelPlazaRequireAuth                 bool `json:"model_plaza_require_auth"`
-	PluginManagementEnabled               bool `json:"plugin_management_enabled"`
-	SupportTicketEnabled                  bool `json:"support_ticket_enabled"`
-	AffiliateEnabled                      bool `json:"affiliate_enabled"`
-	RiskControlEnabled                    bool `json:"risk_control_enabled"`
+	ChannelMonitorHideUserRanking bool `json:"channel_monitor_hide_user_ranking"`
+	ChannelMonitorShowQuota       bool `json:"channel_monitor_show_quota"`
+	AvailableChannelsEnabled      bool `json:"available_channels_enabled"`
+	SubscriptionEnabled           bool `json:"subscription_enabled"`
+	ModelPlazaEnabled             bool `json:"model_plaza_enabled"`
+	ModelPlazaRequireAuth         bool `json:"model_plaza_require_auth"`
+	PluginManagementEnabled       bool `json:"plugin_management_enabled"`
+	SupportTicketEnabled          bool `json:"support_ticket_enabled"`
+	AffiliateEnabled              bool `json:"affiliate_enabled"`
+	RiskControlEnabled            bool `json:"risk_control_enabled"`
+
 	AllowUserViewErrorRequests            bool `json:"allow_user_view_error_requests"`
 	UsageShowLongContextBadge             bool `json:"usage_show_long_context_badge"`
 	UsageShowCacheRate                    bool `json:"usage_show_cache_rate"`
@@ -727,6 +731,7 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 	}
 
 	return &PublicSettingsInjectionPayload{
+		GPTDirectEnabled:                    settings.GPTDirectEnabled,
 		RegistrationEnabled:                 settings.RegistrationEnabled,
 		EmailVerifyEnabled:                  settings.EmailVerifyEnabled,
 		RegistrationEmailSuffixWhitelist:    settings.RegistrationEmailSuffixWhitelist,
@@ -777,6 +782,7 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		GitHubOAuthEnabled:                  settings.GitHubOAuthEnabled,
 		GoogleOAuthEnabled:                  settings.GoogleOAuthEnabled,
 		BackendModeEnabled:                  settings.BackendModeEnabled,
+		MCPEnabled:                          settings.MCPEnabled,
 		PaymentEnabled:                      settings.PaymentEnabled,
 		PaymentBalanceDisabled:              settings.PaymentBalanceDisabled,
 		Version:                             s.version,
@@ -787,22 +793,23 @@ func (s *SettingService) GetPublicSettingsForInjection(ctx context.Context) (any
 		BalanceLowNotifyThreshold:           settings.BalanceLowNotifyThreshold,
 		BalanceLowNotifyRechargeURL:         settings.BalanceLowNotifyRechargeURL,
 
-		ChannelMonitorEnabled:                 settings.ChannelMonitorEnabled,
-		PrismBrowserEnabled:                   settings.PrismBrowserEnabled,
-		ChannelMonitorMode:                    settings.ChannelMonitorMode,
-		ChannelMonitorDefaultIntervalSeconds:  settings.ChannelMonitorDefaultIntervalSeconds,
-		ChannelMonitorHideThroughput:          settings.ChannelMonitorHideThroughput,
-		ChannelMonitorShowQuota:               settings.ChannelMonitorShowQuota,
-		ChannelMonitorHideUserRanking:         settings.ChannelMonitorHideUserRanking,
-		AvailableChannelsEnabled:              settings.AvailableChannelsEnabled,
-		PelicanShowcaseEnabled:                settings.PelicanShowcaseEnabled,
-		SubscriptionEnabled:                   settings.SubscriptionEnabled,
-		ModelPlazaEnabled:                     settings.ModelPlazaEnabled,
-		ModelPlazaRequireAuth:                 settings.ModelPlazaRequireAuth,
-		PluginManagementEnabled:               settings.PluginManagementEnabled,
-		SupportTicketEnabled:                  settings.SupportTicketEnabled,
-		AffiliateEnabled:                      settings.AffiliateEnabled,
-		RiskControlEnabled:                    settings.RiskControlEnabled,
+		ChannelQualityPublicEnabled: settings.ChannelQualityPublicEnabled,
+
+		ChannelMonitorEnabled:                settings.ChannelMonitorEnabled,
+		ChannelMonitorMode:                   settings.ChannelMonitorMode,
+		ChannelMonitorDefaultIntervalSeconds: settings.ChannelMonitorDefaultIntervalSeconds,
+		ChannelMonitorHideThroughput:         settings.ChannelMonitorHideThroughput,
+		ChannelMonitorShowQuota:              settings.ChannelMonitorShowQuota,
+		ChannelMonitorHideUserRanking:        settings.ChannelMonitorHideUserRanking,
+		AvailableChannelsEnabled:             settings.AvailableChannelsEnabled,
+		SubscriptionEnabled:                  settings.SubscriptionEnabled,
+		ModelPlazaEnabled:                    settings.ModelPlazaEnabled,
+		ModelPlazaRequireAuth:                settings.ModelPlazaRequireAuth,
+		PluginManagementEnabled:              settings.PluginManagementEnabled,
+		SupportTicketEnabled:                 settings.SupportTicketEnabled,
+		AffiliateEnabled:                     settings.AffiliateEnabled,
+		RiskControlEnabled:                   settings.RiskControlEnabled,
+
 		AllowUserViewErrorRequests:            settings.AllowUserViewErrorRequests,
 		UsageShowLongContextBadge:             settings.UsageShowLongContextBadge,
 		UsageShowCacheRate:                    settings.UsageShowCacheRate,

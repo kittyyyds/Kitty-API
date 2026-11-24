@@ -70,6 +70,9 @@ vi.mock('vue-i18n', () => ({
       if (key === 'auth.emailDomainRegistrationLimit') {
         return '该邮箱域名无法注册新账户。请使用主流邮箱注册；如需使用企业邮箱，请联系客服添加域名白名单。'
       }
+      if (key === 'auth.errors.VERIFY_CODE_MAX_ATTEMPTS') {
+        return '验证码错误次数过多，请重新获取验证码。'
+      }
       return key
     },
     locale: { value: 'en' },
@@ -87,6 +90,7 @@ vi.mock('@/stores', () => ({
   useAppStore: () => ({
     showSuccess: (...args: any[]) => showSuccessMock(...args),
     showError: (...args: any[]) => showErrorMock(...args),
+    showWarning: vi.fn(),
   }),
 }))
 
@@ -463,6 +467,61 @@ describe('EmailVerifyView', () => {
     expect(showErrorMock).toHaveBeenLastCalledWith(
       '该邮箱域名无法注册新账户。请使用主流邮箱注册；如需使用企业邮箱，请联系客服添加域名白名单。'
     )
+  })
+
+  it('stores the Turnstile proof and drops the spent token so a refresh can still resend', async () => {
+    getPublicSettingsMock.mockResolvedValue({ turnstile_enabled: true, turnstile_site_key: 'site-key', site_name: 'Sub2API' })
+    sessionStorage.setItem('register_data', JSON.stringify({ email: 'user@example.com', password: 'secret-123', turnstile_token: 'one-time-token' }))
+    sendVerifyCodeMock.mockResolvedValueOnce({ countdown: 60, turnstile_proof: 'reusable-proof' })
+
+    mount(EmailVerifyView, {
+      global: { stubs: { AuthLayout: { template: '<div><slot /><slot name="footer" /></div>' }, Icon: true, TurnstileWidget: true, transition: false } },
+    })
+    await flushPromises()
+
+    expect(sendVerifyCodeMock).toHaveBeenCalledWith(expect.objectContaining({ turnstile_token: 'one-time-token' }))
+    const stored = JSON.parse(sessionStorage.getItem('register_data') || '{}')
+    expect(stored.turnstile_proof).toBe('reusable-proof')
+    expect(stored.turnstile_token).toBeUndefined()
+  })
+
+  it('sends the visitor back for a fresh check when a Turnstile resend has nothing valid to send', async () => {
+    getPublicSettingsMock.mockResolvedValue({ turnstile_enabled: true, turnstile_site_key: 'site-key', site_name: 'Sub2API' })
+    sessionStorage.setItem('register_data', JSON.stringify({ email: 'user@example.com', password: 'secret-123', turnstile_token: 'one-time-token' }))
+    // The first send spends the token and fails before a proof is issued.
+    sendVerifyCodeMock.mockRejectedValueOnce({ reason: 'SERVICE_UNAVAILABLE', message: 'busy' })
+
+    const wrapper = mount(EmailVerifyView, {
+      global: { stubs: { AuthLayout: { template: '<div><slot /><slot name="footer" /></div>' }, Icon: true, TurnstileWidget: true, transition: false } },
+    })
+    await flushPromises()
+    expect(JSON.parse(sessionStorage.getItem('register_data') || '{}').turnstile_token).toBeUndefined()
+
+    sendVerifyCodeMock.mockClear()
+    const resend = wrapper.findAll('button').find((button) => button.text() === 'auth.resendCode')
+    expect(resend).toBeDefined()
+    await resend!.trigger('click')
+    await flushPromises()
+
+    expect(sendVerifyCodeMock).not.toHaveBeenCalled()
+    expect(pushMock).toHaveBeenCalledWith('/register')
+  })
+
+  it('translates the backend reason when too many wrong codes were entered', async () => {
+    getPublicSettingsMock.mockResolvedValue({ turnstile_enabled: false, turnstile_site_key: '', site_name: 'Sub2API' })
+    sessionStorage.setItem('register_data', JSON.stringify({ email: 'user@example.com', password: 'secret-123' }))
+    // The API client already turned the English backend text into this generic guess.
+    registerMock.mockRejectedValueOnce({ reason: 'VERIFY_CODE_MAX_ATTEMPTS', message: '操作失败，请稍后重试。' })
+
+    const wrapper = mount(EmailVerifyView, {
+      global: { stubs: { AuthLayout: { template: '<div><slot /><slot name="footer" /></div>' }, Icon: true, TurnstileWidget: true, transition: false } },
+    })
+    await flushPromises()
+    await wrapper.get('#code').setValue('123456')
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(showErrorMock).toHaveBeenLastCalledWith('验证码错误次数过多，请重新获取验证码。')
   })
 
   // 域名限量注册开关默认关闭：恢复 PR5423 之前的客户端白名单预检，非白名单域名不发送验证码。

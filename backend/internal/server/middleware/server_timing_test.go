@@ -55,6 +55,7 @@ func TestServerTimingScopesAndRoleGate(t *testing.T) {
 	}{
 		{name: "disabled", enabled: false, path: "/api/v1/admin/users", role: "admin"},
 		{name: "admin API path", enabled: true, path: "/api/v1/admin/users", role: "admin", wantHeader: true},
+		{name: "super admin API path", enabled: true, path: "/api/v1/admin/users", role: "super_admin", wantHeader: true},
 		{name: "shared API marked by admin UI", enabled: true, path: "/api/v1/groups/available", adminMarker: "1", role: "admin", wantHeader: true},
 		{name: "user role on allowlisted path", enabled: true, path: "/api/v1/groups/available", role: "user", wantHeader: true},
 		{name: "user role with user UI marker on allowlisted path", enabled: true, path: "/api/v1/keys", userMarker: "1", role: "user", wantHeader: true},

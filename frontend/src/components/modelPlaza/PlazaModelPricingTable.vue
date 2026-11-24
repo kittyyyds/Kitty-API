@@ -70,6 +70,7 @@ interface TokenPriceRow {
   output: PricePair
   cacheWrite: PricePair
   cacheWrite1h: PricePair
+  cacheWrite12h: PricePair
   cacheRead: PricePair
   savings: number | null
 }
@@ -228,6 +229,11 @@ function tokenRowsFor(model: PlazaModel): TokenPriceRow[] {
           officialInterval?.cache_write_1h_price ?? model.official_pricing?.cache_write_1h_price,
           rate
         ),
+        cacheWrite12h: pair(
+          interval?.cache_write_12h_price ?? model.pricing?.cache_write_12h_price,
+          officialInterval?.cache_write_12h_price ?? model.official_pricing?.cache_write_12h_price,
+          rate
+        ),
         cacheRead: pair(
           interval?.cache_read_price ?? model.pricing?.cache_read_price,
           officialInterval?.cache_read_price ?? model.official_pricing?.cache_read_price,
@@ -327,6 +333,9 @@ const hasTextTiers = computed(() => textRows.value.some((row) => row.tier !== '-
 const hasText1hCache = computed(() => textRows.value.some((row) => (
   row.cacheWrite1h.reference != null || row.cacheWrite1h.charged != null
 )))
+const hasText12hCache = computed(() => textRows.value.some((row) => (
+  row.cacheWrite12h.reference != null || row.cacheWrite12h.charged != null
+)))
 const hasImageTiers = computed(() => imageRows.value.some((row) => row.tier !== '-'))
 const hasVideoTiers = computed(() => videoRows.value.some((row) => row.tier !== '-'))
 const hasRequestTiers = computed(() => requestRows.value.some((row) => row.tier !== '-'))
@@ -399,6 +408,9 @@ function durationPair(row: UnitPriceRow, seconds: number): PricePair {
               </th>
               <th v-if="hasText1hCache">
                 <span>{{ t('modelPlaza.table.cacheWrite') }} (1h)</span>
+                <small>{{ t('modelPlaza.table.cnyPerMillion') }}</small>
+              </th><th v-if="hasText12hCache">
+                <span>{{ t('modelPlaza.table.cacheWrite') }} (12h)</span>
                 <small>{{ t('modelPlaza.table.cnyPerMillion') }}</small>
               </th>
               <th>
@@ -475,6 +487,12 @@ function durationPair(row: UnitPriceRow, seconds: number): PricePair {
                 <PlazaPricePair
                   :reference-price="row.cacheWrite1h.reference"
                   :charged-price="row.cacheWrite1h.charged"
+                  :scale="PER_MILLION"
+                />
+              </td><td v-if="hasText12hCache" class="price-cell">
+                <PlazaPricePair
+                  :reference-price="row.cacheWrite12h.reference"
+                  :charged-price="row.cacheWrite12h.charged"
                   :scale="PER_MILLION"
                 />
               </td>

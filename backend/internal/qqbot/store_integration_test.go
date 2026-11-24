@@ -62,7 +62,19 @@ func testDB(t *testing.T) *sql.DB {
 		_, err = db.Exec(string(raw))
 		require.NoError(t, err)
 	}
+	raw, err = migrations.FS.ReadFile("326_kitty_qq_enhancements.sql")
+	require.NoError(t, err)
+	_, err = db.Exec(string(raw))
+	require.NoError(t, err)
 	_, err = db.Exec(`CREATE TABLE payment_orders(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id),order_type TEXT NOT NULL DEFAULT 'balance',amount NUMERIC(20,2) NOT NULL,bonus_amount NUMERIC(20,2) NOT NULL DEFAULT 0,refund_amount NUMERIC(20,2) NOT NULL DEFAULT 0,recharge_code VARCHAR(64) NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'COMPLETED',paid_at TIMESTAMPTZ DEFAULT NOW(),completed_at TIMESTAMPTZ DEFAULT NOW());`)
+	require.NoError(t, err)
+	raw, err = migrations.FS.ReadFile("329_kitty_recharge_coupons.sql")
+	require.NoError(t, err)
+	_, err = db.Exec(string(raw))
+	require.NoError(t, err)
+	raw, err = migrations.FS.ReadFile("335_kitty_qq_private_balance_alerts.sql")
+	require.NoError(t, err)
+	_, err = db.Exec(string(raw))
 	require.NoError(t, err)
 	return db
 }

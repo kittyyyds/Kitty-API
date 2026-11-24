@@ -37,72 +37,23 @@ func (u *pluginRoutingHTTPUpstream) DoWithTLS(
 	return u.Do(request, proxyURL, accountID, accountConcurrency)
 }
 
-func TestPluginManagerRoutingDoesNotTouchAPIKeyOrOtherProviders(t *testing.T) {
-	manager := &PluginManager{}
-	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.com/v1/responses", nil)
-	require.NoError(t, err)
-
-	accounts := []*Account{
-		{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
-		{ID: 2, Platform: PlatformAnthropic, Type: AccountTypeOAuth},
-		{ID: 3, Platform: PlatformGemini, Type: AccountTypeOAuth},
-	}
-	for _, account := range accounts {
-		response, handled, routeErr := manager.RoundTripOpenAIOAuth(context.Background(), request, "", account)
-		assert.Nil(t, response)
-		assert.False(t, handled)
-		assert.NoError(t, routeErr)
-	}
-}
-
-func TestPluginManagerRoutingKeepsOAuthOnLegacyPathWithoutEnabledBinding(t *testing.T) {
-	manager := &PluginManager{}
-	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.com/v1/responses", nil)
-	require.NoError(t, err)
-	account := &Account{ID: 10, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
-
-	response, handled, routeErr := manager.RoundTripOpenAIOAuth(context.Background(), request, "", account)
-
-	assert.Nil(t, response)
-	assert.False(t, handled)
-	assert.NoError(t, routeErr)
-}
-
-func TestPluginManagerRoutingSelectsOnlyEligibleOpenAIOAuthAccounts(t *testing.T) {
-	manager := &PluginManager{}
-	manager.route.Store(&pluginRoute{pluginID: 1, rolloutPercent: 100, unavailable: "测试不可用"})
-
-	assert.True(t, manager.ShouldRouteOpenAIOAuth(&Account{ID: 10, Platform: PlatformOpenAI, Type: AccountTypeOAuth}))
-	assert.False(t, manager.ShouldRouteOpenAIOAuth(&Account{ID: 10, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}))
-	assert.False(t, manager.ShouldRouteOpenAIOAuth(&Account{ID: 10, Platform: PlatformGrok, Type: AccountTypeOAuth}))
-	assert.False(t, manager.ShouldRouteOpenAIOAuth(nil))
-}
-
-func TestOpenAIGatewayPluginRoutingPreservesAPIKeyAndFailsClosedForOAuth(t *testing.T) {
-	manager := &PluginManager{}
-	manager.route.Store(&pluginRoute{pluginID: 1, rolloutPercent: 100, unavailable: "测试不可用"})
+// The retired OpenAI OAuth outbound plugin hop is gone: OAuth and API-key
+// requests both reach the HTTP upstream directly.
+func TestOpenAIGatewayUpstreamHasNoPluginHop(t *testing.T) {
 	upstream := &pluginRoutingHTTPUpstream{}
-	service := &OpenAIGatewayService{pluginManager: manager, httpUpstream: upstream}
-
-	apiKeyRequest, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.com/v1/responses", nil)
-	require.NoError(t, err)
-	apiKeyResponse, err := service.doOpenAIUpstream(apiKeyRequest, "", &Account{
-		ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1,
-	})
-	require.NoError(t, err)
-	require.NotNil(t, apiKeyResponse)
-	_ = apiKeyResponse.Body.Close()
-	assert.Equal(t, 1, upstream.doCalls)
-
-	oauthRequest, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.com/v1/responses", nil)
-	require.NoError(t, err)
-	oauthResponse, err := service.doOpenAIUpstream(oauthRequest, "", &Account{
-		ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
-	})
-	require.Error(t, err)
-	assert.Nil(t, oauthResponse)
-	assert.Contains(t, err.Error(), "插件不可用")
-	assert.Equal(t, 1, upstream.doCalls)
+	service := &OpenAIGatewayService{httpUpstream: upstream}
+	for i, account := range []*Account{
+		{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1},
+		{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1},
+	} {
+		request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.com/v1/responses", nil)
+		require.NoError(t, err)
+		response, err := service.doOpenAIUpstream(request, "", account)
+		require.NoError(t, err)
+		require.NotNil(t, response)
+		_ = response.Body.Close()
+		assert.Equal(t, i+1, upstream.doCalls)
+	}
 }
 
 func TestStablePluginBucketIsDeterministicAndBounded(t *testing.T) {

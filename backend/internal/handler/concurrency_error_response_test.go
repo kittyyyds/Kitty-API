@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -24,6 +25,15 @@ func TestConcurrencyErrorResponse(t *testing.T) {
 		wantCode    string
 		wantMessage string
 	}{
+		{
+			name:        "quality admission is not a concurrency timeout",
+			err:         fmt.Errorf("reserve account: %w", service.ErrAccountAdmissionDenied),
+			slotType:    "account",
+			wantStatus:  http.StatusServiceUnavailable,
+			wantType:    "api_error",
+			wantCode:    gatewayAccountUnavailableCode,
+			wantMessage: "Account temporarily unavailable due to scheduling or quality protection, please retry later",
+		},
 		{
 			name:        "true concurrency timeout remains rate limit",
 			err:         &ConcurrencyError{SlotType: "account", IsTimeout: true},
@@ -65,42 +75,6 @@ func TestConcurrencyErrorResponse(t *testing.T) {
 			wantStatus:  http.StatusServiceUnavailable,
 			wantType:    "api_error",
 			wantMessage: "Service temporarily unavailable, please retry later",
-		},
-		{
-			name: "queued configuration change stays retryable",
-			err: &service.APIKeyQueueError{
-				Kind:  service.APIKeyQueueErrorAuthRejected,
-				Cause: infraerrors.ServiceUnavailable("API_KEY_GROUP_CHANGED", "API key configuration changed; please retry"),
-			},
-			slotType:    "API key",
-			wantStatus:  http.StatusServiceUnavailable,
-			wantType:    "api_error",
-			wantCode:    "API_KEY_GROUP_CHANGED",
-			wantMessage: "API key configuration changed; please retry",
-		},
-		{
-			name: "queued permission revocation keeps its business status",
-			err: &service.APIKeyQueueError{
-				Kind:  service.APIKeyQueueErrorAuthRejected,
-				Cause: infraerrors.Forbidden("LIVE_NOT_ALLOWED", "Live is not enabled for this group"),
-			},
-			slotType:    "API key",
-			wantStatus:  http.StatusForbidden,
-			wantType:    "permission_error",
-			wantCode:    "LIVE_NOT_ALLOWED",
-			wantMessage: "Live is not enabled for this group",
-		},
-		{
-			name: "queued model revocation keeps the allowlist not-found shape",
-			err: &service.APIKeyQueueError{
-				Kind:  service.APIKeyQueueErrorAuthRejected,
-				Cause: infraerrors.NotFound("MODEL_NOT_ALLOWED", `Model "gpt-5.4" is not available for this group`),
-			},
-			slotType:    "API key",
-			wantStatus:  http.StatusNotFound,
-			wantType:    "not_found_error",
-			wantCode:    "MODEL_NOT_ALLOWED",
-			wantMessage: `Model "gpt-5.4" is not available for this group`,
 		},
 	}
 

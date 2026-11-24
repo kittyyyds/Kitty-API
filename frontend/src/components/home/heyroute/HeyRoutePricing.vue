@@ -38,7 +38,7 @@ const rows = computed(() => {
 })
 
 function formatRate(value: number | null): string {
-  if (value === null) return '...'
+  if (value === null) return props.loading ? '...' : '—'
   return `x${new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 }).format(value)}`
 }
 </script>
@@ -57,26 +57,26 @@ function formatRate(value: number | null): string {
         </div>
       </header>
 
-      <div class="hr-pricing-table" :aria-busy="loading">
+      <div class="hr-pricing-table" role="table" :aria-label="copy.title" :aria-busy="loading">
         <div class="hr-pricing-row hr-pricing-head" role="row">
-          <span>{{ copy.model }}</span>
-          <span>{{ copy.kittyRate }}<small>{{ copy.inputOutput }}</small></span>
-          <span>{{ copy.group }}</span>
-          <span>{{ copy.interface }}</span>
+          <span role="columnheader">{{ copy.model }}</span>
+          <span role="columnheader">{{ copy.kittyRate }}<small>{{ copy.inputOutput }}</small></span>
+          <span role="columnheader">{{ copy.group }}</span>
+          <span role="columnheader">{{ copy.interface }}</span>
         </div>
 
         <div v-for="row in rows" :key="row.model" class="hr-pricing-row" role="row">
-          <div class="hr-price-model">
+          <div class="hr-price-model" role="cell">
             <span class="hr-model-icon"><ModelIcon :model="row.iconModel" size="24px" /></span>
             <span><strong>{{ row.featuredModel }}</strong><small>{{ row.provider }}</small></span>
           </div>
-          <div class="hr-rate-value" :class="{ loading }">{{ formatRate(row.rateMultiplier) }}</div>
-          <div class="hr-group-value">
+          <div class="hr-rate-value" role="cell" :class="{ loading }">{{ formatRate(row.rateMultiplier) }}</div>
+          <div class="hr-group-value" role="cell">
             <strong>{{ row.groupName }}</strong>
-            <small v-if="row.modelCount !== null">{{ row.modelCount }} models</small>
+            <small v-if="row.modelCount !== null">{{ copy.modelCount.replace('{count}', String(row.modelCount)) }}</small>
           </div>
-          <div class="hr-interface-value">
-            <span class="hr-live-dot" />
+          <div class="hr-interface-value" role="cell">
+            <span class="hr-live-dot" :class="{ 'is-unavailable': row.rateMultiplier === null && !loading }" aria-hidden="true" />
             <span>{{ row.rateMultiplier === null ? copy.unavailable : copy.live }}</span>
           </div>
         </div>
@@ -228,6 +228,13 @@ function formatRate(value: number | null): string {
   background: var(--hr-panel);
 }
 
+/* ModelIcon hard-codes black / near-black brand fills; lift them on the dark theme only. */
+.heyroute-preview[data-theme='dark'] .hr-model-icon :deep(path[fill='#000000' i]),
+.heyroute-preview[data-theme='dark'] .hr-model-icon :deep(path[fill='#003425' i]),
+.heyroute-preview[data-theme='dark'] .hr-model-icon :deep(path[fill='#16191e' i]) {
+  fill: var(--hr-ink);
+}
+
 .hr-price-model strong,
 .hr-group-value strong {
   display: block;
@@ -267,6 +274,11 @@ function formatRate(value: number | null): string {
   border-radius: 50%;
   background: #168c75;
   box-shadow: 0 0 0 4px rgba(22, 140, 117, 0.12);
+}
+
+.hr-live-dot.is-unavailable {
+  background: var(--hr-line-strong);
+  box-shadow: none;
 }
 
 .hr-pricing footer {
@@ -322,8 +334,14 @@ function formatRate(value: number | null): string {
     grid-template-columns: 1fr 1fr;
   }
 
+  /* Visually hidden (not display: none) so the cells keep their column headers for screen readers. */
   .hr-pricing-head {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
   }
 
   .hr-pricing-row > * {

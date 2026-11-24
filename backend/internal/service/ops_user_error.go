@@ -1,6 +1,71 @@
 package service
 
-import "time"
+import (
+	"context"
+	"net/http"
+	"strings"
+	"time"
+)
+
+func hasUserErrorUpstreamEvidence(e *OpsErrorLog) bool {
+	if e == nil {
+		return false
+	}
+	if e.HasUpstreamError || strings.EqualFold(e.Source, "upstream_http") || strings.EqualFold(e.Owner, "provider") {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(e.Phase)) {
+	case "upstream", "account_auth", "network":
+		return true
+	}
+	return false
+}
+
+func isLocalUserBillingFailure(e *OpsErrorLog) bool {
+	if e == nil || (e.Type != "billing_error" && e.Type != "subscription_error") {
+		return false
+	}
+	// A final local eligibility check may fail after an earlier upstream retry.
+	// Match the gateway's own messages, not the provider's error type alone.
+	switch strings.ToLower(strings.TrimSpace(e.Message)) {
+	case "insufficient balance", "insufficient account balance", "no active subscription found for this group",
+		"subscription is invalid or expired", "daily usage limit exceeded", "weekly usage limit exceeded",
+		"monthly usage limit exceeded", "usage quota exhausted for this platform":
+		return true
+	}
+	return false
+}
+
+// The presentation override applies only to copies returned to the caller.
+// Stored diagnostics and administrator projections retain their original text.
+func toUserErrorRequestForContext(ctx context.Context, e *OpsErrorLog) *UserErrorRequest {
+	out := ToUserErrorRequest(e)
+	if out != nil && ConfiguredUpstreamErrorMessage(ctx) != "" && isLocalUserBillingFailure(e) {
+		out.Message, out.StatusCode = e.Message, e.StatusCode
+		return out
+	}
+	if out != nil && hasUserErrorUpstreamEvidence(e) {
+		out.Message = UpstreamErrorClientMessage(ctx, out.Message)
+	}
+	return out
+}
+
+func toUserErrorRequestDetailForContext(ctx context.Context, e *OpsErrorLogDetail) *UserErrorRequestDetail {
+	out := ToUserErrorRequestDetail(e)
+	if out == nil || ConfiguredUpstreamErrorMessage(ctx) == "" {
+		return out
+	}
+	if isLocalUserBillingFailure(&e.OpsErrorLog) {
+		out.Message, out.StatusCode, out.ErrorBody = e.Message, e.StatusCode, e.ErrorBody
+		return out
+	}
+	if hasUserErrorUpstreamEvidence(&e.OpsErrorLog) || e.UpstreamStatusCode != nil || strings.TrimSpace(e.UpstreamErrorMessage) != "" {
+		out.Message = UpstreamErrorClientMessage(ctx, out.Message)
+		// The response body may contain duplicated provider details outside message.
+		out.ErrorBody = ""
+	}
+	return out
+}
 
 // UserErrorRequest 是面向终端用户的"错误请求"精简脱敏视图（白名单）。
 // 严禁包含 account / api_key_prefix / upstream_endpoint / user_email 等
@@ -54,7 +119,7 @@ func MapUserErrorCategory(phase, errType string) string {
 			return "rate_limit"
 		case "billing_error", "subscription_error":
 			return "quota"
-		case "invalid_request_error", "model_not_found":
+		case "invalid_request_error":
 			return "invalid_request"
 		case "cyber_policy":
 			return "cyber"
@@ -81,7 +146,7 @@ func CategoryToFilter(category string) (phases []string, errorTypes []string) {
 	case "quota":
 		return nil, []string{"billing_error", "subscription_error"}
 	case "invalid_request":
-		return []string{"request"}, []string{"invalid_request_error", "model_not_found"}
+		return nil, []string{"invalid_request_error"}
 	case "cyber":
 		return []string{"request"}, []string{"cyber_policy"}
 	default:
@@ -102,15 +167,21 @@ func ToUserErrorRequest(e *OpsErrorLog) *UserErrorRequest {
 	if e.ClientIP != nil {
 		clientIP = *e.ClientIP
 	}
+	message := e.Message
+	statusCode := e.StatusCode
+	if shouldHideUpstreamBillingDetails(e, e.StatusCode, message) {
+		message = UpstreamBillingExhaustedClientMessage
+		statusCode = http.StatusBadGateway
+	}
 	return &UserErrorRequest{
 		ID:              e.ID,
 		CreatedAt:       e.CreatedAt,
 		Model:           model,
 		InboundEndpoint: e.InboundEndpoint,
-		StatusCode:      e.StatusCode,
+		StatusCode:      statusCode,
 		Category:        MapUserErrorCategory(e.Phase, e.Type),
 		Platform:        e.Platform,
-		Message:         e.Message,
+		Message:         message,
 		KeyName:         e.APIKeyName,
 		KeyDeleted:      e.APIKeyDeleted,
 		ClientIP:        clientIP,
@@ -119,6 +190,24 @@ func ToUserErrorRequest(e *OpsErrorLog) *UserErrorRequest {
 		Stream:          e.Stream,
 		UserAgent:       e.UserAgent,
 	}
+}
+
+// shouldHideUpstreamBillingDetails limits redaction to provider-owned errors.
+// Local user balance/quota errors are recorded in the request phase and keep
+// their existing billing_error/rate_limit_error messages.
+func shouldHideUpstreamBillingDetails(e *OpsErrorLog, statusCode int, evidence string) bool {
+	if e == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(e.Phase)) {
+	case "upstream", "account_auth", "network":
+	default:
+		return false
+	}
+	if isUpstreamBillingErrorCode(strings.TrimSpace(evidence)) {
+		return true
+	}
+	return IsUpstreamBillingError(statusCode, []byte(evidence))
 }
 
 // UserErrorRequestDetail 是错误请求详情的脱敏视图(点击单行查看)。
@@ -136,9 +225,23 @@ func ToUserErrorRequestDetail(e *OpsErrorLogDetail) *UserErrorRequestDetail {
 		return nil
 	}
 	base := ToUserErrorRequest(&e.OpsErrorLog)
+	errorBody := e.ErrorBody
+	statusCode := e.StatusCode
+	upstreamStatusCode := e.UpstreamStatusCode
+	if e.UpstreamStatusCode != nil {
+		statusCode = *e.UpstreamStatusCode
+	}
+	if shouldHideUpstreamBillingDetails(&e.OpsErrorLog, e.StatusCode, e.Message) ||
+		shouldHideUpstreamBillingDetails(&e.OpsErrorLog, statusCode, errorBody) ||
+		shouldHideUpstreamBillingDetails(&e.OpsErrorLog, statusCode, e.UpstreamErrorMessage) {
+		errorBody = ""
+		base.Message = UpstreamBillingExhaustedClientMessage
+		base.StatusCode = http.StatusBadGateway
+		upstreamStatusCode = nil
+	}
 	return &UserErrorRequestDetail{
 		UserErrorRequest:   *base,
-		ErrorBody:          e.ErrorBody,
-		UpstreamStatusCode: e.UpstreamStatusCode,
+		ErrorBody:          errorBody,
+		UpstreamStatusCode: upstreamStatusCode,
 	}
 }

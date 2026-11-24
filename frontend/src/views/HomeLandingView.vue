@@ -3,7 +3,7 @@ import { computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import HeyRouteLandingPage from '@/components/home/heyroute/HeyRouteLandingPage.vue'
-import { heyRouteCopyByLanguage } from '@/components/home/heyroute/heyRouteCopy'
+import { heyRouteCopyByLanguage, withSiteName } from '@/components/home/heyroute/heyRouteCopy'
 import { useHomePricingPreview } from '@/composables/useHomePricingPreview'
 import { useTheme } from '@/composables/useTheme'
 import { useAppStore, useAuthStore } from '@/stores'
@@ -13,8 +13,9 @@ const appStore = useAppStore()
 const authStore = useAuthStore()
 const { locale } = useI18n()
 
-const copy = computed(() => heyRouteCopyByLanguage[locale.value.startsWith('zh') ? 'zh' : 'en'])
 const siteName = computed(() => appStore.cachedPublicSettings?.site_name || appStore.siteName || 'Kitty奇妙屋')
+// The copy is written with the default brand name; show the operator's configured name instead.
+const copy = computed(() => withSiteName(heyRouteCopyByLanguage[locale.value.startsWith('zh') ? 'zh' : 'en'], siteName.value))
 const siteLogo = computed(() => appStore.brandLogoUrl)
 const docUrl = computed(() => sanitizeUrl(
   appStore.cachedPublicSettings?.doc_url || appStore.docUrl || '',
@@ -27,20 +28,21 @@ const apiBaseUrl = computed(() => {
 })
 const modelPlazaEnabled = computed(() => appStore.cachedPublicSettings?.model_plaza_enabled === true)
 const isAuthenticated = computed(() => authStore.isAuthenticated)
+// A catalog that requires login answers 401 to visitors; do not request it for them.
+const pricingPreviewEnabled = computed(() => modelPlazaEnabled.value
+  && (appStore.cachedPublicSettings?.model_plaza_require_auth !== true || isAuthenticated.value))
 const dashboardPath = computed(() => authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
 const { isDark, toggleTheme } = useTheme()
 
 const {
   summaries,
-  groupCount,
-  modelCount,
   loading,
   failed,
   reload,
-} = useHomePricingPreview({ enabled: modelPlazaEnabled })
+} = useHomePricingPreview({ enabled: pricingPreviewEnabled })
 
+// The router guard already restored the session on the first navigation; no second /auth/me here.
 onMounted(() => {
-  authStore.checkAuth()
   if (!appStore.publicSettingsLoaded) {
     void appStore.fetchPublicSettings()
   }
@@ -61,8 +63,6 @@ onMounted(() => {
     :pricing-summaries="summaries"
     :pricing-loading="loading"
     :pricing-failed="failed"
-    :group-count="groupCount"
-    :model-count="modelCount"
     @toggle-theme="toggleTheme"
     @retry-pricing="reload"
   />

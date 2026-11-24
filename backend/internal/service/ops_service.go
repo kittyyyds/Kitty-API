@@ -43,10 +43,9 @@ type OpsRuntimeSettingsRefreshHealth struct {
 
 // OpsService provides ingestion and query APIs for the Ops monitoring module.
 type OpsService struct {
-	autoConfigObserver func(AccountConcurrencyResult)
-	opsRepo            OpsRepository
-	settingRepo        SettingRepository
-	cfg                *config.Config
+	opsRepo     OpsRepository
+	settingRepo SettingRepository
+	cfg         *config.Config
 
 	accountRepo AccountRepository
 	userRepo    UserRepository
@@ -512,8 +511,6 @@ func (s *OpsService) prepareErrorLogInput(ctx context.Context, entry *OpsInsertE
 		break
 	}
 
-	// Normalize responsibility after final upstream/credential attribution is
-	// known, for both middleware and direct/batched producers.
 	NormalizeOpsClientRejection(entry)
 
 	// Sanitize + truncate error_body to avoid storing sensitive data.
@@ -572,7 +569,17 @@ const (
 )
 
 func sanitizeOpsUpstreamErrors(entry *OpsInsertErrorLogInput) error {
-	if entry == nil || len(entry.UpstreamErrors) == 0 {
+	if entry == nil {
+		return nil
+	}
+	// Never replace an already serialized attempt chain just to add optional
+	// diagnostics. Keep legacy raw-vs-JSON precedence if both were supplied.
+	diagnostic := entry.upstreamReadDiagnostic
+	entry.upstreamReadDiagnostic = nil
+	if entry.UpstreamErrorsJSON != nil {
+		diagnostic = nil
+	}
+	if len(entry.UpstreamErrors) == 0 && diagnostic == nil {
 		return nil
 	}
 
@@ -590,6 +597,7 @@ func sanitizeOpsUpstreamErrors(entry *OpsInsertErrorLogInput) error {
 	sanitized := make([]*OpsUpstreamErrorEvent, 0, len(events))
 	for i, ev := range events {
 		out := *ev
+		out.ReplayBoundary = cloneOpsReplayBoundary(ev.ReplayBoundary)
 		normalizeOpsUpstreamProxyAttribution(&out)
 		// Only boundOpsUpstreamErrors may stamp this; never trust caller input.
 		out.DroppedEarlierAttempts = 0
@@ -647,6 +655,11 @@ func sanitizeOpsUpstreamErrors(entry *OpsInsertErrorLogInput) error {
 		sanitized = append(sanitized, &evCopy)
 	}
 
+	// The diagnostic does not move the existing sixteen-attempt body window.
+	// It shares the final event/byte budget and is copied before queueing.
+	if diagnostic = cloneOpenAIWSReadDiagnostic(diagnostic); diagnostic != nil {
+		sanitized = append(sanitized, diagnostic)
+	}
 	sanitized, _ = boundOpsUpstreamErrors(sanitized)
 	entry.UpstreamErrorsJSON = marshalOpsUpstreamErrors(sanitized)
 	entry.UpstreamErrors = nil
@@ -736,7 +749,7 @@ func (s *OpsService) ListUserErrorRequests(ctx context.Context, userID int64, fi
 	}
 	items := make([]*UserErrorRequest, 0, len(list.Errors))
 	for _, e := range list.Errors {
-		if r := ToUserErrorRequest(e); r != nil {
+		if r := toUserErrorRequestForContext(ctx, e); r != nil {
 			items = append(items, r)
 		}
 	}
@@ -791,7 +804,7 @@ func (s *OpsService) GetUserErrorRequestDetail(ctx context.Context, userID, id i
 	if !ownedDirectly {
 		return nil, infraerrors.NotFound("OPS_ERROR_NOT_FOUND", "ops error log not found")
 	}
-	return ToUserErrorRequestDetail(detail), nil
+	return toUserErrorRequestDetailForContext(ctx, detail), nil
 }
 
 func (s *OpsService) UpdateErrorResolution(ctx context.Context, errorID int64, resolved bool, resolvedByUserID *int64) error {

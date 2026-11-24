@@ -95,6 +95,7 @@ const normalizedAuthMode = computed(() =>
 
 const typeLabel = computed(() => {
   if (props.platform === 'openai' && props.type === 'oauth') {
+    if (normalizedAuthMode.value === 'bps') return 'BPS'
     if (normalizedAuthMode.value === 'agentidentity') return 'Agent Identity'
     if (normalizedAuthMode.value === 'personalaccesstoken') return 'PAT'
   }

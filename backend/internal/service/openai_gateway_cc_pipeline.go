@@ -39,6 +39,7 @@ func (s *OpenAIGatewayService) newUpstreamSSEScanner(r io.Reader) *bufio.Scanner
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	scanner.Split(newBoundedSSESplit(s.cfg, maxLineSize, nil))
 	return scanner
 }
 
@@ -102,16 +103,27 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 	upstreamModel string,
 ) *UpstreamFailoverError {
 	shouldFailover := s.shouldFailoverOpenAIUpstreamResponse(account, resp.StatusCode, upstreamMsg, respBody)
+	modelReplayAllowed := true
+	if (account == nil || account.Platform != PlatformGrok) && isOpenAIModelUnavailableError(resp.StatusCode, respBody) {
+		var guard openAIResponseReplayGuard
+		guard.Observe(respBody, "response.failed")
+		modelReplayAllowed = guard.CanReplay(c) && !IsResponseCommitted(c) && !openAIStreamClientOutputStarted(c, false) && (ctx == nil || ctx.Err() == nil)
+		shouldFailover = shouldFailover && modelReplayAllowed
+	}
 	tempUnscheduled := false
 	if c != nil && account != nil && account.Platform != PlatformGrok && !shouldFailover && !IsResponseCommitted(c) && s.rateLimitService != nil {
-		tempUnscheduled = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody, upstreamModel) == ErrorPolicyTempUnscheduled
-		shouldFailover = tempUnscheduled
+		stateCtx, cancelState := openAIAccountStateContext(ctx)
+		tempUnscheduled = s.rateLimitService.CheckErrorPolicy(stateCtx, account, resp.StatusCode, respBody, upstreamModel) == ErrorPolicyTempUnscheduled
+		cancelState()
+		// Preserve the configured scheduling side effect without allowing it
+		// to replay work which already produced output/usage or was canceled.
+		shouldFailover = tempUnscheduled && modelReplayAllowed
 	}
 	if account != nil && account.Platform == PlatformGrok {
 		shouldFailover = s.shouldFailoverGrokUpstreamError(resp.StatusCode, respBody)
 	}
 	if account != nil && account.Platform == PlatformGrok {
-		s.handleGrokAccountUpstreamError(withGrokTeamRateLimitModel(ctx, upstreamModel), account, resp.StatusCode, resp.Header, respBody)
+		s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 	}
 	if !shouldFailover {
 		return nil
@@ -125,6 +137,7 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 		upstreamDetail = truncateString(string(respBody), maxBytes)
 	}
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+
 		ProxyID:            opsUpstreamProxyID(account),
 		ProxyName:          opsUpstreamProxyName(account),
 		Platform:           account.Platform,
@@ -148,7 +161,8 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 		upstreamMsg,
 		shouldDisable,
 		!shouldDisable && account.IsPoolMode() && (account.IsPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
-	).WithGrokForbiddenPolicy(account)
+		resp.StatusCode,
+	)
 }
 
 // openAIChatCompletionsTargetURL 解析账号的（非 Grok）Chat Completions 上游端点。
@@ -238,8 +252,6 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 		}
 		applyGrokCacheHeaders(upstreamReq.Header, grokCacheIdentity)
 	}
-	applyOpenAIAPIKeyIdentityHeaders(upstreamReq.Header, account, s.codexIdentityOverrideUA(account))
-
 	// 官方 OpenCode / Command Code 上游收敛为规范客户端 UA：客户端透传的编程库
 	// UA 会命中其前置 Cloudflare bot 拦截（CF 1010/403），并被计入账号 403 strike。
 	applyOpenCodeUpstreamUserAgent(account, targetURL, upstreamReq.Header)
@@ -288,6 +300,7 @@ func (s *OpenAIGatewayService) scanCCStream(
 	emit func(*apicompat.ChatCompletionsChunk),
 ) ccStreamScanState {
 	var st ccStreamScanState
+	var protectionFinished, protectionIncomplete bool
 
 	scanner := s.newUpstreamSSEScanner(resp.Body)
 	for scanner.Scan() {
@@ -304,14 +317,18 @@ func (s *OpenAIGatewayService) scanCCStream(
 			st.SawDone = true
 			break
 		}
-		// 观察上游 CC chunk 回显的 model / service_tier（计费以回显为准）。
+		// 观察上游 CC chunk 回显的 model / service_tier；档位仅用于诊断，计费使用出站请求档位。
 		// CC chunk 无 type 字段，按 untyped payload 观察（上游约束：只有终止
 		// 事件与无类型 body 报告实际处理档位）。
 		if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
 			observer.ObserveOpenAI([]byte(payload), "")
 		}
 
+		finished, incomplete := openAICCFinishState([]byte(payload))
+		protectionFinished = protectionFinished || finished
+		protectionIncomplete = protectionIncomplete || incomplete
 		if u := extractCCStreamUsage(payload); u != nil {
+			mergeOpenAICacheUsageEvidence(st.Usage, u)
 			st.Usage = *u
 		}
 
@@ -338,6 +355,9 @@ func (s *OpenAIGatewayService) scanCCStream(
 			)
 		}
 		st.Err = err
+	}
+	if !st.SawDone || st.Err != nil || !protectionFinished || protectionIncomplete {
+		st.Usage.CacheReadKnown = false
 	}
 	return st
 }
@@ -369,7 +389,7 @@ func (s *OpenAIGatewayService) readCCUpstreamJSONResponse(
 		writeError(c, http.StatusBadGateway, "api_error", "Failed to parse upstream response")
 		return nil, OpenAIUsage{}, fmt.Errorf("parse chat completions response: %w", err)
 	}
-	// 观察上游 CC JSON 回显的 model / service_tier（计费以回显为准）。
+	// 观察上游 CC JSON 回显的 model / service_tier；档位仅用于诊断，计费使用出站请求档位。
 	// CC JSON 无 type 字段，按 untyped payload 观察（上游约束）。
 	if observer := upstreamResponseModelObserverFromContext(c); observer != nil {
 		observer.ObserveOpenAI(respBody, "")
@@ -378,6 +398,10 @@ func (s *OpenAIGatewayService) readCCUpstreamJSONResponse(
 	usage := OpenAIUsage{}
 	if parsed, ok := extractOpenAIUsageFromJSONBytes(respBody); ok {
 		usage = parsed
+	}
+	finished, incomplete := openAICCFinishState(respBody)
+	if !finished || incomplete {
+		usage.CacheReadKnown = false
 	}
 	return &ccResp, usage, nil
 }

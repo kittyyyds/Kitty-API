@@ -4,9 +4,11 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
+	"net/netip"
 	"net/textproto"
 	"net/url"
 	"os"
@@ -15,7 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/upstreamroute"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/sysutil"
 	"github.com/spf13/viper"
 	"golang.org/x/net/http/httpguts"
 )
@@ -68,11 +70,12 @@ const DefaultUpstreamResponseReadMaxBytes int64 = 128 * 1024 * 1024
 const DefaultModelsListReadMaxBytes int64 = 8 * 1024 * 1024
 
 type Config struct {
-	Runtime                 RuntimeConfig `mapstructure:"runtime"`
-	astraRoutingLoader      atomic.Pointer[astraRoutingLoader]
+	Runtime RuntimeConfig `mapstructure:"runtime"`
+
 	Server                  ServerConfig                  `mapstructure:"server"`
 	Log                     LogConfig                     `mapstructure:"log"`
 	CORS                    CORSConfig                    `mapstructure:"cors"`
+	MCP                     MCPConfig                     `mapstructure:"mcp"`
 	Security                SecurityConfig                `mapstructure:"security"`
 	Billing                 BillingConfig                 `mapstructure:"billing"`
 	Turnstile               TurnstileConfig               `mapstructure:"turnstile"`
@@ -118,6 +121,54 @@ type Config struct {
 // SimpleModeConfig controls startup behavior in simple mode.
 type SimpleModeConfig struct {
 	AutoCreateDefaultGroups bool `mapstructure:"auto_create_default_groups" yaml:"auto_create_default_groups"`
+}
+
+// MCPConfig fixes the public resource URL used by OAuth discovery and tokens.
+// Setting it is also the explicit opt-in that enables MCP.
+type MCPConfig struct {
+	PublicURL string `mapstructure:"public_url"`
+}
+
+// Enabled reports whether the operator opted in to the management MCP endpoint.
+func (c MCPConfig) Enabled() bool { return strings.TrimSpace(c.PublicURL) != "" }
+
+// Validate normalizes the configured resource URL without trusting request headers.
+// An empty URL keeps MCP and its OAuth endpoints disabled.
+func (c *MCPConfig) Validate() error {
+	raw := strings.TrimSpace(c.PublicURL)
+	if raw == "" {
+		c.PublicURL = ""
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("mcp.public_url invalid: %w", err)
+	}
+	if !u.IsAbs() || u.Hostname() == "" || !httpguts.ValidHostHeader(u.Host) || strings.ContainsAny(u.Host, "*%") {
+		return fmt.Errorf("mcp.public_url must be an absolute URL with a valid host")
+	}
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || strings.Contains(raw, "#") {
+		return fmt.Errorf("mcp.public_url must not include userinfo, query, or fragment")
+	}
+	if u.Path != "/api/v1/mcp" || u.EscapedPath() != "/api/v1/mcp" {
+		return fmt.Errorf("mcp.public_url must have the exact path /api/v1/mcp without a trailing slash")
+	}
+	if port := u.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("mcp.public_url must have a valid port")
+		}
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	host := u.Hostname()
+	addr, _ := netip.ParseAddr(host)
+	localDevelopment := host == "localhost" || addr.IsLoopback()
+	if u.Scheme != "https" && (u.Scheme != "http" || !localDevelopment) {
+		return fmt.Errorf("mcp.public_url must use HTTPS (HTTP is allowed only for localhost or loopback IPs)")
+	}
+	c.PublicURL = u.String()
+	return nil
 }
 
 // PluginConfig 控制管理员手动上传的本地进程插件。
@@ -518,6 +569,24 @@ func shouldApplyLegacyWeChatEnv(configKey, envKey string) bool {
 	return !hasNewEnv
 }
 
+// detectMemoryLimitBytes is replaced in tests so defaults do not depend on the host.
+var detectMemoryLimitBytes = sysutil.MemoryLimitBytes
+
+const (
+	defaultRequestBodyMemoryBudgetBytes = int64(1 << 30)
+	// requestBodyMemoryBudgetDivisor leaves the rest of memory for conversion
+	// state, SSE buffers, caches and GC headroom.
+	requestBodyMemoryBudgetDivisor = 4
+)
+
+// autoRequestBodyMemoryBudget sizes the unconfigured ingress budget to a
+// quarter of the process memory limit. It never goes below the historical
+// 1 GiB default, so small instances keep their previous behavior.
+func autoRequestBodyMemoryBudget(memoryLimitBytes uint64) int64 {
+	// uint64 / 4 always fits in int64.
+	return max(int64(memoryLimitBytes/requestBodyMemoryBudgetDivisor), defaultRequestBodyMemoryBudgetBytes)
+}
+
 func hasExplicitConfigOrEnv(configKey, envKey string) bool {
 	if viper.InConfig(configKey) {
 		return true
@@ -740,16 +809,23 @@ type ForwardedClientIPSettings struct {
 }
 
 type SecurityConfig struct {
-	URLAllowlist    URLAllowlistConfig   `mapstructure:"url_allowlist"`
-	ResponseHeaders ResponseHeaderConfig `mapstructure:"response_headers"`
-	CSP             CSPConfig            `mapstructure:"csp"`
-	ProxyFallback   ProxyFallbackConfig  `mapstructure:"proxy_fallback"`
-	ProxyProbe      ProxyProbeConfig     `mapstructure:"proxy_probe"`
+	MainlandWebBlock MainlandWebBlockConfig `mapstructure:"mainland_web_block"`
+	URLAllowlist     URLAllowlistConfig     `mapstructure:"url_allowlist"`
+	ResponseHeaders  ResponseHeaderConfig   `mapstructure:"response_headers"`
+	CSP              CSPConfig              `mapstructure:"csp"`
+	ProxyFallback    ProxyFallbackConfig    `mapstructure:"proxy_fallback"`
+	ProxyProbe       ProxyProbeConfig       `mapstructure:"proxy_probe"`
 	// TrustForwardedIPForAPIKeyACL enables legacy raw forwarded-header takeover.
 	// When disabled, server.trusted_proxies is authoritative for all client-IP consumers.
 	TrustForwardedIPForAPIKeyACL  bool                                       `mapstructure:"trust_forwarded_ip_for_api_key_acl"`
 	ForwardedClientIPHeaders      []string                                   `mapstructure:"forwarded_client_ip_headers" json:"forwarded_client_ip_headers" yaml:"forwarded_client_ip_headers"`
 	forwardedClientIPSettingsLive *atomic.Pointer[ForwardedClientIPSettings] `mapstructure:"-" json:"-" yaml:"-"`
+}
+
+// MainlandWebBlockConfig controls mainland-IP restrictions on /, /login and /home only.
+type MainlandWebBlockConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`
+	CIDRFile string `mapstructure:"cidr_file"` // empty uses bundled IPv4 + IPv6 data
 }
 
 func NormalizeForwardedClientIPHeaders(headers []string) ([]string, error) {
@@ -1150,8 +1226,43 @@ func (c CodexWSAnchorConfig) Validate() error {
 	return nil
 }
 
+// GatewayCodexWireConfig controls Codex CLI wire-profile emulation. Every key
+// here is read only for OpenAI OAuth accounts (isCodexOAuthAccount); SetupToken,
+// API-key, VM-routed and non-OpenAI platform accounts ignore the whole section.
+type GatewayCodexWireConfig struct {
+	// Profile pins the wire profile: auto (default), stable, or main.
+	// auto follows the synced Codex version (>=0.164 uses main).
+	Profile string `mapstructure:"profile"`
+	// Strict rejects unknown/future versions instead of warning and using the
+	// newest known profile.
+	Strict bool `mapstructure:"strict"`
+	// MapOrderJitter shuffles client_metadata keys within the legal key set.
+	// Production viper defaults to true; a hand-built zero Config keeps the
+	// legacy fixed order.
+	MapOrderJitter *bool `mapstructure:"map_order_jitter"`
+	// StreamIdleTimeoutSeconds overrides the upstream SSE idle timeout for the
+	// OAuth Codex lane. Production viper defaults to 300; 0 (hand-built Config
+	// or an explicit yaml 0) falls back to gateway.stream_data_interval_timeout.
+	StreamIdleTimeoutSeconds int `mapstructure:"stream_idle_timeout_seconds"`
+}
+
+// CodexWireMapOrderJitterEnabled reports whether client_metadata key order is
+// jittered. A hand-built Config (tests/tools) keeps the legacy fixed order;
+// viper sets gateway.codex_wire.map_order_jitter=true in production.
+func (c GatewayConfig) CodexWireMapOrderJitterEnabled() bool {
+	return c.CodexWire.MapOrderJitter != nil && *c.CodexWire.MapOrderJitter
+}
+
+// CodexFullSynthesisEnabled reports whether generic clients on OAuth Codex
+// accounts are rebuilt into the full Codex request shape. A hand-built Config
+// keeps legacy behavior; viper sets gateway.codex_full_synthesis=true.
+func (c GatewayConfig) CodexFullSynthesisEnabled() bool {
+	return c.CodexFullSynthesis != nil && *c.CodexFullSynthesis
+}
+
 type GatewayConfig struct {
-	UpstreamRouting upstreamroute.Config `mapstructure:"upstream_routing"`
+	NativeReasoningReplay               GatewayNativeReasoningReplayConfig `mapstructure:"native_reasoning_replay"`
+	DisableOpenAITransportErrorCooldown bool                               `mapstructure:"disable_openai_transport_error_cooldown"`
 	// PrismBrowser is the server-managed browser-session adapter for prism.openai.com.
 	// Account settings only select this route; cookies, sandbox state and the adapter
 	// API key remain outside account credentials.
@@ -1160,6 +1271,29 @@ type GatewayConfig struct {
 	// CodexGatewayPin shares qualified source routing cookies with selected targets.
 	// Disabled by default; applies only to ChatGPT HTTP Responses requests.
 	CodexGatewayPin CodexGatewayPinConfig `mapstructure:"codex_gateway_pin"`
+	// OpenAITiboRoute: 按 Tibo 探针（gpt-6-astra 是否认识 Tibo）判断账号线路是否降智：
+	// 后台探测、投票确认、可选的调度分层。enabled=false 时停止全部探测。
+	OpenAITiboRoute OpenAITiboRouteConfig `mapstructure:"openai_tibo_route"`
+	// OpenAICreditsGuardDisabled 全局关闭点数保护。默认 false（保护开启）：未在账号上开启
+	// "额度用尽后消耗点数" 的 OpenAI OAuth/SetupToken 账号，5h/7d 窗口用尽后按 429 限流到窗口重置。
+	// 设为 true 后恢复为窗口用尽仍继续转发（由上游扣点数）。
+	OpenAICreditsGuardDisabled bool `mapstructure:"openai_credits_guard_disabled"`
+	// OpenAI429SoftThreshold 是 OpenAI 账号连续 429 多少次后才写入正式冷却。
+	// 0 使用默认 30；1 表示第一次 429 就冷却（移植前的行为）。
+	OpenAI429SoftThreshold int `mapstructure:"openai_429_soft_threshold"`
+	// OpenAI429RecoveryProbeDisabled 关闭 429 正式冷却期间的恢复探测（30s/1m/2m/5m/15m 发一条
+	// 极小的 Codex 请求，成功则提前解除限流）。默认 false（开启）。
+	OpenAI429RecoveryProbeDisabled bool `mapstructure:"openai_429_recovery_probe_disabled"`
+	// OpenAINearLimitDisabled 关闭 95% 临界账号优先（near-limit）选号。默认 false（开启）。
+	OpenAINearLimitDisabled bool `mapstructure:"openai_near_limit_disabled"`
+	// OpenAINearLimitMaxConcurrency caps effective concurrency/load-factor for 95% near-limit OpenAI accounts.
+	OpenAINearLimitMaxConcurrency int `mapstructure:"openai_near_limit_max_concurrency"`
+	// OpenAINearLimit429ProbeBackoffSeconds is the in-process 429 probe backoff for near-limit accounts.
+	OpenAINearLimit429ProbeBackoffSeconds int `mapstructure:"openai_near_limit_429_probe_backoff_seconds"`
+	// OpenAINearLimitTTFTThresholdMS is the slow first-token threshold for near-limit protection.
+	OpenAINearLimitTTFTThresholdMS int `mapstructure:"openai_near_limit_ttft_threshold_ms"`
+	// OpenAINearLimitTTFTBackoffSeconds is the in-process TTFT backoff after a slow first token.
+	OpenAINearLimitTTFTBackoffSeconds int `mapstructure:"openai_near_limit_ttft_backoff_seconds"`
 	// MinOutputTokens is the minimum max_output_tokens used when
 	// converting Chat Completions or Anthropic requests to Responses.
 	MinOutputTokens int `mapstructure:"min_output_tokens"`
@@ -1184,6 +1318,15 @@ type GatewayConfig struct {
 	OpenAIHighEffortFirstOutputTimeoutSeconds int `mapstructure:"openai_high_effort_first_output_timeout_seconds"`
 	// 请求体最大字节数，用于网关请求体大小限制
 	MaxBodySize int64 `mapstructure:"max_body_size"`
+	// RequestBodyMemoryBudgetBytes bounds buffered ingress allocations per instance; 0 disables it.
+	// When unset in config and env it defaults to 1/4 of the memory limit (at least 1 GiB).
+	RequestBodyMemoryBudgetBytes int64 `mapstructure:"request_body_memory_budget_bytes"`
+	// Explicit opt-in: existing deployments keep their configured or legacy budget.
+	RequestBodyMemoryBudgetAuto bool `mapstructure:"request_body_memory_budget_auto"`
+	// RequestBodyReadTimeoutSeconds bounds each socket read during upload; 0 disables it.
+	RequestBodyReadTimeoutSeconds int `mapstructure:"request_body_read_timeout_seconds"`
+	// DownstreamWriteTimeoutSeconds bounds each HTTP write/flush, not the lifetime of a stream.
+	DownstreamWriteTimeoutSeconds int `mapstructure:"downstream_write_timeout_seconds"`
 	// TextMaxBodySize limits endpoints that cannot carry inline image/video payloads.
 	TextMaxBodySize int64 `mapstructure:"text_max_body_size"`
 	// 非流式上游响应体读取上限（字节），用于防止无界读取导致内存放大
@@ -1201,6 +1344,13 @@ type GatewayConfig struct {
 	// ForceCodexCLI: 强制将 OpenAI `/v1/responses` 请求按 Codex CLI 处理。
 	// 用于网关未透传/改写 User-Agent 时的兼容兜底（默认关闭，避免影响其他客户端）。
 	ForceCodexCLI bool `mapstructure:"force_codex_cli"`
+	// CodexFullSynthesis rebuilds non-native requests into the full Codex CLI
+	// request shape when the selected account is OpenAI OAuth (not VM-routed).
+	// Production viper defaults to true; a hand-built zero Config keeps the
+	// legacy path. SetupToken/API-key/non-OpenAI accounts never read it.
+	CodexFullSynthesis *bool `mapstructure:"codex_full_synthesis"`
+	// CodexWire: Codex CLI wire profile emulation (OAuth-only).
+	CodexWire GatewayCodexWireConfig `mapstructure:"codex_wire"`
 	// DisableCodexIdentityEnforcement: 关闭「强制统一 Codex 出站身份」。上游 /backend-api/codex
 	// 在容量紧张时按客户端身份分优先级降载，被降载的请求会拿到 HTTP 200 + 流内
 	// server_is_overloaded，该次请求失败。默认强制统一出口：OAuth 与 OpenAI API Key 出站的
@@ -1226,6 +1376,9 @@ type GatewayConfig struct {
 	// OpenAIPassthroughAllowTimeoutHeaders: OpenAI 透传模式是否放行客户端超时头
 	// 关闭（默认）可避免 x-stainless-timeout 等头导致上游提前断流。
 	OpenAIPassthroughAllowTimeoutHeaders bool `mapstructure:"openai_passthrough_allow_timeout_headers"`
+	// Opt in only for the final Codex OAuth Responses HTTP lane. TLS/VM/WS
+	// identity and compression remain independent; plain JSON is the default.
+	OpenAIRequestCompressionEnabled bool `mapstructure:"openai_request_compression_enabled"`
 	// OpenAICompactModel: /responses/compact 上游使用的模型。
 	// compact 端点支持模型滞后于普通 /responses 时，可用该配置降级规避上游错误。
 	OpenAICompactModel string `mapstructure:"openai_compact_model"`
@@ -1265,6 +1418,12 @@ type GatewayConfig struct {
 	// ConcurrencySlotTTLMinutes: 并发槽位过期时间（分钟）
 	// 应大于最长 LLM 请求时间，防止请求完成前槽位过期
 	ConcurrencySlotTTLMinutes int `mapstructure:"concurrency_slot_ttl_minutes"`
+	// APIKeySlotTTLSeconds: 普通 API Key 并发槽位的独立过期时间（秒）。
+	// 0 表示继承 concurrency_slot_ttl_minutes 的有效值，升级默认不改变行为；
+	// 显式正值需不低于 30 秒（配置策略下限，非实测安全 SLA，见部署文档）。
+	// 仅作用于普通共享 Redis 实现的 API Key 槽位；account/user 槽位、Live
+	// 租约及 regional concurrency authority 不受影响。
+	APIKeySlotTTLSeconds int `mapstructure:"api_key_slot_ttl_seconds"`
 	// SessionIdleTimeoutMinutes: 会话空闲超时时间（分钟），默认 5 分钟
 	// 用于 Anthropic OAuth/SetupToken 账号的会话数量限制功能
 	// 空闲超过此时间的会话将被自动释放
@@ -1281,7 +1440,10 @@ type GatewayConfig struct {
 	// ImageNonstreamKeepaliveInterval: 图片非流式 JSON keepalive 间隔（秒），0表示禁用
 	ImageNonstreamKeepaliveInterval int `mapstructure:"image_nonstream_keepalive_interval"`
 	// MaxLineSize: 上游 SSE 单行最大字节数（0使用默认值）
-	MaxLineSize int `mapstructure:"max_line_size"`
+	MaxLineSize      int   `mapstructure:"max_line_size"`
+	SSEQueueMaxBytes int64 `mapstructure:"sse_queue_max_bytes"`
+	SSEEventMaxBytes int64 `mapstructure:"sse_event_max_bytes"`
+	SSEEventMaxLines int   `mapstructure:"sse_event_max_lines"`
 
 	// 是否记录上游错误响应体摘要（避免输出请求内容）
 	LogUpstreamErrorBody bool `mapstructure:"log_upstream_error_body"`
@@ -1503,6 +1665,21 @@ type GatewayOpenAIWSConfig struct {
 	StoreDisabledForceNewConn bool `mapstructure:"store_disabled_force_new_conn"`
 	// PrewarmGenerateEnabled: 是否启用 WSv2 generate=false 预热（默认 false）
 	PrewarmGenerateEnabled bool `mapstructure:"prewarm_generate_enabled"`
+	// DeltaContextEnabled: Codex 身份通道（OpenAI OAuth/SetupToken，非 VM）在网关
+	// 管理的 WSv2 上游转发中使用增量上下文（官方 Codex CLI 协议：input 只发尾部
+	// 新增 items + previous_response_id 锚定同一连接上的上轮响应）。默认 true，
+	// 仅对没有自己发送 previous_response_id 的请求生效；无法证明前缀一致时发完整 input。
+	DeltaContextEnabled bool `mapstructure:"delta_context_enabled"`
+	// ExactFidelityEnabled: codex lane 线级保真总开关（默认 true）。开启时 openai
+	// 平台 OAuth/SetupToken 账号的最终直连出站走 codexwire（官方 Codex CLI 的
+	// TLS ClientHello、头顺序、h1/h2 帧），WS 握手同理；关闭后回退到 net/http
+	// 与 coder/websocket。VM 绑定、插件、智能 WS 已接管的请求不受影响。
+	ExactFidelityEnabled bool `mapstructure:"exact_fidelity_enabled"`
+	// CodexHTTPH2Enabled: Codex OAuth 的 HTTP 出站模拟「自定义 CA」部署的官方
+	// 客户端（rustls-h2 TLS profile + codexwire h2 多路复用）。默认 false：官方
+	// Linux 客户端默认走 native-tls/OpenSSL、无 ALPN、HTTP/1.1、每请求新连接
+	// （openssl36 profile + codexwire 原始 h1，codexgolden 实抓校准）。
+	CodexHTTPH2Enabled bool `mapstructure:"codex_http_h2_enabled"`
 	// ClientReadLimitBytes: 入站客户端 WS 单帧读取上限。
 	ClientReadLimitBytes int64 `mapstructure:"client_read_limit_bytes"`
 	// HTTPBridgeEnabled: 首包过大时，保持客户端 WS，改用 HTTP Responses 上游。
@@ -2077,6 +2254,7 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config error: %w", err)
 	}
+	applyRequestBodyMemoryBudget(&cfg, viper.InConfig("gateway.request_body_memory_budget_bytes"), os.Getenv("GATEWAY_REQUEST_BODY_MEMORY_BUDGET_BYTES"))
 	if trustedProxiesEnvConfigured {
 		cfg.Server.TrustedProxies = normalizeStringSlice(strings.Split(trustedProxiesEnv, ","))
 	}
@@ -2084,6 +2262,15 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 		cfg.Security.ForwardedClientIPHeaders = normalizeStringSlice(strings.Split(forwardedClientIPHeadersEnv, ","))
 	}
 	cfg.Server.TrustedProxiesConfigured = trustedProxiesConfigured
+	// Mirror viper's own precedence: an empty environment variable is ignored by
+	// viper, so it must not pin the static default either (e.g. Compose ${VAR:-}).
+	if !viper.InConfig("gateway.request_body_memory_budget_bytes") && os.Getenv("GATEWAY_REQUEST_BODY_MEMORY_BUDGET_BYTES") == "" {
+		memoryLimit := detectMemoryLimitBytes()
+		cfg.Gateway.RequestBodyMemoryBudgetBytes = autoRequestBodyMemoryBudget(memoryLimit)
+		slog.Info("gateway.request_body_memory_budget_bytes auto-sized from memory limit",
+			"budget_bytes", cfg.Gateway.RequestBodyMemoryBudgetBytes,
+			"memory_limit_bytes", memoryLimit)
+	}
 	if cfg.Gateway.OpenAIScheduler.StickyEscapeTTFTMs == 0 {
 		cfg.Gateway.OpenAIScheduler.StickyEscapeTTFTMs = 15000
 	}
@@ -2259,25 +2446,20 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 func setDefaults() {
 	viper.SetDefault("gateway.upstream_routing.enabled", false)
 	viper.SetDefault("runtime.role", RuntimeRoleFull)
-	viper.SetDefault("runtime.node_id", "")
-	viper.SetDefault("runtime.ws_node_owner.enabled", false)
-	viper.SetDefault("runtime.ws_node_owner.node_id", "")
-	viper.SetDefault("runtime.scheduler_snapshot_mode", SchedulerSnapshotModeAuto)
-	viper.SetDefault("runtime.scheduler_readiness.enabled", false)
-	viper.SetDefault("runtime.scheduler_readiness.buckets", []string{})
-	viper.SetDefault("runtime.scheduler_readiness.max_age_seconds", 900)
-	viper.SetDefault("runtime.regional_scheduler_file", "")
-	viper.SetDefault("runtime.regional_auth_file", "")
-	viper.SetDefault("runtime.regional_concurrency_file", "")
-	viper.SetDefault("runtime.regional_funds_file", "")
-	viper.SetDefault("runtime.serverless_id", "")
-	viper.SetDefault("runtime.serverless_endpoint", "")
-	viper.SetDefault("runtime.serverless_region", "")
-	viper.SetDefault("runtime.serverless_secret", "")
 	viper.SetDefault("server.graceful_shutdown_timeout", 5)
 	viper.SetDefault("server.shutdown_drain_delay", 0)
 	viper.SetDefault("run_mode", RunModeStandard)
 	viper.SetDefault("gateway.min_output_tokens", 128)
+	// Chat Completions native reasoning replay storage budget (native_reasoning_replay.go).
+	// Rollout mode and user scope live in the openai_native_reasoning_replay_config setting.
+	viper.SetDefault("gateway.native_reasoning_replay.ttl_seconds", 3600)
+	viper.SetDefault("gateway.native_reasoning_replay.io_timeout_ms", 100)
+	viper.SetDefault("gateway.native_reasoning_replay.max_entry_bytes", 256<<10)
+	viper.SetDefault("gateway.native_reasoning_replay.max_entries_per_user", 64)
+	viper.SetDefault("gateway.native_reasoning_replay.max_entries_global", 1024)
+	viper.SetDefault("gateway.native_reasoning_replay.max_lookups", 32)
+	viper.SetDefault("gateway.native_reasoning_replay.max_history_bytes", 4<<20)
+	viper.SetDefault("gateway.native_reasoning_replay.max_output_items", 128)
 	viper.SetDefault("simple_mode.auto_create_default_groups", true)
 	viper.SetDefault("simple_mode_key_rate_limit_enabled", false)
 
@@ -2322,6 +2504,7 @@ func setDefaults() {
 	// CORS
 	viper.SetDefault("cors.allowed_origins", []string{})
 	viper.SetDefault("cors.allow_credentials", true)
+	viper.SetDefault("mcp.public_url", "")
 
 	// WebAuthn / Passkeys are opt-in because every deployment must explicitly
 	// declare its relying-party domain and trusted browser origins.
@@ -2331,6 +2514,8 @@ func setDefaults() {
 	viper.SetDefault("webauthn.rp_origins", []string{})
 
 	// Security
+	viper.SetDefault("security.mainland_web_block.enabled", false)
+	viper.SetDefault("security.mainland_web_block.cidr_file", "")
 	viper.SetDefault("security.url_allowlist.enabled", false)
 	viper.SetDefault("security.url_allowlist.upstream_hosts", []string{
 		"api.openai.com",
@@ -2667,11 +2852,35 @@ func setDefaults() {
 	// Kitty preserves the existing unlimited header wait until an admin enables
 	// the new runtime timeout setting; upgrading must not shorten live requests.
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
+	viper.SetDefault("gateway.disable_openai_transport_error_cooldown", false)
 	viper.SetDefault("gateway.grok_response_header_timeout", 120)
 	viper.SetDefault("gateway.openai_first_output_timeout_seconds", 0)
 	viper.SetDefault("gateway.openai_upload_timeout_seconds", 0)
 	viper.SetDefault("gateway.openai_pre_output_budget_seconds", 0)
 	viper.SetDefault("gateway.openai_high_effort_first_output_timeout_seconds", 0)
+	viper.SetDefault("gateway.openai_credits_guard_disabled", false)
+	viper.SetDefault("gateway.openai_429_soft_threshold", 30)
+	viper.SetDefault("gateway.openai_429_recovery_probe_disabled", false)
+	viper.SetDefault("gateway.openai_near_limit_disabled", false)
+	viper.SetDefault("gateway.openai_near_limit_max_concurrency", 20)
+	viper.SetDefault("gateway.openai_near_limit_429_probe_backoff_seconds", 2)
+	viper.SetDefault("gateway.openai_near_limit_ttft_threshold_ms", 15000)
+	viper.SetDefault("gateway.openai_near_limit_ttft_backoff_seconds", 30)
+	// Tibo HTTP probing (openai_tibo_route.go): ~10m ± up to 5m per account.
+	// Each probe is one gpt-6-astra request at reasoning effort xhigh.
+	viper.SetDefault("gateway.openai_tibo_route.enabled", false)
+	viper.SetDefault("gateway.openai_tibo_route.tick_interval", 6*time.Second)
+	viper.SetDefault("gateway.openai_tibo_route.probe_api_key_accounts", true)
+	viper.SetDefault("gateway.openai_tibo_route.probe_paused_accounts", true)
+	viper.SetDefault("gateway.openai_tibo_route.interval", 10*time.Minute)
+	viper.SetDefault("gateway.openai_tibo_route.spread", 5*time.Minute)
+	viper.SetDefault("gateway.openai_tibo_route.confirm_samples", 3)
+	viper.SetDefault("gateway.openai_tibo_route.confirm_spacing", 20*time.Second)
+	viper.SetDefault("gateway.openai_tibo_route.min_degraded_dwell", 10*time.Minute)
+	viper.SetDefault("gateway.openai_tibo_route.max_stale", 45*time.Minute)
+	viper.SetDefault("gateway.openai_tibo_route.max_probes_per_hour", 20)
+	viper.SetDefault("gateway.openai_tibo_route.probe_concurrency", 4)
+	viper.SetDefault("gateway.openai_tibo_route.scheduler_prefer_healthy_route", false)
 	viper.SetDefault("gateway.log_upstream_error_body", true)
 	viper.SetDefault("gateway.log_upstream_error_body_max_bytes", 2048)
 	viper.SetDefault("gateway.inject_beta_for_apikey", false)
@@ -2682,6 +2891,11 @@ func setDefaults() {
 	viper.SetDefault("gateway.api_key_queue.timeout_seconds", defaultAPIKeyQueueTimeoutSeconds)
 	viper.SetDefault("gateway.max_same_account_retries_gemini", 4)
 	viper.SetDefault("gateway.force_codex_cli", false)
+	viper.SetDefault("gateway.codex_full_synthesis", true)
+	viper.SetDefault("gateway.codex_wire.profile", "auto")
+	viper.SetDefault("gateway.codex_wire.strict", false)
+	viper.SetDefault("gateway.codex_wire.map_order_jitter", true)
+	viper.SetDefault("gateway.codex_wire.stream_idle_timeout_seconds", 300)
 	viper.SetDefault("gateway.codex_ws_anchor.ttl_seconds", 3600)
 	viper.SetDefault("gateway.codex_gateway_pin.ttl_seconds", 230)
 	viper.SetDefault("gateway.codex_gateway_pin.node_cooldown_seconds", 3600)
@@ -2697,6 +2911,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.disable_codex_originator_normalization", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
+	viper.SetDefault("gateway.openai_request_compression_enabled", false)
 	viper.SetDefault("gateway.openai_compact_model", "gpt-5.5")
 	viper.SetDefault("gateway.prism_browser.enabled", false)
 	viper.SetDefault("gateway.prism_browser.base_url", "http://127.0.0.1:8319/v1")
@@ -2717,7 +2932,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.store_disabled_conn_mode", "strict")
 	viper.SetDefault("gateway.openai_ws.store_disabled_force_new_conn", true)
 	viper.SetDefault("gateway.openai_ws.prewarm_generate_enabled", false)
+	viper.SetDefault("gateway.openai_ws.delta_context_enabled", true)
 	viper.SetDefault("gateway.openai_ws.client_read_limit_bytes", 64*1024*1024)
+	viper.SetDefault("gateway.openai_ws.exact_fidelity_enabled", true)
+	viper.SetDefault("gateway.openai_ws.codex_http_h2_enabled", false)
 	viper.SetDefault("gateway.openai_ws.smart_protocol.enabled", false)
 	viper.SetDefault("gateway.openai_ws.smart_protocol.mode", "auto")
 	viper.SetDefault("gateway.openai_ws.smart_protocol.large_output_threshold", 2000)
@@ -2795,6 +3013,11 @@ func setDefaults() {
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
 	viper.SetDefault("gateway.antigravity_extra_retries", 10)
 	viper.SetDefault("gateway.max_body_size", int64(256*1024*1024))
+	// Without explicit config or env, load() replaces this with a size derived
+	// from the memory limit (see autoRequestBodyMemoryBudget).
+	viper.SetDefault("gateway.request_body_memory_budget_bytes", defaultRequestBodyMemoryBudgetBytes)
+	viper.SetDefault("gateway.request_body_read_timeout_seconds", 120)
+	viper.SetDefault("gateway.downstream_write_timeout_seconds", 120)
 	viper.SetDefault("gateway.text_max_body_size", int64(32*1024*1024))
 	viper.SetDefault("gateway.upstream_response_read_max_bytes", DefaultUpstreamResponseReadMaxBytes)
 	viper.SetDefault("gateway.models_list_read_max_bytes", DefaultModelsListReadMaxBytes)
@@ -2810,12 +3033,16 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_upstream_clients", 5000)
 	viper.SetDefault("gateway.client_idle_ttl_seconds", 900)
 	viper.SetDefault("gateway.concurrency_slot_ttl_minutes", 30) // 并发槽位过期时间（支持超长请求）
+	viper.SetDefault("gateway.api_key_slot_ttl_seconds", 0)      // 普通 API Key 槽位独立 TTL；0=继承 concurrency_slot_ttl_minutes
 	viper.SetDefault("gateway.stream_data_interval_timeout", 180)
 	viper.SetDefault("gateway.stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
 	viper.SetDefault("gateway.image_stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.image_nonstream_keepalive_interval", 0)
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
+	viper.SetDefault("gateway.sse_queue_max_bytes", int64(8*1024*1024))
+	viper.SetDefault("gateway.sse_event_max_bytes", int64(0))
+	viper.SetDefault("gateway.sse_event_max_lines", 4096)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
 	viper.SetDefault("gateway.scheduling.fallback_wait_timeout", 30*time.Second)
@@ -2977,9 +3204,14 @@ func setEnvReachableDefaults() {
 	viper.SetDefault("dingtalk_connect.sync_corp_email_attr_name", "")
 }
 
+var errCodexNativeTLSProfile = errors.New("SUB2API_CODEX_NATIVE_TLS_PROFILE must be empty, openssl36 or openssl35-gnu")
+
 func (c *Config) Validate() error {
-	if _, err := upstreamroute.New(c.Gateway.UpstreamRouting); err != nil {
-		return fmt.Errorf("gateway.upstream_routing: %w", err)
+	// codexwire.NativeTLSProfileName 读取同一环境变量；未知值在启动时拒绝。
+	switch strings.TrimSpace(os.Getenv("SUB2API_CODEX_NATIVE_TLS_PROFILE")) {
+	case "", "openssl36", "openssl35-gnu":
+	default:
+		return errCodexNativeTLSProfile
 	}
 	if err := c.validateRuntime(); err != nil {
 		return err
@@ -3138,6 +3370,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("gemini.oauth.client_id and gemini.oauth.client_secret must be both set or both empty")
 	}
 
+	if err := c.MCP.Validate(); err != nil {
+		return err
+	}
 	if strings.TrimSpace(c.Server.FrontendURL) != "" {
 		if err := ValidateAbsoluteHTTPURL(c.Server.FrontendURL); err != nil {
 			return fmt.Errorf("server.frontend_url invalid: %w", err)
@@ -3632,6 +3867,18 @@ func (c *Config) Validate() error {
 	if c.Gateway.MaxBodySize <= 0 {
 		return fmt.Errorf("gateway.max_body_size must be positive")
 	}
+	if c.Gateway.RequestBodyMemoryBudgetBytes < 0 {
+		return fmt.Errorf("gateway.request_body_memory_budget_bytes must be non-negative")
+	}
+	if c.Gateway.RequestBodyReadTimeoutSeconds < 0 || c.Gateway.RequestBodyReadTimeoutSeconds > 3600 {
+		return fmt.Errorf("gateway.request_body_read_timeout_seconds must be between 0 and 3600")
+	}
+	if c.Gateway.DownstreamWriteTimeoutSeconds < 0 || c.Gateway.DownstreamWriteTimeoutSeconds > 3600 {
+		return fmt.Errorf("gateway.downstream_write_timeout_seconds must be between 0 and 3600")
+	}
+	if c.Gateway.SSEQueueMaxBytes < 0 || c.Gateway.SSEEventMaxBytes < 0 || c.Gateway.SSEEventMaxLines < 0 {
+		return fmt.Errorf("gateway.sse_queue_max_bytes, sse_event_max_bytes and sse_event_max_lines must be non-negative")
+	}
 	if c.Gateway.TextMaxBodySize <= 0 || c.Gateway.TextMaxBodySize > c.Gateway.MaxBodySize {
 		return fmt.Errorf("gateway.text_max_body_size must be positive and no greater than gateway.max_body_size")
 	}
@@ -3669,6 +3916,27 @@ func (c *Config) Validate() error {
 	if c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds < 0 || c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds > 1800 ||
 		(c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds > 0 && c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds < 30) {
 		return fmt.Errorf("gateway.openai_high_effort_first_output_timeout_seconds must be 0 or between 30-1800 seconds")
+	}
+	if c.Gateway.OpenAI429SoftThreshold < 0 || c.Gateway.OpenAI429SoftThreshold > 1000 {
+		return fmt.Errorf("gateway.openai_429_soft_threshold must be between 0-1000")
+	}
+	if c.Gateway.OpenAINearLimitMaxConcurrency < 0 {
+		return fmt.Errorf("gateway.openai_near_limit_max_concurrency must be non-negative")
+	}
+	if c.Gateway.OpenAINearLimit429ProbeBackoffSeconds < 0 {
+		return fmt.Errorf("gateway.openai_near_limit_429_probe_backoff_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAINearLimitTTFTThresholdMS < 0 {
+		return fmt.Errorf("gateway.openai_near_limit_ttft_threshold_ms must be non-negative")
+	}
+	if c.Gateway.OpenAINearLimitTTFTBackoffSeconds < 0 {
+		return fmt.Errorf("gateway.openai_near_limit_ttft_backoff_seconds must be non-negative")
+	}
+	if err := validateOpenAITiboRoute(c.Gateway.OpenAITiboRoute); err != nil {
+		return err
+	}
+	if err := c.Gateway.NativeReasoningReplay.Validate(); err != nil {
+		return err
 	}
 
 	if c.Gateway.Live.MaxSessionDurationSeconds <= 0 {
@@ -3721,12 +3989,32 @@ func (c *Config) Validate() error {
 	if c.Gateway.ConcurrencySlotTTLMinutes <= 0 {
 		return fmt.Errorf("gateway.concurrency_slot_ttl_minutes must be positive")
 	}
+	if c.Gateway.APIKeySlotTTLSeconds < 0 {
+		return fmt.Errorf("gateway.api_key_slot_ttl_seconds must be non-negative")
+	}
+	// 30 秒下限是配置策略：更短的租约会压缩既有 watchdog/续租超时公式的余量，
+	// 不是实测安全 SLA。
+	if c.Gateway.APIKeySlotTTLSeconds != 0 && c.Gateway.APIKeySlotTTLSeconds < 30 {
+		return fmt.Errorf("gateway.api_key_slot_ttl_seconds must be 0 (inherit concurrency_slot_ttl_minutes) or at least 30 seconds")
+	}
 	if c.Gateway.StreamDataIntervalTimeout < 0 {
 		return fmt.Errorf("gateway.stream_data_interval_timeout must be non-negative")
 	}
 	if c.Gateway.StreamDataIntervalTimeout != 0 &&
 		(c.Gateway.StreamDataIntervalTimeout < 30 || c.Gateway.StreamDataIntervalTimeout > 300) {
 		return fmt.Errorf("gateway.stream_data_interval_timeout must be 0 or between 30-300 seconds")
+	}
+	switch strings.TrimSpace(c.Gateway.CodexWire.Profile) {
+	case "", "auto", "stable", "main":
+	default:
+		return fmt.Errorf("gateway.codex_wire.profile must be one of: auto/stable/main")
+	}
+	if c.Gateway.CodexWire.StreamIdleTimeoutSeconds < 0 {
+		return fmt.Errorf("gateway.codex_wire.stream_idle_timeout_seconds must be non-negative")
+	}
+	if c.Gateway.CodexWire.StreamIdleTimeoutSeconds != 0 &&
+		(c.Gateway.CodexWire.StreamIdleTimeoutSeconds < 30 || c.Gateway.CodexWire.StreamIdleTimeoutSeconds > 1800) {
+		return fmt.Errorf("gateway.codex_wire.stream_idle_timeout_seconds must be 0 or between 30-1800 seconds")
 	}
 	if c.Gateway.StreamKeepaliveInterval < 0 {
 		return fmt.Errorf("gateway.stream_keepalive_interval must be non-negative")

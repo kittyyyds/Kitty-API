@@ -7,6 +7,7 @@
       </div>
       <div v-if="loading && !data" class="flex justify-center py-20"><LoadingSpinner /></div>
       <template v-if="data">
+        <p class="text-xs text-gray-500 dark:text-gray-400" data-testid="today-window">{{ t('admin.operations.todayWindow', { date: data.today_date || consumptionRange.end, timezone: siteTimeZone }) }}</p>
         <section class="grid grid-cols-2 gap-4 xl:grid-cols-4" :aria-label="t('admin.operations.metrics')" data-testid="operations-metrics">
           <article v-for="metric in metrics" :key="metric.key" class="ops-metric card min-w-0 p-3 sm:p-5" :data-metric="metric.key">
             <div class="flex flex-col items-start gap-3 2xl:flex-row">
@@ -158,16 +159,20 @@
           <p>{{ t('admin.operations.retentionHint', { date: data.details_retained_since ? new Date(data.details_retained_since).toLocaleDateString() : '—' }) }}</p>
           <RouterLink to="/admin/procurement/receipts" class="text-primary-600 hover:underline dark:text-primary-400">{{ t('admin.operations.receiptsLink') }}</RouterLink>
         </div>
-        <OperationsTrendChart :points="data.trend" :days="trendDays" />
+        <div class="grid grid-cols-1 items-stretch gap-6 xl:grid-cols-2">
+          <OperationsTrendChart :points="data.trend" :days="trendDays" :time-zone="siteTimeZone" />
+          <OperationsRechargeRankingPanel :ranking="rechargeRanking" :loading="rankingLoading" :error="rankingError" @retry="loadRechargeRanking" />
+        </div>
         <section class="grid grid-cols-1 items-stretch gap-6 xl:grid-cols-10" :aria-label="t('admin.operations.recharge.ordersTitle')" data-testid="recharge-dashboard-grid">
           <OperationsRechargeOrdersPanel class="xl:col-span-7"
             :orders="rechargeOrders" :loading="rechargeLoading" :error="rechargeError" :page="rechargePage" :pages="rechargePages" :total="rechargeTotal"
             :search="rechargeSearch" :suggestions="rechargeSuggestions" :suggestions-open="rechargeSuggestionsOpen" :suggestions-loading="rechargeSuggestionsLoading"
             :status="rechargeStatus" :channel="rechargeChannel" :days="rechargeDays"
+            :summary="rechargeSummary" :summary-loading="rechargeSummaryLoading" :summary-error="rechargeSummaryError" :time-zone="siteTimeZone"
             @update:search="updateRechargeSearch" @focus-search="focusRechargeSearch" @blur-search="blurRechargeSearch"
             @select-suggestion="selectRechargeSuggestion" @select-status="selectRechargeStatus" @select-channel="selectRechargeChannel"
-            @select-days="selectRechargeDays" @select-page="selectRechargePage" @retry="loadRechargeOrders" />
-          <OperationsRechargeRiskPanel class="xl:col-span-3" :events="rechargeRisks" :loading="rechargeRiskLoading" :error="rechargeRiskError" @retry="loadRechargeRisks" />
+            @select-days="selectRechargeDays" @select-page="selectRechargePage" @retry="loadRechargeOrders" @retry-summary="loadRechargeSummary" />
+          <OperationsRechargeRiskPanel class="xl:col-span-3" :time-zone="siteTimeZone" :events="rechargeRisks" :loading="rechargeRiskLoading" :error="rechargeRiskError" @retry="loadRechargeRisks" />
         </section>
       </template>
     </div>
@@ -179,7 +184,8 @@ import { RouterLink } from 'vue-router'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
-import type { OperationsDashboardResponse, OperationsGroupProfitStat, OperationsModelProfitStat, OperationsUserSpendResponse } from '@/api/admin/dashboard'
+import { useAppStore } from '@/stores/app'
+import type { OperationsDashboardResponse, OperationsGroupProfitStat, OperationsModelProfitStat, OperationsUserSpendResponse, OperationsRechargeRankingResponse } from '@/api/admin/dashboard'
 import type { SimpleUser } from '@/api/admin/usage'
 import type { GroupPlatform } from '@/types'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -189,12 +195,24 @@ import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import OperationsTrendChart from '@/components/admin/dashboard/OperationsTrendChart.vue'
 import OperationsUserSpendPanel from '@/components/admin/dashboard/OperationsUserSpendPanel.vue'
 import OperationsRechargeOrdersPanel from '@/components/admin/dashboard/OperationsRechargeOrdersPanel.vue'
+import OperationsRechargeRankingPanel from '@/components/admin/dashboard/OperationsRechargeRankingPanel.vue'
 import OperationsRechargeRiskPanel from '@/components/admin/dashboard/OperationsRechargeRiskPanel.vue'
-import type { RechargeChannel, RechargeOrder, RechargeRiskEvent, RechargeStatus } from './operationsRechargeTypes'
+import type { RechargeChannel, RechargeOrder, RechargeRiskEvent, RechargeStatus, RechargeSummary } from './operationsRechargeTypes'
 import { platformTextClass } from '@/utils/platformColors'
-import { compareProfit, dateRange, formatMoney, profitOf } from './operationsUtils'
+import { compareProfit, dateRange, formatMoney, profitOf, supportedTimeZone } from './operationsUtils'
 
 const { t } = useI18n()
+const appStore = useAppStore()
+const siteTimeZone = ref(supportedTimeZone(appStore.cachedPublicSettings?.server_timezone) || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
+const rechargeRanking = ref<OperationsRechargeRankingResponse | null>(null)
+const rankingLoading = ref(false)
+const rankingError = ref(false)
+const rechargeSummary = ref<RechargeSummary | null>(null)
+const rechargeSummaryLoading = ref(false)
+const rechargeSummaryError = ref(false)
+let rankingSequence = 0
+let rechargeSummarySequence = 0
+let unmounted = false
 const data = ref<OperationsDashboardResponse | null>(null)
 const loading = ref(false)
 const error = ref(false)
@@ -280,7 +298,7 @@ function todayValue(metric: Metric): number {
 const formatOptionalMoney = (value: number | null) => value === null ? '—' : formatMoney(value)
 const formatChange = (value: number, currency = 'USD') => `${value > 0 ? '+' : ''}${formatMoney(value, currency)}`
 const changeClass = (value: number) => value > 0 ? 'text-rose-500 dark:text-rose-400' : value < 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-500 dark:text-gray-400'
-const consumptionRange = computed(() => dateRange(selectedDays.value))
+const consumptionRange = computed(() => dateRange(selectedDays.value, new Date(), siteTimeZone.value))
 const users = computed(() => userSpendData.value?.users ?? [])
 const selectedDetail = computed(() => userSpendData.value?.detail?.user_id === selectedUserId.value ? userSpendData.value.detail : null)
 const selectedUser = computed(() => {
@@ -336,11 +354,11 @@ async function loadUserSpend() {
   userLoading.value = true
   userError.value = false
   try {
-    const range = dateRange(selectedDays.value)
+    const range = dateRange(selectedDays.value, new Date(), siteTimeZone.value)
     const result = await adminAPI.dashboard.getOperationsUserSpend({
       start_date: range.start,
       end_date: range.end,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+      timezone: siteTimeZone.value,
       ...(userSearch.value.trim() ? { search: userSearch.value.trim() } : {}),
       ...(selectedUserId.value !== null ? { user_id: selectedUserId.value } : {})
     })
@@ -435,10 +453,10 @@ async function loadRechargeOrders() {
   const sequence = ++rechargeSequence
   rechargeLoading.value = true
   rechargeError.value = false
-  const range = dateRange(rechargeDays.value)
+  const range = dateRange(rechargeDays.value, new Date(), siteTimeZone.value)
   try {
     const result = await adminAPI.dashboard.getOperationsRechargeOrders({
-      page: rechargePage.value, page_size: 25, start_date: range.start, end_date: range.end,
+      page: rechargePage.value, page_size: 25, start_date: range.start, end_date: range.end, timezone: siteTimeZone.value,
       ...(rechargeSearch.value.trim() ? { search: rechargeSearch.value.trim() } : {}),
       ...(rechargeStatus.value !== 'all' ? { status: rechargeStatus.value } : {}),
       ...(rechargeChannel.value !== 'all' ? { channel: rechargeChannel.value } : {})
@@ -455,6 +473,33 @@ async function loadRechargeOrders() {
     if (sequence === rechargeSequence) rechargeLoading.value = false
   }
 }
+async function loadRechargeRanking() {
+  const sequence = ++rankingSequence
+  rankingLoading.value = true; rankingError.value = false
+  try {
+    const result = await adminAPI.dashboard.getOperationsRechargeRanking()
+    if (sequence === rankingSequence) rechargeRanking.value = result
+  } catch (reason) {
+    if (sequence === rankingSequence) rankingError.value = true
+    console.error('Failed to load recharge ranking:', reason)
+  } finally { if (sequence === rankingSequence) rankingLoading.value = false }
+}
+async function loadRechargeSummary() {
+  const sequence = ++rechargeSummarySequence
+  rechargeSummaryLoading.value = true; rechargeSummaryError.value = false
+  const range = dateRange(rechargeDays.value, new Date(), siteTimeZone.value)
+  try {
+    const result = await adminAPI.dashboard.getOperationsRechargeSummary({
+      start_date: range.start, end_date: range.end, timezone: siteTimeZone.value,
+      ...(rechargeSearch.value.trim() ? { search: rechargeSearch.value.trim() } : {}),
+      ...(rechargeChannel.value !== 'all' ? { channel: rechargeChannel.value } : {})
+    })
+    if (sequence === rechargeSummarySequence) rechargeSummary.value = result
+  } catch (reason) {
+    if (sequence === rechargeSummarySequence) rechargeSummaryError.value = true
+    console.error('Failed to load recharge summary:', reason)
+  } finally { if (sequence === rechargeSummarySequence) rechargeSummaryLoading.value = false }
+}
 async function loadRechargeRisks() {
   rechargeRiskLoading.value = true
   rechargeRiskError.value = false
@@ -462,8 +507,8 @@ async function loadRechargeRisks() {
   catch (reason) { rechargeRiskError.value = true; console.error('Failed to load recharge risks:', reason) }
   finally { rechargeRiskLoading.value = false }
 }
-function resetRechargeOrders() { rechargePage.value = 1; void loadRechargeOrders() }
-function selectRechargeStatus(value: 'all' | RechargeStatus) { if (rechargeStatus.value !== value) { rechargeStatus.value = value; resetRechargeOrders() } }
+function resetRechargeOrders(includeSummary = true) { rechargePage.value = 1; void loadRechargeOrders(); if (includeSummary) void loadRechargeSummary() }
+function selectRechargeStatus(value: 'all' | RechargeStatus) { if (rechargeStatus.value !== value) { rechargeStatus.value = value; resetRechargeOrders(false) } }
 function selectRechargeChannel(value: 'all' | RechargeChannel) { if (rechargeChannel.value !== value) { rechargeChannel.value = value; resetRechargeOrders() } }
 function selectRechargeDays(value: 1 | 7 | 30) { if (rechargeDays.value !== value) { rechargeDays.value = value; resetRechargeOrders() } }
 function selectRechargePage(value: number) { if (value >= 1 && value <= rechargePages.value && value !== rechargePage.value) { rechargePage.value = value; void loadRechargeOrders() } }
@@ -473,6 +518,7 @@ function updateRechargeSearch(value: string) {
   rechargeSuggestionsOpen.value = Boolean(value.trim())
   rechargeSuggestionSequence++
   rechargeSequence++
+  rechargeSummarySequence++
   if (rechargeSearchTimer) clearTimeout(rechargeSearchTimer)
   if (!value.trim()) { rechargeSuggestionsLoading.value = false; resetRechargeOrders(); return }
   rechargeSearchTimer = setTimeout(() => { void loadRechargeSuggestions(value.trim()); resetRechargeOrders() }, 250)
@@ -498,19 +544,25 @@ function selectRechargeSuggestion(user: SimpleUser) {
   rechargeSuggestionsOpen.value = false
   resetRechargeOrders()
 }
-function refreshAll() { void loadData(); void loadUserSpend() }
+function refreshAll() { void loadData(); void loadUserSpend(); void loadRechargeRanking(); void loadRechargeSummary(); void loadRechargeOrders(); void loadRechargeRisks() }
 async function loadData() {
   const sequence = ++requestSequence
   loading.value = true
   error.value = false
-  const range = dateRange(selectedDays.value)
+  const range = dateRange(selectedDays.value, new Date(), siteTimeZone.value)
   try {
     const result = await adminAPI.dashboard.getOperationsDashboard({
       start_date: range.start, end_date: range.end, trend_days: trendDays.value,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+      timezone: siteTimeZone.value,
       group_id: selectedGroup.value === null ? 0 : selectedGroup.value === 0 ? -1 : selectedGroup.value
     })
     if (sequence !== requestSequence) return
+    const confirmedZone = supportedTimeZone(result.site_timezone)
+    if (confirmedZone && confirmedZone !== siteTimeZone.value) {
+      siteTimeZone.value = confirmedZone
+      await loadData()
+      return
+    }
     data.value = result
   } catch (err) {
     if (sequence !== requestSequence) return
@@ -523,8 +575,23 @@ async function loadData() {
 function onResize() { trendDays.value = window.innerWidth < 768 ? 7 : 15 }
 watch([selectedDays, selectedGroup, trendDays], loadData)
 watch(selectedDays, () => { if (!manuallySelectedUser.value) selectedUserId.value = null; activeBreakdownTab.value = 'groups'; void loadUserSpend() })
-onMounted(() => { window.addEventListener('resize', onResize); void loadData(); void loadUserSpend(); void loadRechargeOrders(); void loadRechargeRisks() })
+onMounted(async () => {
+  loading.value = true
+  window.addEventListener('resize', onResize)
+  try {
+    const settings = await appStore.fetchPublicSettings()
+    const zone = supportedTimeZone(settings?.server_timezone)
+    if (zone) siteTimeZone.value = zone
+  } catch (reason) { console.error('Failed to read site timezone:', reason) }
+  if (unmounted) return
+  await loadData()
+  if (unmounted) return
+  void loadUserSpend(); void loadRechargeOrders(); void loadRechargeRisks(); void loadRechargeRanking(); void loadRechargeSummary()
+})
 onUnmounted(() => {
+  unmounted = true
+  rankingSequence++
+  rechargeSummarySequence++
   requestSequence++
   userRequestSequence++
   suggestionSequence++

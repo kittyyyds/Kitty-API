@@ -94,7 +94,9 @@ function defineFlag<K extends keyof PublicSettings>(
  * public-settings-driven switch; see the "Adding a new flag" checklist above.
  */
 export const FeatureFlags = {
-  prismBrowser: defineFlag({ key: 'prism_browser_enabled', mode: 'opt-in', label: 'Prism browser bridge' }),
+  gptDirect: defineFlag({ key: 'gpt_direct_enabled', mode: 'opt-in', label: 'GPT Direct' }),
+  mcp: defineFlag({key: 'mcp_enabled',mode: 'opt-in',label: 'MCP'}),
+  channelQualityPublic: defineFlag({ key: 'channel_quality_public_enabled', mode: 'opt-out', label: 'Channel Quality Results' }),
   channelMonitor: defineFlag({
     key: 'channel_monitor_enabled',
     mode: 'opt-out',
@@ -104,11 +106,6 @@ export const FeatureFlags = {
     key: 'available_channels_enabled',
     mode: 'opt-in',
     label: 'Available Channels',
-  }),
-  pelicanShowcase: defineFlag({
-    key: 'pelican_showcase_enabled',
-    mode: 'opt-in',
-    label: 'Pelican Showcase',
   }),
   subscription: defineFlag({
     key: 'subscription_enabled',
@@ -130,11 +127,6 @@ export const FeatureFlags = {
     mode: 'opt-out',
     label: 'Payment',
   }),
-  riskControl: defineFlag({
-    key: 'risk_control_enabled',
-    mode: 'opt-in',
-    label: 'Risk Control',
-  }),
   affiliate: defineFlag({
     key: 'affiliate_enabled',
     mode: 'opt-in',
@@ -144,6 +136,11 @@ export const FeatureFlags = {
     key: 'support_ticket_enabled',
     mode: 'opt-in',
     label: 'Support Tickets',
+  }),
+  riskControl: defineFlag({
+    key: 'risk_control_enabled',
+    mode: 'opt-in',
+    label: 'Risk Control',
   }),
 } as const
 

@@ -47,7 +47,7 @@ func TestForwardAsAnthropic_BufferedResponseFailed_ReturnsError(t *testing.T) {
 
 	require.Error(t, err, "non-cyber response.failed must return an error, not swallow as 200")
 	require.Contains(t, err.Error(), "upstream response failed")
-	require.Equal(t, http.StatusBadGateway, rec.Code, "should write 502 for non-failover failed response")
+	require.Equal(t, http.StatusBadRequest, rec.Code, "a structured request/policy rejection keeps its semantic 400 status")
 }
 
 func TestForwardAsAnthropic_StreamingResponseFailed_ReturnsError(t *testing.T) {
@@ -115,7 +115,8 @@ func TestForwardAsAnthropic_StreamingBareErrorAfterOutputIsVisible(t *testing.T)
 	clientStream := rec.Body.String()
 	require.Contains(t, clientStream, `"text":"partial"`)
 	require.Contains(t, clientStream, "event: error")
-	require.Contains(t, clientStream, "mixed tools failed")
+	require.Contains(t, clientStream, OpenAIUpstreamFailureClientMessage)
+	require.NotContains(t, clientStream, "mixed tools failed")
 	require.NotContains(t, clientStream, "event: message_stop")
 	require.NotContains(t, err.Error(), "missing terminal event")
 }
@@ -179,10 +180,11 @@ func TestForwardAsAnthropic_StreamingGenericBareErrorBeforeOutputIsNotHiddenByFa
 	require.Error(t, err)
 	var failoverErr *UpstreamFailoverError
 	require.False(t, errors.As(err, &failoverErr))
-	require.Contains(t, rec.Body.String(), "mixed tools failed")
+	require.Contains(t, rec.Body.String(), OpenAIUpstreamFailureClientMessage)
+	require.NotContains(t, rec.Body.String(), "mixed tools failed")
 }
 
-func TestForwardAsAnthropic_BufferedResponseFailed_Failover(t *testing.T) {
+func TestForwardAsAnthropic_BufferedResponseFailed_MeteredRateLimitIsNotReplayed(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"gpt-5.4","max_tokens":32,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
@@ -204,9 +206,13 @@ func TestForwardAsAnthropic_BufferedResponseFailed_Failover(t *testing.T) {
 	}
 
 	account := rawChatCompletionsTestAccount()
-	_, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
+	result, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "", "")
 
 	require.Error(t, err)
 	var failoverErr *UpstreamFailoverError
-	require.True(t, errors.As(err, &failoverErr), "rate_limit_error should trigger UpstreamFailoverError for failover, got: %T: %v", err, err)
+	require.False(t, errors.As(err, &failoverErr), "already metered input must not be submitted again")
+	require.NotNil(t, result)
+	require.Equal(t, 10, result.Usage.InputTokens)
+	require.False(t, result.SucceededForScheduling())
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
 }

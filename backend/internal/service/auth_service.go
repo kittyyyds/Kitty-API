@@ -99,6 +99,7 @@ type AuthService struct {
 	affiliateService      *AffiliateService
 	defaultSubAssigner    DefaultSubscriptionAssigner
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	mcpGrantRevoker       MCPGrantRevoker
 }
 
 type CaptchaProof struct {
@@ -106,6 +107,11 @@ type CaptchaProof struct {
 	TurnstileToken string
 	TencentTicket  string
 	TencentRandstr string
+}
+
+// MCPGrantRevoker revokes MCP authorizations, which outlive browser sessions.
+type MCPGrantRevoker interface {
+	RevokeAllGrants(ctx context.Context, userID int64) error
 }
 
 type DefaultSubscriptionAssigner interface {
@@ -167,6 +173,10 @@ func (s *AuthService) SetAliyunCaptchaService(aliyunCaptchaService *AliyunCaptch
 	s.aliyunCaptchaService = aliyunCaptchaService
 }
 
+func (s *AuthService) SetMCPGrantRevoker(revoker MCPGrantRevoker) {
+	s.mcpGrantRevoker = revoker
+}
+
 // Register 用户注册，返回token和用户
 func (s *AuthService) Register(ctx context.Context, email, password string) (string, *User, error) {
 	return s.RegisterWithVerification(ctx, email, password, "", "", "", "")
@@ -178,6 +188,12 @@ func (s *AuthService) RegisterWithVerification(ctx context.Context, email, passw
 	if s.settingService == nil || !s.settingService.IsRegistrationEnabled(ctx) {
 		return "", nil, ErrRegDisabled
 	}
+	// 密码长度上限必须在消耗邮箱验证码 / 占用邀请码之前检查，否则一次性验证码会被白白烧掉。
+	if err := ValidatePasswordMaxLength(password); err != nil {
+		return "", nil, err
+	}
+	// 邀请码与校验接口同口径去掉首尾空格（数据库中存储的邀请码本身不变）。
+	invitationCode = strings.TrimSpace(invitationCode)
 
 	// 防止用户注册 LinuxDo OAuth 合成邮箱，避免第三方登录与本地账号发生碰撞。
 	if isReservedEmail(email) {
@@ -1349,7 +1365,19 @@ func inferLegacySignupSource(email string) string {
 	}
 }
 
+// validateRegistrationEmailPolicy 校验邮箱能否用于新建账号或绑定为账号邮箱：精确黑名单与域名白名单。
 func (s *AuthService) validateRegistrationEmailPolicy(ctx context.Context, email string) error {
+	if s.settingService == nil {
+		return nil
+	}
+	if s.settingService.IsRegistrationEmailBlacklisted(ctx, email) {
+		return ErrEmailBlocked
+	}
+	return s.validateRegistrationEmailSuffixPolicy(ctx, email)
+}
+
+// validateRegistrationEmailSuffixPolicy 只校验域名白名单。
+func (s *AuthService) validateRegistrationEmailSuffixPolicy(ctx context.Context, email string) error {
 	if s.settingService == nil {
 		return nil
 	}
@@ -1360,12 +1388,15 @@ func (s *AuthService) validateRegistrationEmailPolicy(ctx context.Context, email
 	return nil
 }
 
-// validateRegistrationEmailQuota 保留白名单为空时的全放行行为；配置白名单后，
-// 非白名单域名默认直接拒绝（严格白名单模式）；仅当域名限量注册开关开启时，
+// validateRegistrationEmailQuota 精确黑名单命中直接拒绝；保留白名单为空时的全放行行为；
+// 配置白名单后，非白名单域名默认直接拒绝（严格白名单模式）；仅当域名限量注册开关开启时，
 // 非白名单域名每个最多允许一个账户。
 func (s *AuthService) validateRegistrationEmailQuota(ctx context.Context, email string) error {
 	if s.settingService == nil {
 		return nil
+	}
+	if s.settingService.IsRegistrationEmailBlacklisted(ctx, email) {
+		return ErrEmailBlocked
 	}
 	whitelist := s.settingService.GetRegistrationEmailSuffixWhitelist(ctx)
 	if !IsRegistrationEmailSuffixLimited(email, whitelist) {
@@ -1620,12 +1651,9 @@ func (s *AuthService) GetAccessTokenExpiresIn() int {
 }
 
 // HashPassword 使用bcrypt加密密码
+// 超过 72 字节的密码返回 400 PASSWORD_TOO_LONG（而不是 bcrypt 原始错误导致的 500）。
 func (s *AuthService) HashPassword(password string) (string, error) {
-	hashedBytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return "", err
-	}
-	return string(hashedBytes), nil
+	return hashPasswordBcrypt(password)
 }
 
 // CheckPassword 验证密码是否匹配
@@ -1780,6 +1808,11 @@ func (s *AuthService) ResetPassword(ctx context.Context, email, token, newPasswo
 
 	if s.emailService == nil {
 		return ErrServiceUnavailable
+	}
+
+	// Reject passwords bcrypt cannot hash before the one-time reset token is consumed.
+	if err := ValidatePasswordMaxLength(newPassword); err != nil {
+		return err
 	}
 
 	// Verify and consume the reset token (one-time use)
@@ -2004,10 +2037,15 @@ func (s *AuthService) RefreshTokenPair(ctx context.Context, refreshToken string)
 		}
 	}
 
-	// Token轮转：立即使旧Token失效
-	if err := s.refreshTokenCache.DeleteRefreshToken(ctx, tokenHash); err != nil {
-		logger.LegacyPrintf("service.auth", "[Auth] Failed to delete old refresh token: %v", err)
-		// 继续处理，不影响主流程
+	// Token轮转：原子消费旧Token。并发刷新时只有一个请求能成功，
+	// 其余请求拿到 ErrRefreshTokenNotFound，避免同一个 Refresh Token 被兑换两次。
+	if _, err := s.refreshTokenCache.ConsumeRefreshToken(ctx, tokenHash); err != nil {
+		if errors.Is(err, ErrRefreshTokenNotFound) {
+			logger.LegacyPrintf("service.auth", "[Auth] Refresh token already consumed, possible reuse attack")
+			return nil, ErrRefreshTokenInvalid
+		}
+		logger.LegacyPrintf("service.auth", "[Auth] Failed to consume old refresh token: %v", err)
+		return nil, ErrServiceUnavailable
 	}
 
 	// 生成新的Token对，保持同一个家族ID
@@ -2066,6 +2104,13 @@ func (s *AuthService) RevokeAllUserTokens(ctx context.Context, userID int64) err
 
 	if err := s.RevokeAllUserSessions(ctx, userID); err != nil {
 		logger.LegacyPrintf("service.auth", "[Auth] Failed to revoke refresh sessions after token invalidation for user %d: %v", userID, err)
+	}
+	// A browser JWT can mint a long-lived MCP grant, so revoking every session
+	// must also revoke those grants. Fail loudly: the caller can retry.
+	if s.mcpGrantRevoker != nil {
+		if err := s.mcpGrantRevoker.RevokeAllGrants(ctx, userID); err != nil {
+			return fmt.Errorf("revoke MCP grants: %w", err)
+		}
 	}
 	return nil
 }

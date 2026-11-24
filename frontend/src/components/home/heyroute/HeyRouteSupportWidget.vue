@@ -64,6 +64,10 @@ const open = shallowRef(false)
   cursor: pointer;
 }
 
+:global(.heyroute-preview[data-theme='dark'] .hr-support-button) {
+  color: #86e0d6;
+}
+
 .hr-support-panel {
   width: min(300px, calc(100vw - 40px));
   border: 1px solid var(--hr-glass-border);

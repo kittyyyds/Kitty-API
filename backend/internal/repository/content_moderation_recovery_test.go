@@ -59,7 +59,6 @@ func TestModerationRecoveryThresholdOwnershipAndExemption(t *testing.T) {
 		{"threshold", "active", "user", false, true},
 		{"allowlisted still counts", "active", "user", true, false},
 		{"administrator exempt", "active", "admin", false, false},
-		{"kitty super administrator exempt", "active", "super_admin", false, false},
 		{"other disable retained", "disabled", "user", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

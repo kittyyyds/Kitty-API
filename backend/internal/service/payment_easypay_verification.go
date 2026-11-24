@@ -190,19 +190,33 @@ func (s *PaymentService) easyPayPaidTransition(ctx context.Context, o *dbent.Pay
 	}
 	defer func() { _ = tx.Rollback() }()
 	client := tx.Client()
+	if err := s.lockEasyPayTransaction(ctx, client, o, tradeNo); err != nil {
+		return 0, err
+	}
+	n, err := update(client)
+	if err != nil {
+		return 0, err
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func (s *PaymentService) lockEasyPayTransaction(ctx context.Context, client *dbent.Client, o *dbent.PaymentOrder, tradeNo string) error {
 	if s.entClient.Driver().Dialect() == dialect.Postgres {
 		digest := sha256.Sum256([]byte("easypay-paid:" + tradeNo))
 		lockID := int64(binary.BigEndian.Uint64(digest[:8]))
-		if _, err = client.ExecContext(ctx, "SET LOCAL lock_timeout = '2s'"); err != nil {
-			return 0, err
+		if _, err := client.ExecContext(ctx, "SET LOCAL lock_timeout = '2s'"); err != nil {
+			return err
 		}
-		if _, err = client.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", lockID); err != nil {
-			return 0, err
+		if _, err := client.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", lockID); err != nil {
+			return err
 		}
 	}
 	others, err := client.PaymentOrder.Query().Where(paymentorder.PaymentTradeNoEQ(tradeNo), paymentorder.IDNEQ(o.ID)).All(ctx)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	for _, other := range others {
 		// Only an authoritative non-EasyPay identity can exclude an old owner.
@@ -217,14 +231,7 @@ func (s *PaymentService) easyPayPaidTransition(ctx context.Context, o *dbent.Pay
 		if thisSnapshot != nil && otherSnapshot != nil && thisSnapshot.MerchantID != "" && otherSnapshot.MerchantID != "" && thisSnapshot.MerchantID != otherSnapshot.MerchantID {
 			continue
 		}
-		return 0, fmt.Errorf("easypay transaction is already bound to another order")
+		return fmt.Errorf("easypay transaction is already bound to another order")
 	}
-	n, err := update(client)
-	if err != nil {
-		return 0, err
-	}
-	if err = tx.Commit(); err != nil {
-		return 0, err
-	}
-	return n, nil
+	return nil
 }

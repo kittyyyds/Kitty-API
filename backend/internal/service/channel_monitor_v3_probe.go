@@ -157,7 +157,7 @@ func normalizeChannelMonitorV3IdleProbe(probe *ChannelMonitorV3IdleProbe) error 
 			return channelMonitorV3Invalid("probe model must be at most 100 characters")
 		}
 		if effort := strings.TrimSpace(g.ReasoningEffort); effort != "" {
-			if g.ReasoningEffort = normalizePelicanReasoningEffort(effort); g.ReasoningEffort == "" {
+			if g.ReasoningEffort = normalizeMonitorReasoningEffort(effort); g.ReasoningEffort == "" {
 				return channelMonitorV3Invalid("unknown reasoning effort %q", effort)
 			}
 		} else {
@@ -197,7 +197,7 @@ func channelMonitorV3ProbeRetention(availabilityRange string) time.Duration {
 // last minute of a slot; several instances share the work through the claim.
 type ChannelMonitorV3Prober struct {
 	repo     ChannelMonitorV3Repository
-	groups   *PelicanGroupTestService
+	groups   *MonitorGroupProbeService
 	settings channelMonitorRuntimeReader
 	now      func() time.Time
 
@@ -210,7 +210,7 @@ type ChannelMonitorV3Prober struct {
 	stopOnce  sync.Once
 }
 
-func NewChannelMonitorV3Prober(repo ChannelMonitorV3Repository, groups *PelicanGroupTestService, settings channelMonitorRuntimeReader) *ChannelMonitorV3Prober {
+func NewChannelMonitorV3Prober(repo ChannelMonitorV3Repository, groups *MonitorGroupProbeService, settings channelMonitorRuntimeReader) *ChannelMonitorV3Prober {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ChannelMonitorV3Prober{repo: repo, groups: groups, settings: settings, now: time.Now, ctx: ctx, cancel: cancel}
 }
@@ -364,7 +364,7 @@ func (p *ChannelMonitorV3Prober) runOne(ctx context.Context, target channelMonit
 	challenge := generateChallenge()
 	runCtx, cancel := context.WithTimeout(ctx, channelMonitorV3ProbeTimeout)
 	defer cancel()
-	plan := &PelicanGroupTestPlan{GroupID: target.GroupID, ModelID: target.Model, PelicanConfig: &PelicanTestConfig{
+	plan := &MonitorProbePlan{GroupID: target.GroupID, ModelID: target.Model, Config: &MonitorProbeConfig{
 		QuestionKind: ChannelMonitorV3ProbeQuestionKind, Prompt: challenge.Prompt, ReasoningEffort: target.ReasoningEffort,
 		ParallelCount: 1, ModelID: target.Model,
 	}}
@@ -381,7 +381,7 @@ func (p *ChannelMonitorV3Prober) runOne(ctx context.Context, target channelMonit
 
 // channelMonitorV3ProbeVerdict judges a probe the way V1 judges a check: the
 // answer must contain the expected number; anything else is a failure.
-func channelMonitorV3ProbeVerdict(deadline error, sample *PelicanGroupTestResult, expected string) (string, string) {
+func channelMonitorV3ProbeVerdict(deadline error, sample *MonitorProbeResult, expected string) (string, string) {
 	switch {
 	case deadline != nil:
 		return ChannelMonitorV3ProbeFailure, fmt.Sprintf("timeout: no answer within %d seconds", int(channelMonitorV3ProbeTimeout.Seconds()))

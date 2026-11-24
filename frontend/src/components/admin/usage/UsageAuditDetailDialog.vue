@@ -149,6 +149,21 @@ const rawUsage = computed(() => {
         </div>
       </div>
 
+      <section v-if="row.image_count > 0" class="rounded-xl border border-gray-200 p-4 dark:border-dark-700" data-testid="image-output-evidence">
+        <h4 class="mb-3 text-sm font-semibold">{{ t('admin.usage.imageEvidence.title') }}</h4>
+        <template v-if="audit?.image_output_evidence">
+          <dl class="grid gap-3 text-sm sm:grid-cols-2">
+            <div><dt class="text-xs text-gray-500">{{ t('admin.usage.imageEvidence.model') }}</dt><dd>{{ t('admin.usage.imageEvidence.modelStatus.' + audit.image_output_evidence.model_status) }}</dd></div>
+            <div><dt class="text-xs text-gray-500">{{ t('admin.usage.imageEvidence.size') }}</dt><dd>{{ t('admin.usage.imageEvidence.sizeStatus.' + audit.image_output_evidence.size_status) }}</dd></div>
+            <div><dt class="text-xs text-gray-500">{{ t('admin.usage.imageEvidence.requested') }}</dt><dd>{{ audit.image_output_evidence.requested_size || 'auto' }}</dd></div>
+            <div><dt class="text-xs text-gray-500">{{ t('admin.usage.imageEvidence.processing') }}</dt><dd>{{ t(audit.image_output_evidence.postprocessed === false ? 'admin.usage.imageEvidence.unchanged' : 'admin.usage.imageEvidence.unknown') }}</dd></div>
+          </dl>
+          <div v-for="(image, index) in audit.image_output_evidence.outputs" :key="index" class="mt-3 text-sm">#{{ index + 1 }} · {{ t('admin.usage.imageEvidence.declared') }} {{ image.declared_size || '—' }} · {{ t('admin.usage.imageEvidence.measured') }} {{ image.measured_size || '—' }}</div>
+        </template>
+        <p v-else class="text-sm text-gray-500">{{ t('admin.usage.imageEvidence.noEvidence') }}</p>
+        <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.usage.imageEvidence.hint') }}</p>
+      </section>
+
       <section>
         <h4 class="mb-3 flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
           <Icon name="document" size="sm" class="text-primary-500" />

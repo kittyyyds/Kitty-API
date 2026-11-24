@@ -282,12 +282,13 @@ func (s *ChannelService) SyncProviderHubWallet(ctx context.Context, id int64) er
 				if snap == nil || snap.Balance == nil {
 					continue
 				}
-				raw, _ := json.Marshal(snap.Balance)
-				row := BuildSupplierBalanceRow(a.ID, a.Name, a.Platform, "", raw, nil, time.Now())
-				if row.Status == "ok" && row.Wallet != nil {
-					balance = row.Wallet
-					observedAt = row.ReceivedAt
-					unit = row.Unit
+				b := snap.Balance
+				valid, hasValidity := b.Data["is_valid"].(bool)
+				wallet, hasWallet := opsNumber(b.Data["wallet_balance"])
+				if b.Status == "ok" && opsFresh(b.ReceivedAt, b.FreshUntil, time.Now()) && (!hasValidity || valid) && hasWallet {
+					balance = &wallet
+					observedAt = b.ReceivedAt
+					unit, _ = b.Data["unit"].(string)
 					source = "linked_account_snapshot"
 					break
 				}

@@ -3,7 +3,6 @@ package middleware
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -35,36 +34,39 @@ func TestDeriveAuditAction(t *testing.T) {
 	}
 }
 
+func TestGPTDirectAuditNeverCapturesCDKSessionOrTaskToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repository := &auditCaptureRepository{}
+	audit := service.NewAuditLogService(repository, nil)
+	audit.Start()
+	router := gin.New()
+	router.Use(gin.HandlerFunc(NewAuditLogMiddleware(audit)))
+	for _, operation := range []string{"verify", "query", "redeem", "subscription", "task"} {
+		path := "/api/v1/gpt-direct/" + operation
+		router.POST(path, func(c *gin.Context) {
+			var input map[string]string
+			require.NoError(t, c.ShouldBindJSON(&input))
+			require.Equal(t, "audit-canary-session", input["session"])
+			c.Status(200)
+		})
+		request := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{"code":"audit-canary-cdk","session":"audit-canary-session","token":"audit-canary-token"}`))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		require.Equal(t, 200, recorder.Code)
+	}
+	audit.Stop()
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	require.Len(t, repository.logs, 5)
+	for _, entry := range repository.logs {
+		require.Equal(t, "<credential-bearing body omitted>", entry.RequestBody)
+	}
+}
+
 type auditCaptureRepository struct {
 	mu   sync.Mutex
 	logs []*service.AuditLog
-}
-
-func TestUserQuickEnableUsesUserManagementAudit(t *testing.T) {
-	repository := &auditCaptureRepository{}
-	auditService := service.NewAuditLogService(repository, nil)
-	auditService.Start()
-	router := gin.New()
-	router.Use(func(c *gin.Context) {
-		c.Set(string(ContextKeyUser), AuthSubject{UserID: 17})
-		c.Set(string(ContextKeyUserRole), "admin")
-		c.Next()
-	})
-	router.Use(gin.HandlerFunc(NewAuditLogMiddleware(auditService)))
-	router.PUT("/api/v1/admin/users/:id", func(c *gin.Context) { c.Status(http.StatusOK) })
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/users/306", strings.NewReader(`{"status":"active","reason":"reviewed disable source"}`))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(w, req)
-	auditService.Stop()
-	require.Equal(t, http.StatusOK, w.Code)
-	require.Len(t, repository.logs, 1)
-	entry := repository.logs[0]
-	require.Equal(t, "admin.users.update", entry.Action)
-	require.Equal(t, int64(17), *entry.ActorUserID)
-	require.Equal(t, "admin", entry.ActorRole)
-	require.Equal(t, map[string]string{"id": "306"}, entry.Extra["params"])
-	require.JSONEq(t, `{"status":"active","reason":"reviewed disable source"}`, entry.RequestBody)
 }
 
 func (r *auditCaptureRepository) BatchInsert(_ context.Context, logs []*service.AuditLog) (int64, error) {
@@ -89,90 +91,6 @@ func (r *auditCaptureRepository) Count(context.Context) (int64, error) { return 
 func (r *auditCaptureRepository) TruncateAll(context.Context) error    { return nil }
 func (r *auditCaptureRepository) DeleteBefore(context.Context, time.Time, int) (int64, error) {
 	return 0, nil
-}
-
-func TestPromptAuditAdminOperationsUseOmittedBodiesAndAllowlistedDetails(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	repository := &auditCaptureRepository{}
-	auditService := service.NewAuditLogService(repository, nil)
-	auditService.Start()
-
-	router := gin.New()
-	router.Use(func(c *gin.Context) {
-		c.Set(string(ContextKeyUser), AuthSubject{UserID: 77})
-		c.Set(string(ContextKeyUserRole), "admin")
-		c.Next()
-	})
-	router.Use(gin.HandlerFunc(NewAuditLogMiddleware(auditService)))
-	router.PUT("/api/v1/admin/prompt-audit/config", func(c *gin.Context) {
-		SetAuditExtra(c, map[string]any{
-			"result": "failed", "error_code": "prompt_audit_config_conflict", "config_version": int64(9),
-			"token": "audit-canary-secret", "raw_prompt": "audit-canary-prompt", "nested": map[string]any{"unsafe": true},
-		})
-		c.JSON(http.StatusConflict, gin.H{"ok": false})
-	})
-	router.POST("/api/v1/admin/prompt-audit/endpoints/probe", func(c *gin.Context) {
-		SetAuditExtra(c, map[string]any{
-			"result": "success", "guard_endpoint_id": "guard-1", "http_status": 200,
-			"latency_ms": 12, "token_applied": true,
-		})
-		c.JSON(http.StatusOK, gin.H{"ok": true})
-	})
-
-	for _, request := range []*http.Request{
-		httptest.NewRequest(http.MethodPut, "/api/v1/admin/prompt-audit/config", bytes.NewBufferString(`{"expected_config_version":8,"token":"audit-canary-secret"}`)),
-		httptest.NewRequest(http.MethodPost, "/api/v1/admin/prompt-audit/endpoints/probe", bytes.NewBufferString(`{"endpoint":{"token":"audit-canary-secret"}}`)),
-	} {
-		request.Header.Set("Content-Type", "application/json")
-		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, request)
-	}
-	auditService.Stop()
-
-	repository.mu.Lock()
-	logs := append([]*service.AuditLog(nil), repository.logs...)
-	repository.mu.Unlock()
-	require.Len(t, logs, 2)
-
-	byAction := make(map[string]*service.AuditLog, len(logs))
-	for _, entry := range logs {
-		byAction[entry.Action] = entry
-		require.Equal(t, "<credential-bearing body omitted>", entry.RequestBody)
-		require.NotContains(t, entry.RequestBody, "audit-canary")
-		require.NotContains(t, entry.Extra, "token")
-		require.NotContains(t, entry.Extra, "raw_prompt")
-		require.NotContains(t, entry.Extra, "nested")
-	}
-
-	config := byAction["admin.prompt_audit.config.update"]
-	require.NotNil(t, config)
-	require.Equal(t, http.StatusConflict, config.StatusCode)
-	require.Equal(t, "failed", config.Extra["result"])
-	require.Equal(t, "prompt_audit_config_conflict", config.Extra["error_code"])
-	require.EqualValues(t, 9, config.Extra["config_version"])
-
-	probe := byAction["admin.prompt_audit.endpoint.probe"]
-	require.NotNil(t, probe)
-	require.Equal(t, http.StatusOK, probe.StatusCode)
-	require.Equal(t, "success", probe.Extra["result"])
-	require.Equal(t, "guard-1", probe.Extra["guard_endpoint_id"])
-	require.Equal(t, true, probe.Extra["token_applied"])
-}
-
-func TestPromptAuditMutationAuditRoutesHaveStableActionsAndOmitBodies(t *testing.T) {
-	expected := map[string]string{
-		"PUT /api/v1/admin/prompt-audit/config":                   "admin.prompt_audit.config.update",
-		"POST /api/v1/admin/prompt-audit/endpoints/probe":         "admin.prompt_audit.endpoint.probe",
-		"DELETE /api/v1/admin/prompt-audit/events/:id":            "admin.prompt_audit.event.delete",
-		"POST /api/v1/admin/prompt-audit/events/batch-delete":     "admin.prompt_audit.events.batch_delete",
-		"POST /api/v1/admin/prompt-audit/events/delete-preview":   "admin.prompt_audit.events.delete_preview",
-		"POST /api/v1/admin/prompt-audit/events/delete-by-filter": "admin.prompt_audit.events.filter_delete",
-	}
-	for route, action := range expected {
-		require.Equal(t, action, auditActionOverrides[route])
-		_, omitted := auditBodyOmittedRoutes[route]
-		require.Truef(t, omitted, "%s must not persist its credential or confirmation-bearing body", route)
-	}
 }
 
 func TestPasskeyLoginAuditUsesCanonicalLoginActionAndOmitsCredentialBody(t *testing.T) {
@@ -218,81 +136,104 @@ func TestOllamaCloudUsageSessionRouteOmitsAuditBody(t *testing.T) {
 	require.NotContains(t, logs[0].RequestBody, "audit-canary")
 }
 
-func TestAccountOpsRobotConfigOmitsAuditBody(t *testing.T) {
-	for _, path := range []string{"/api/v1/admin/account-ops/config", "/api/v1/admin/account-ops/webhooks/:id"} {
-		t.Run(path, func(t *testing.T) {
-			gin.SetMode(gin.TestMode)
-
-			repository := &auditCaptureRepository{}
-			auditService := service.NewAuditLogService(repository, nil)
-			auditService.Start()
-
-			router := gin.New()
-			router.Use(func(c *gin.Context) {
-				c.Set(string(ContextKeyUser), AuthSubject{UserID: 77})
-				c.Set(string(ContextKeyUserRole), "admin")
-				c.Next()
-			})
-			router.Use(gin.HandlerFunc(NewAuditLogMiddleware(auditService)))
-			router.PUT(path, func(c *gin.Context) {
-				c.JSON(http.StatusOK, gin.H{"ok": true})
-			})
-
-			requestPath := strings.ReplaceAll(path, ":id", "fixture")
-			request := httptest.NewRequest(http.MethodPut, requestPath,
-				bytes.NewBufferString(`{"webhooks":[{"url":"https://open.feishu.cn/open-apis/bot/v2/hook/audit-canary","secret":"secret-canary"}]}`))
-			request.Header.Set("Content-Type", "application/json")
-			recorder := httptest.NewRecorder()
-			router.ServeHTTP(recorder, request)
-			require.Equal(t, http.StatusOK, recorder.Code)
-			auditService.Stop()
-
-			repository.mu.Lock()
-			logs := append([]*service.AuditLog(nil), repository.logs...)
-			repository.mu.Unlock()
-			require.Len(t, logs, 1)
-			require.Equal(t, "<credential-bearing body omitted>", logs[0].RequestBody)
-			require.NotContains(t, logs[0].RequestBody, "audit-canary")
-		})
-	}
-}
-
-func TestOpenAISessionExportOmitsAuditBody(t *testing.T) {
+// MCP OAuth 是机器凭证：只读工具同样可以批量读取邮箱等数据，必须全部入审计并带上 grant。
+func TestAuditRecordsEveryMCPOAuthReadWithGrant(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	require.Contains(t, auditBodyOmittedRoutes, "POST /api/v1/admin/accounts/:id/export-session")
-
 	repository := &auditCaptureRepository{}
 	auditService := service.NewAuditLogService(repository, nil)
 	auditService.Start()
 
-	router := gin.New()
-	router.Use(func(c *gin.Context) {
-		c.Set(string(ContextKeyUser), AuthSubject{UserID: 77})
-		c.Set(string(ContextKeyUserRole), "admin")
-		c.Next()
-	})
-	router.Use(gin.HandlerFunc(NewAuditLogMiddleware(auditService)))
-	router.POST("/api/v1/admin/accounts/:id/export-session", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"ok": true})
-	})
-
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/7/export-session",
-		bytes.NewBufferString(`{"cookie":"__Secure-next-auth.session-token=audit-canary-cookie","remember_cookie":true}`))
-	request.Header.Set("Content-Type", "application/json")
-	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, request)
-	require.Equal(t, http.StatusOK, recorder.Code)
+	for _, authMethod := range []string{service.AuditAuthMethodMCPOAuth, ""} {
+		router := gin.New()
+		router.Use(func(c *gin.Context) {
+			c.Set(string(ContextKeyUser), AuthSubject{UserID: 77})
+			c.Set(string(ContextKeyUserRole), service.RoleAdmin)
+			if authMethod != "" {
+				c.Set("auth_method", authMethod)
+				SetAuditExtra(c, map[string]any{"mcp_grant_id": "grant-1", "mcp_tool": "admin_list_users"})
+			}
+			c.Next()
+		})
+		router.Use(gin.HandlerFunc(NewAuditLogMiddleware(auditService)))
+		router.GET("/api/v1/admin/users", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"items": []any{}}) })
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/admin/users?search=a", nil))
+		require.Equal(t, http.StatusOK, recorder.Code)
+	}
 	auditService.Stop()
 
 	repository.mu.Lock()
 	logs := append([]*service.AuditLog(nil), repository.logs...)
 	repository.mu.Unlock()
-	require.Len(t, logs, 1)
-	require.Equal(t, "<credential-bearing body omitted>", logs[0].RequestBody)
-	require.NotContains(t, logs[0].RequestBody, "audit-canary")
+	require.Len(t, logs, 1, "browser reads stay outside the audit log")
+	require.Equal(t, service.AuditAuthMethodMCPOAuth, logs[0].AuthMethod)
+	require.Equal(t, "admin.users.read", logs[0].Action)
+	require.Equal(t, "grant-1", logs[0].Extra["mcp_grant_id"])
+	require.Equal(t, "admin_list_users", logs[0].Extra["mcp_tool"])
 }
 
-func TestAnonymousGuardAdminAuditOmitsBodies(t *testing.T) {
+// A VM2-managed login passes the account's password and 2FA secret through
+// Sub2API. Its audit record must say that it happened, never what was typed.
+func TestOpenAIVMManagedOperationRouteOmitsAuditBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const route = "/api/v1/admin/accounts/:id/vm-managed/op/*operation"
+	require.Contains(t, auditBodyOmittedRoutes, "POST "+route)
+	const batchRoute = "/api/v1/admin/openai-vm/managed-batches"
+	require.Contains(t, auditBodyOmittedRoutes, "POST "+batchRoute)
+	require.Contains(t, auditBodyOmittedRoutes, "POST "+batchRoute+"/preview")
+
+	repository := &auditCaptureRepository{}
+	auditService := service.NewAuditLogService(repository, nil)
+	auditService.Start()
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(ContextKeyUser), AuthSubject{UserID: 77})
+		c.Set(string(ContextKeyUserRole), "admin")
+		c.Next()
+	})
+	router.Use(gin.HandlerFunc(NewAuditLogMiddleware(auditService)))
+	router.POST(route, func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+	router.POST(batchRoute, func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+	router.POST(batchRoute+"/preview", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+	// Values a key-level redactor cannot recognise: an "email"/"code"/"raw"
+	// field is not a sensitive key, and the password hides in free text.
+	for _, tc := range []struct{ operation, body string }{
+		{"login/password", `{"email":"canary-owner@example.test","password":"audit-canary-password","mfa_mode":"secret","mfa_secret":"AUDITCANARYSECRET"}`},
+		{"login/password/code", `{"job_id":"j1","code":"audit-canary-otp"}`},
+		{"login/oauth-code", `{"session_id":"s1","code":"audit-canary-oauth-code"}`},
+		{"login/import", `{"raw":"{\"tokens\":{\"refresh\":\"audit-canary-refresh\"}}"}`},
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/7/vm-managed/op/"+tc.operation, bytes.NewBufferString(tc.body))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		require.Equal(t, http.StatusOK, recorder.Code)
+	}
+	// A batch body is one login per line inside a single "text" value.
+	batchBody := `{"text":"owner@example.test---audit-canary-batch-password---AUDITCANARYSECRET","proxy_ids":[1],"per_proxy":1}`
+	for _, path := range []string{batchRoute, batchRoute + "/preview"} {
+		request := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(batchBody))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		require.Equal(t, http.StatusOK, recorder.Code)
+	}
+	auditService.Stop()
+
+	repository.mu.Lock()
+	logs := append([]*service.AuditLog(nil), repository.logs...)
+	repository.mu.Unlock()
+	require.Len(t, logs, 6, "the operations themselves are still audited")
+	for _, entry := range logs {
+		require.Equal(t, "<credential-bearing body omitted>", entry.RequestBody)
+		require.NotContains(t, entry.RequestBody, "canary")
+	}
+}
+
+func TestOpenAIPasswordLoginRouteOmitsAuditBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	repository := &auditCaptureRepository{}
 	auditService := service.NewAuditLogService(repository, nil)
 	auditService.Start()
@@ -303,74 +244,26 @@ func TestAnonymousGuardAdminAuditOmitsBodies(t *testing.T) {
 		c.Next()
 	})
 	router.Use(gin.HandlerFunc(NewAuditLogMiddleware(auditService)))
-	router.POST("/api/v1/admin/settings/ip-risk/anonymous-unban", func(c *gin.Context) {
-		SetAuditAction(c, "admin.ip_risk.anonymous.unban")
-		SetAuditExtra(c, map[string]any{"filter_hash": "test-digest", "token": "canary-secret"})
-		c.Status(200)
-	})
-	router.GET("/api/v1/admin/settings/ip-risk/anonymous-bans", func(c *gin.Context) { c.Status(200) })
-	router.PUT("/api/v1/admin/settings/ip-risk", func(c *gin.Context) {
-		SetAuditAction(c, "admin.ip_risk.config.update")
-		SetAuditExtra(c, map[string]any{"anonymous_api_enabled": true})
-		c.Status(200)
-	})
-	for _, tc := range []struct{ method, path string }{{"POST", "/api/v1/admin/settings/ip-risk/anonymous-unban"}, {"GET", "/api/v1/admin/settings/ip-risk/anonymous-bans"}, {"PUT", "/api/v1/admin/settings/ip-risk"}} {
-		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(`{"arbitrary":"canary-secret", "network":"8.8.8.8"}`))
-		req.Header.Set("Content-Type", "application/json")
-		router.ServeHTTP(httptest.NewRecorder(), req)
+	routes := []string{
+		"/api/v1/admin/openai/password-login/tasks",
+		"/api/v1/admin/openai/password-login/tasks/:jobID/code",
+		"/api/v1/admin/openai/password-login/tasks/:jobID/exchange",
+	}
+	for _, route := range routes {
+		router.POST(route, func(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) })
+		request := httptest.NewRequest(http.MethodPost, strings.ReplaceAll(route, ":jobID", "synthetic-job"), bytes.NewBufferString(`{"email":"audit-canary@example.test","password":"audit-canary-password","mfa_secret":"AUDITCANARYSECRET","code":"987654"}`))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		require.Equal(t, http.StatusOK, recorder.Code)
 	}
 	auditService.Stop()
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
-	require.Len(t, repository.logs, 3)
-	actions := map[string]bool{}
+	require.Len(t, repository.logs, len(routes))
 	for _, entry := range repository.logs {
-		actions[entry.Action] = true
-		require.NotContains(t, entry.RequestBody, "canary-secret")
-		require.NotContains(t, entry.RequestBody, "8.8.8.8")
-		require.NotContains(t, fmt.Sprint(entry.Extra), "canary-secret")
+		require.Equal(t, "<credential-bearing body omitted>", entry.RequestBody)
+		require.NotContains(t, entry.RequestBody, "canary")
+		require.NotContains(t, entry.RequestBody, "987654")
 	}
-	require.True(t, actions["admin.ip_risk.anonymous.unban"])
-	require.True(t, actions["admin.ip_risk.anonymous.bans.read"])
-}
-
-func TestIPAuditRecoveryOperatorAuditsWithoutRequestBody(t *testing.T) {
-	repository := &auditCaptureRepository{}
-	auditService := service.NewAuditLogService(repository, nil)
-	auditService.Start()
-	router := gin.New()
-	router.Use(func(c *gin.Context) {
-		c.Set(string(ContextKeyUser), AuthSubject{UserID: 17})
-		c.Set(string(ContextKeyUserRole), "admin")
-		c.Next()
-	})
-	router.Use(gin.HandlerFunc(NewAuditLogMiddleware(auditService)))
-	router.POST("/api/v1/admin/settings/ip-audit/release", func(c *gin.Context) {
-		SetAuditAction(c, "admin.ip_audit.release")
-		SetAuditExtra(c, map[string]any{"source": "anonymous_api", "reason_code": "operator_review", "result": "released", "readback": "released", "filter_hash": "digest", "remaining_count": 1})
-		c.Status(200)
-	})
-	router.GET("/api/v1/admin/settings/ip-audit", func(c *gin.Context) { c.Status(200) })
-	for _, method := range []string{"POST", "GET"} {
-		path := "/api/v1/admin/settings/ip-audit"
-		if method == "POST" {
-			path += "/release"
-		}
-		req := httptest.NewRequest(method, path, strings.NewReader(`{"network":"8.8.8.8","key":"private-canary"}`))
-		req.Header.Set("Content-Type", "application/json")
-		router.ServeHTTP(httptest.NewRecorder(), req)
-	}
-	auditService.Stop()
-	repository.mu.Lock()
-	defer repository.mu.Unlock()
-	require.Len(t, repository.logs, 2)
-	for _, row := range repository.logs {
-		require.EqualValues(t, 17, *row.ActorUserID)
-		require.NotContains(t, row.RequestBody, "private-canary")
-		require.NotContains(t, row.RequestBody, "8.8.8.8")
-	}
-	require.Equal(t, "admin.ip_audit.release", repository.logs[0].Action)
-	require.Equal(t, "anonymous_api", repository.logs[0].Extra["source"])
-	require.Equal(t, "operator_review", repository.logs[0].Extra["reason_code"])
-	require.Equal(t, "released", repository.logs[0].Extra["result"])
 }

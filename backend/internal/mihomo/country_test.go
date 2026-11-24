@@ -90,8 +90,6 @@ func TestCountryFilterPersistsAndCannotBeBypassedByRecovery(t *testing.T) {
 	require.Equal(t, "country_excluded", m.Status().NodeStates[0].State)
 	require.Zero(t, m.Status().EligibleNodes)
 	require.Equal(t, 1, m.Status().CountryExcluded)
-	_, err := AstraNodes()
-	require.Error(t, err)
 	config, err := m.config(m.saved)
 	require.NoError(t, err)
 	var decoded struct {

@@ -7,10 +7,7 @@ import (
 
 // AdminHandlers contains all admin-related HTTP handlers
 type AdminHandlers struct {
-	RequestCapture         *admin.RequestCaptureHandler
-	AccountOps             *admin.AccountOpsHandler
-	AccountTokenGuard      *admin.AccountTokenGuardHandler
-	AccountTokenGuardV2    *admin.AccountTokenGuardV2Handler
+	ChannelQuality         *admin.ChannelQualityHandler
 	Dashboard              *admin.DashboardHandler
 	User                   *admin.UserHandler
 	UserCleanup            *admin.UserCleanupHandler
@@ -21,7 +18,7 @@ type AdminHandlers struct {
 	Backup                 *admin.BackupHandler
 	OAuth                  *admin.OAuthHandler
 	OpenAIOAuth            *admin.OpenAIOAuthHandler
-	OpenAIOAuthReauth      *admin.OpenAIOAuthReauthHandler
+	OpenAIReauth           *admin.OpenAIOAuthReauthHandler
 	GeminiOAuth            *admin.GeminiOAuthHandler
 	AntigravityOAuth       *admin.AntigravityOAuthHandler
 	GrokOAuth              *admin.GrokOAuthHandler
@@ -30,6 +27,8 @@ type AdminHandlers struct {
 	Redeem                 *admin.RedeemHandler
 	Promo                  *admin.PromoHandler
 	Setting                *admin.SettingHandler
+	ContentModeration      *admin.ContentModerationHandler
+	PromptAudit            *securityaudit.PromptAdminHandler
 	Ops                    *admin.OpsHandler
 	System                 *admin.SystemHandler
 	Subscription           *admin.SubscriptionHandler
@@ -38,52 +37,54 @@ type AdminHandlers struct {
 	ErrorPassthrough       *admin.ErrorPassthroughHandler
 	TLSFingerprintProfile  *admin.TLSFingerprintProfileHandler
 	Plugin                 *admin.PluginHandler
+	OpenAIVM               *admin.OpenAIVMHandler
+	OpenAIVMManaged        *admin.OpenAIVMManagedHandler
+	OpenAIIPv6             *admin.OpenAIIPv6Handler
 	APIKey                 *admin.AdminAPIKeyHandler
 	ScheduledTest          *admin.ScheduledTestHandler
-	PelicanGroupTest       *admin.PelicanGroupTestHandler
 	Channel                *admin.ChannelHandler
 	ChannelMonitor         *admin.ChannelMonitorHandler
 	ChannelMonitorTemplate *admin.ChannelMonitorRequestTemplateHandler
-	ContentModeration      *admin.ContentModerationHandler
-	SecurityPolicy         *admin.SecurityPolicyHandler
-	BillingExport          *admin.BillingExportHandler
-	PromptAudit            *securityaudit.PromptAdminHandler
-	Payment                *admin.PaymentHandler
-	Affiliate              *admin.AffiliateHandler
-	Compliance             *admin.ComplianceHandler
-	AuditLog               *admin.AuditLogHandler
+
+	BillingExport *admin.BillingExportHandler
+
+	Payment    *admin.PaymentHandler
+	Affiliate  *admin.AffiliateHandler
+	Compliance *admin.ComplianceHandler
+	AuditLog   *admin.AuditLogHandler
 }
 
 // Handlers contains all HTTP handlers
 type Handlers struct {
-	QQBot             *QQBotHandler
-	RetainedMedia     *RetainedMediaHandler
-	Auth              *AuthHandler
-	User              *UserHandler
-	APIKey            *APIKeyHandler
-	Usage             *UsageHandler
-	Redeem            *RedeemHandler
-	Subscription      *SubscriptionHandler
-	Announcement      *AnnouncementHandler
-	ChannelMonitor    *ChannelMonitorUserHandler
-	ChannelMonitorV2  *ChannelMonitorV2Handler
-	ChannelMonitorV3  *ChannelMonitorV3Handler
-	Admin             *AdminHandlers
-	Gateway           *GatewayHandler
-	OpenAIGateway     *OpenAIGatewayHandler
-	Setting           *SettingHandler
-	Totp              *TotpHandler
-	Passkey           *PasskeyHandler
-	Payment           *PaymentHandler
-	PaymentWebhook    *PaymentWebhookHandler
-	AvailableChannel  *AvailableChannelHandler
-	BillingPreview    *BillingPreviewHandler
-	PelicanShowcase   *PelicanShowcaseHandler
-	ModelPlaza        *ModelPlazaHandler
-	AsyncImage        *AsyncImageHandler
-	BatchImage        *BatchImageHandler
-	ApplicationCenter *ApplicationCenterHandler
-	SupportTicket     *SupportTicketHandler
+	GPTDirect *GPTDirectHandler
+	QQBot     *QQBotHandler
+	MCPOAuth  *MCPOAuthHandler
+
+	RetainedMedia    *RetainedMediaHandler
+	Auth             *AuthHandler
+	User             *UserHandler
+	APIKey           *APIKeyHandler
+	Usage            *UsageHandler
+	Redeem           *RedeemHandler
+	Subscription     *SubscriptionHandler
+	Announcement     *AnnouncementHandler
+	ChannelMonitor   *ChannelMonitorUserHandler
+	ChannelMonitorV2 *ChannelMonitorV2Handler
+	ChannelMonitorV3 *ChannelMonitorV3Handler
+	Admin            *AdminHandlers
+	Gateway          *GatewayHandler
+	OpenAIGateway    *OpenAIGatewayHandler
+	Setting          *SettingHandler
+	Totp             *TotpHandler
+	Passkey          *PasskeyHandler
+	Payment          *PaymentHandler
+	PaymentWebhook   *PaymentWebhookHandler
+	AvailableChannel *AvailableChannelHandler
+	BillingPreview   *BillingPreviewHandler
+	ModelPlaza       *ModelPlazaHandler
+	AsyncImage       *AsyncImageHandler
+	BatchImage       *BatchImageHandler
+	SupportTicket    *SupportTicketHandler
 }
 
 // BuildInfo contains build-time information

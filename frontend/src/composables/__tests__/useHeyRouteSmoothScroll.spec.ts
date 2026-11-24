@@ -128,4 +128,41 @@ describe('useHeyRouteSmoothScroll', () => {
     expect(frames.size).toBe(0)
     expect(instance.destroy).toHaveBeenCalledOnce()
   })
+
+  it('stops when the window narrows to the mobile layout and restarts when it widens again', () => {
+    let desktop = true
+    const listeners = new Set<() => void>()
+    vi.mocked(window.matchMedia).mockImplementation((query) => ({
+      get matches() { return query === '(min-width: 901px)' ? desktop : false },
+      media: query,
+      onchange: null,
+      addEventListener: (_type: string, listener: () => void) => { if (query === '(min-width: 901px)') listeners.add(listener) },
+      removeEventListener: (_type: string, listener: () => void) => { listeners.delete(listener) },
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }) as unknown as MediaQueryList)
+
+    const wrapper = mount(defineComponent({
+      setup() {
+        const rootRef = shallowRef<HTMLElement | null>(null)
+        useHeyRouteSmoothScroll(rootRef)
+        return () => h('div', { ref: rootRef })
+      },
+    }))
+    expect(lenisState.instances).toHaveLength(1)
+
+    desktop = false
+    listeners.forEach((listener) => listener())
+    expect(lenisState.instances[0].destroy).toHaveBeenCalledOnce()
+    expect(frames.size).toBe(0)
+
+    desktop = true
+    listeners.forEach((listener) => listener())
+    expect(lenisState.instances).toHaveLength(2)
+
+    wrapper.unmount()
+    expect(lenisState.instances[1].destroy).toHaveBeenCalledOnce()
+    expect(listeners.size).toBe(0)
+  })
 })

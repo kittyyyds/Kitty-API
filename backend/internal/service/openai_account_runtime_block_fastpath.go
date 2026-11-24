@@ -93,31 +93,6 @@ func isOpenAIAccount(account *Account) bool {
 // handleOpenAIAccountUpstreamError expects canonicalModel to be the model used
 // for scheduling after applying account mapping exactly once.
 func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, canonicalModel ...string) bool {
-	if isOpenAIUpstreamSessionBlocked(responseBody) {
-		return false
-	}
-	// Apply the same exemption before access-state and custom cooldown fast
-	// paths, which can otherwise block the credential before the shared handler.
-	if isOpenAIRequestScoped403(account, statusCode, responseBody) {
-		return false
-	}
-	if account != nil && account.AuthConnectionID != "" && !isOpenAIHTTPUpstreamAccessStateError(statusCode, "", responseBody) && statusCode != http.StatusTooManyRequests {
-		if (statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden || statusCode >= 500) && s != nil && s.openAIOAuthReauth != nil {
-			stateCtx, cancel := openAIAccountStateContext(ctx)
-			defer cancel()
-			_ = s.openAIOAuthReauth.FailAuthConnection(stateCtx, account, statusCode)
-		}
-		return false
-	}
-	// SIWC has independent credentials and limits. Never revoke or relogin the primary Codex grant on its errors.
-	if account.IsSIWCEnabled() && account.AuthConnectionID == "" {
-		return false
-	}
-	// Observe other HTTP responses before request/model-scoped policies return.
-	// The shared handler below skips this reset to keep one observation per response.
-	if s != nil && s.rateLimitService != nil && !isOpenAIIPUnauthorizedResponse(statusCode, responseBody) {
-		s.rateLimitService.resetOpenAIIPUnauthorizedStreak(account)
-	}
 	if account != nil && account.Platform == PlatformGrok && isGrokContentPolicyRejection(statusCode, responseBody) {
 		return false
 	}
@@ -128,13 +103,30 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	}
 	// Capacity shedding describes this request, not account health. Keep the
 	// account schedulable while the request-local retry budget handles recovery.
-	if account != nil && account.Platform == PlatformOpenAI && isOpenAIRequestScopedCapacityResponse(statusCode, headers, responseBody) {
+	if account != nil && account.Platform == PlatformOpenAI && isOpenAIRequestScopedCapacityShed("", responseBody) {
+		// An explicit model-scoped rule overrides the default retry policy without
+		// turning a request-level overload into an account-wide health failure.
+		model := firstRequestedModel(canonicalModel)
+		if s != nil && s.rateLimitService != nil && model != "" && account.IsTempUnschedulableEnabled() {
+			ruleBody := openAICapacityShedRuleBody(responseBody)
+			matches := matchTempUnschedulableRules(account, statusCode, ruleBody)
+			if len(matches) > 0 && matches[0].rule.Scope == TempUnschedScopeModel {
+				stateCtx, cancel := openAIAccountStateContext(ctx)
+				defer cancel()
+				return s.rateLimitService.HandleTempUnschedulable(stateCtx, account, statusCode, ruleBody, model)
+			}
+		}
 		return false
 	}
 	stateCtx, cancel := openAIAccountStateContext(ctx)
 	defer cancel()
-	if s != nil {
-		stateCtx = s.rateLimitService.observeAccountOps(stateCtx, account, statusCode, headers, responseBody)
+	// The runtime tracks a managed slot's login and limits; the state sync
+	// copies that here. A response from it never disables the account for good.
+	if account.IsOpenAIVMManaged() {
+		if s == nil || s.rateLimitService == nil {
+			return false
+		}
+		return s.rateLimitService.HandleUpstreamError(stateCtx, account, statusCode, headers, responseBody)
 	}
 	if account != nil && account.Platform == PlatformOpenAI && isOpenAIHTTPUpstreamAccessStateError(statusCode, "", responseBody) {
 		message := "OpenAI upstream account or workspace is unavailable"
@@ -165,9 +157,7 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	// "tool choice not found in 'tools'" 400 means upstream revoked this account's
 	// image capability. Gated on the self-built marker: passthrough clients control
 	// their own tools/tool_choice and could otherwise poison a healthy account.
-	// A structured 403 image-permission denial is authoritative for passthrough too.
-	if isOpenAIImagePermissionError(statusCode, responseBody) ||
-		(isOpenAIImagesSelfBuiltRequest(ctx) && isOpenAIImageCapabilityLossError(statusCode, responseBody)) {
+	if isOpenAIImagesSelfBuiltRequest(ctx) && isOpenAIImageCapabilityLossError(statusCode, responseBody) {
 		if s != nil && s.rateLimitService != nil {
 			_ = s.rateLimitService.HandleOpenAIImageCapabilityLoss(stateCtx, account, statusCode, responseBody)
 		}
@@ -203,7 +193,7 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	if s.rateLimitService == nil {
 		return false
 	}
-	shouldDisable := s.rateLimitService.handleUpstreamErrorAfterStreakReset(stateCtx, account, statusCode, headers, responseBody)
+	shouldDisable := s.rateLimitService.HandleUpstreamError(stateCtx, account, statusCode, headers, responseBody)
 	tempModel := tempUnschedulableModel(stateCtx, nil)
 	modelTempMatched := tempModel != "" && tempUnschedRulesApply(account, statusCode, responseBody, tempModel) &&
 		len(matchTempUnschedulableRules(account, statusCode, responseBody)) > 0
@@ -497,7 +487,7 @@ func (s *OpenAIGatewayService) clearOpenAIAccountModelTransientState(accountID i
 	state.recordSuccess(accountID, model)
 }
 
-func (s *OpenAIGatewayService) isOpenAIAccountModelRuntimeBlocked(account *Account, requestedModel string, _ ...bool) bool {
+func (s *OpenAIGatewayService) isOpenAIAccountModelRuntimeBlocked(account *Account, requestedModel string) bool {
 	if s == nil || account == nil {
 		return false
 	}
@@ -583,13 +573,16 @@ func (s *OpenAIGatewayService) clearOpenAIAccountRuntimeBlockIfUnchanged(account
 // scheduling Account as source of truth. When TempUnschedulableUntil,
 // RateLimitResetAt, and OverloadUntil are all inactive, a stale local account
 // block is dropped with generation+deadline CAS. Model-scoped transient blocks
-// Model-scoped transient blocks are left alone. This is fail-open if a DB write
-// failed or the snapshot has not caught up yet: empty
-// cooldown fields drop the local account-level block.
-// requireCompact is retained for callers that share this runtime eligibility check.
-func (s *OpenAIGatewayService) isOpenAIAccountRequestRuntimeBlocked(account *Account, requestedModel string, requireCompact bool) bool {
+// are left alone. This is fail-open if a DB write failed or the snapshot has
+// not caught up yet: empty cooldown fields drop the local account-level block.
+func (s *OpenAIGatewayService) isOpenAIAccountRequestRuntimeBlocked(account *Account, requestedModel string) bool {
 	if s == nil {
 		return false
+	}
+	if s.openAITokenProvider != nil {
+		if failure := s.openAITokenProvider.refreshAPI.openAIRejectionForAccount(account); failure != nil && !failure.accessVerifiedAt(account, time.Now()) {
+			return true
+		}
 	}
 	snapshot := s.peekOpenAIAccountRuntimeBlock(account)
 	if snapshot.blocked {

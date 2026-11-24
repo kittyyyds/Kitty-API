@@ -33,6 +33,16 @@ describe('supplier workflow', () => {
     expect(providerHubWrite).toHaveBeenCalledWith('/wallets/1/rules', expect.objectContaining({ revision: 3, unit_price: 0, method: 'request', currency: 'USD' }), 'post')
     w.unmount()
   })
+  it.each([['', null], ['0', 0], ['3.5', 3.5]])('preserves nullable 12h procurement price %s', async (input, expected) => {
+    const w = mount(ProviderHubView); await flushPromises()
+    await w.findAll('nav button').find(b => b.text() === 'providerHub.rules')!.trigger('click')
+    await w.findAll('button').find(b => b.text() === 'providerHub.addRule')!.trigger('click')
+    await w.get('#provider-hub-form select').setValue('tokens')
+    await w.get('input[placeholder="providerHub.cacheWrite12hFallback"]').setValue(input)
+    await w.get('#provider-hub-form').trigger('submit'); await flushPromises()
+    expect(providerHubWrite).toHaveBeenCalledWith('/wallets/1/rules', expect.objectContaining({ cache_write_12h_price: expected, cache_write_price: 0 }), 'post')
+    w.unmount()
+  })
   it('does not retain a typed secret after closing the editor', async () => {
     const w = mount(ProviderHubView); await flushPromises()
     await w.findAll('button[aria-label="providerHub.authorization"]')[0]!.trigger('click')

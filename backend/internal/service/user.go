@@ -1,10 +1,46 @@
 package service
 
 import (
+	"errors"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// MaxPasswordBytes is bcrypt's input limit; longer passwords cannot be hashed.
+// The limit is in bytes (not characters), so multi-byte UTF-8 runes count more than once.
+const MaxPasswordBytes = 72
+
+// ErrPasswordTooLong is returned when a new password exceeds MaxPasswordBytes.
+// It sits beside the PASSWORD_TOO_SHORT rule (min 6 characters) used by the auth flows.
+var ErrPasswordTooLong = infraerrors.BadRequest("PASSWORD_TOO_LONG", "password must be at most 72 bytes")
+
+// ValidatePasswordMaxLength rejects passwords bcrypt cannot hash. Flows that set
+// a password must call it before any irreversible step (consuming a verification
+// code, reset token, captcha ticket, ...).
+func ValidatePasswordMaxLength(password string) error {
+	if len(password) > MaxPasswordBytes {
+		return ErrPasswordTooLong
+	}
+	return nil
+}
+
+// hashPasswordBcrypt hashes a password with bcrypt and maps bcrypt's too-long
+// error to ErrPasswordTooLong so no caller can surface it as a 500.
+func hashPasswordBcrypt(password string) (string, error) {
+	if err := ValidatePasswordMaxLength(password); err != nil {
+		return "", err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		if errors.Is(err, bcrypt.ErrPasswordTooLong) {
+			return "", ErrPasswordTooLong
+		}
+		return "", err
+	}
+	return string(hash), nil
+}
 
 type User struct {
 	ID             int64
@@ -63,6 +99,9 @@ type User struct {
 	// nil = 该 API Key 对应的 (user, group) 无 override；非 nil 时 checkRPM 直接使用，
 	// 避免每请求查 DB。字段不持久化到数据库。
 	UserGroupRPMOverride *int
+	// UserGroupRPMOverrideGroupID 是 snapshot 已成功查询 override 的分组 ID（0 = 未知）。
+	// 等于当前分组且 UserGroupRPMOverride 为 nil 时表示确认无 override，checkRPM 不再查 DB。
+	UserGroupRPMOverrideGroupID int64
 
 	// UserGroupDeniedModels 来自 auth cache snapshot 的 (user, group) 禁用模型，
 	// 即该 API Key 所属用户在 Key 分组内不能使用的模型。字段不持久化到 users 表。
@@ -104,11 +143,11 @@ func (u *User) CanBindGroup(groupID int64, isExclusive bool) bool {
 }
 
 func (u *User) SetPassword(password string) error {
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := hashPasswordBcrypt(password)
 	if err != nil {
 		return err
 	}
-	u.PasswordHash = string(hash)
+	u.PasswordHash = hash
 	return nil
 }
 

@@ -6,23 +6,23 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
-	"github.com/Wei-Shaw/sub2api/internal/requestcapture"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
@@ -30,11 +30,12 @@ import (
 	"golang.org/x/net/http2"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/codexwire"
+	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/upstreamroute"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
@@ -107,7 +108,6 @@ const (
 	upstreamProtocolModeOpenAIH1         = "openai_h1"
 	upstreamProtocolModeOpenAIH2         = "openai_h2"
 	upstreamProtocolModeOpenAIH1Fallback = "openai_h1_fallback"
-	upstreamProtocolModeOpenAIH1NoReuse  = "openai_h1_noreuse"
 	upstreamProtocolModeGrok             = "grok"
 )
 
@@ -165,22 +165,22 @@ type openAIHTTP2FallbackState struct {
 // 5. 仅回收空闲客户端，避免中断活跃请求
 // 6. HTTP/2 多路复用，连接上限不等于并发请求上限
 // 7. 代理变更时清空旧连接池，避免复用错误代理
-// OpenAIResponseHeaderTimeoutProvider supplies the admin-configurable
-// response-header timeout for OpenAI/Codex HTTP upstream clients.
+// 8. 账号并发数与连接池上限对应（账号隔离策略下）
 type OpenAIResponseHeaderTimeoutProvider interface {
-	GetOpenAIResponseHeaderTimeoutCached(ctx context.Context) (int, bool)
+	GetOpenAIResponseHeaderTimeoutCached(context.Context) (int, bool)
 }
 
-// 8. 账号并发数与连接池上限对应（账号隔离策略下）
 type httpUpstreamService struct {
-	upstreamRoutes                      *upstreamroute.Router
-	upstreamRoutesErr                   error
-	cfg                                 *config.Config                      // 全局配置
-	openAIResponseHeaderTimeoutProvider OpenAIResponseHeaderTimeoutProvider // 可选：DB 设置覆盖
-	mu                                  sync.RWMutex                        // 保护 clients map 的读写锁
-	clients                             map[string]*upstreamClientEntry     // 客户端缓存池，key 由隔离策略决定
+	openAIResponseHeaderTimeoutProvider OpenAIResponseHeaderTimeoutProvider
+	cfg                                 *config.Config                  // 全局配置
+	mu                                  sync.RWMutex                    // 保护 clients map 的读写锁
+	clients                             map[string]*upstreamClientEntry // 客户端缓存池，key 由隔离策略决定
 	// OpenAI 走 HTTP/HTTPS 代理时的 H2->H1 回退状态（key=标准化 proxyKey）
 	openAIHTTP2Fallbacks sync.Map
+	// Codex HTTP/2 保真客户端池（hyper/h2 线级复刻）；仅 profile.H2 的请求
+	// 路由到这里，按需懒初始化。
+	codexH2Once sync.Once
+	codexH2Pool *codexwire.H2Pool
 }
 
 // NewHTTPUpstream 创建通用 HTTP 上游服务
@@ -191,36 +191,18 @@ type httpUpstreamService struct {
 //
 // 返回:
 //   - service.HTTPUpstream 接口实现
-func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
-	return newHTTPUpstream(cfg, nil)
-}
+func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream { return newHTTPUpstream(cfg, nil) }
 
-// ProvideHTTPUpstream wires the admin-configurable OpenAI response-header
-// timeout provider. Tests and lightweight callers can keep using
-// NewHTTPUpstream, which falls back to the static config.
 func ProvideHTTPUpstream(cfg *config.Config, settings *service.SettingService) service.HTTPUpstream {
 	if settings == nil {
 		return NewHTTPUpstream(cfg)
 	}
-	// Warm the cache before the first OpenAI request; the transport reads it
-	// synchronously when it builds a client pool.
 	go settings.GetOpenAIResponseHeaderTimeoutCached(context.Background())
 	return newHTTPUpstream(cfg, settings)
 }
 
 func newHTTPUpstream(cfg *config.Config, provider OpenAIResponseHeaderTimeoutProvider) service.HTTPUpstream {
-	s := &httpUpstreamService{
-		cfg:                                 cfg,
-		openAIResponseHeaderTimeoutProvider: provider,
-		clients:                             make(map[string]*upstreamClientEntry),
-	}
-	if cfg != nil {
-		s.upstreamRoutes, s.upstreamRoutesErr = upstreamroute.New(cfg.Gateway.UpstreamRouting)
-	}
-	if cfg != nil && (cfg.HasAstraRoutingLoader() || cfg.Gateway.CodexGatewayPin.Enabled) {
-		return &astraRoutingUpstream{delegate: s, cfg: cfg}
-	}
-	return s
+	return &httpUpstreamService{cfg: cfg, openAIResponseHeaderTimeoutProvider: provider, clients: make(map[string]*upstreamClientEntry)}
 }
 
 // Do 执行 HTTP 请求
@@ -240,15 +222,16 @@ func newHTTPUpstream(cfg *config.Config, provider OpenAIResponseHeaderTimeoutPro
 //   - 调用方必须关闭 resp.Body，否则会导致 inFlight 计数泄漏
 //   - inFlight > 0 的客户端不会被淘汰，确保活跃请求不被中断
 func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
-	if req != nil {
-		requestcapture.FromContext(req.Context()).BindAccount(accountID)
-		req = req.WithContext(requestcapture.WithAccount(req.Context(), accountID))
-	}
+	return service.DoWithConfiguredUpstreamRetry(req, func(attempt *http.Request) (*http.Response, error) {
+		return s.do(attempt, proxyURL, accountID, accountConcurrency)
+	})
+}
+
+func (s *httpUpstreamService) do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (result *http.Response, resultErr error) {
+	req, timingTrace := requesttiming.StartAttempt(req, accountID, 0)
+	defer func() { timingTrace.Response(result, resultErr) }()
 	applyGrokCLIProxyHeaders(req)
 	if err := s.validateRequestHost(req); err != nil {
-		if req != nil {
-			requestcapture.FromContext(req.Context()).SelectionFailed(accountID, 0, nil, nil, err)
-		}
 		return nil, err
 	}
 	profile := service.HTTPUpstreamProfileDefault
@@ -257,23 +240,15 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	}
 
 	// 获取或创建对应的客户端，并标记请求占用
-	if s.useRegionalEgress(proxyURL, accountID) {
-		return s.doRegionalEgress(req, accountID, accountConcurrency, profile, nil)
-	}
-	req, bindErr := service.BindOpenAIRequestTimezone(req, proxyURL)
-	if bindErr != nil {
-		return nil, bindErr
-	}
 	entry, err := s.acquireClientWithProfile(proxyURL, accountID, accountConcurrency, profile)
 	if err != nil {
-		requestcapture.FromContext(req.Context()).SelectionFailed(accountID, 0, nil, nil, err)
 		return nil, err
 	}
 
 	// 执行请求
 	client := s.httpClientForUpstreamRequest(entry.client, req)
 	client = httpClientWithGrokAccessDeniedFallback(client)
-	resp, err := doWithOpenAIPreRequestRetry(client, req, proxyURL, profile)
+	resp, err := doUpstreamRequest(client, req, s.upstreamDrainTimeout())
 	if err != nil {
 		s.recordOpenAIHTTP2Failure(profile, entry.protocolMode, entry.proxyKey, err)
 		// 请求失败，立即减少计数
@@ -282,6 +257,7 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 		return nil, err
 	}
 	s.recordOpenAIHTTP2Success(profile, entry.protocolMode, entry.proxyKey)
+
 	// 包装响应体，在关闭时自动减少计数并更新时间戳
 	// 这确保了流式响应（如 SSE）在完全读取前不会被淘汰
 	resp.Body = wrapTrackedBody(resp.Body, func() {
@@ -297,17 +273,19 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 // profile 为 nil 时不启用 TLS 指纹，行为与 Do 方法相同。
 // profile 非 nil 时使用指定的 Profile 进行 TLS 指纹伪装。
 func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	return service.DoWithConfiguredUpstreamRetry(req, func(attempt *http.Request) (*http.Response, error) {
+		return s.doWithTLS(attempt, proxyURL, accountID, accountConcurrency, profile)
+	})
+}
+
+func (s *httpUpstreamService) doWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 	if profile == nil {
-		return s.Do(req, proxyURL, accountID, accountConcurrency)
+		return s.do(req, proxyURL, accountID, accountConcurrency)
 	}
 	// Plain HTTP has no TLS handshake to fingerprint. Reuse the normal transport
 	// so a configured HTTP or SOCKS proxy is not bypassed.
 	if req != nil && req.URL != nil && strings.EqualFold(req.URL.Scheme, "http") {
-		return s.Do(req, proxyURL, accountID, accountConcurrency)
-	}
-	if req != nil {
-		requestcapture.FromContext(req.Context()).BindAccount(accountID)
-		req = req.WithContext(requestcapture.WithAccount(req.Context(), accountID))
+		return s.do(req, proxyURL, accountID, accountConcurrency)
 	}
 	applyGrokCLIProxyHeaders(req)
 	upstreamProfile := service.HTTPUpstreamProfileDefault
@@ -321,34 +299,29 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	}
 	proxyInfo := "direct"
 	if proxyURL != "" {
-		proxyInfo = safeUpstreamPoolID(proxyURL)
+		proxyInfo = proxyurl.Redact(proxyURL)
 	}
 	slog.Debug("tls_fingerprint_enabled", "account_id", accountID, "target", targetHost, "proxy", proxyInfo, "profile", profile.Name)
 
 	if err := s.validateRequestHost(req); err != nil {
-		if req != nil {
-			requestcapture.FromContext(req.Context()).SelectionFailed(accountID, 0, nil, nil, err)
-		}
 		return nil, err
 	}
 
-	if s.useRegionalEgress(proxyURL, accountID) {
-		return s.doRegionalEgress(req, accountID, accountConcurrency, upstreamProfile, profile)
+	// Codex lane profiles bypass net/http entirely: the official client's
+	// header order, casing and h2 framing are written by codexwire.
+	if profile.H2 || profile.H1 {
+		return s.doCodexWire(req, proxyURL, accountID, profile, upstreamProfile)
 	}
-	req, bindErr := service.BindOpenAIRequestTimezone(req, proxyURL)
-	if bindErr != nil {
-		return nil, bindErr
-	}
+
 	entry, err := s.acquireClientWithTLS(proxyURL, accountID, accountConcurrency, profile, upstreamProfile)
 	if err != nil {
-		requestcapture.FromContext(req.Context()).SelectionFailed(accountID, 0, nil, nil, err)
 		slog.Debug("tls_fingerprint_acquire_client_failed", "account_id", accountID, "error", err)
 		return nil, err
 	}
 
 	client := s.httpClientForUpstreamRequest(entry.client, req)
 	client = httpClientWithGrokAccessDeniedFallback(client)
-	resp, err := doWithOpenAIPreRequestRetry(client, req, proxyURL, upstreamProfile)
+	resp, err := doUpstreamRequest(client, req, s.upstreamDrainTimeout())
 	if err != nil {
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
@@ -364,15 +337,23 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	return resp, nil
 }
 
+func (s *httpUpstreamService) upstreamDrainTimeout() time.Duration {
+	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
+		return time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
+	}
+	return pkghttputil.DefaultUpstreamDrainTimeout
+}
+
 // doUpstreamRequest owns cancellation for one attempt, without cancelling the
 // caller's context (which may be detached for billing or reused for retries).
-func doUpstreamRequest(client *http.Client, req *http.Request) (result *http.Response, resultErr error) {
+func doUpstreamRequest(client *http.Client, req *http.Request, drainTimeouts ...time.Duration) (result *http.Response, resultErr error) {
 	req, timingTrace := requesttiming.StartTransport(req)
 	defer func() { timingTrace.Response(result, resultErr) }()
-	_, observeCapture := requestcapture.FromContext(req.Context()).ObserveHTTPRequest(req, requestcapture.AccountFromContext(req.Context()))
-	defer func() { observeCapture(result, resultErr) }()
-
-	ctx, cancel := context.WithCancel(req.Context())
+	var drainTimeout time.Duration
+	if len(drainTimeouts) > 0 {
+		drainTimeout = drainTimeouts[0]
+	}
+	ctx, cancel := pkghttputil.NewUpstreamAttemptContext(req.Context(), drainTimeout)
 	resp, err := servertiming.Do(client, req.WithContext(ctx))
 	if err != nil {
 		cancel()
@@ -384,8 +365,7 @@ func doUpstreamRequest(client *http.Client, req *http.Request) (result *http.Res
 		resp.Body = requesttiming.WrapStage(req.Context(), resp.Body, "raw_body_first")
 	}
 	decompressResponseBody(resp)
-	// A retained encoding means decompression was unsupported or failed.
-	if encoding := strings.TrimSpace(resp.Header.Get("Content-Encoding")); encoding == "" || strings.EqualFold(encoding, "identity") {
+	if enc := strings.TrimSpace(resp.Header.Get("Content-Encoding")); enc == "" || strings.EqualFold(enc, "identity") {
 		resp.Body = requesttiming.WrapStage(req.Context(), resp.Body, "decoded_body_first")
 	}
 	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
@@ -658,7 +638,9 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 			atomic.AddInt64(&entry.inFlight, 1)
 		}
 		s.mu.RUnlock()
-		slog.Debug("tls_fingerprint_reusing_client", "account_id", accountID, "cache_key", safeUpstreamPoolID(cacheKey))
+		// cacheKey embeds the proxy URL; never emit it because it may contain
+		// credentials.  The account ID is sufficient for correlation.
+		slog.Debug("tls_fingerprint_reusing_client", "account_id", accountID)
 		return entry, nil
 	}
 	s.mu.RUnlock()
@@ -672,12 +654,11 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 				atomic.AddInt64(&entry.inFlight, 1)
 			}
 			s.mu.Unlock()
-			slog.Debug("tls_fingerprint_reusing_client", "account_id", accountID, "cache_key", safeUpstreamPoolID(cacheKey))
+			slog.Debug("tls_fingerprint_reusing_client", "account_id", accountID)
 			return entry, nil
 		}
 		slog.Debug("tls_fingerprint_evicting_stale_client",
 			"account_id", accountID,
-			"cache_key", safeUpstreamPoolID(cacheKey),
 			"proxy_changed", entry.proxyKey != proxyKey,
 			"pool_changed", entry.poolKey != poolKey)
 		s.removeClientLocked(cacheKey, entry)
@@ -695,7 +676,7 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 	}
 
 	// 创建带 TLS 指纹的 Transport
-	slog.Debug("tls_fingerprint_creating_new_client", "account_id", accountID, "cache_key", safeUpstreamPoolID(cacheKey), "proxy", safeUpstreamPoolID(proxyKey))
+	slog.Debug("tls_fingerprint_creating_new_client", "account_id", accountID, "proxy", proxyurl.Redact(proxyKey))
 	transport, err := buildUpstreamTransportWithTLSFingerprint(settings, parsedProxy, profile)
 	if err != nil {
 		s.mu.Unlock()
@@ -1152,9 +1133,6 @@ func (s *httpUpstreamService) resolveProtocolMode(profile service.HTTPUpstreamPr
 	if profile == service.HTTPUpstreamProfileGrok {
 		return upstreamProtocolModeGrok
 	}
-	if profile == service.HTTPUpstreamProfileOpenAIFreshConnection {
-		return upstreamProtocolModeOpenAIH1NoReuse
-	}
 	if profile != service.HTTPUpstreamProfileOpenAI {
 		return upstreamProtocolModeDefault
 	}
@@ -1274,7 +1252,7 @@ func (s *httpUpstreamService) recordOpenAIHTTP2Failure(profile service.HTTPUpstr
 	activated, until := state.recordFailure(time.Now(), settings.fallbackErrorThreshold, settings.fallbackWindow, settings.fallbackTTL)
 	if activated {
 		slog.Warn("openai_http2_proxy_fallback_activated",
-			"proxy", safeUpstreamPoolID(proxyKey),
+			"proxy", proxyurl.Redact(proxyKey),
 			"fallback_until", until.Format(time.RFC3339))
 	}
 }
@@ -1366,11 +1344,7 @@ func (s *openAIHTTP2FallbackState) recordFailure(now time.Time, threshold int, w
 func normalizeProxyURL(raw string) (string, *url.URL, error) {
 	_, parsed, err := proxyurl.Parse(raw)
 	if err != nil {
-		var ferr error
-		_, parsed, ferr = proxyurl.ParseFlexible(raw, "http")
-		if ferr != nil {
-			return "", nil, err
-		}
+		return "", nil, err
 	}
 	if parsed == nil {
 		return directProxyKey, nil, nil
@@ -1446,8 +1420,10 @@ func defaultPoolSettings(cfg *config.Config) poolSettings {
 // 建连没有任何超时上限，只能等内核 TCP 重传耗尽（Linux 约 130 秒）。
 func newUpstreamDialer() *net.Dialer {
 	return &net.Dialer{
-		Timeout:   defaultUpstreamDialTimeout,
-		KeepAlive: defaultUpstreamDialKeepAlive,
+		Timeout:         defaultUpstreamDialTimeout,
+		KeepAlive:       defaultUpstreamDialKeepAlive,
+		KeepAliveConfig: net.KeepAliveConfig{Enable: true, Idle: upstreamKeepAliveIdle, Interval: upstreamKeepAliveInterval, Count: upstreamKeepAliveCount},
+		Control:         upstreamDialControl,
 	}
 }
 
@@ -1490,13 +1466,6 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
 		}
 	case upstreamProtocolModeOpenAIH1:
 		transport.ForceAttemptHTTP2 = false
-		transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
-	case upstreamProtocolModeOpenAIH1NoReuse:
-		// Astra rotation needs a fresh CONNECT so each request uses its selected egress node.
-		transport.ForceAttemptHTTP2 = false
-		transport.DisableKeepAlives = true
-		transport.MaxIdleConns = 0
-		transport.MaxIdleConnsPerHost = 0
 		transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
 	case upstreamProtocolModeOpenAIH1Fallback:
 		// 显式禁用 HTTP/2，确保代理不兼容场景回退到 HTTP/1.1。
@@ -1543,7 +1512,7 @@ func enableHTTP2KeepAlive(transport *http.Transport, protocolMode string) (*http
 //
 // 代理类型处理:
 //   - nil/空: 直连，使用 TLSFingerprintDialer
-//   - http/https: HTTP 代理，使用 HTTPProxyDialer（CONNECT 隧道 + utls 握手）
+//   - http/https: HTTP 代理，使用 HTTPProxyDialer（HTTPS 代理先做外层 TLS，再 CONNECT + utls）
 //   - socks5: SOCKS5 代理，使用 SOCKS5ProxyDialer（SOCKS5 隧道 + utls 握手）
 func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *url.URL, profile *tlsfingerprint.Profile) (*http.Transport, error) {
 	transport := &http.Transport{
@@ -1570,13 +1539,10 @@ func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *u
 			slog.Debug("tls_fingerprint_transport_socks5", "proxy", proxyURL.Host)
 			socks5Dialer := tlsfingerprint.NewSOCKS5ProxyDialer(profile, proxyURL)
 			transport.DialTLSContext = socks5Dialer.DialTLSContext
-		case "https":
-			// The fingerprint dialer emits a plaintext CONNECT preface and cannot
-			// establish TLS to an HTTPS proxy. Keep proxy routing via net/http.
-			return buildUpstreamTransport(settings, proxyURL, upstreamProtocolModeDefault)
-		case "http":
-			// HTTP/HTTPS 代理：使用 HTTPProxyDialer（CONNECT 隧道）
-			slog.Debug("tls_fingerprint_transport_http_connect", "proxy", proxyURL.Host)
+		case "http", "https":
+			// HTTP/HTTPS 代理：先建立代理连接（HTTPS 代理含外层 TLS），
+			// 再通过 CONNECT 隧道使用目标上游的自定义 TLS 指纹。
+			slog.Debug("tls_fingerprint_transport_http_connect", "proxy", proxyURL.Host, "scheme", scheme)
 			httpDialer := tlsfingerprint.NewHTTPProxyDialer(profile, proxyURL)
 			transport.DialTLSContext = httpDialer.DialTLSContext
 		default:
@@ -1710,5 +1676,139 @@ func (d *decompressedBody) Close() error {
 	return d.closer.Close()
 }
 
-// Pool keys can contain proxy credentials; log only an irreversible identifier.
-func safeUpstreamPoolID(key string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(key)))[:16] }
+// doCodexWire 把 codex lane 的请求交给 codexwire 原始客户端，并沿用
+// Do 路径的请求计时记录（StartAttempt），让切换后的账号仍有同样的耗时诊断。
+func (s *httpUpstreamService) doCodexWire(req *http.Request, proxyURL string, accountID int64, profile *tlsfingerprint.Profile, upstreamProfile service.HTTPUpstreamProfile) (result *http.Response, resultErr error) {
+	req, timingTrace := requesttiming.StartAttempt(req, accountID, 0)
+	defer func() { timingTrace.Response(result, resultErr) }()
+	if profile.H2 {
+		return s.doCodexH2Uncontrolled(req, proxyURL, accountID, profile)
+	}
+	return s.doCodexH1Uncontrolled(req, proxyURL, profile, upstreamProfile)
+}
+
+// codexWireOrderedHeaders flattens req's headers into the Codex wire order for
+// its path. Framing headers are written by the transport after the user headers.
+func codexWireOrderedHeaders(req *http.Request) []codexwire.HeaderKV {
+	ordered := codexwire.OrderCodexHTTPHeadersForPath(req.URL.Path, req.Header)
+	filtered := ordered[:0]
+	for _, kv := range ordered {
+		if strings.EqualFold(kv.Name, "content-length") || strings.EqualFold(kv.Name, "transfer-encoding") || strings.EqualFold(kv.Name, "host") {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return filtered
+}
+
+// doCodexH1Uncontrolled routes a codex-lane request through the raw HTTP/1.1
+// client: OpenSSL-profile ClientHello without ALPN, hyper h1 header order and
+// casing, and one fresh connection per request — the official Codex CLI's
+// default (native-tls) HTTP lane.
+func (s *httpUpstreamService) doCodexH1Uncontrolled(req *http.Request, proxyURL string, profile *tlsfingerprint.Profile, upstreamProfile service.HTTPUpstreamProfile) (*http.Response, error) {
+	body, err := readReplayableBody(req)
+	if err != nil {
+		return nil, err
+	}
+	// 与 net/http 客户端同一套响应头超时（含 OpenAI 的后台可调超时）。
+	headerTimeout := s.applyProfilePoolSettings(defaultPoolSettings(s.cfg), upstreamProfile).responseHeaderTimeout
+	ctx, cancel := context.WithCancel(req.Context())
+	resp, err := codexwire.DoHTTP1(ctx, req.Method, req.URL.String(), codexWireOrderedHeaders(req), body, proxyURL, codexwire.HTTP1Options{
+		TLSProfile:            profile,
+		DialTimeout:           defaultUpstreamDialTimeout + 5*time.Second,
+		ResponseHeaderTimeout: headerTimeout,
+	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	decompressResponseBody(resp)
+	resp.Request = req
+	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+// readReplayableBody reads req's body, preferring GetBody so a retry can
+// replay the same bytes, and restores req.Body.
+func readReplayableBody(req *http.Request) ([]byte, error) {
+	if req.Body == nil || req.Body == http.NoBody {
+		return nil, nil
+	}
+	if req.GetBody != nil {
+		if rc, err := req.GetBody(); err == nil {
+			body, rerr := io.ReadAll(rc)
+			_ = rc.Close()
+			if rerr == nil {
+				return body, nil
+			}
+		}
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	return body, nil
+}
+
+// codexH2 懒初始化 Codex HTTP/2 保真客户端池。
+func (s *httpUpstreamService) codexH2() *codexwire.H2Pool {
+	s.codexH2Once.Do(func() {
+		s.codexH2Pool = codexwire.NewH2Pool(codexwire.H2Options{
+			Timeout: defaultUpstreamDialTimeout + 5*time.Second,
+		})
+	})
+	return s.codexH2Pool
+}
+
+// doCodexH2Uncontrolled routes a codex-lane request through the hyper/h2
+// faithful client: rustls-h2 ClientHello, h2 preface/SETTINGS, hpack encoding
+// and stream multiplexing matching the official Codex reqwest+hyper stack.
+func (s *httpUpstreamService) doCodexH2Uncontrolled(req *http.Request, proxyURL string, accountID int64, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	body, err := readReplayableBody(req)
+	if err != nil {
+		return nil, err
+	}
+	// content-length is emitted from the actual body length
+	// (skip_value_index → literal-not-indexed).
+	ordered := codexWireOrderedHeaders(req)
+	// Hyper does not advertise a body for an empty GET/HEAD. In particular,
+	// the Codex models request has Accept: */* and no Content-Length.
+	if len(body) > 0 || (req.Method != http.MethodGet && req.Method != http.MethodHead) {
+		ordered = append(ordered, codexwire.HeaderKV{Name: "content-length", Value: strconv.Itoa(len(body))})
+	}
+
+	ctx, cancel := context.WithCancel(req.Context())
+	var pool *codexwire.H2Pool
+	closeRequest := cancel
+	var stopOwnedAbort func() bool
+	if service.CodexBusinessHTTPFromContext(req.Context()) {
+		// Auth and quota clients own separate persistent pools. Business API
+		// and models calls instead own one fresh connection/HPACK lifetime per
+		// request, including each 401 recovery attempt.
+		pool = codexwire.NewH2Pool(codexwire.H2Options{Timeout: defaultUpstreamDialTimeout + 5*time.Second})
+		stopOwnedAbort = context.AfterFunc(ctx, pool.CloseAll)
+		closeRequest = func() { stopOwnedAbort(); cancel(); pool.CloseAll() }
+	} else {
+		pool = s.codexH2()
+	}
+	resp, err := pool.Do(ctx, req.Method, req.URL.String(), ordered, body, proxyURL, strconv.FormatInt(accountID, 10), profile)
+	if err != nil {
+		closeRequest()
+		return nil, err
+	}
+	var complete func() bool
+	if body, ok := resp.Body.(interface{ ResponseComplete() bool }); ok {
+		complete = body.ResponseComplete
+	}
+	decompressResponseBody(resp)
+	resp.Request = req
+	if stopOwnedAbort != nil {
+		resp.Body = &codexOwnedH2Body{ReadCloser: resp.Body, ctx: ctx, cancel: cancel, stopAbort: stopOwnedAbort, pool: pool, complete: complete}
+	} else if complete != nil {
+		resp.Body = &codexPooledH2Body{cancelOnCloseBody: cancelOnCloseBody{ReadCloser: resp.Body, cancel: closeRequest}, complete: complete}
+	} else {
+		resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: closeRequest}
+	}
+	return resp, nil
+}

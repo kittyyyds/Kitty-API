@@ -294,7 +294,7 @@ func TestTrackAPIKeySlot_FailOpen(t *testing.T) {
 	require.Equal(t, []int64{88}, cache.trackedAPIKeyIDs)
 
 	require.NotPanics(t, release)
-	require.Equal(t, cache.trackedAPIKeyRequestIDs, cache.releasedAPIKeyRequestIDs)
+	require.Equal(t, []int64{88}, cache.releasedAPIKeyIDs, "compensate an ambiguous tracking write with its exact ID")
 }
 
 func TestGetAPIKeyConcurrencyBatch_Fallbacks(t *testing.T) {

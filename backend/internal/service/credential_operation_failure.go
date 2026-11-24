@@ -11,6 +11,7 @@ import (
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 // CredentialOperationFailure is a projection of one persisted operation, never
@@ -49,7 +50,7 @@ func NewCredentialOperationRefreshError(status int, body []byte) error {
 	if safe := credentialOperationRefreshMarker(rawCode); safe != "" {
 		marker = safe
 	}
-	return &CredentialOperationError{Code: code, cause: infraerrors.New(502, "OPENAI_OAUTH_TOKEN_REFRESH_FAILED", fmt.Sprintf("token refresh failed: status %d, code %s", status, marker))}
+	return &CredentialOperationError{Code: code, cause: fmt.Errorf("%w: %w", infraerrors.New(502, "OPENAI_OAUTH_TOKEN_REFRESH_FAILED", fmt.Sprintf("token refresh failed: status %d, code %s", status, marker)), openai.NewRefreshTokenError(status, body))}
 }
 
 func credentialOperationRefreshMarker(code string) string {
@@ -139,8 +140,6 @@ func credentialOperationText(text string) string {
 		return "requires_relogin"
 	case "worker timeout", "password/TOTP protocol timed out":
 		return "timeout"
-	case accountTokenGuardV2PolicyBlocked:
-		return "authorization_denied"
 	}
 	return credentialOperationCode(text)
 }
@@ -245,19 +244,12 @@ func SafeCredentialOperationFailure(code, stage string, at *time.Time) *Credenti
 	return credentialOperationFailure(code, stage, at)
 }
 
-func storedRefreshFailure(record AccountTokenGuardV2Record) *CredentialOperationFailure {
-	if record.LastRefreshFailureAt == nil && record.RefreshFailureCode == "" {
-		return nil
-	}
-	return credentialOperationFailure(record.RefreshFailureCode, "refresh_token", record.LastRefreshFailureAt)
-}
-
 func credentialOperationDetail(code string) string {
 	return "credential_operation_failed stage=inspection code=" + credentialOperationCode(code)
 }
 
 func probeOperationFailure(state, detail string, at *time.Time) *CredentialOperationFailure {
-	if state == AccountTokenGuardV2ProbeOK || state == AccountTokenGuardV2ProbePending || state == "" {
+	if state == "ok" || state == "pending" || state == "" {
 		return nil
 	}
 	var code string
@@ -271,7 +263,7 @@ func probeOperationFailure(state, detail string, at *time.Time) *CredentialOpera
 }
 
 func safeProbeOperationDetail(state, detail string) string {
-	if state == AccountTokenGuardV2ProbeOK {
+	if state == "ok" {
 		return "credential accepted"
 	}
 	if failure := probeOperationFailure(state, detail, nil); failure != nil {

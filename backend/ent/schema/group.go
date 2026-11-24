@@ -229,6 +229,10 @@ func (Group) Fields() []ent.Field {
 			Optional().
 			Nillable().
 			Comment("非 Claude Code 请求降级使用的分组 ID"),
+		field.Int64("fallback_group_id_on_unavailable").
+			Optional().
+			Nillable().
+			Comment("账号不可用时的兜底分组，用户仍按原分组计费"),
 		field.Int64("fallback_group_id_on_invalid_request").
 			Optional().
 			Nillable().
@@ -254,6 +258,9 @@ func (Group) Fields() []ent.Field {
 			Comment("模型路由配置：模型模式 -> 优先账号ID列表"),
 
 		// 模型路由开关 (added by migration 041)
+		field.JSON("strict_failover", domain.StrictFailoverConfig{}).
+			Default(domain.StrictFailoverConfig{}).
+			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
 		field.Bool("model_routing_enabled").
 			Default(false).
 			Comment("是否启用模型路由配置"),
@@ -284,6 +291,10 @@ func (Group) Fields() []ent.Field {
 		field.Bool("force_openai_fast").
 			Default(false).
 			Comment("是否强制此 OpenAI/Composite 分组请求使用 service_tier=priority"),
+		field.String("force_openai_service_tier").
+			MaxLen(16).
+			Default("").
+			Comment("强制此 OpenAI/Composite 分组的服务档位：空、priority 或 ultrafast"),
 		field.Bool("free_openai_fast").
 			Default(false).
 			Comment("是否让此 OpenAI/Composite 分组的 Fast 请求按 Standard 价格计费"),
@@ -314,6 +325,10 @@ func (Group) Fields() []ent.Field {
 		field.Int("rpm_limit").
 			Default(0).
 			Comment("分组 RPM 上限，0 表示不限制；设置后接管该分组用户的限流"),
+
+		field.Int("user_concurrency_limit").
+			Default(0).
+			Comment("分组内每个用户的并发上限，0 表示不限制"),
 
 		// OpenAI/Codex 请求的推理强度上限（空字符串表示不限制）。
 		field.String("max_reasoning_effort").
@@ -360,6 +375,7 @@ func (Group) Fields() []ent.Field {
 func (Group) Edges() []ent.Edge {
 	return []ent.Edge{
 		edge.To("api_keys", APIKey.Type),
+		edge.To("fallback_api_keys", APIKey.Type),
 		edge.To("redeem_codes", RedeemCode.Type),
 		edge.To("subscriptions", UserSubscription.Type),
 		edge.To("usage_logs", UsageLog.Type),

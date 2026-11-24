@@ -27,6 +27,13 @@ type rateLimitClearRepoStub struct {
 	clearAntigravityErr       error
 	clearModelRateLimitErr    error
 	clearTempUnschedulableErr error
+	clearQualityCalls         int
+	clearQualityErr           error
+}
+
+func (r *rateLimitClearRepoStub) ClearAccountQualityProtection(ctx context.Context, id int64) error {
+	r.clearQualityCalls++
+	return r.clearQualityErr
 }
 
 func (r *rateLimitClearRepoStub) GetByID(ctx context.Context, id int64) (*Account, error) {
@@ -200,7 +207,7 @@ func TestRateLimitService_ClearRateLimit_WithoutTempUnschedCache(t *testing.T) {
 	require.Equal(t, 1, repo.clearTempUnschedCalls)
 }
 
-func TestRateLimitService_RecoverAccountAfterSuccessfulTest_RecoversNonGrokRuntimeState(t *testing.T) {
+func TestRateLimitService_RecoverAccountAfterSuccessfulTest_ClearsErrorAndRateLimitRelatedState(t *testing.T) {
 	now := time.Now()
 	repo := &rateLimitClearRepoStub{
 		getByIDAccount: &Account{
@@ -229,7 +236,7 @@ func TestRateLimitService_RecoverAccountAfterSuccessfulTest_RecoversNonGrokRunti
 	require.True(t, result.ClearedError)
 	require.True(t, result.ClearedRateLimit)
 
-	require.Equal(t, 2, repo.getByIDCalls)
+	require.Equal(t, 1, repo.getByIDCalls)
 	require.Equal(t, 1, repo.clearErrorCalls)
 	require.Equal(t, 1, repo.clearRateLimitCalls)
 	require.Equal(t, 1, repo.clearAntigravityCalls)
@@ -266,7 +273,53 @@ func TestRateLimitService_RecoverAccountAfterSuccessfulTest_NoRecoverableStateIs
 	require.Empty(t, cache.deletedIDs)
 }
 
-func TestRateLimitService_RecoverAccountAfterSuccessfulTest_PropagatesRecoveryFailure(t *testing.T) {
+func TestRateLimitService_SuccessfulConnectivityTestPreservesAllModelAbilityPause(t *testing.T) {
+	account := &Account{ID: 7, Status: "quality_paused", Schedulable: true, Extra: map[string]any{
+		"active_test_model_holds":       map[string]any{"model-a": "ability failed"},
+		"active_test_all_models_paused": true,
+	}}
+	repo := &rateLimitClearRepoStub{getByIDAccount: account}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	result, err := svc.RecoverAccountAfterSuccessfulTest(context.Background(), 7)
+	require.NoError(t, err)
+	require.False(t, result.ClearedError)
+	require.False(t, result.ClearedRateLimit)
+	require.Zero(t, repo.clearErrorCalls)
+	require.Zero(t, repo.clearQualityCalls)
+	require.Equal(t, "quality_paused", account.Status)
+	require.True(t, account.ActiveTestAllModelsPaused())
+	require.True(t, account.ActiveTestModelBlocked("unmonitored-model"))
+}
+
+func TestRateLimitService_RecoverAccountState_ExplicitQualityRecovery(t *testing.T) {
+	for _, status := range []string{StatusActive, StatusQualityPaused, StatusError} {
+		t.Run(status, func(t *testing.T) {
+			repo := &rateLimitClearRepoStub{getByIDAccount: &Account{ID: 42, Status: status}}
+			blocker := &runtimeBlockRecorder{}
+			svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+			svc.SetAccountRuntimeBlocker(blocker)
+			result, err := svc.RecoverAccountState(context.Background(), 42, AccountRecoveryOptions{ClearQualityProtection: true})
+			require.NoError(t, err)
+			require.True(t, result.ClearedQualityProtection)
+			require.Equal(t, status == StatusError, result.ClearedError)
+			require.Equal(t, 1, repo.clearQualityCalls, "read live holds even when the account snapshot appears active")
+			require.Equal(t, []int64{42}, blocker.clearedIDs)
+		})
+	}
+}
+
+func TestRateLimitService_RecoverAccountState_QualityRecoveryFailure(t *testing.T) {
+	repo := &rateLimitClearRepoStub{
+		getByIDAccount:  &Account{ID: 42, Status: StatusQualityPaused},
+		clearQualityErr: errors.New("quality recovery failed"),
+	}
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	result, err := svc.RecoverAccountState(context.Background(), 42, AccountRecoveryOptions{ClearQualityProtection: true})
+	require.ErrorIs(t, err, repo.clearQualityErr)
+	require.Nil(t, result)
+}
+
+func TestRateLimitService_RecoverAccountAfterSuccessfulTest_ClearErrorFailed(t *testing.T) {
 	repo := &rateLimitClearRepoStub{
 		getByIDAccount: &Account{
 			ID:     9,
@@ -277,7 +330,7 @@ func TestRateLimitService_RecoverAccountAfterSuccessfulTest_PropagatesRecoveryFa
 	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 
 	result, err := svc.RecoverAccountAfterSuccessfulTest(context.Background(), 9)
-	require.ErrorIs(t, err, repo.clearErrorErr)
+	require.Error(t, err)
 	require.Nil(t, result)
 	require.Equal(t, 1, repo.getByIDCalls)
 	require.Equal(t, 1, repo.clearErrorCalls)
@@ -305,5 +358,6 @@ func TestRateLimitService_RecoverAccountState_InvalidatesOAuthTokenOnErrorRecove
 	require.False(t, result.ClearedRateLimit)
 	require.Equal(t, 1, repo.clearErrorCalls)
 	require.Len(t, invalidator.accounts, 1)
+	require.Zero(t, repo.clearQualityCalls, "quota/token recovery must not release quality protection")
 	require.Equal(t, int64(21), invalidator.accounts[0].ID)
 }

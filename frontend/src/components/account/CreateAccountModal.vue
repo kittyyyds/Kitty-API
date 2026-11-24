@@ -1,14 +1,14 @@
 <template>
   <BaseDialog
-    :show="show"
+    :show="show && !managedWizardOpen"
     :title="t('admin.accounts.createAccount')"
     width="wide"
     @close="handleClose"
   >
-    <div v-if="show" class="mb-4 space-y-2">
-    </div>
+    <!-- A VM2-managed account continues in the VM2 wizard; both share one step bar. -->
+    <VMManagedSteps v-if="isVMManaged && step === 1" :current="1" />
     <!-- Step Indicator for OAuth accounts -->
-    <div v-if="isOAuthFlow" class="mb-6 flex items-center justify-center">
+    <div v-else-if="isOAuthFlow" class="mb-6 flex items-center justify-center">
       <div class="flex items-center space-x-4">
         <div class="flex items-center">
           <div
@@ -47,16 +47,20 @@
       @submit.prevent="handleSubmit"
       class="space-y-5"
     >
+
       <div>
-        <label class="input-label">{{ t('admin.accounts.accountName') }}</label>
+        <label class="input-label">{{ isVMManaged ? t('admin.accounts.vmManaged.wizard.namePrefix') : t('admin.accounts.accountName') }}</label>
         <input
           v-model="form.name"
           type="text"
-          :required="!isGrokSSOInputMethod && !isOpenAITwoFA"
+          :required="!isGrokSSOInputMethod"
           class="input"
-          :placeholder="t('admin.accounts.enterAccountName')"
+          :placeholder="isVMManaged ? t('admin.accounts.vmManaged.wizard.namePrefixPlaceholder') : t('admin.accounts.enterAccountName')"
           data-tour="account-form-name"
         />
+        <p v-if="isVMManaged" class="input-hint" data-testid="vm-name-prefix-hint">
+          {{ t('admin.accounts.vmManaged.wizard.namePrefixHint', { single: vmNameExample, first: `${vmNameExample}-01`, second: `${vmNameExample}-02` }) }}
+        </p>
       </div>
       <div>
         <label class="input-label">{{ t('admin.accounts.notes') }}</label>
@@ -68,7 +72,6 @@
         ></textarea>
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
-
 
       <!-- Platform Selection - Segmented Control Style -->
       <div>
@@ -407,13 +410,13 @@
       <!-- Account Type Selection (OpenAI) -->
       <div v-if="form.platform === 'openai'">
         <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
-        <div class="mt-2 grid grid-cols-2 gap-3 lg:grid-cols-4" data-tour="account-form-type">
+        <div class="mt-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3" data-tour="account-form-type">
           <button
             type="button"
-            @click="accountCategory = 'oauth-based'; openaiTwoFA = false"
+            @click="selectOpenAIOAuth()"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
-              accountCategory === 'oauth-based' && !openaiTwoFA
+              accountCategory === 'oauth-based' && !isVMManaged
                 ? 'border-green-500 bg-green-50 dark:bg-green-900/20'
                 : 'border-gray-200 hover:border-green-300 dark:border-dark-600 dark:hover:border-green-700'
             ]"
@@ -421,12 +424,12 @@
             <div
               :class="[
                 'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
-                accountCategory === 'oauth-based' && !openaiTwoFA
+                accountCategory === 'oauth-based' && !isVMManaged
                   ? 'bg-green-500 text-white'
                   : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
               ]"
             >
-              <Icon name="link" size="sm" />
+              <Icon name="key" size="sm" />
             </div>
             <div>
               <span class="block text-sm font-medium text-gray-900 dark:text-white">OAuth</span>
@@ -436,7 +439,7 @@
 
           <button
             type="button"
-            @click="accountCategory = 'apikey'"
+            @click="accountCategory = 'apikey'; vmManagedSelected = false"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
               accountCategory === 'apikey'
@@ -460,18 +463,23 @@
             </div>
           </button>
 
-          <button type="button" data-testid="openai-two-fa" @click="accountCategory = 'oauth-based'; openaiTwoFA = true"
-            :class="['flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
-              isOpenAITwoFA ? 'border-green-500 bg-green-50 dark:bg-green-900/20' : 'border-gray-200 dark:border-dark-600']">
-            <Icon name="shield" size="sm" />
+          <!-- Shared policy is collected here; login material remains in VM2. -->
+          <button
+            type="button"
+            data-testid="select-vm-managed"
+            @click="selectVMManaged"
+            :class="['flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all', isVMManaged ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20' : 'border-gray-200 dark:border-dark-600']"
+          >
+            <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400">
+              <Icon name="server" size="sm" />
+            </div>
             <div>
-              <span class="block text-sm font-medium text-gray-900 dark:text-white">2FA</span>
-              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('tokenGuard.twoFA.label') }}</span>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.accounts.vmManaged.entry') }}</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.vmManaged.entryDesc') }}</span>
             </div>
           </button>
 
         </div>
-        <p v-if="isOpenAITwoFA" class="input-hint">{{ t('tokenGuard.twoFA.nameHint') }}</p>
       </div>
 
       <!-- Account Type Selection (Grok) -->
@@ -710,7 +718,7 @@
       </div>
 
       <!-- Zhipu 团队版 Coding Plan：组织/项目 ID（可选，填写后额度探测走团队版端点） -->
-      <div v-if="form.platform === 'zhipu' && accountMode === 'coding'" class="mt-4">
+      <div v-if="(form.platform === 'zhipu' && accountMode === 'coding')" class="mt-4">
         <div class="flex items-center">
           <label class="input-label">{{ t('admin.accounts.cnProviders.zhipuTeam.title') }}</label>
           <HelpTooltip trigger="click" width-class="w-80">
@@ -1012,7 +1020,7 @@
           </div>
 
           <!-- Custom OAuth Client (Advanced) -->
-          <div v-if="showAdvancedOAuth" class="mt-3 group relative">
+          <div v-if="(showAdvancedOAuth)" class="mt-3 group relative">
             <button
               type="button"
               :disabled="!geminiAIStudioOAuthEnabled"
@@ -1181,7 +1189,7 @@
         </div>
       </div>
 
-      <div v-if="form.platform === 'antigravity' && antigravityAccountType === 'oauth'">
+      <div v-if="(form.platform === 'antigravity' && antigravityAccountType === 'oauth')">
         <label class="input-label">{{ t('admin.accounts.antigravityProjectIdLabel') }}</label>
         <input
           v-model="antigravityProjectId"
@@ -2019,7 +2027,7 @@
 
         <!-- Header Override Section (eligible API-key platforms) -->
         <div
-          v-if="isHeaderOverrideCapable(form.platform, 'apikey')"
+          v-if="(isHeaderOverrideCapable(form.platform, 'apikey'))"
           class="border-t border-gray-200 pt-4 dark:border-dark-600"
         >
           <div class="mb-3 flex items-center justify-between">
@@ -2329,7 +2337,7 @@
 
       <!-- 配额控制 (Anthropic apikey/bedrock: 配额限制 + 亲和) -->
       <div
-        v-if="form.platform === 'anthropic' && (form.type === 'apikey' || form.type === 'bedrock')"
+        v-if="(form.platform === 'anthropic' && (form.type === 'apikey' || form.type === 'bedrock'))"
         class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
       >
         <div class="mb-3">
@@ -2433,7 +2441,7 @@
 
       <!-- Grok OAuth Custom Upstream URL (仅改写转发端点，OAuth 授权/刷新不受影响) -->
       <div
-        v-if="form.platform === 'grok' && isOAuthFlow"
+        v-if="(form.platform === 'grok' && isOAuthFlow)"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="mb-3 flex items-center justify-between">
@@ -2474,7 +2482,7 @@
 
       <!-- Grok OAuth Header Override (OAuth 类型没有 apikey 容器，需要独立区域) -->
       <div
-        v-if="form.platform === 'grok' && isOAuthFlow"
+        v-if="(form.platform === 'grok' && isOAuthFlow)"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="mb-3 flex items-center justify-between">
@@ -2846,7 +2854,7 @@
 
       <!-- Intercept Warmup Requests (Anthropic/Antigravity) -->
       <div
-        v-if="form.platform === 'anthropic' || form.platform === 'antigravity'"
+        v-if="(form.platform === 'anthropic' || form.platform === 'antigravity')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -2878,7 +2886,7 @@
 
       <!-- 配额控制 (Anthropic OAuth/SetupToken: 亲和 + 窗口费用 + 会话 + RPM 等) -->
       <div
-        v-if="form.platform === 'anthropic' && accountCategory === 'oauth-based'"
+        v-if="(form.platform === 'anthropic' && accountCategory === 'oauth-based')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
       >
         <div class="mb-3">
@@ -3007,12 +3015,95 @@
 
         <!-- RPM Limit -->
         <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
-          <AccountRpmSettings
-            v-model:enabled="rpmLimitEnabled"
-            v-model:base-rpm="baseRpm"
-            v-model:strategy="rpmStrategy"
-            v-model:sticky-buffer="rpmStickyBuffer"
-          />
+          <div class="mb-3 flex items-center justify-between">
+            <div>
+              <label class="input-label mb-0">{{ t('admin.accounts.quotaControl.rpmLimit.label') }}</label>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.quotaControl.rpmLimit.hint') }}
+              </p>
+            </div>
+            <button
+              type="button"
+              @click="rpmLimitEnabled = !rpmLimitEnabled"
+              :class="[
+                'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+                rpmLimitEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  rpmLimitEnabled ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
+
+          <div v-if="rpmLimitEnabled" class="space-y-4">
+            <div>
+              <label class="input-label">{{ t('admin.accounts.quotaControl.rpmLimit.baseRpm') }}</label>
+              <input
+                v-model.number="baseRpm"
+                type="number"
+                min="1"
+                max="1000"
+                step="1"
+                class="input"
+                :placeholder="t('admin.accounts.quotaControl.rpmLimit.baseRpmPlaceholder')"
+              />
+              <p class="input-hint">{{ t('admin.accounts.quotaControl.rpmLimit.baseRpmHint') }}</p>
+            </div>
+
+            <div>
+              <label class="input-label">{{ t('admin.accounts.quotaControl.rpmLimit.strategy') }}</label>
+              <div class="flex gap-2">
+                <button
+                  type="button"
+                  @click="rpmStrategy = 'tiered'"
+                  :class="[
+                    'flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-all',
+                    rpmStrategy === 'tiered'
+                      ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+                  ]"
+                >
+                  <div class="text-center">
+                    <div>{{ t('admin.accounts.quotaControl.rpmLimit.strategyTiered') }}</div>
+                    <div class="mt-0.5 text-[10px] opacity-70">{{ t('admin.accounts.quotaControl.rpmLimit.strategyTieredHint') }}</div>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  @click="rpmStrategy = 'sticky_exempt'"
+                  :class="[
+                    'flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-all',
+                    rpmStrategy === 'sticky_exempt'
+                      ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
+                  ]"
+                >
+                  <div class="text-center">
+                    <div>{{ t('admin.accounts.quotaControl.rpmLimit.strategyStickyExempt') }}</div>
+                    <div class="mt-0.5 text-[10px] opacity-70">{{ t('admin.accounts.quotaControl.rpmLimit.strategyStickyExemptHint') }}</div>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            <div v-if="rpmStrategy === 'tiered'">
+              <label class="input-label">{{ t('admin.accounts.quotaControl.rpmLimit.stickyBuffer') }}</label>
+              <input
+                v-model.number="rpmStickyBuffer"
+                type="number"
+                min="1"
+                step="1"
+                class="input"
+                :placeholder="t('admin.accounts.quotaControl.rpmLimit.stickyBufferPlaceholder')"
+              />
+              <p class="input-hint">{{ t('admin.accounts.quotaControl.rpmLimit.stickyBufferHint') }}</p>
+            </div>
+
+          </div>
 
           <!-- 用户消息限速模式（独立于 RPM 开关，始终可见） -->
           <div class="mt-4">
@@ -3173,15 +3264,13 @@
         </div>
       </div>
 
-      <div>
+      <div v-if="!isVMManaged">
         <div class="mb-1 flex items-center gap-2">
           <label class="input-label mb-0">{{ t('admin.accounts.proxy') }}</label>
-          <span class="text-xs" :class="bindingFailed?'text-red-600':'text-primary-600'">状态：{{bindingLoading?'正在读取 IP 规则':bindingFailed?'规则读取失败，请重试':autoProxyAssignment?'自动分配 IP 中':'可手动选择 IP'}}</span>
-          <button v-if="bindingFailed" type="button" class="text-xs underline" @click="loadBindingRules">重试</button>
           <ProxyAdBanner />
         </div>
-        <p v-if="autoProxyAssignment" class="input-hint">无需手动选择，后台会在每个账号登录前分别预留空闲 IP；没有候选时停止该账号导入。</p>
-        <fieldset v-else :disabled="bindingLoading||bindingFailed"><ProxySelector v-model="form.proxy_id" :proxies="selectableProxies" /></fieldset>
+        <ProxySelector v-model="form.proxy_ids" :proxies="proxies" multiple />
+        <p class="input-hint">{{ t('admin.accounts.proxyPoolHint') }}</p>
       </div>
 
       <UpstreamRequestIdHeaderField
@@ -3220,6 +3309,11 @@
           <p class="input-hint">{{ t('admin.accounts.billingRateMultiplierHint') }}</p>
         </div>
         <div>
+          <label class="input-label">{{ t('admin.accounts.groupBillingRateMultiplier') }}</label>
+          <input v-model.number="form.group_rate_multiplier" type="number" min="0" step="0.01" required class="input" data-testid="account-group-rate-multiplier" />
+          <p class="input-hint">{{ t('admin.accounts.groupBillingRateMultiplierHint') }}</p>
+        </div>
+        <div>
           <label class="input-label" for="account-cost-multiplier">{{ t('admin.accounts.costMultiplier') }}</label>
           <input
             id="account-cost-multiplier"
@@ -3252,29 +3346,9 @@
         </p>
       </div>
 
-      <div v-if="form.platform === 'openai' && accountCategory === 'apikey'" class="border-t border-gray-200 pt-4 dark:border-dark-600">
-        <label class="flex items-center gap-2">
-          <input v-model="copilotSDKEnabled" type="checkbox" data-testid="copilot-sdk-toggle" />
-          <span>Copilot SDK</span>
-        </label>
-        <p class="input-hint">{{ t('admin.accounts.openai.copilotSDKDesc') }}</p>
-      </div>
-
-      <!-- OpenAI OAuth RPM limit -->
-      <div
-        v-if="form.platform === 'openai' && accountCategory === 'oauth-based' && addMethod === 'oauth'"
-        class="border-t border-gray-200 pt-4 dark:border-dark-600"
-      >
-        <AccountRpmSettings
-          v-model:enabled="rpmLimitEnabled"
-          v-model:base-rpm="baseRpm"
-          strict
-        />
-      </div>
-
       <!-- OpenAI 自动透传开关（OAuth/API Key） -->
       <div
-        v-if="form.platform === 'openai'"
+        v-if="(form.platform === 'openai')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -3286,6 +3360,7 @@
           </div>
           <button
             type="button"
+            data-testid="openai-passthrough-toggle"
             @click="openaiPassthroughEnabled = !openaiPassthroughEnabled"
             :class="[
               'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
@@ -3307,6 +3382,11 @@
         v-model:models="extraImageModels"
         v-model:prefixes="extraImageModelPrefixes"
       />
+
+      <label v-if="form.platform === 'openai' && openaiPassthroughEnabled" class="flex items-start gap-3 rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+        <input v-model="openaiPassthroughModelFilterEnabled" type="checkbox" data-testid="openai-passthrough-model-filter" class="mt-0.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500" />
+        <span><span class="text-sm font-medium">{{ t('admin.accounts.openai.passthroughModelFilter') }}</span><span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.openai.passthroughModelFilterDesc') }}</span></span>
+      </label>
 
       <!-- OpenAI Codex namespace 工具摊平（兼容开关，仅 OAuth） -->
       <div
@@ -3361,26 +3441,9 @@
         </div>
       </div>
 
-      <div
-        v-if="form.platform === 'openai' && form.type === 'oauth'"
-        class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600"
-      >
-        <div>
-          <label class="input-label mb-0">{{ t('admin.accounts.openai.wsSseAcceleration') }}</label>
-          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            {{ t('admin.accounts.openai.wsSseAccelerationDesc') }}
-          </p>
-        </div>
-        <Toggle
-          v-model="openaiOAuthWSSSEAcceleration"
-          data-testid="create-openai-ws-sse-acceleration"
-          :aria-label="t('admin.accounts.openai.wsSseAcceleration')"
-        />
-      </div>
-
       <!-- Anthropic API Key 自动透传开关 -->
       <div
-        v-if="form.platform === 'anthropic' && accountCategory === 'apikey'"
+        v-if="(form.platform === 'anthropic' && accountCategory === 'apikey')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -3408,38 +3471,8 @@
         </div>
       </div>
 
-      <!-- Anthropic API Key 抹除 Claude Code 身份开关 -->
       <div
-        v-if="form.platform === 'anthropic' && accountCategory === 'apikey'"
-        class="border-t border-gray-200 pt-4 dark:border-dark-600"
-      >
-        <div class="flex items-center justify-between">
-          <div>
-            <label class="input-label mb-0">{{ t('admin.accounts.anthropic.stripClaudeCodeIdentity') }}</label>
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              {{ t('admin.accounts.anthropic.stripClaudeCodeIdentityDesc') }}
-            </p>
-          </div>
-          <button
-            type="button"
-            @click="anthropicStripClaudeCodeIdentityEnabled = !anthropicStripClaudeCodeIdentityEnabled"
-            :class="[
-              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
-              anthropicStripClaudeCodeIdentityEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
-            ]"
-          >
-            <span
-              :class="[
-                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
-                anthropicStripClaudeCodeIdentityEnabled ? 'translate-x-5' : 'translate-x-0'
-              ]"
-            />
-          </button>
-        </div>
-      </div>
-
-      <div
-        v-if="form.platform === 'anthropic' && accountCategory === 'apikey'"
+        v-if="(form.platform === 'anthropic' && accountCategory === 'apikey')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between gap-4">
@@ -3458,7 +3491,7 @@
 
       <!-- Anthropic API Key: Web Search Emulation (hidden when global disabled) -->
       <div
-        v-if="form.platform === 'anthropic' && accountCategory === 'apikey' && webSearchGlobalEnabled"
+        v-if="(form.platform === 'anthropic' && accountCategory === 'apikey' && webSearchGlobalEnabled)"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -3478,7 +3511,7 @@
 
       <!-- OpenAI API 长上下文计费开关 -->
       <div
-        v-if="form.platform === 'openai' && !hideAccountLongContextBilling && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
+        v-if="(form.platform === 'openai' && !hideAccountLongContextBilling && (accountCategory === 'oauth-based' || accountCategory === 'apikey'))"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between gap-4">
@@ -3510,7 +3543,7 @@
       </div>
 
       <div
-        v-if="form.platform === 'openai' && accountCategory === 'oauth-based'"
+        v-if="(form.platform === 'openai' && accountCategory === 'oauth-based')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -3564,10 +3597,9 @@
         </div>
       </div>
 
-
-      <!-- Codex 指纹收敛模式（仅 OpenAI OAuth） -->
+      <!-- Codex 指纹收敛（仅 OpenAI OAuth） -->
       <div
-        v-if="form.platform === 'openai' && accountCategory === 'oauth-based'"
+        v-if="!isVMManaged && (form.platform === 'openai' && accountCategory === 'oauth-based')"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between gap-4">
@@ -3585,7 +3617,7 @@
 
       <!-- OpenAI Compact 能力配置 -->
       <div
-        v-if="form.platform === 'openai' && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
+        v-if="!isVMManaged && (form.platform === 'openai' && (accountCategory === 'oauth-based' || accountCategory === 'apikey'))"
         class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
       >
         <div class="flex items-center justify-between">
@@ -3624,7 +3656,7 @@
 
       <!-- OpenAI APIKey Responses API support mode -->
       <div
-        v-if="form.platform === 'openai' && accountCategory === 'apikey'"
+        v-if="(form.platform === 'openai' && accountCategory === 'apikey')"
         class="space-y-4 border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between gap-4">
@@ -3674,7 +3706,7 @@
 
       <!-- OpenAI APIKey images: backfill b64_json from url -->
       <div
-        v-if="form.platform === 'openai' && accountCategory === 'apikey'"
+        v-if="(form.platform === 'openai' && accountCategory === 'apikey')"
         class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div>
@@ -3701,6 +3733,14 @@
             ]"
           />
         </button>
+      </div>
+
+      <!-- OpenAI images: size tier routing -->
+      <div
+        v-if="form.platform === 'openai'"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <OpenAIImageSizeTiersField v-model="openAIImageSizeTiers" />
       </div>
 
       <div>
@@ -3799,13 +3839,12 @@
         />
       </div>
 
+      <AccountGroupModelLimits v-if="isVMManaged" v-model="managedGroupModels" :groups="groups.filter(g => form.group_ids.includes(g.id))" platform="openai" />
     </form>
 
     <!-- Step 2: OAuth Authorization -->
     <div v-else class="space-y-5">
-      <OpenAITwoFAImport v-if="isOpenAITwoFA" :auto-proxy="autoProxyAssignment" :proxy-id="form.proxy_id" :prepare="prepareTwoFABatch" :import-credential="importTwoFACredential" @busy="twoFABusy = $event" @reset="resetTwoFABatch" />
       <OAuthAuthorizationFlow
-        v-else
         ref="oauthFlowRef"
         :add-method="form.platform === 'anthropic' ? addMethod : 'oauth'"
         :auth-url="currentAuthUrl"
@@ -3825,6 +3864,8 @@
         :show-codex-pat-option="form.platform === 'openai'"
         :show-sso-option="form.platform === 'grok'"
         :show-email-password-option="false"
+        :show-openai-password-option="form.platform === 'openai'"
+        :proxy-id="authProxyID"
         :show-manual-option="true"
         :initial-input-method="'manual'"
         :platform="form.platform"
@@ -3838,6 +3879,7 @@
         @import-codex-pat="handleOpenAIImportCodexPAT"
         @import-sso="handleGrokImportSSO"
         @authorize-password="handleGrokAuthorizePassword"
+        @openai-password-authorized="handleOpenAIPasswordAuthorized"
       />
 
     </div>
@@ -3875,7 +3917,9 @@
             ></path>
           </svg>
           {{
-            isOAuthFlow
+            isVMManaged
+              ? t('admin.accounts.vmManaged.wizard.nextToResources')
+              : isOAuthFlow
               ? t('common.next')
               : submitting
                 ? t('admin.accounts.creating')
@@ -3884,11 +3928,11 @@
         </button>
       </div>
       <div v-else class="flex justify-between gap-3">
-        <button type="button" class="btn btn-secondary" :disabled="twoFABusy" @click="isOpenAITwoFA ? handleClose() : goBackToBasicInfo()">
+        <button type="button" class="btn btn-secondary" @click="goBackToBasicInfo">
           {{ t('common.back') }}
         </button>
         <button
-          v-if="!isOpenAITwoFA && isManualInputMethod"
+          v-if="isManualInputMethod"
           type="button"
           :disabled="!canExchangeCode"
           class="btn btn-primary"
@@ -4152,21 +4196,24 @@
     @confirm="handleMixedChannelConfirm"
     @cancel="handleMixedChannelCancel"
   />
+  <OpenAIVMManagedWizard :show="show && managedWizardOpen" :settings="managedSettings" :name-prefix="form.name.trim()" :proxies="proxies" @back="managedWizardOpen = false" @close="handleClose" @updated="emit('created')" />
 </template>
 
 <script setup lang="ts">
+import OpenAIVMManagedWizard from '@/components/admin/account/OpenAIVMManagedWizard.vue'
+import VMManagedSteps from '@/components/admin/account/VMManagedSteps.vue'
+import type { OpenAIVMManagedSettings } from '@/api/admin/openaiVmManaged'
+import AccountGroupModelLimits from '@/components/account/AccountGroupModelLimits.vue'
+import { buildGroupAllowedModelsPayload, type GroupAllowedModels } from '@/components/account/groupAllowedModels'
+
 import ProviderAccountImport from '@/components/account/ProviderAccountImport.vue'
 import { providerAccountRateMultiplier, suggestedProviderAccountName, type ProviderAccountSelection } from '@/components/account/providerImport'
-import { usesImagePriceProbe } from "@/utils/modelPriceProbe"
+import { usesImagePriceProbe } from '@/utils/modelPriceProbe'
 import ExtraImageModelsField from '@/components/account/ExtraImageModelsField.vue'
 import { parseExtraImageModels } from '@/utils/extraImageModels'
 import { DEFAULT_ACCOUNT_COST_MULTIPLIER, isValidAccountCostMultiplier } from '@/utils/accountCost'
-
-import OpenAITwoFAImport from './OpenAITwoFAImport.vue'
-import { getProxyBindingPolicy,getProxyBindingSummaries,matchesProxyBinding,type ProxyBindingPolicy,type ProxyBindingSummary } from '@/api/admin/proxyBinding'
-import { reserveOAuthImport,releaseOAuthImport,type OAuthReservation } from '@/api/admin/proxyBinding'
-import { createTokenGuardV2Account } from '@/api/admin/accountTokenGuardV2'
-import type { TokenGuardReloginAccount } from '@/api/admin/accountTokenGuard'
+import GrokMediaProviderSelect from '@/components/account/GrokMediaProviderSelect.vue'
+import { applyGrokMediaProvider, type GrokMediaProvider } from '@/components/account/grokMediaProvider'
 import { ref, reactive, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -4187,7 +4234,8 @@ import {
   type AddMethod,
   type AuthInputMethod
 } from '@/composables/useAccountOAuth'
-import { useOpenAIOAuth } from '@/composables/useOpenAIOAuth'
+import { useOpenAIOAuth, type OpenAITokenInfo } from '@/composables/useOpenAIOAuth'
+import { openaiPasswordLogin, type PasswordLoginResult } from '@/api/admin/openaiPasswordLogin'
 import { useGeminiOAuth } from '@/composables/useGeminiOAuth'
 import { useAntigravityOAuth } from '@/composables/useAntigravityOAuth'
 import { useGrokOAuth } from '@/composables/useGrokOAuth'
@@ -4209,6 +4257,12 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
+import OpenAIImageSizeTiersField from '@/components/account/OpenAIImageSizeTiersField.vue'
+import {
+  OPENAI_IMAGE_SIZE_TIERS,
+  applyOpenAIImageSizeTiersToExtra,
+  type OpenAIImageSizeTier
+} from '@/components/account/openaiImageSizeTiers'
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
@@ -4217,11 +4271,7 @@ import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import Toggle from '@/components/common/Toggle.vue'
-import AccountRpmSettings from '@/components/account/AccountRpmSettings.vue'
-import { applyAccountRPMSettings } from '@/components/account/accountRpm'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
-import GrokMediaProviderSelect from '@/components/account/GrokMediaProviderSelect.vue'
-import { applyGrokMediaProvider, type GrokMediaProvider } from '@/components/account/grokMediaProvider'
 import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
 import { applyExplicitCacheUpstreamCredentials, isOfficialGeminiBaseUrl } from '@/utils/geminiExplicitCache'
 import OpenCodeGoProtocolRulesEditor from '@/components/account/OpenCodeGoProtocolRulesEditor.vue'
@@ -4296,7 +4346,6 @@ const { t } = useI18n()
 const browserTimeZone = getBrowserTimeZone()
 
 const oauthStepTitle = computed(() => {
-  if (isOpenAITwoFA.value) return t('tokenGuard.twoFA.title')
   if (form.platform === 'openai') return t('admin.accounts.oauth.openai.title')
   if (form.platform === 'gemini') return t('admin.accounts.oauth.gemini.title')
   if (form.platform === 'antigravity') return t('admin.accounts.oauth.antigravity.title')
@@ -4389,9 +4438,24 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   close: []
   created: []
+  'create-vm-managed': []
 }>()
 
 const appStore = useAppStore()
+const vmManagedSelected = ref(false)
+const isVMManaged = computed(() => form.platform === 'openai' && vmManagedSelected.value && accountCategory.value === 'oauth-based')
+const managedWizardOpen = ref(false)
+const vmNameExample = computed(() => form.name.trim() || t('admin.accounts.vmManaged.wizard.namePrefixExample'))
+const managedSettings = ref<OpenAIVMManagedSettings>({group_ids: [], concurrency: 3, priority: 1})
+const managedGroupModels = ref<GroupAllowedModels>({})
+const selectVMManaged = () => { accountCategory.value = 'oauth-based'; form.type = 'oauth'; vmManagedSelected.value = true }
+
+const selectOpenAIOAuth = () => {
+  vmManagedSelected.value = false
+  accountCategory.value = 'oauth-based'
+  openaiOAuth.resetState()
+  oauthFlowRef.value?.reset()
+}
 
 const hideAccountLongContextBilling = computed(() => {
   return allSelectedGroupsEnableLongContextPricing(form.group_ids, props.groups)
@@ -4457,13 +4521,12 @@ interface TempUnschedRuleForm {
 
 // State
 const step = ref(1)
-const openaiTwoFA = ref(false)
-const twoFABusy = ref(false)
-const isOpenAITwoFA = computed(() => form.platform === 'openai' && accountCategory.value === 'oauth-based' && openaiTwoFA.value)
 const submitting = ref(false)
 const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account'>('oauth-based') // UI selection for account category
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
+const extraImageModels = ref('')
+const extraImageModelPrefixes = ref('')
 const apiKeyValue = ref('')
 const grokMediaProvider = ref<GrokMediaProvider>('')
 const isModelPriceProbe = computed(() => form.platform === 'video' || usesImagePriceProbe(form.platform, apiKeyBaseUrl.value))
@@ -4702,8 +4765,7 @@ const syncPreviewCredentials = computed(() => {
     platform: form.platform,
     type: form.type,
     base_url: baseUrl || undefined,
-    api_key: apiKeyValue.value.trim(),
-    proxy_id: form.proxy_id ?? undefined,
+    api_key: apiKeyValue.value,
     ...(modelMapping ? { model_mapping: modelMapping } : {})
   }
 })
@@ -4725,7 +4787,6 @@ const upstreamModelsPreviewed = ref(false)
 const DEFAULT_POOL_MODE_RETRY_COUNT = 3
 const MAX_POOL_MODE_RETRY_COUNT = 10
 const DEFAULT_POOL_MODE_RETRY_STATUS_CODES = [401, 403, 429]
-
 const poolModeEnabled = ref(false)
 const explicitCacheUpstreamEnabled = ref(false)
 const explicitCacheUpstreamMaxTTL = ref<string | number>('')
@@ -4791,10 +4852,8 @@ const applyGrokOAuthUpstreamConfig = (credentials: Record<string, unknown>) => {
 }
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(true)
-const copilotSDKEnabled = ref(false)
-const extraImageModels = ref('')
-const extraImageModelPrefixes = ref('')
 const openaiPassthroughEnabled = ref(false)
+const openaiPassthroughModelFilterEnabled = ref(false)
 // OpenAI Codex namespace 工具摊平兼容开关（仅 OAuth），缺省关闭即原样保留
 const openaiFlattenNamespacesEnabled = ref(false)
 const openAILongContextBillingEnabled = ref(false)
@@ -4803,9 +4862,9 @@ const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
 // Images 非流式响应缺 b64_json 时由网关下载 url 回填（仅 OpenAI API Key）。
 const openAIImagesUrlToB64JsonEnabled = ref(false)
+const openAIImageSizeTiers = ref<OpenAIImageSizeTier[]>([...OPENAI_IMAGE_SIZE_TIERS])
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
-const openaiOAuthWSSSEAcceleration = ref(false)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAppServerEnabled = ref(false)
@@ -4819,7 +4878,6 @@ const codexFingerprintModeOptions = computed(() => [
 ])
 type AnthropicAPIKeyAuthScheme = 'x_api_key' | 'authorization_bearer'
 const anthropicPassthroughEnabled = ref(false)
-const anthropicStripClaudeCodeIdentityEnabled = ref(false)
 const anthropicAPIKeyAuthScheme = ref<AnthropicAPIKeyAuthScheme>('x_api_key')
 const webSearchEmulationMode = ref('default')
 const webSearchGlobalEnabled = ref(false)
@@ -5042,7 +5100,7 @@ const openAIWSModeHintKey = computed(() =>
 )
 
 const isOpenAIModelRestrictionDisabled = computed(() =>
-  form.platform === 'openai' && (openaiPassthroughEnabled.value || copilotSDKEnabled.value)
+  form.platform === 'openai' && openaiPassthroughEnabled.value && !openaiPassthroughModelFilterEnabled.value
 )
 
 const mixedChannelWarningMessageText = computed(() => {
@@ -5122,13 +5180,23 @@ const form = reactive({
   type: 'oauth' as AccountType, // Will be 'oauth', 'setup-token', or 'apikey'
   credentials: {} as Record<string, unknown>,
   proxy_id: null as number | null,
+  proxy_ids: [] as number[],
   concurrency: 10,
   load_factor: null as number | null,
   priority: 1,
   rate_multiplier: 1,
+  group_rate_multiplier: 1,
   group_ids: [] as number[],
   expires_at: null as number | null
 })
+
+
+// OAuth 验证只能使用一个出口；多代理模式使用池中第一个代理认证，
+// 账号保存后实际请求仍按整个代理池调度。
+const authProxyID = computed(() =>
+  form.proxy_ids[0] ?? null
+)
+
 
 watch(() => [form.platform, form.type, providerSource.value], () => {
   providerSelection.value = null
@@ -5323,19 +5391,17 @@ watch(
       interceptWarmupRequests.value = false
     }
     if (newPlatform !== 'openai') {
-      copilotSDKEnabled.value = false
       openaiPassthroughEnabled.value = false
+  openaiPassthroughModelFilterEnabled.value = false
       openaiFlattenNamespacesEnabled.value = false
       openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
       openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
-      openaiOAuthWSSSEAcceleration.value = false
       openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       codexCLIOnlyEnabled.value = false
       codexCLIOnlyAppServerEnabled.value = false
     }
     if (newPlatform !== 'anthropic') {
       anthropicPassthroughEnabled.value = false
-      anthropicStripClaudeCodeIdentityEnabled.value = false
       anthropicAPIKeyAuthScheme.value = 'x_api_key'
       webSearchEmulationMode.value = 'default'
     }
@@ -5344,6 +5410,7 @@ watch(
     headerOverrideEnabled.value = false
     headerOverrideRows.value = []
     openAIImagesUrlToB64JsonEnabled.value = false
+    openAIImageSizeTiers.value = [...OPENAI_IMAGE_SIZE_TIERS]
     grokOAuthCustomBaseUrlEnabled.value = false
     grokOAuthBaseUrl.value = ''
     // Reset OAuth states
@@ -5366,7 +5433,6 @@ watch(
     }
     if (platform !== 'anthropic' || category !== 'apikey') {
       anthropicPassthroughEnabled.value = false
-      anthropicStripClaudeCodeIdentityEnabled.value = false
       anthropicAPIKeyAuthScheme.value = 'x_api_key'
       webSearchEmulationMode.value = 'default'
     }
@@ -5671,23 +5737,20 @@ const ensureAntigravityMixedChannelConfirmed = async (onConfirm: () => Promise<v
   }
 }
 
-const createAccountWithReservation = async (payload: CreateAccountRequest) => {
- await ensureOAuthReservation()
- const reservation = oauthReservation.value
- const account=await adminAPI.accounts.create({
-  ...payload,
-  ...(usingProvider.value && providerSelection.value && payload.type === 'apikey' ? {provider_id:providerSelection.value.providerId,provider_key_id:providerSelection.value.keyId} : {}),
-  ...(reservation ? {import_ticket:reservation.id,proxy_id:reservation.proxy_id} : {})
- })
- oauthReservation.value=null
- return account
+const createAccountWithProvider = async (payload: CreateAccountRequest) => {
+  return adminAPI.accounts.create({
+    ...payload,
+    ...(usingProvider.value && providerSelection.value && payload.type === 'apikey'
+      ? { provider_id: providerSelection.value.providerId, provider_key_id: providerSelection.value.keyId }
+      : {})
+  })
 }
 
 
 const submitCreateAccount = async (payload: CreateAccountRequest) => {
   submitting.value = true
   try {
-    const account = await createAccountWithReservation(withAntigravityConfirmFlag(payload))
+    const account = await createAccountWithProvider(withAntigravityConfirmFlag(payload))
     const modelMapping = payload.credentials.model_mapping
     const hasConcreteMappedTarget = payload.type === 'apikey' &&
       typeof modelMapping === 'object' &&
@@ -5745,22 +5808,23 @@ const submitCreateAccount = async (payload: CreateAccountRequest) => {
 
 // Methods
 const resetForm = () => {
+  vmManagedSelected.value = false; managedWizardOpen.value = false; managedGroupModels.value = {}
   step.value = 1
-  openaiTwoFA.value = false
-  twoFABusy.value = false
   form.name = ''
   extraImageModels.value = ''
   extraImageModelPrefixes.value = ''
+  costMultiplier.value = DEFAULT_ACCOUNT_COST_MULTIPLIER
   form.notes = ''
   form.platform = 'anthropic'
   form.type = 'oauth'
   form.credentials = {}
   form.proxy_id = null
+  form.proxy_ids = []
   form.concurrency = 10
   form.load_factor = null
   form.priority = 1
-  costMultiplier.value = DEFAULT_ACCOUNT_COST_MULTIPLIER
   form.rate_multiplier = 1
+  form.group_rate_multiplier = 1
   form.group_ids = []
   form.expires_at = null
   accountCategory.value = 'oauth-based'
@@ -5805,12 +5869,13 @@ const resetForm = () => {
   headerOverrideEnabled.value = false
   headerOverrideRows.value = []
   openAIImagesUrlToB64JsonEnabled.value = false
+  openAIImageSizeTiers.value = [...OPENAI_IMAGE_SIZE_TIERS]
   grokOAuthCustomBaseUrlEnabled.value = false
   grokOAuthBaseUrl.value = ''
   interceptWarmupRequests.value = false
   autoPauseOnExpired.value = true
-  copilotSDKEnabled.value = false
   openaiPassthroughEnabled.value = false
+  openaiPassthroughModelFilterEnabled.value = false
   openaiFlattenNamespacesEnabled.value = false
   openAILongContextBillingEnabled.value = false
   openAILongContextBillingTouched.value = false
@@ -5818,13 +5883,11 @@ const resetForm = () => {
   openAIResponsesMode.value = 'auto'
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
-  openaiOAuthWSSSEAcceleration.value = false
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   codexCLIOnlyEnabled.value = false
   codexCLIOnlyAppServerEnabled.value = false
   codexFingerprintMode.value = 'off'
   anthropicPassthroughEnabled.value = false
-  anthropicStripClaudeCodeIdentityEnabled.value = false
   anthropicAPIKeyAuthScheme.value = 'x_api_key'
   webSearchEmulationMode.value = 'default'
   // Reset quota control state
@@ -5875,8 +5938,6 @@ const resetForm = () => {
 }
 
 const handleClose = () => {
-  if (twoFABusy.value) return
-  void clearOAuthReservation()
   antigravityMixedChannelConfirmed.value = false
   clearMixedChannelDialog()
   emit('close')
@@ -5887,7 +5948,7 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
     return base
   }
 
-  const extra: Record<string, unknown> = { ...base }
+  const extra: Record<string, unknown> = { ...(base || {}) }
   if (form.type === 'apikey') {
     extra.extra_image_models = parseExtraImageModels(extraImageModels.value)
     extra.extra_image_model_prefixes = parseExtraImageModels(extraImageModelPrefixes.value)
@@ -5895,34 +5956,21 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   if (accountCategory.value === 'oauth-based') {
     extra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
     extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
-    applyAccountRPMSettings(extra, {
-      enabled: addMethod.value === 'oauth' && rpmLimitEnabled.value,
-      baseRpm: baseRpm.value,
-      strict: true
-    })
   } else if (accountCategory.value === 'apikey') {
     extra.openai_apikey_responses_websockets_v2_mode = openaiAPIKeyResponsesWebSocketV2Mode.value
     extra.openai_apikey_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiAPIKeyResponsesWebSocketV2Mode.value)
   }
-  if (form.type === 'oauth' && openaiOAuthWSSSEAcceleration.value) {
-    extra.openai_oauth_ws_sse_acceleration = true
-  } else {
-    delete extra.openai_oauth_ws_sse_acceleration
-  }
   // 清理兼容旧键，统一改用分类型开关。
   delete extra.responses_websockets_v2_enabled
   delete extra.openai_ws_enabled
-  if (accountCategory.value === 'apikey' && copilotSDKEnabled.value) {
-    extra.openai_copilot_sdk = true
-  } else {
-    delete extra.openai_copilot_sdk
-  }
   if (openaiPassthroughEnabled.value) {
     extra.openai_passthrough = true
   } else {
     delete extra.openai_passthrough
     delete extra.openai_oauth_passthrough
   }
+  if (openaiPassthroughEnabled.value && openaiPassthroughModelFilterEnabled.value) extra.openai_passthrough_model_filter = true
+  else delete extra.openai_passthrough_model_filter
   // 缺省即保留 namespace，不写空值，避免 extra 里堆积默认项
   if (form.type === 'oauth' && openaiFlattenNamespacesEnabled.value) {
     extra.openai_responses_flatten_namespaces = true
@@ -5946,8 +5994,7 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   } else {
     delete extra.codex_cli_only_allow_app_server
   }
-  // 收敛是显式 opt-in：off 即默认值，不落键；device/session/full 必须显式写入，
-  // 否则管理员的选择会被当成默认而丢失（#5610）。
+  // 使用官方默认关闭；仅显式启用时保存指纹模式。
   if (codexFingerprintMode.value !== 'off') {
     extra.codex_fingerprint_mode = codexFingerprintMode.value
   } else {
@@ -5973,6 +6020,7 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   } else {
     delete extra.images_url_to_b64_json
   }
+  applyOpenAIImageSizeTiersToExtra(extra, openAIImageSizeTiers.value)
 
   return Object.keys(extra).length > 0 ? extra : undefined
 }
@@ -5998,11 +6046,6 @@ const buildAnthropicExtra = (base?: Record<string, unknown>): Record<string, unk
     extra.anthropic_passthrough = true
   } else {
     delete extra.anthropic_passthrough
-  }
-  if (anthropicStripClaudeCodeIdentityEnabled.value) {
-    extra.anthropic_strip_claude_code_identity = true
-  } else {
-    delete extra.anthropic_strip_claude_code_identity
   }
   if (anthropicAPIKeyAuthScheme.value === 'authorization_bearer') {
     extra.anthropic_apikey_auth_scheme = 'authorization_bearer'
@@ -6110,10 +6153,37 @@ const handleVertexServiceAccountDrop = async (event: DragEvent) => {
 }
 
 const handleSubmit = async () => {
-  if(bindingLoading.value || bindingFailed.value){appStore.showError('请先成功读取 IP 规则后再添加账号');return}
+  if (isVMManaged.value) {
+    if (!form.name.trim()) { appStore.showError(t('admin.accounts.pleaseEnterAccountName')); return }
+    const credentials: Record<string, unknown> = {}
+    if (!isOpenAIModelRestrictionDisabled.value) {
+      const mapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
+      if (mapping) credentials.model_mapping = mapping
+    }
+    if (!applyTempUnschedConfig(credentials)) return
+    const extra: Record<string, unknown> = {
+      cost_multiplier: costMultiplier.value,
+      openai_oauth_responses_websockets_v2_mode: openaiOAuthResponsesWebSocketV2Mode.value,
+      openai_oauth_responses_websockets_v2_enabled: isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value),
+      openai_long_context_billing_enabled: openAILongContextBillingEnabled.value
+    }
+    if (openaiPassthroughEnabled.value) extra.openai_passthrough = true
+    if (openaiPassthroughEnabled.value && openaiPassthroughModelFilterEnabled.value) extra.openai_passthrough_model_filter = true
+    if (openaiFlattenNamespacesEnabled.value) extra.openai_responses_flatten_namespaces = true
+    if (codexCLIOnlyEnabled.value) { extra.codex_cli_only = true; extra.codex_cli_only_allow_app_server = codexCLIOnlyAppServerEnabled.value }
+    if (upstreamRequestIdHeader.value.trim()) extra.upstream_request_id_header = upstreamRequestIdHeader.value.trim()
+    applyOpenAIImageSizeTiersToExtra(extra, openAIImageSizeTiers.value)
+    managedSettings.value = {notes: form.notes, group_ids: [...form.group_ids], concurrency: form.concurrency, priority: form.priority,
+      rate_multiplier: form.rate_multiplier, group_rate_multiplier: form.group_rate_multiplier, load_factor: form.load_factor ?? undefined,
+      expires_at: form.expires_at, auto_pause_on_expired: autoPauseOnExpired.value, credentials, extra,
+      group_allowed_models: buildGroupAllowedModelsPayload(form.group_ids, managedGroupModels.value)}
+    managedWizardOpen.value = true
+    return
+  }
+
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
-    if (!isGrokSSOInputMethod.value && !isOpenAITwoFA.value && !form.name.trim()) {
+    if (!isGrokSSOInputMethod.value && !form.name.trim()) {
       appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
       return
     }
@@ -6406,7 +6476,6 @@ const handleSubmit = async () => {
 }
 
 const goBackToBasicInfo = () => {
-  void clearOAuthReservation()
   step.value = 1
   oauth.resetState()
   openaiOAuth.resetState()
@@ -6417,22 +6486,21 @@ const goBackToBasicInfo = () => {
 }
 
 const handleGenerateUrl = async () => {
-  try {await ensureOAuthReservation()} catch(e) {appStore.showError((e as Error).message);return}
   if (form.platform === 'openai') {
-    await openaiOAuth.generateAuthUrl(form.proxy_id)
+    await openaiOAuth.generateAuthUrl(authProxyID.value)
   } else if (form.platform === 'gemini') {
     await geminiOAuth.generateAuthUrl(
-      form.proxy_id,
+      authProxyID.value,
       oauthFlowRef.value?.projectId,
       geminiOAuthType.value,
       geminiSelectedTier.value
     )
   } else if (form.platform === 'antigravity') {
-    await antigravityOAuth.generateAuthUrl(form.proxy_id)
+    await antigravityOAuth.generateAuthUrl(authProxyID.value)
   } else if (form.platform === 'grok') {
-    await grokOAuth.generateAuthUrl(form.proxy_id)
+    await grokOAuth.generateAuthUrl(authProxyID.value)
   } else {
-    await oauth.generateAuthUrl(addMethod.value, form.proxy_id)
+    await oauth.generateAuthUrl(addMethod.value, authProxyID.value)
   }
 }
 
@@ -6524,11 +6592,13 @@ const createAccountAndFinish = async (
     type,
     credentials,
     extra: finalExtra,
-    proxy_id: form.proxy_id,
+    proxy_id: authProxyID.value,
+    proxy_ids: [...form.proxy_ids],
     concurrency: form.concurrency,
     load_factor: form.load_factor ?? undefined,
     priority: form.priority,
     rate_multiplier: form.rate_multiplier,
+      group_rate_multiplier: form.group_rate_multiplier,
     group_ids: form.group_ids,
     expires_at: form.expires_at,
     // 上游倍率探测对全部 API-key 平台开放（antigravity upstream 走本 helper）；
@@ -6563,8 +6633,7 @@ const handleGrokValidateRT = async (refreshTokenInput: string) => {
   try {
     for (let i = 0; i < refreshTokens.length; i++) {
       try {
-        await ensureOAuthReservation(true)
-        const tokenInfo = await grokOAuth.validateRefreshToken(refreshTokens[i], form.proxy_id)
+        const tokenInfo = await grokOAuth.validateRefreshToken(refreshTokens[i], authProxyID.value)
         if (!tokenInfo) {
           failedCount++
           errors.push(`#${i + 1}: ${grokOAuth.error.value || 'Validation failed'}`)
@@ -6585,18 +6654,20 @@ const handleGrokValidateRT = async (refreshTokenInput: string) => {
           return
         }
 
-        await createAccountWithReservation({
+        await adminAPI.accounts.create({
           name: accountName,
           notes: form.notes,
           platform: 'grok',
           type: 'oauth',
           credentials,
           extra: withAccountExtraSettings(extra),
-          proxy_id: form.proxy_id,
+          proxy_id: authProxyID.value,
+          proxy_ids: [...form.proxy_ids],
           concurrency: form.concurrency,
           load_factor: form.load_factor ?? undefined,
           priority: form.priority,
           rate_multiplier: form.rate_multiplier,
+      group_rate_multiplier: form.group_rate_multiplier,
           group_ids: form.group_ids,
           expires_at: form.expires_at,
           auto_pause_on_expired: autoPauseOnExpired.value
@@ -6658,13 +6729,15 @@ const handleGrokImportSSO = async (ssoInput: string) => {
       sso_tokens: ssoTokens,
       name: form.name || undefined,
       notes: form.notes || undefined,
-      proxy_id: form.proxy_id,
+      proxy_id: authProxyID.value,
+      proxy_ids: [...form.proxy_ids],
       group_ids: form.group_ids,
       credentials,
       concurrency: form.concurrency,
       load_factor: form.load_factor ?? undefined,
       priority: form.priority,
       rate_multiplier: form.rate_multiplier,
+      group_rate_multiplier: form.group_rate_multiplier,
       expires_at: form.expires_at,
       auto_pause_on_expired: autoPauseOnExpired.value
     })
@@ -6734,8 +6807,7 @@ const handleGrokAuthorizePassword = async (emailPasswordInput: string) => {
   try {
     for (let i = 0; i < lines.length; i++) {
       try {
-        await ensureOAuthReservation(true)
-        const tokenInfo = await grokOAuth.authorizePassword(lines[i], form.proxy_id)
+        const tokenInfo = await grokOAuth.authorizePassword(lines[i], authProxyID.value)
         if (!tokenInfo) {
           failedCount++
           errors.push(`#${i + 1}: ${grokOAuth.error.value || 'Authorization failed'}`)
@@ -6763,18 +6835,20 @@ const handleGrokAuthorizePassword = async (emailPasswordInput: string) => {
           return
         }
 
-        await createAccountWithReservation({
+        await adminAPI.accounts.create({
           name: accountName,
           notes: form.notes,
           platform: 'grok',
           type: 'oauth',
           credentials,
           extra: withAccountExtraSettings(extra),
-          proxy_id: form.proxy_id,
+          proxy_id: authProxyID.value,
+          proxy_ids: [...form.proxy_ids],
           concurrency: form.concurrency,
           load_factor: form.load_factor ?? undefined,
           priority: form.priority,
           rate_multiplier: form.rate_multiplier,
+      group_rate_multiplier: form.group_rate_multiplier,
           group_ids: form.group_ids,
           expires_at: form.expires_at,
           auto_pause_on_expired: autoPauseOnExpired.value
@@ -6813,6 +6887,78 @@ const handleGrokAuthorizePassword = async (emailPasswordInput: string) => {
   }
 }
 
+// Both browser authorization and password/2FA produce the same normal OAuth account.
+// Keep the complete account settings in one save path.
+const saveOpenAIOAuthAccount = async (tokenInfo: OpenAITokenInfo, proxyID: number | null | undefined, rememberJobID?: string) => {
+  const credentials = openaiOAuth.buildCredentials(tokenInfo)
+  const oauthExtra = openaiOAuth.buildExtraInfo(tokenInfo) as Record<string, unknown> | undefined
+  const extra = buildOpenAIExtra(oauthExtra)
+  const shouldCreateOpenAI = form.platform === 'openai'
+
+  // Add model mapping for OpenAI OAuth accounts（透传模式下不应用）
+  if (shouldCreateOpenAI && !isOpenAIModelRestrictionDisabled.value) {
+    const modelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
+    if (modelMapping) {
+      credentials.model_mapping = modelMapping
+    }
+  }
+  if (shouldCreateOpenAI) {
+    const compactModelMapping = buildOpenAICompactModelMapping()
+    if (compactModelMapping) {
+      credentials.compact_model_mapping = compactModelMapping
+    }
+  }
+
+  // 应用临时不可调度配置
+  if (!applyTempUnschedConfig(credentials)) {
+    return
+  }
+
+  if (shouldCreateOpenAI) {
+    const created = await adminAPI.accounts.create({
+      name: form.name,
+      notes: form.notes,
+      platform: 'openai',
+      type: 'oauth',
+      credentials,
+      extra: withAccountExtraSettings(extra),
+      proxy_id: proxyID,
+      proxy_ids: [...form.proxy_ids],
+      concurrency: form.concurrency,
+      load_factor: form.load_factor ?? undefined,
+      priority: form.priority,
+      rate_multiplier: form.rate_multiplier,
+    group_rate_multiplier: form.group_rate_multiplier,
+      group_ids: form.group_ids,
+      expires_at: form.expires_at,
+      auto_pause_on_expired: autoPauseOnExpired.value
+    })
+    if (rememberJobID) {
+      try { await openaiPasswordLogin.remember(created.id, rememberJobID) }
+      catch { appStore.showWarning(t('admin.accounts.oauth.openai.passwordLogin.rememberFailed')) }
+    }
+    appStore.showSuccess(t('admin.accounts.accountCreated'))
+  }
+
+  emit('created')
+  handleClose()
+}
+
+const handleOpenAIPasswordAuthorized = async (result: PasswordLoginResult) => {
+  if (openaiOAuth.loading.value) return
+  openaiOAuth.loading.value = true
+  openaiOAuth.error.value = ''
+  try {
+    if (result.remember_failed) appStore.showWarning(t('admin.accounts.oauth.openai.passwordLogin.rememberFailed'))
+    await saveOpenAIOAuthAccount(result.token_info, result.proxy_id, result.remember_job_id)
+  } catch (error: any) {
+    openaiOAuth.error.value = error.response?.data?.detail || error.response?.data?.message || error.message || t('admin.accounts.oauth.authFailed')
+    appStore.showError(openaiOAuth.error.value)
+  } finally {
+    openaiOAuth.loading.value = false
+  }
+}
+
 // OpenAI OAuth 授权码兑换
 const handleOpenAIExchange = async (authCode: string) => {
   const oauthClient = openaiOAuth
@@ -6833,58 +6979,13 @@ const handleOpenAIExchange = async (authCode: string) => {
       authCode.trim(),
       oauthClient.sessionId.value,
       stateToUse,
-      form.proxy_id
+      authProxyID.value
     )
     if (!tokenInfo) return
 
-    const credentials = oauthClient.buildCredentials(tokenInfo)
-    const oauthExtra = oauthClient.buildExtraInfo(tokenInfo) as Record<string, unknown> | undefined
-    const extra = buildOpenAIExtra(oauthExtra)
-    const shouldCreateOpenAI = form.platform === 'openai'
-
-    // Add model mapping for OpenAI OAuth accounts（透传模式下不应用）
-    if (shouldCreateOpenAI && !isOpenAIModelRestrictionDisabled.value) {
-      const modelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
-      if (modelMapping) {
-        credentials.model_mapping = modelMapping
-      }
-    }
-    if (shouldCreateOpenAI) {
-      const compactModelMapping = buildOpenAICompactModelMapping()
-      if (compactModelMapping) {
-        credentials.compact_model_mapping = compactModelMapping
-      }
-    }
-
-    // 应用临时不可调度配置
-    if (!applyTempUnschedConfig(credentials)) {
-      return
-    }
-
-    if (shouldCreateOpenAI) {
-      await createAccountWithReservation({
-        name: form.name,
-        notes: form.notes,
-        platform: 'openai',
-        type: 'oauth',
-        credentials,
-        extra: withAccountExtraSettings(extra),
-        proxy_id: form.proxy_id,
-        concurrency: form.concurrency,
-        load_factor: form.load_factor ?? undefined,
-        priority: form.priority,
-        rate_multiplier: form.rate_multiplier,
-        group_ids: form.group_ids,
-        expires_at: form.expires_at,
-        auto_pause_on_expired: autoPauseOnExpired.value
-      })
-      appStore.showSuccess(t('admin.accounts.accountCreated'))
-    }
-
-    emit('created')
-    handleClose()
+    await saveOpenAIOAuthAccount(tokenInfo, authProxyID.value)
   } catch (error: any) {
-    oauthClient.error.value = error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
+    oauthClient.error.value = error.response?.data?.detail || error.message || t('admin.accounts.oauth.authFailed')
     appStore.showError(oauthClient.error.value)
   } finally {
     oauthClient.loading.value = false
@@ -6948,67 +7049,6 @@ const isAgentIdentityImportContent = (content: string) => {
   }
 }
 
-const oauthReservation = ref<OAuthReservation|null>(null)
-async function clearOAuthReservation(){const ticket=oauthReservation.value;oauthReservation.value=null;if(ticket)try{await releaseOAuthImport(ticket.id)}catch{/* server expiry releases abandoned reservations */}}
-async function ensureOAuthReservation(fresh=false){
- if(!autoProxyAssignment.value || isOpenAITwoFA.value)return
- if(fresh)await clearOAuthReservation()
- if(!oauthReservation.value){oauthReservation.value=await reserveOAuthImport(form.platform,form.proxy_id);form.proxy_id=oauthReservation.value.proxy_id}
-}
-// Freeze the first-login route and import settings together, including retries.
-const bindingPolicy = ref<ProxyBindingPolicy|null>(null)
-const bindingRows = ref<ProxyBindingSummary[]>([])
-const bindingLoading = ref(false), bindingFailed = ref(false)
-const bindingInScope = computed(()=>matchesProxyBinding(bindingPolicy.value,form.platform,form.type,isOpenAITwoFA.value?'twofa':'oauth'))
-const autoProxyAssignment = computed(()=>bindingInScope.value && !!bindingPolicy.value?.auto_assign)
-const selectableProxies = computed(()=>!bindingInScope.value?props.proxies:props.proxies.filter(p=>{const s=bindingRows.value.find(s=>s.proxy_id===p.id);return !!s && (s.history<s.limit||s.extra_allowed)&&s.reserved===0}))
-async function loadBindingRules(){bindingLoading.value=true;bindingFailed.value=false;try{const [policy,rows]=await Promise.all([getProxyBindingPolicy(),getProxyBindingSummaries()]);bindingPolicy.value=policy;bindingRows.value=rows}catch{bindingFailed.value=true;bindingPolicy.value=null}finally{bindingLoading.value=false}}
-watch(()=>props.show,show=>{if(show)void loadBindingRules()},{immediate:true})
-watch(autoProxyAssignment,active=>{if(active)form.proxy_id=null})
-type TwoFABatchSettings = Omit<Parameters<typeof adminAPI.accounts.importCodexSession>[0], 'content'>
-let twoFABatchSettings: TwoFABatchSettings | null = null
-const twoFACreated = new Map<string, number>()
-const resetTwoFABatch = () => { twoFABatchSettings = null; twoFACreated.clear() }
-const prepareTwoFABatch = () => {
-  const credentialExtras = buildOpenAICodexImportCredentialExtras()
-  if (credentialExtras === null) throw new Error('invalid_account_settings')
-  twoFABatchSettings = JSON.parse(JSON.stringify({
-    name: form.name.trim(), notes: form.notes || null, proxy_id: form.proxy_id,
-    concurrency: form.concurrency, load_factor: form.load_factor ?? undefined,
-    priority: form.priority, rate_multiplier: form.rate_multiplier, group_ids: form.group_ids,
-    expires_at: form.expires_at, auto_pause_on_expired: autoPauseOnExpired.value,
-    credential_extras: credentialExtras, extra: withAccountExtraSettings(buildOpenAICodexImportExtra()),
-    update_existing: false, skip_existing: true
-  }))
-}
-const importTwoFACredential = async (credential: Record<string, unknown>, email: string, login: TokenGuardReloginAccount): Promise<'created' | 'skipped'> => {
-  const settings = twoFABatchSettings
-  if (!settings) throw new Error('batch_not_prepared')
-  let accountId = twoFACreated.get(email)
-  if (!accountId) {
-    const result = await adminAPI.accounts.importCodexSession({
-      ...settings, initialize_openai_two_fa: true, import_ticket: credential._import_ticket as string | undefined, proxy_id: credential._import_proxy_id as number | null, content: JSON.stringify(credential),
-      name: settings.name ? `${settings.name} (${email})` : email
-    })
-    const created = result.items?.find(item => item.action === 'created' && item.account_id)
-    if (!created?.account_id) {
-      if (result.skipped > 0 && result.failed === 0) return 'skipped'
-      throw new Error('import_failed')
-    }
-    accountId = created.account_id
-    twoFACreated.set(email, accountId)
-  }
-  await createTokenGuardV2Account({
-    account_id: accountId, login_email: login.email,
-    credential_mode: 'password_totp', proxy_source: 'account',
-    engine: credential._import_proxy_id ? 'local_worker' : undefined,
-    password: login.password, totp_secret: login.mfa_secret,
-    enabled: true, auto_relogin_enabled: true
-  })
-  emit('created')
-  return 'created'
-}
-
 const handleOpenAIImportCodexSession = async (content: string) => {
   const oauthClient = openaiOAuth
   const trimmed = content.trim()
@@ -7035,11 +7075,13 @@ const handleOpenAIImportCodexSession = async (content: string) => {
       content: trimmed,
       name: form.name,
       notes: form.notes || null,
-      proxy_id: form.proxy_id,
+      proxy_id: authProxyID.value,
+      proxy_ids: [...form.proxy_ids],
       concurrency: form.concurrency,
       load_factor: form.load_factor ?? undefined,
       priority: form.priority,
       rate_multiplier: form.rate_multiplier,
+      group_rate_multiplier: form.group_rate_multiplier,
       group_ids: form.group_ids,
       expires_at: form.expires_at,
       auto_pause_on_expired: autoPauseOnExpired.value,
@@ -7047,7 +7089,7 @@ const handleOpenAIImportCodexSession = async (content: string) => {
       extra: withAccountExtraSettings(extra),
       update_existing: true
     })
-    // 只给这次新建的账号建规则；已有账号被更新时不动它原有的规则。
+
     const successCount = result.created + result.updated
     const params = {
       created: result.created,
@@ -7113,11 +7155,13 @@ const handleOpenAIImportCodexPAT = async (accessToken: string) => {
       access_token: trimmed,
       name: form.name,
       notes: form.notes || null,
-      proxy_id: form.proxy_id,
+      proxy_id: authProxyID.value,
+      proxy_ids: [...form.proxy_ids],
       concurrency: form.concurrency,
       load_factor: form.load_factor ?? undefined,
       priority: form.priority,
       rate_multiplier: form.rate_multiplier,
+      group_rate_multiplier: form.group_rate_multiplier,
       group_ids: form.group_ids,
       expires_at: form.expires_at,
       auto_pause_on_expired: autoPauseOnExpired.value,
@@ -7161,16 +7205,14 @@ const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string)
   let successCount = 0
   let failedCount = 0
   const errors: string[] = []
-  const createdIds: number[] = []
   const shouldCreateOpenAI = form.platform === 'openai'
 
   try {
     for (let i = 0; i < refreshTokens.length; i++) {
       try {
-        await ensureOAuthReservation(true)
         const tokenInfo = await oauthClient.validateRefreshToken(
           refreshTokens[i],
-          form.proxy_id,
+          authProxyID.value,
           clientId
         )
         if (!tokenInfo) {
@@ -7206,23 +7248,24 @@ const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string)
         const accountName = refreshTokens.length > 1 ? `${baseName} #${i + 1}` : baseName
 
         if (shouldCreateOpenAI) {
-          const account = await createAccountWithReservation({
-            name: accountName,
+          await adminAPI.accounts.create({
+              name: accountName,
             notes: form.notes,
             platform: 'openai',
             type: 'oauth',
             credentials,
             extra: withAccountExtraSettings(extra),
-            proxy_id: form.proxy_id,
+            proxy_id: authProxyID.value,
+            proxy_ids: [...form.proxy_ids],
             concurrency: form.concurrency,
             load_factor: form.load_factor ?? undefined,
             priority: form.priority,
             rate_multiplier: form.rate_multiplier,
+      group_rate_multiplier: form.group_rate_multiplier,
             group_ids: form.group_ids,
             expires_at: form.expires_at,
             auto_pause_on_expired: autoPauseOnExpired.value
           })
-          createdIds.push(account.id)
         }
 
         successCount++
@@ -7232,7 +7275,6 @@ const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string)
         errors.push(`#${i + 1}: ${errMsg}`)
       }
     }
-
 
     // Show results
     if (successCount > 0 && failedCount === 0) {
@@ -7258,7 +7300,7 @@ const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string)
   }
 }
 
-// Each login entry uses its issuing OAuth client; existing accounts retain theirs.
+// 手动输入 RT（Codex CLI client_id，默认）
 const handleOpenAIValidateRT = (rt: string) => handleOpenAIBatchRT(rt)
 
 // 手动输入 Mobile RT
@@ -7289,10 +7331,9 @@ const handleAntigravityValidateRT = async (refreshTokenInput: string) => {
   try {
     for (let i = 0; i < refreshTokens.length; i++) {
       try {
-        await ensureOAuthReservation(true)
         const tokenInfo = await antigravityOAuth.validateRefreshToken(
           refreshTokens[i],
-          form.proxy_id
+          authProxyID.value
         )
         if (!tokenInfo) {
           failedCount++
@@ -7303,7 +7344,7 @@ const handleAntigravityValidateRT = async (refreshTokenInput: string) => {
 
         const credentials = antigravityOAuth.buildCredentials(tokenInfo, refreshTokens[i])
         applyAntigravityProjectID(credentials, antigravityProjectId.value, 'create')
-        
+
         // Generate account name with index for batch
         const accountName = refreshTokens.length > 1 ? `${form.name} #${i + 1}` : form.name
 
@@ -7315,16 +7356,18 @@ const handleAntigravityValidateRT = async (refreshTokenInput: string) => {
           type: 'oauth',
           credentials,
           extra: withAccountExtraSettings({}),
-          proxy_id: form.proxy_id,
+          proxy_id: authProxyID.value,
+          proxy_ids: [...form.proxy_ids],
           concurrency: form.concurrency,
           load_factor: form.load_factor ?? undefined,
           priority: form.priority,
           rate_multiplier: form.rate_multiplier,
+      group_rate_multiplier: form.group_rate_multiplier,
           group_ids: form.group_ids,
           expires_at: form.expires_at,
           auto_pause_on_expired: autoPauseOnExpired.value
         })
-        await createAccountWithReservation(createPayload)
+        await adminAPI.accounts.create(createPayload)
         successCount++
       } catch (error: any) {
         failedCount++
@@ -7377,7 +7420,7 @@ const handleGeminiExchange = async (authCode: string) => {
       code: authCode.trim(),
       sessionId: geminiOAuth.sessionId.value,
       state: stateToUse,
-      proxyId: form.proxy_id,
+      proxyId: authProxyID.value,
       oauthType: geminiOAuthType.value,
       tierId: geminiSelectedTier.value
     })
@@ -7414,7 +7457,7 @@ const handleAntigravityExchange = async (authCode: string) => {
       code: authCode.trim(),
       sessionId: antigravityOAuth.sessionId.value,
       state: stateToUse,
-      proxyId: form.proxy_id
+      proxyId: authProxyID.value
     })
 		if (!tokenInfo) return
 
@@ -7461,7 +7504,7 @@ const handleGrokExchange = async (authCode: string) => {
       code: authCode.trim(),
       sessionId: grokOAuth.sessionId.value,
       state: stateToUse,
-      proxyId: form.proxy_id
+      proxyId: authProxyID.value
     })
     if (!tokenInfo) return
 
@@ -7485,7 +7528,7 @@ const handleAnthropicExchange = async (authCode: string) => {
   oauth.error.value = ''
 
   try {
-    const proxyConfig = form.proxy_id ? { proxy_id: form.proxy_id } : {}
+    const proxyConfig = authProxyID.value ? { proxy_id: authProxyID.value } : {}
     const endpoint =
       addMethod.value === 'oauth'
         ? '/admin/accounts/exchange-code'
@@ -7514,12 +7557,16 @@ const handleAnthropicExchange = async (authCode: string) => {
     }
 
     // Add RPM limit settings
-    applyAccountRPMSettings(extra, {
-      enabled: rpmLimitEnabled.value,
-      baseRpm: baseRpm.value,
-      strategy: rpmStrategy.value,
-      stickyBuffer: rpmStickyBuffer.value
-    })
+    if (rpmLimitEnabled.value) {
+      const DEFAULT_BASE_RPM = 15
+      extra.base_rpm = (baseRpm.value != null && baseRpm.value > 0)
+        ? baseRpm.value
+        : DEFAULT_BASE_RPM
+      extra.rpm_strategy = rpmStrategy.value
+      if (rpmStickyBuffer.value != null && rpmStickyBuffer.value > 0) {
+        extra.rpm_sticky_buffer = rpmStickyBuffer.value
+      }
+    }
 
     // UMQ mode（独立于 RPM）
     if (userMsgQueueMode.value) {
@@ -7585,7 +7632,7 @@ const handleCookieAuth = async (sessionKey: string) => {
   oauth.error.value = ''
 
   try {
-    const proxyConfig = form.proxy_id ? { proxy_id: form.proxy_id } : {}
+    const proxyConfig = authProxyID.value ? { proxy_id: authProxyID.value } : {}
     const keys = oauth.parseSessionKeys(sessionKey)
 
     if (keys.length === 0) {
@@ -7612,12 +7659,10 @@ const handleCookieAuth = async (sessionKey: string) => {
 
     for (let i = 0; i < keys.length; i++) {
       try {
-        await ensureOAuthReservation(true)
         const tokenInfo = await adminAPI.accounts.exchangeCode(endpoint, {
           session_id: '',
           code: keys[i],
-          ...proxyConfig,
-          ...(oauthReservation.value ? {proxy_id:oauthReservation.value.proxy_id ?? undefined} : {})
+          ...proxyConfig
         })
 
         // Build extra with quota control settings
@@ -7637,12 +7682,16 @@ const handleCookieAuth = async (sessionKey: string) => {
         }
 
         // Add RPM limit settings
-        applyAccountRPMSettings(extra, {
-          enabled: rpmLimitEnabled.value,
-          baseRpm: baseRpm.value,
-          strategy: rpmStrategy.value,
-          stickyBuffer: rpmStickyBuffer.value
-        })
+        if (rpmLimitEnabled.value) {
+          const DEFAULT_BASE_RPM = 15
+          extra.base_rpm = (baseRpm.value != null && baseRpm.value > 0)
+            ? baseRpm.value
+            : DEFAULT_BASE_RPM
+          extra.rpm_strategy = rpmStrategy.value
+          if (rpmStickyBuffer.value != null && rpmStickyBuffer.value > 0) {
+            extra.rpm_sticky_buffer = rpmStickyBuffer.value
+          }
+        }
 
         // UMQ mode（独立于 RPM）
         if (userMsgQueueMode.value) {
@@ -7683,18 +7732,20 @@ const handleCookieAuth = async (sessionKey: string) => {
           credentials.temp_unschedulable_rules = tempUnschedPayload
         }
 
-        await createAccountWithReservation({
+        await adminAPI.accounts.create({
           name: accountName,
           notes: form.notes,
           platform: form.platform,
           type: addMethod.value, // Use addMethod as type: 'oauth' or 'setup-token'
           credentials,
           extra: withAccountExtraSettings(extra),
-          proxy_id: form.proxy_id,
+          proxy_id: authProxyID.value,
+          proxy_ids: [...form.proxy_ids],
           concurrency: form.concurrency,
           load_factor: form.load_factor ?? undefined,
           priority: form.priority,
           rate_multiplier: form.rate_multiplier,
+      group_rate_multiplier: form.group_rate_multiplier,
           group_ids: form.group_ids,
           expires_at: form.expires_at,
           auto_pause_on_expired: autoPauseOnExpired.value

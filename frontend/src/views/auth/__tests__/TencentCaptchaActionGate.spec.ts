@@ -34,6 +34,8 @@ vi.mock('@/stores', () => ({
     loginWithPasskey: (...args: unknown[]) => loginWithPasskeyMock(...args)
   }),
   useAppStore: () => ({
+    // The login page reads the app's cached settings; serve the same values the test configures.
+    fetchPublicSettings: () => getPublicSettingsMock(),
     showError: vi.fn(),
     showSuccess: vi.fn(),
     showWarning: vi.fn()
@@ -143,6 +145,23 @@ describe('Tencent captcha action gate', () => {
       tencent_captcha_ticket: 'ticket-1',
       tencent_captcha_randstr: '@rand-1'
     }))
+  })
+
+  it('ignores a second submit while the captcha popup is still open', async () => {
+    let finishCaptcha: (value: { token: string; randstr: string }) => void = () => {}
+    verifyActionMock.mockImplementation(() => new Promise((resolve) => { finishCaptcha = resolve }))
+    const wrapper = mountLogin()
+    await flushPromises()
+    await wrapper.get('#email').setValue('user@example.com')
+    await wrapper.get('#password').setValue('secret-123')
+
+    await wrapper.get('form').trigger('submit')
+    await wrapper.get('form').trigger('submit')
+    finishCaptcha({ token: 'ticket-1', randstr: '@rand-1' })
+    await flushPromises()
+
+    expect(verifyActionMock).toHaveBeenCalledOnce()
+    expect(loginMock).toHaveBeenCalledOnce()
   })
 
   it('does not call login when Tencent captcha is closed', async () => {

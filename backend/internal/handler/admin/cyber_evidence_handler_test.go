@@ -51,7 +51,7 @@ func TestCyberEvidenceAdminOnlyReadExportDelete(t *testing.T) {
 	defer es.Close()
 	cm := service.NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil).WithCyberEvidence(es)
 	h := NewContentModerationHandler(cm)
-	for _, role := range []string{"", "user", "observer", "admin", "super_admin"} {
+	for _, role := range []string{"", "user", "observer", "admin"} {
 		router := gin.New()
 		router.Use(func(c *gin.Context) {
 			if role != "" {
@@ -68,7 +68,7 @@ func TestCyberEvidenceAdminOnlyReadExportDelete(t *testing.T) {
 		for _, op := range []struct{ method, path string }{{"GET", "/logs/7/evidence"}, {"GET", "/logs/7/evidence/export"}, {"DELETE", "/logs/7/evidence"}, {"GET", "/evidence/config"}, {"PUT", "/evidence/config"}} {
 			w := httptest.NewRecorder()
 			router.ServeHTTP(w, httptest.NewRequest(op.method, op.path, nil))
-			if role != "admin" && role != "super_admin" {
+			if role != "admin" {
 				require.Equal(t, http.StatusForbidden, w.Code)
 				require.NotContains(t, w.Body.String(), "req_synthetic")
 			} else if op.method != "PUT" {

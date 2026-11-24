@@ -114,6 +114,8 @@ func TestFailedSubscriptionKeepsRunningPhase(t *testing.T) {
 	defer server.Close()
 	m := New(t.TempDir())
 	t.Cleanup(m.Close)
+	// Mock an already supported/running kernel; this test never starts a process.
+	m.state.Supported = true
 	m.state.Installed = true
 	m.state.Running = true
 	// This test uses an HTTP stub and never starts the platform-specific kernel.

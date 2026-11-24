@@ -61,12 +61,19 @@ func (h *GatewayHandler) multiGroupKeyBilling(c *gin.Context, key *service.APIKe
 
 func buildMultiGroupKeyBillingInfo(groups []keyBillingGroup, now time.Time) multiGroupKeyBillingInfo {
 	minRate, maxRate := math.Inf(1), 0.0
+	scope := "token"
+	if len(groups) > 0 && groups[0].BillingScope != "" {
+		scope = groups[0].BillingScope
+	}
 	for _, group := range groups {
 		minRate = math.Min(minRate, group.EffectiveRateMultiplier)
 		maxRate = math.Max(maxRate, group.EffectiveRateMultiplier)
+		if group.BillingScope != "" && group.BillingScope != scope {
+			scope = "mixed"
+		}
 	}
 	if len(groups) == 0 {
 		minRate = 0
 	}
-	return multiGroupKeyBillingInfo{Object: "sub2api.key_billing", SchemaVersion: 2, BillingScope: "token", BillingMode: "multi_group", Groups: groups, MinRateMultiplier: minRate, MaxRateMultiplier: maxRate, ObservedAt: now.UTC()}
+	return multiGroupKeyBillingInfo{Object: "sub2api.key_billing", SchemaVersion: 2, BillingScope: scope, BillingMode: "multi_group", Groups: groups, MinRateMultiplier: minRate, MaxRateMultiplier: maxRate, ObservedAt: now.UTC()}
 }

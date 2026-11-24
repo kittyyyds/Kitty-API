@@ -2,8 +2,6 @@ package service
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,14 +17,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
-
-func defaultPrismBrowserAPIKey() string {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return ""
-	}
-	return hex.EncodeToString(b)
-}
 
 // InitializeDefaultSettings 初始化默认设置
 func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
@@ -65,6 +55,8 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 
 	// 初始化默认设置
 	defaults := map[string]string{
+
+		SettingKeyMainlandWebBlockEnabled:                   strconv.FormatBool(s.mainlandWebBlockConfigDefault()),
 		SettingKeyRegistrationEnabled:                       "true",
 		SettingKeyLoginRateLimitEnabled:                     "true",
 		SettingKeyRegistrationIPLimitEnabled:                "true",
@@ -199,18 +191,13 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyOpsMetricsIntervalSeconds:    "60",
 
 		// Channel monitor defaults (enabled, 60s)
+		SettingKeyChannelQualityPublicEnabled:          "true",
 		SettingKeyChannelMonitorEnabled:                "true",
 		SettingKeyChannelMonitorMode:                   ChannelMonitorModeV1,
 		SettingKeyChannelMonitorDefaultIntervalSeconds: "60",
 		SettingKeyChannelMonitorHideThroughput:         "true",
 		SettingKeyChannelMonitorShowQuota:              "false",
 		SettingKeyChannelMonitorHideUserRanking:        "false",
-		SettingKeyPrismBrowserEnabled:                  "false",
-		SettingKeyPrismBrowserBaseURL:                  "http://127.0.0.1:8319/v1",
-		// Generate a disabled-by-default bridge key so enabling the feature does
-		// not require a fragile hand-written secret during first-run setup.
-		SettingKeyPrismBrowserAPIKey: defaultPrismBrowserAPIKey(),
-
 		// Grok compatibility defaults: cross-client mapping stays enabled unless
 		// operators explicitly disable it.
 		SettingKeyGrokDefaultTextModel:           "grok-4.6",
@@ -220,9 +207,6 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 
 		// Available channels feature (default disabled; opt-in)
 		SettingKeyAvailableChannelsEnabled: "false",
-
-		// Pelican showcase (default disabled; opt-in). A missing config means the defaults.
-		SettingKeyPelicanShowcaseEnabled: "false",
 
 		// Subscription feature (default enabled; opt-out)
 		SettingKeySubscriptionEnabled: "true",
@@ -366,6 +350,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		InvitationCodeEnabled:                  settings[SettingKeyInvitationCodeEnabled] == "true",
 		TotpEnabled:                            settings[SettingKeyTotpEnabled] == "true",
 		PasskeyEnabled:                         s.passkeySettingEnabled(settings),
+		MainlandWebBlockEnabled:                s.parseMainlandWebBlockEnabled(settings),
 		SessionBindingEnabled:                  settings[SettingKeySessionBindingEnabled] == "true", // 默认关闭
 		StepUpEnabled:                          settings[SettingKeyStepUpEnabled] == "true",         // 默认关闭
 		AuditLogRetentionDays:                  parseAuditLogRetentionDays(settings[SettingKeyAuditLogRetentionDays]),
@@ -839,6 +824,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	}
 
 	// Channel monitor feature (default: enabled, 60s)
+	result.ChannelQualityPublicEnabled = !isFalseSettingValue(settings[SettingKeyChannelQualityPublicEnabled])
 	result.ChannelMonitorEnabled = !isFalseSettingValue(settings[SettingKeyChannelMonitorEnabled])
 	result.ChannelMonitorMode = normalizeChannelMonitorMode(settings[SettingKeyChannelMonitorMode])
 	result.ChannelMonitorDefaultIntervalSeconds = parseChannelMonitorInterval(
@@ -851,13 +837,6 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	// （与 setting_public.go 公开读取路径保持一致）。
 	result.ChannelMonitorShowQuota = settings[SettingKeyChannelMonitorShowQuota] == "true"
 	result.ChannelMonitorHideUserRanking = isTrueSettingValue(settings[SettingKeyChannelMonitorHideUserRanking])
-	result.PrismBrowserEnabled = settings[SettingKeyPrismBrowserEnabled] == "true"
-	result.PrismBrowserBaseURL = strings.TrimSpace(settings[SettingKeyPrismBrowserBaseURL])
-	if result.PrismBrowserBaseURL == "" {
-		result.PrismBrowserBaseURL = "http://127.0.0.1:8319/v1"
-	}
-	result.PrismBrowserAPIKey = settings[SettingKeyPrismBrowserAPIKey]
-	result.PrismBrowserAPIKeyConfigured = strings.TrimSpace(result.PrismBrowserAPIKey) != ""
 
 	// Grok default mapping policy
 	result.GrokDefaultTextModel = strings.TrimSpace(settings[SettingKeyGrokDefaultTextModel])
@@ -872,14 +851,6 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 
 	// Available channels feature (default: disabled; strict true)
 	result.AvailableChannelsEnabled = settings[SettingKeyAvailableChannelsEnabled] == "true"
-
-	// Pelican showcase (default: disabled; strict true). A corrupt config is shown as the
-	// defaults so the admin page still loads; the runtime reader fails closed on it.
-	result.PelicanShowcaseEnabled = settings[SettingKeyPelicanShowcaseEnabled] == "true"
-	result.PelicanShowcase = DefaultPelicanShowcaseConfig()
-	if showcase, err := parsePelicanShowcaseConfig(settings[SettingKeyPelicanShowcaseConfig]); err == nil {
-		result.PelicanShowcase = showcase
-	}
 
 	// Subscription feature (default: enabled; only an explicit false disables)
 	result.SubscriptionEnabled = !isFalseSettingValue(settings[SettingKeySubscriptionEnabled])
@@ -924,6 +895,9 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 
 	// Gateway forwarding behavior (defaults: fingerprint=true, metadata_passthrough=false,
 	// cch_signing=false, claude_oauth_system_prompt_injection=true)
+	retrySettings := parseUpstreamErrorRetrySettings(settings[SettingKeyUpstreamErrorRetry])
+	result.UpstreamErrorRetry = &retrySettings
+	result.UpstreamErrorMessage, _ = normalizeUpstreamErrorMessage(settings[SettingKeyUpstreamErrorMessage])
 	result.OpenAITTFTMode = normalizeOpenAITTFTMode(settings[SettingKeyOpenAITTFTMode])
 	if v, ok := settings[SettingKeyEnableFingerprintUnification]; ok && v != "" {
 		result.EnableFingerprintUnification = v == "true"
@@ -1062,15 +1036,6 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.UsageShowCacheRate = settings[SettingKeyUsageShowCacheRate] != "false"                                      // 默认开启
 	result.UsageShowCacheRateToUsers = settings[SettingKeyUsageShowCacheRateToUsers] == "true"                         // 默认不向用户展示
 	result.UsageShowUpstreamResponseModelToUsers = settings[SettingKeyUsageShowUpstreamResponseModelToUsers] == "true" // 默认不向用户展示
-	result.RequestCaptureEnabled = settings[SettingKeyRequestCaptureEnabled] == "true"
-	result.RequestCaptureQuotaMiB, _ = strconv.ParseInt(settings[SettingKeyRequestCaptureQuotaMiB], 10, 64)
-	if result.RequestCaptureQuotaMiB <= 0 {
-		result.RequestCaptureQuotaMiB = 1024
-	}
-	result.RequestCaptureRetentionDays, _ = strconv.Atoi(settings[SettingKeyRequestCaptureRetentionDays])
-	if result.RequestCaptureRetentionDays < 1 || result.RequestCaptureRetentionDays > 30 {
-		result.RequestCaptureRetentionDays = 7
-	}
 	// Publish Grok default model_mapping options for accounts with empty mapping.
 	xai.SetRuntimeModelMappingOptions(xai.ModelMappingOptions{
 		DefaultText:          result.GrokDefaultTextModel,

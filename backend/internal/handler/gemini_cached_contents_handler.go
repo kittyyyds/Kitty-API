@@ -65,11 +65,12 @@ func (h *GatewayHandler) geminiCachedContentsPreamble(c *gin.Context, component 
 func readGeminiCachedContentBody(c *gin.Context) ([]byte, bool) {
 	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
 	if err != nil {
-		if maxErr, ok := extractMaxBytesError(err); ok {
-			googleError(c, http.StatusRequestEntityTooLarge, buildBodyTooLargeMessage(maxErr.Limit))
+		bodyLog := requestLogger(c, "handler.gemini_cached_contents")
+		if handleRequestBodyReadError(c, bodyLog, err) {
 			return nil, false
 		}
-		googleError(c, http.StatusBadRequest, "Failed to read request body")
+		status, message := requestBodyReadFailure(bodyLog, c.Request, err)
+		googleErrorWithType(c, status, "invalid_request_error", "", message)
 		return nil, false
 	}
 	if len(body) == 0 {
@@ -132,7 +133,7 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 	subscription, _ := middleware.GetSubscriptionFromContext(c)
 	geminiConcurrency := NewConcurrencyHelper(h.concurrencyHelper.concurrencyService, SSEPingFormatNone, 0)
 	streamStarted := false
-	userReleaseFunc, err := geminiConcurrency.AcquireUserSlotWithWait(c, authSubject.UserID, authSubject.Concurrency, apiKey.ID, apiKey.ConcurrencyLimit, false, &streamStarted)
+	userReleaseFunc, err := geminiConcurrency.AcquireUserSlotWithWait(c, authSubject.UserID, authSubject.Concurrency, false, &streamStarted)
 	if err != nil {
 		reqLog.Warn("gemini.cached_content.user_slot_acquire_failed", zap.Error(err))
 		googleConcurrencyError(c, err, "user")

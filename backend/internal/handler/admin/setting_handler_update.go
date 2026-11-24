@@ -23,9 +23,7 @@ import (
 
 // UpdateSettingsRequest 更新设置请求
 type UpdateSettingsRequest struct {
-	PrismBrowserEnabled bool   `json:"prism_browser_enabled"`
-	PrismBrowserBaseURL string `json:"prism_browser_base_url"`
-	PrismBrowserAPIKey  string `json:"prism_browser_api_key"`
+
 	// 注册设置
 	RegistrationEnabled                 bool                         `json:"registration_enabled"`
 	LoginRateLimitEnabled               *bool                        `json:"login_rate_limit_enabled"`      // 省略=保持现值
@@ -38,11 +36,12 @@ type UpdateSettingsRequest struct {
 	PasswordResetEnabled                bool                         `json:"password_reset_enabled"`
 	FrontendURL                         string                       `json:"frontend_url"`
 	InvitationCodeEnabled               bool                         `json:"invitation_code_enabled"`
-	TotpEnabled                         bool                         `json:"totp_enabled"`             // TOTP 双因素认证
-	PasskeyEnabled                      *bool                        `json:"passkey_enabled"`          // Passkey 登录（省略=保持现值）
-	SessionBindingEnabled               *bool                        `json:"session_binding_enabled"`  // 会话 IP/UA 绑定（省略=保持现值）
-	StepUpEnabled                       *bool                        `json:"step_up_enabled"`          // 敏感操作 step-up 2FA（省略=保持现值）
-	AuditLogRetentionDays               int                          `json:"audit_log_retention_days"` // 审计日志保留天数
+	TotpEnabled                         bool                         `json:"totp_enabled"`               // TOTP 双因素认证
+	PasskeyEnabled                      *bool                        `json:"passkey_enabled"`            // Passkey 登录（省略=保持现值）
+	MainlandWebBlockEnabled             *bool                        `json:"mainland_web_block_enabled"` // 省略=保持现值
+	SessionBindingEnabled               *bool                        `json:"session_binding_enabled"`    // 会话 IP/UA 绑定（省略=保持现值）
+	StepUpEnabled                       *bool                        `json:"step_up_enabled"`            // 敏感操作 step-up 2FA（省略=保持现值）
+	AuditLogRetentionDays               int                          `json:"audit_log_retention_days"`   // 审计日志保留天数
 	LoginAgreementEnabled               bool                         `json:"login_agreement_enabled"`
 	LoginAgreementMode                  string                       `json:"login_agreement_mode"`
 	LoginAgreementUpdatedAt             string                       `json:"login_agreement_updated_at"`
@@ -252,6 +251,9 @@ type UpdateSettingsRequest struct {
 	BackendModeEnabled bool `json:"backend_mode_enabled"`
 
 	// Gateway forwarding behavior
+	UpstreamErrorRetry   *service.UpstreamErrorRetrySettings `json:"upstream_error_retry"`
+	UpstreamErrorMessage *string                             `json:"upstream_error_message"`
+
 	OpenAITTFTMode                         *string `json:"openai_ttft_mode"`
 	EnableFingerprintUnification           *bool   `json:"enable_fingerprint_unification"`
 	EnableMetadataPassthrough              *bool   `json:"enable_metadata_passthrough"`
@@ -346,6 +348,7 @@ type UpdateSettingsRequest struct {
 	PaymentAlipayMobilePrecreateDeepLink *bool `json:"payment_alipay_mobile_precreate_deep_link"`
 
 	// Channel Monitor feature switch
+	ChannelQualityPublicEnabled          *bool   `json:"channel_quality_public_enabled"`
 	ChannelMonitorEnabled                *bool   `json:"channel_monitor_enabled"`
 	ChannelMonitorMode                   *string `json:"channel_monitor_mode"`
 	ChannelMonitorDefaultIntervalSeconds *int    `json:"channel_monitor_default_interval_seconds"`
@@ -363,8 +366,6 @@ type UpdateSettingsRequest struct {
 	AvailableChannelsEnabled *bool `json:"available_channels_enabled"`
 
 	// Pelican showcase switch + gallery limits (user-facing)
-	PelicanShowcaseEnabled *bool                          `json:"pelican_showcase_enabled"`
-	PelicanShowcase        *service.PelicanShowcaseConfig `json:"pelican_showcase_config"`
 
 	// Subscription feature switch (user-facing subscription surface; see SettingKeySubscriptionEnabled)
 	SubscriptionEnabled *bool `json:"subscription_enabled"`
@@ -424,13 +425,13 @@ type UpdateSettingsRequest struct {
 // UpdateSettings 更新系统设置
 // PUT /api/v1/admin/settings
 // ensureActorTotpForStepUp 校验当前操作者具备开启 step-up 门控的条件：
-// 必须是真人管理员会话（admin API key 无法完成 TOTP step-up，拒绝）且本人已启用 TOTP。
+// 必须是真人管理员会话（admin API key、MCP OAuth 等机器凭证无法完成 TOTP step-up，拒绝）且本人已启用 TOTP。
 // 校验失败时写入错误响应并返回 false。
 func (h *SettingHandler) ensureActorTotpForStepUp(c *gin.Context) bool {
-	if c.GetString("auth_method") == service.AuditAuthMethodAdminAPIKey {
+	if reason, machine := middleware.MachineCredentialReason(c); machine {
 		response.ErrorWithDetails(c, http.StatusForbidden,
-			"Admin API key cannot enable step-up verification; use an admin session with TOTP enabled",
-			"STEP_UP_ADMIN_API_KEY_FORBIDDEN", nil)
+			"Machine credentials cannot enable step-up verification; use an admin session with TOTP enabled",
+			reason, nil)
 		return false
 	}
 	subject, ok := middleware.GetAuthSubjectFromContext(c)
@@ -529,25 +530,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	if req.PrismBrowserEnabled {
-		if strings.TrimSpace(req.PrismBrowserBaseURL) == "" {
-			response.BadRequest(c, "prism browser base URL is required when enabled")
-			return
-		}
-		if strings.TrimSpace(req.PrismBrowserAPIKey) != "" && len(strings.TrimSpace(req.PrismBrowserAPIKey)) < 32 {
-			response.BadRequest(c, "prism browser API key must contain at least 32 characters")
-			return
-		}
-		current, err := h.settingService.GetAllSettings(c.Request.Context())
-		if err != nil {
-			response.ErrorFrom(c, err)
-			return
-		}
-		if len(strings.TrimSpace(req.PrismBrowserAPIKey)) < 32 && len(strings.TrimSpace(current.PrismBrowserAPIKey)) < 32 {
-			response.BadRequest(c, "configure a Prism browser API key with at least 32 characters before enabling")
-			return
-		}
-	}
+
 	if req.RequestCaptureQuotaMiB != nil && (*req.RequestCaptureQuotaMiB < 1 || *req.RequestCaptureQuotaMiB > (1<<63-1)/(1<<20)) {
 		response.BadRequest(c, "Capture quota must be positive MiB within int64 range")
 		return
@@ -558,6 +541,15 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	}
 	auditReq := settingsAuditRequest(req)
 	omitted := omittedSettingKeys(sentFields)
+	// Commit this switch last: later payment/refresh failures must not activate
+	// a restriction after the UI reports the settings save as failed.
+	omitted[service.SettingKeyMainlandWebBlockEnabled] = struct{}{}
+	if req.MainlandWebBlockEnabled != nil {
+		if err := h.settingService.ValidateMainlandWebBlockEnabled(*req.MainlandWebBlockEnabled); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+	}
 
 	previousSettings, err := h.settingService.GetAllSettings(c.Request.Context())
 	if err != nil {
@@ -572,6 +564,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 
 	// 安全开关的请求字段为指针：省略字段=保持现值，避免旧客户端/脚本
 	// 用不含新字段的全量 payload 保存设置时把安全开关静默重置。
+	mainlandWebBlockEnabled := previousSettings.MainlandWebBlockEnabled
+	if req.MainlandWebBlockEnabled != nil {
+		mainlandWebBlockEnabled = *req.MainlandWebBlockEnabled
+	}
 	sessionBindingEnabled := previousSettings.SessionBindingEnabled
 	if req.SessionBindingEnabled != nil {
 		sessionBindingEnabled = *req.SessionBindingEnabled
@@ -1612,9 +1608,6 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		RegistrationEnabled:                 req.RegistrationEnabled,
 		LoginRateLimitEnabled:               loginRateLimitEnabled,
 		RegistrationIPLimitEnabled:          registrationIPLimitEnabled,
-		PrismBrowserEnabled:                 req.PrismBrowserEnabled,
-		PrismBrowserBaseURL:                 req.PrismBrowserBaseURL,
-		PrismBrowserAPIKey:                  req.PrismBrowserAPIKey,
 		EmailVerifyEnabled:                  req.EmailVerifyEnabled,
 		RegistrationEmailSuffixWhitelist:    req.RegistrationEmailSuffixWhitelist,
 		RegistrationEmailAliasBlockEnabled:  registrationEmailAliasBlockEnabled,
@@ -1625,6 +1618,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		InvitationCodeEnabled:               req.InvitationCodeEnabled,
 		TotpEnabled:                         req.TotpEnabled,
 		PasskeyEnabled:                      passkeyEnabled,
+		MainlandWebBlockEnabled:             mainlandWebBlockEnabled,
 		SessionBindingEnabled:               sessionBindingEnabled,
 		StepUpEnabled:                       stepUpEnabled,
 		AuditLogRetentionDays:               req.AuditLogRetentionDays,
@@ -1849,6 +1843,18 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.EnableFingerprintUnification
 		}(),
+		UpstreamErrorMessage: func() string {
+			if req.UpstreamErrorMessage != nil {
+				return *req.UpstreamErrorMessage
+			}
+			return previousSettings.UpstreamErrorMessage
+		}(),
+		UpstreamErrorRetry: func() *service.UpstreamErrorRetrySettings {
+			if req.UpstreamErrorRetry != nil {
+				return req.UpstreamErrorRetry
+			}
+			return previousSettings.UpstreamErrorRetry
+		}(),
 		OpenAITTFTMode: func() string {
 			if req.OpenAITTFTMode != nil {
 				return *req.OpenAITTFTMode
@@ -2068,6 +2074,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.AccountQuotaNotifyEmails
 		}(),
+		ChannelQualityPublicEnabled: func() bool {
+			if req.ChannelQualityPublicEnabled != nil {
+				return *req.ChannelQualityPublicEnabled
+			}
+			return previousSettings.ChannelQualityPublicEnabled
+		}(),
 		ChannelMonitorEnabled: func() bool {
 			if req.ChannelMonitorEnabled != nil {
 				return *req.ChannelMonitorEnabled
@@ -2133,18 +2145,6 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 				return *req.AvailableChannelsEnabled
 			}
 			return previousSettings.AvailableChannelsEnabled
-		}(),
-		PelicanShowcaseEnabled: func() bool {
-			if req.PelicanShowcaseEnabled != nil {
-				return *req.PelicanShowcaseEnabled
-			}
-			return previousSettings.PelicanShowcaseEnabled
-		}(),
-		PelicanShowcase: func() service.PelicanShowcaseConfig {
-			if req.PelicanShowcase != nil {
-				return *req.PelicanShowcase
-			}
-			return previousSettings.PelicanShowcase
 		}(),
 		SubscriptionEnabled: func() bool {
 			if req.SubscriptionEnabled != nil {
@@ -2344,8 +2344,6 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
-	h.auditSettingsUpdate(c, previousSettings, settings, previousAuthSourceDefaults, authSourceDefaults, auditReq)
-
 	// 重新获取设置返回
 	updatedSettings, err := h.settingService.GetAllSettings(c.Request.Context())
 	if err != nil {
@@ -2377,12 +2375,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	passkeyConfigured, passkeyRPID, passkeyRPOrigins := h.settingService.PasskeyConfiguration()
 
 	payload := dto.SystemSettings{
+
 		RegistrationEnabled:                                    updatedSettings.RegistrationEnabled,
 		LoginRateLimitEnabled:                                  updatedSettings.LoginRateLimitEnabled,
 		RegistrationIPLimitEnabled:                             updatedSettings.RegistrationIPLimitEnabled,
-		PrismBrowserEnabled:                                    updatedSettings.PrismBrowserEnabled,
-		PrismBrowserBaseURL:                                    updatedSettings.PrismBrowserBaseURL,
-		PrismBrowserAPIKeyConfigured:                           updatedSettings.PrismBrowserAPIKeyConfigured,
 		EmailVerifyEnabled:                                     updatedSettings.EmailVerifyEnabled,
 		RegistrationEmailSuffixWhitelist:                       updatedSettings.RegistrationEmailSuffixWhitelist,
 		RegistrationEmailAliasBlockEnabled:                     updatedSettings.RegistrationEmailAliasBlockEnabled,
@@ -2397,6 +2393,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		PasskeyConfigured:                                      passkeyConfigured,
 		PasskeyRPID:                                            passkeyRPID,
 		PasskeyRPOrigins:                                       passkeyRPOrigins,
+		MainlandWebBlockEnabled:                                updatedSettings.MainlandWebBlockEnabled,
 		SessionBindingEnabled:                                  updatedSettings.SessionBindingEnabled,
 		StepUpEnabled:                                          updatedSettings.StepUpEnabled,
 		AuditLogRetentionDays:                                  updatedSettings.AuditLogRetentionDays,
@@ -2538,6 +2535,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		AccountGroupPriorityEnabled:                            updatedSettings.AccountGroupPriorityEnabled,
 		BackendModeEnabled:                                     updatedSettings.BackendModeEnabled,
 		EnableFingerprintUnification:                           updatedSettings.EnableFingerprintUnification,
+		UpstreamErrorRetry:                                     updatedSettings.UpstreamErrorRetry,
+		UpstreamErrorMessage:                                   updatedSettings.UpstreamErrorMessage,
 		EnableMetadataPassthrough:                              updatedSettings.EnableMetadataPassthrough,
 		EnableCCHSigning:                                       updatedSettings.EnableCCHSigning,
 		EnableClaudeOAuthSystemPromptInjection:                 updatedSettings.EnableClaudeOAuthSystemPromptInjection,
@@ -2626,6 +2625,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		PaymentAlipayForceQRCode:                               updatedPaymentCfg.AlipayForceQRCode,
 		PaymentAlipayMobilePrecreateDeepLink:                   updatedPaymentCfg.AlipayMobilePrecreateDeepLink,
 
+		ChannelQualityPublicEnabled: updatedSettings.ChannelQualityPublicEnabled,
+
 		ChannelMonitorEnabled:                updatedSettings.ChannelMonitorEnabled,
 		ChannelMonitorMode:                   updatedSettings.ChannelMonitorMode,
 		ChannelMonitorDefaultIntervalSeconds: updatedSettings.ChannelMonitorDefaultIntervalSeconds,
@@ -2639,8 +2640,6 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		GrokVideoSourceURLEnabled:      updatedSettings.GrokVideoSourceURLEnabled,
 
 		AvailableChannelsEnabled: updatedSettings.AvailableChannelsEnabled,
-		PelicanShowcaseEnabled:   updatedSettings.PelicanShowcaseEnabled,
-		PelicanShowcase:          updatedSettings.PelicanShowcase,
 		SubscriptionEnabled:      updatedSettings.SubscriptionEnabled,
 
 		ModelPlazaEnabled:       updatedSettings.ModelPlazaEnabled,
@@ -2653,10 +2652,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 
 		AffiliateEnabled: updatedSettings.AffiliateEnabled,
 
-		RiskControlEnabled:                    updatedSettings.RiskControlEnabled,
-		CyberSessionBlockEnabled:              updatedSettings.CyberSessionBlockEnabled,
-		CyberSessionBlockTTLSeconds:           updatedSettings.CyberSessionBlockTTLSeconds,
-		CyberSessionIdentityStrictEnabled:     updatedSettings.CyberSessionIdentityStrictEnabled,
+		RiskControlEnabled:                updatedSettings.RiskControlEnabled,
+		CyberSessionBlockEnabled:          updatedSettings.CyberSessionBlockEnabled,
+		CyberSessionBlockTTLSeconds:       updatedSettings.CyberSessionBlockTTLSeconds,
+		CyberSessionIdentityStrictEnabled: updatedSettings.CyberSessionIdentityStrictEnabled,
+		CyberPolicyUserAllowlist:          updatedSettings.CyberPolicyUserAllowlist,
+
 		AccountSchedulingThresholds:           updatedSettings.AccountSchedulingThresholds,
 		AllowUserViewErrorRequests:            updatedSettings.AllowUserViewErrorRequests,
 		UsageShowLongContextBadge:             updatedSettings.UsageShowLongContextBadge,
@@ -2666,7 +2667,6 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		RequestCaptureEnabled:                 updatedSettings.RequestCaptureEnabled,
 		RequestCaptureQuotaMiB:                updatedSettings.RequestCaptureQuotaMiB,
 		RequestCaptureRetentionDays:           updatedSettings.RequestCaptureRetentionDays,
-		CyberPolicyUserAllowlist:              updatedSettings.CyberPolicyUserAllowlist,
 	}
 	if fastPolicy, err := h.settingService.GetOpenAIFastPolicySettings(c.Request.Context()); err != nil {
 		slog.Error("openai_fast_policy_settings_get_failed", "error", err)
@@ -2680,6 +2680,15 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	} else {
 		payload.DefaultPlatformQuotas = platformQuotas
 	}
+	if req.MainlandWebBlockEnabled != nil {
+		if err := h.settingService.SetMainlandWebBlockEnabled(c.Request.Context(), *req.MainlandWebBlockEnabled); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		updatedSettings.MainlandWebBlockEnabled = *req.MainlandWebBlockEnabled
+		payload.MainlandWebBlockEnabled = *req.MainlandWebBlockEnabled
+	}
+	h.auditSettingsUpdate(c, previousSettings, settings, previousAuthSourceDefaults, authSourceDefaults, auditReq)
 	response.Success(c, systemSettingsResponseData(payload, updatedAuthSourceDefaults))
 }
 

@@ -54,7 +54,7 @@ func (s *ProxyProbeServiceSuite) TestProbeProxy_Success_IPAPI() {
 		// 检查是否是 ip-api 请求
 		if strings.Contains(r.RequestURI, "ip-api.com") {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"status":"success","query":"1.2.3.4","city":"c","regionName":"r","country":"cc","countryCode":"CC","timezone":"Asia/Tokyo"}`)
+			_, _ = io.WriteString(w, `{"status":"success","query":"1.2.3.4","city":"c","regionName":"r","country":"cc","countryCode":"CC"}`)
 			return
 		}
 		// 其他请求返回错误
@@ -69,7 +69,6 @@ func (s *ProxyProbeServiceSuite) TestProbeProxy_Success_IPAPI() {
 	require.Equal(s.T(), "r", info.Region)
 	require.Equal(s.T(), "cc", info.Country)
 	require.Equal(s.T(), "CC", info.CountryCode)
-	require.Equal(s.T(), "Asia/Tokyo", info.Timezone)
 }
 
 func (s *ProxyProbeServiceSuite) TestProbeProxy_Success_IPifyFallback() {
@@ -134,7 +133,7 @@ func (s *ProxyProbeServiceSuite) TestProbeProxy_ProxyServerClosed() {
 }
 
 func (s *ProxyProbeServiceSuite) TestParseIPAPI_Success() {
-	body := []byte(`{"status":"success","query":"1.2.3.4","city":"Beijing","regionName":"Beijing","country":"China","countryCode":"CN","timezone":"Asia/Shanghai"}`)
+	body := []byte(`{"status":"success","query":"1.2.3.4","city":"Beijing","regionName":"Beijing","country":"China","countryCode":"CN"}`)
 	info, latencyMs, err := s.prober.parseIPAPI(body, 100)
 	require.NoError(s.T(), err)
 	require.Equal(s.T(), int64(100), latencyMs)
@@ -143,7 +142,6 @@ func (s *ProxyProbeServiceSuite) TestParseIPAPI_Success() {
 	require.Equal(s.T(), "Beijing", info.Region)
 	require.Equal(s.T(), "China", info.Country)
 	require.Equal(s.T(), "CN", info.CountryCode)
-	require.Equal(s.T(), "Asia/Shanghai", info.Timezone)
 }
 
 func (s *ProxyProbeServiceSuite) TestParseIPAPI_Failure() {

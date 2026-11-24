@@ -29,6 +29,10 @@ func normalizeOAuthSignupSource(signupSource string) string {
 // SendPendingOAuthVerifyCode sends a local verification code for pending OAuth
 // account-creation flows without relying on the public registration gate.
 func (s *AuthService) SendPendingOAuthVerifyCode(ctx context.Context, email string, locale ...string) (*SendVerifyCodeResult, error) {
+	if s == nil || s.emailService == nil {
+		return nil, ErrServiceUnavailable
+	}
+
 	email = strings.TrimSpace(strings.ToLower(email))
 	if email == "" {
 		return nil, ErrEmailVerifyRequired
@@ -41,9 +45,6 @@ func (s *AuthService) SendPendingOAuthVerifyCode(ctx context.Context, email stri
 	}
 	if err := s.validateRegistrationEmailAlias(ctx, email); err != nil {
 		return nil, err
-	}
-	if s == nil || s.emailService == nil {
-		return nil, ErrServiceUnavailable
 	}
 	if err := s.validateRegistrationEmailQuota(ctx, email); err != nil {
 		return nil, err
@@ -118,6 +119,11 @@ func (s *AuthService) RegisterOAuthEmailAccount(
 	}
 	if s.settingService == nil || (!s.settingService.IsRegistrationEnabled(ctx) && !s.canBypassRegistrationDisabledForOAuth(ctx, signupSource)) {
 		return nil, nil, ErrRegDisabled
+	}
+
+	// 密码长度上限必须在消耗邮箱验证码之前检查。
+	if err := ValidatePasswordMaxLength(password); err != nil {
+		return nil, nil, err
 	}
 
 	email = strings.TrimSpace(strings.ToLower(email))
@@ -224,6 +230,9 @@ func (s *AuthService) RegisterVerifiedOAuthEmailAccount(
 	}
 	if strings.TrimSpace(password) == "" {
 		return nil, nil, infraerrors.BadRequest("PASSWORD_REQUIRED", "password is required")
+	}
+	if err := ValidatePasswordMaxLength(password); err != nil {
+		return nil, nil, err
 	}
 	if _, err := s.validateOAuthRegistrationInvitation(ctx, invitationCode); err != nil {
 		return nil, nil, err

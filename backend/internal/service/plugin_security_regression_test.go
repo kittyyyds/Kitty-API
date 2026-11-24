@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -94,19 +93,14 @@ func TestPluginReconcileFailsClosedWhenDesiredStateCannotBeRead(t *testing.T) {
 		localInstallations: make(map[int64]*PluginInstallation),
 	}
 
+	manager.transformRoute.Store(&pluginRoute{capability: PluginCapabilityGatewayTransform, pluginID: 1, rolloutPercent: 100})
+
 	err := manager.reconcileOnce(context.Background())
 	require.ErrorContains(t, err, "读取插件启用状态")
-	require.True(t, manager.ShouldRouteOpenAIOAuth(&Account{
-		ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
-	}))
-
-	request, requestErr := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.com/v1/responses", nil)
-	require.NoError(t, requestErr)
-	_, handled, routeErr := manager.RoundTripOpenAIOAuth(context.Background(), request, "", &Account{
-		ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
-	})
-	require.True(t, handled)
-	require.ErrorContains(t, routeErr, "插件不可用")
+	route := manager.transformRoute.Load()
+	require.NotNil(t, route)
+	require.Nil(t, route.runtime)
+	require.Equal(t, "插件启用状态暂时无法读取", route.unavailable)
 }
 
 type normalizingPluginClient struct {

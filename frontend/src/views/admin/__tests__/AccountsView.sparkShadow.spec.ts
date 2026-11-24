@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 
 import AccountsView from '../AccountsView.vue'
 import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
+import OpenAIVMModal from '@/components/admin/account/OpenAIVMModal.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
@@ -30,6 +31,8 @@ const {
   showSuccess: vi.fn(),
   showError: vi.fn()
 }))
+
+vi.mock('@/api/admin/channelQuality', () => ({ channelQualityAPI: { scores: async () => ({}) } }))
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
@@ -85,6 +88,7 @@ const mountView = () =>
         ReAuthAccountModal: true,
         AccountTestModal: true,
         AccountStatsModal: true,
+        OpenAIVMModal: true,
         ScheduledTestsPanel: true,
         SyncFromCrsModal: true,
         TempUnschedStatusModal: true,
@@ -121,6 +125,35 @@ describe('admin AccountsView — 外审 F2:spark 影子创建接线', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('专属槽位事件打开对应账号弹窗，关闭后清空账号', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const account = { id: 42, name: 'parent', platform: 'openai', type: 'oauth', parent_account_id: null }
+    wrapper.findComponent(AccountActionMenu).vm.$emit('openai-vm', account)
+    await flushPromises()
+    const modal = wrapper.findComponent(OpenAIVMModal)
+    expect(modal.props('show')).toBe(true)
+    expect(modal.props('account')).toEqual(account)
+    const initialCalls = listAccounts.mock.calls.length
+    modal.vm.$emit('updated')
+    await flushPromises()
+    expect(listAccounts.mock.calls.length).toBeGreaterThan(initialCalls)
+    modal.vm.$emit('close')
+    await flushPromises()
+    expect(modal.props('show')).toBe(false)
+    expect(modal.props('account')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('拒绝影子账号触发的专属槽位事件', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    wrapper.findComponent(AccountActionMenu).vm.$emit('openai-vm', { id: 43, platform: 'openai', type: 'oauth', parent_account_id: 42 })
+    await flushPromises()
+    expect(wrapper.findComponent(OpenAIVMModal).props('show')).toBe(false)
+    wrapper.unmount()
   })
 
   it('AccountActionMenu 的 duplicate 事件一键复制账号并刷新列表', async () => {
@@ -323,7 +356,7 @@ describe('admin AccountsView — 账号行展示', () => {
     const wrapper = mountViewWithRow()
     await flushPromises()
 
-    const links = wrapper.findAll('a[target="_blank"]')
+    const links = wrapper.findAll('a')
     expect(links).toHaveLength(1)
     const [link] = links
     expect(link.text()).toBe('relay-account')

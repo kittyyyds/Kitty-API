@@ -51,10 +51,12 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 	schedulerSnapshotSvc := service.NewSchedulerSnapshotService(nil, nil, nil, nil, cfg)
 	opsSystemLogSinkSvc := service.NewOpsSystemLogSink(nil)
 
-	cleanup := provideCleanup(nil, // QQ bot runtime
-		nil, // retained media service
-		nil, // default/full runtime configuration
-		nil, // request capture manager
+	cleanup := provideCleanup(nil, // gptDirect
+		nil, // qqBot
+		nil, // retainedMedia
+		nil, // concurrencyService
+		nil, // rechargeBonusExpiry
+		nil, // channelMonitorV3Prober
 		nil, // entClient
 		nil, // redis
 		&service.OpsMetricsCollector{},
@@ -66,7 +68,6 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		nil, // opsService
 		nil, // opsIngressRejectAggregator
 		nil, // apiKeyService
-		nil, // concurrencyService
 		nil, // authCacheInvalidationWorker
 		schedulerSnapshotSvc,
 		tokenRefreshSvc,
@@ -85,32 +86,35 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		emailQueueSvc,
 		billingCacheSvc,
 		&service.UsageRecordWorkerPool{},
+		service.ProvideBalanceNotifyService(nil, nil, nil, nil),
+		service.NewDigestSessionStore(),
 		&service.SubscriptionService{},
 		oauthSvc,
 		openAIOAuthSvc,
+		nil, // openaiReauth
+		nil, // accountTests
 		geminiOAuthSvc,
 		antigravityOAuthSvc,
 		nil, // grokOAuth
 		nil, // openAIGateway
 		nil, // scheduledTestRunner
-		nil, // accountOps
-		nil, // accountTokenGuard
-		nil, // accountTokenGuardV2
+		nil, // account performance monitor
 		nil, // backupSvc
 		nil, // paymentOrderExpiry
-		nil, // rechargeBonusExpiry
 		nil, // channelMonitorRunner
 		nil, // channelMonitorV2Aggregator
-		nil, // channelMonitorV3Prober
+		nil, // channelMonitorV2CandyRunner
 		nil, // quotaFlusher
 		nil, // upstreamBillingProbe
 		nil, // ollamaCloudUsage
 		nil, // opencodeGoUsage
+		nil, // promptAudit
+		nil, // cyberModeration
 		nil, // auditLog
 		nil, // openAIAutoReset
-		nil, // promptAudit
+		nil, // openAIVMManaged
+		nil, // openAIVMBatch
 		nil, // pluginManager
-		nil, // cyberModeration
 	)
 
 	require.NotPanics(t, func() {

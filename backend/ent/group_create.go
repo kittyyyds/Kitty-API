@@ -676,6 +676,20 @@ func (_c *GroupCreate) SetNillableFallbackGroupID(v *int64) *GroupCreate {
 	return _c
 }
 
+// SetFallbackGroupIDOnUnavailable sets the "fallback_group_id_on_unavailable" field.
+func (_c *GroupCreate) SetFallbackGroupIDOnUnavailable(v int64) *GroupCreate {
+	_c.mutation.SetFallbackGroupIDOnUnavailable(v)
+	return _c
+}
+
+// SetNillableFallbackGroupIDOnUnavailable sets the "fallback_group_id_on_unavailable" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableFallbackGroupIDOnUnavailable(v *int64) *GroupCreate {
+	if v != nil {
+		_c.SetFallbackGroupIDOnUnavailable(*v)
+	}
+	return _c
+}
+
 // SetFallbackGroupIDOnInvalidRequest sets the "fallback_group_id_on_invalid_request" field.
 func (_c *GroupCreate) SetFallbackGroupIDOnInvalidRequest(v int64) *GroupCreate {
 	_c.mutation.SetFallbackGroupIDOnInvalidRequest(v)
@@ -735,6 +749,20 @@ func (_c *GroupCreate) SetNillableStreamOnly(v *bool) *GroupCreate {
 // SetModelRouting sets the "model_routing" field.
 func (_c *GroupCreate) SetModelRouting(v map[string][]int64) *GroupCreate {
 	_c.mutation.SetModelRouting(v)
+	return _c
+}
+
+// SetStrictFailover sets the "strict_failover" field.
+func (_c *GroupCreate) SetStrictFailover(v domain.StrictFailoverConfig) *GroupCreate {
+	_c.mutation.SetStrictFailover(v)
+	return _c
+}
+
+// SetNillableStrictFailover sets the "strict_failover" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableStrictFailover(v *domain.StrictFailoverConfig) *GroupCreate {
+	if v != nil {
+		_c.SetStrictFailover(*v)
+	}
 	return _c
 }
 
@@ -824,6 +852,20 @@ func (_c *GroupCreate) SetForceOpenaiFast(v bool) *GroupCreate {
 func (_c *GroupCreate) SetNillableForceOpenaiFast(v *bool) *GroupCreate {
 	if v != nil {
 		_c.SetForceOpenaiFast(*v)
+	}
+	return _c
+}
+
+// SetForceOpenaiServiceTier sets the "force_openai_service_tier" field.
+func (_c *GroupCreate) SetForceOpenaiServiceTier(v string) *GroupCreate {
+	_c.mutation.SetForceOpenaiServiceTier(v)
+	return _c
+}
+
+// SetNillableForceOpenaiServiceTier sets the "force_openai_service_tier" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableForceOpenaiServiceTier(v *string) *GroupCreate {
+	if v != nil {
+		_c.SetForceOpenaiServiceTier(*v)
 	}
 	return _c
 }
@@ -936,6 +978,20 @@ func (_c *GroupCreate) SetRpmLimit(v int) *GroupCreate {
 func (_c *GroupCreate) SetNillableRpmLimit(v *int) *GroupCreate {
 	if v != nil {
 		_c.SetRpmLimit(*v)
+	}
+	return _c
+}
+
+// SetUserConcurrencyLimit sets the "user_concurrency_limit" field.
+func (_c *GroupCreate) SetUserConcurrencyLimit(v int) *GroupCreate {
+	_c.mutation.SetUserConcurrencyLimit(v)
+	return _c
+}
+
+// SetNillableUserConcurrencyLimit sets the "user_concurrency_limit" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableUserConcurrencyLimit(v *int) *GroupCreate {
+	if v != nil {
+		_c.SetUserConcurrencyLimit(*v)
 	}
 	return _c
 }
@@ -1071,6 +1127,21 @@ func (_c *GroupCreate) AddAPIKeys(v ...*APIKey) *GroupCreate {
 		ids[i] = v[i].ID
 	}
 	return _c.AddAPIKeyIDs(ids...)
+}
+
+// AddFallbackAPIKeyIDs adds the "fallback_api_keys" edge to the APIKey entity by IDs.
+func (_c *GroupCreate) AddFallbackAPIKeyIDs(ids ...int64) *GroupCreate {
+	_c.mutation.AddFallbackAPIKeyIDs(ids...)
+	return _c
+}
+
+// AddFallbackAPIKeys adds the "fallback_api_keys" edges to the APIKey entity.
+func (_c *GroupCreate) AddFallbackAPIKeys(v ...*APIKey) *GroupCreate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddFallbackAPIKeyIDs(ids...)
 }
 
 // AddRedeemCodeIDs adds the "redeem_codes" edge to the RedeemCode entity by IDs.
@@ -1311,6 +1382,10 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultStreamOnly
 		_c.mutation.SetStreamOnly(v)
 	}
+	if _, ok := _c.mutation.StrictFailover(); !ok {
+		v := group.DefaultStrictFailover
+		_c.mutation.SetStrictFailover(v)
+	}
 	if _, ok := _c.mutation.ModelRoutingEnabled(); !ok {
 		v := group.DefaultModelRoutingEnabled
 		_c.mutation.SetModelRoutingEnabled(v)
@@ -1338,6 +1413,10 @@ func (_c *GroupCreate) defaults() error {
 	if _, ok := _c.mutation.ForceOpenaiFast(); !ok {
 		v := group.DefaultForceOpenaiFast
 		_c.mutation.SetForceOpenaiFast(v)
+	}
+	if _, ok := _c.mutation.ForceOpenaiServiceTier(); !ok {
+		v := group.DefaultForceOpenaiServiceTier
+		_c.mutation.SetForceOpenaiServiceTier(v)
 	}
 	if _, ok := _c.mutation.FreeOpenaiFast(); !ok {
 		v := group.DefaultFreeOpenaiFast
@@ -1370,6 +1449,10 @@ func (_c *GroupCreate) defaults() error {
 	if _, ok := _c.mutation.RpmLimit(); !ok {
 		v := group.DefaultRpmLimit
 		_c.mutation.SetRpmLimit(v)
+	}
+	if _, ok := _c.mutation.UserConcurrencyLimit(); !ok {
+		v := group.DefaultUserConcurrencyLimit
+		_c.mutation.SetUserConcurrencyLimit(v)
 	}
 	if _, ok := _c.mutation.MaxReasoningEffort(); !ok {
 		v := group.DefaultMaxReasoningEffort
@@ -1565,6 +1648,9 @@ func (_c *GroupCreate) check() error {
 	if _, ok := _c.mutation.StreamOnly(); !ok {
 		return &ValidationError{Name: "stream_only", err: errors.New(`ent: missing required field "Group.stream_only"`)}
 	}
+	if _, ok := _c.mutation.StrictFailover(); !ok {
+		return &ValidationError{Name: "strict_failover", err: errors.New(`ent: missing required field "Group.strict_failover"`)}
+	}
 	if _, ok := _c.mutation.ModelRoutingEnabled(); !ok {
 		return &ValidationError{Name: "model_routing_enabled", err: errors.New(`ent: missing required field "Group.model_routing_enabled"`)}
 	}
@@ -1585,6 +1671,14 @@ func (_c *GroupCreate) check() error {
 	}
 	if _, ok := _c.mutation.ForceOpenaiFast(); !ok {
 		return &ValidationError{Name: "force_openai_fast", err: errors.New(`ent: missing required field "Group.force_openai_fast"`)}
+	}
+	if _, ok := _c.mutation.ForceOpenaiServiceTier(); !ok {
+		return &ValidationError{Name: "force_openai_service_tier", err: errors.New(`ent: missing required field "Group.force_openai_service_tier"`)}
+	}
+	if v, ok := _c.mutation.ForceOpenaiServiceTier(); ok {
+		if err := group.ForceOpenaiServiceTierValidator(v); err != nil {
+			return &ValidationError{Name: "force_openai_service_tier", err: fmt.Errorf(`ent: validator failed for field "Group.force_openai_service_tier": %w`, err)}
+		}
 	}
 	if _, ok := _c.mutation.FreeOpenaiFast(); !ok {
 		return &ValidationError{Name: "free_openai_fast", err: errors.New(`ent: missing required field "Group.free_openai_fast"`)}
@@ -1614,6 +1708,9 @@ func (_c *GroupCreate) check() error {
 	}
 	if _, ok := _c.mutation.RpmLimit(); !ok {
 		return &ValidationError{Name: "rpm_limit", err: errors.New(`ent: missing required field "Group.rpm_limit"`)}
+	}
+	if _, ok := _c.mutation.UserConcurrencyLimit(); !ok {
+		return &ValidationError{Name: "user_concurrency_limit", err: errors.New(`ent: missing required field "Group.user_concurrency_limit"`)}
 	}
 	if _, ok := _c.mutation.MaxReasoningEffort(); !ok {
 		return &ValidationError{Name: "max_reasoning_effort", err: errors.New(`ent: missing required field "Group.max_reasoning_effort"`)}
@@ -1880,6 +1977,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 		_spec.SetField(group.FieldFallbackGroupID, field.TypeInt64, value)
 		_node.FallbackGroupID = &value
 	}
+	if value, ok := _c.mutation.FallbackGroupIDOnUnavailable(); ok {
+		_spec.SetField(group.FieldFallbackGroupIDOnUnavailable, field.TypeInt64, value)
+		_node.FallbackGroupIDOnUnavailable = &value
+	}
 	if value, ok := _c.mutation.FallbackGroupIDOnInvalidRequest(); ok {
 		_spec.SetField(group.FieldFallbackGroupIDOnInvalidRequest, field.TypeInt64, value)
 		_node.FallbackGroupIDOnInvalidRequest = &value
@@ -1899,6 +2000,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.ModelRouting(); ok {
 		_spec.SetField(group.FieldModelRouting, field.TypeJSON, value)
 		_node.ModelRouting = value
+	}
+	if value, ok := _c.mutation.StrictFailover(); ok {
+		_spec.SetField(group.FieldStrictFailover, field.TypeJSON, value)
+		_node.StrictFailover = value
 	}
 	if value, ok := _c.mutation.ModelRoutingEnabled(); ok {
 		_spec.SetField(group.FieldModelRoutingEnabled, field.TypeBool, value)
@@ -1927,6 +2032,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.ForceOpenaiFast(); ok {
 		_spec.SetField(group.FieldForceOpenaiFast, field.TypeBool, value)
 		_node.ForceOpenaiFast = value
+	}
+	if value, ok := _c.mutation.ForceOpenaiServiceTier(); ok {
+		_spec.SetField(group.FieldForceOpenaiServiceTier, field.TypeString, value)
+		_node.ForceOpenaiServiceTier = value
 	}
 	if value, ok := _c.mutation.FreeOpenaiFast(); ok {
 		_spec.SetField(group.FieldFreeOpenaiFast, field.TypeBool, value)
@@ -1959,6 +2068,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.RpmLimit(); ok {
 		_spec.SetField(group.FieldRpmLimit, field.TypeInt, value)
 		_node.RpmLimit = value
+	}
+	if value, ok := _c.mutation.UserConcurrencyLimit(); ok {
+		_spec.SetField(group.FieldUserConcurrencyLimit, field.TypeInt, value)
+		_node.UserConcurrencyLimit = value
 	}
 	if value, ok := _c.mutation.MaxReasoningEffort(); ok {
 		_spec.SetField(group.FieldMaxReasoningEffort, field.TypeString, value)
@@ -2002,6 +2115,22 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 			Inverse: false,
 			Table:   group.APIKeysTable,
 			Columns: []string{group.APIKeysColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(apikey.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := _c.mutation.FallbackAPIKeysIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.FallbackAPIKeysTable,
+			Columns: []string{group.FallbackAPIKeysColumn},
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(apikey.FieldID, field.TypeInt64),
@@ -2968,6 +3097,30 @@ func (u *GroupUpsert) ClearFallbackGroupID() *GroupUpsert {
 	return u
 }
 
+// SetFallbackGroupIDOnUnavailable sets the "fallback_group_id_on_unavailable" field.
+func (u *GroupUpsert) SetFallbackGroupIDOnUnavailable(v int64) *GroupUpsert {
+	u.Set(group.FieldFallbackGroupIDOnUnavailable, v)
+	return u
+}
+
+// UpdateFallbackGroupIDOnUnavailable sets the "fallback_group_id_on_unavailable" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateFallbackGroupIDOnUnavailable() *GroupUpsert {
+	u.SetExcluded(group.FieldFallbackGroupIDOnUnavailable)
+	return u
+}
+
+// AddFallbackGroupIDOnUnavailable adds v to the "fallback_group_id_on_unavailable" field.
+func (u *GroupUpsert) AddFallbackGroupIDOnUnavailable(v int64) *GroupUpsert {
+	u.Add(group.FieldFallbackGroupIDOnUnavailable, v)
+	return u
+}
+
+// ClearFallbackGroupIDOnUnavailable clears the value of the "fallback_group_id_on_unavailable" field.
+func (u *GroupUpsert) ClearFallbackGroupIDOnUnavailable() *GroupUpsert {
+	u.SetNull(group.FieldFallbackGroupIDOnUnavailable)
+	return u
+}
+
 // SetFallbackGroupIDOnInvalidRequest sets the "fallback_group_id_on_invalid_request" field.
 func (u *GroupUpsert) SetFallbackGroupIDOnInvalidRequest(v int64) *GroupUpsert {
 	u.Set(group.FieldFallbackGroupIDOnInvalidRequest, v)
@@ -3043,6 +3196,18 @@ func (u *GroupUpsert) UpdateModelRouting() *GroupUpsert {
 // ClearModelRouting clears the value of the "model_routing" field.
 func (u *GroupUpsert) ClearModelRouting() *GroupUpsert {
 	u.SetNull(group.FieldModelRouting)
+	return u
+}
+
+// SetStrictFailover sets the "strict_failover" field.
+func (u *GroupUpsert) SetStrictFailover(v domain.StrictFailoverConfig) *GroupUpsert {
+	u.Set(group.FieldStrictFailover, v)
+	return u
+}
+
+// UpdateStrictFailover sets the "strict_failover" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateStrictFailover() *GroupUpsert {
+	u.SetExcluded(group.FieldStrictFailover)
 	return u
 }
 
@@ -3133,6 +3298,18 @@ func (u *GroupUpsert) SetForceOpenaiFast(v bool) *GroupUpsert {
 // UpdateForceOpenaiFast sets the "force_openai_fast" field to the value that was provided on create.
 func (u *GroupUpsert) UpdateForceOpenaiFast() *GroupUpsert {
 	u.SetExcluded(group.FieldForceOpenaiFast)
+	return u
+}
+
+// SetForceOpenaiServiceTier sets the "force_openai_service_tier" field.
+func (u *GroupUpsert) SetForceOpenaiServiceTier(v string) *GroupUpsert {
+	u.Set(group.FieldForceOpenaiServiceTier, v)
+	return u
+}
+
+// UpdateForceOpenaiServiceTier sets the "force_openai_service_tier" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateForceOpenaiServiceTier() *GroupUpsert {
+	u.SetExcluded(group.FieldForceOpenaiServiceTier)
 	return u
 }
 
@@ -3235,6 +3412,24 @@ func (u *GroupUpsert) UpdateRpmLimit() *GroupUpsert {
 // AddRpmLimit adds v to the "rpm_limit" field.
 func (u *GroupUpsert) AddRpmLimit(v int) *GroupUpsert {
 	u.Add(group.FieldRpmLimit, v)
+	return u
+}
+
+// SetUserConcurrencyLimit sets the "user_concurrency_limit" field.
+func (u *GroupUpsert) SetUserConcurrencyLimit(v int) *GroupUpsert {
+	u.Set(group.FieldUserConcurrencyLimit, v)
+	return u
+}
+
+// UpdateUserConcurrencyLimit sets the "user_concurrency_limit" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateUserConcurrencyLimit() *GroupUpsert {
+	u.SetExcluded(group.FieldUserConcurrencyLimit)
+	return u
+}
+
+// AddUserConcurrencyLimit adds v to the "user_concurrency_limit" field.
+func (u *GroupUpsert) AddUserConcurrencyLimit(v int) *GroupUpsert {
+	u.Add(group.FieldUserConcurrencyLimit, v)
 	return u
 }
 
@@ -4358,6 +4553,34 @@ func (u *GroupUpsertOne) ClearFallbackGroupID() *GroupUpsertOne {
 	})
 }
 
+// SetFallbackGroupIDOnUnavailable sets the "fallback_group_id_on_unavailable" field.
+func (u *GroupUpsertOne) SetFallbackGroupIDOnUnavailable(v int64) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetFallbackGroupIDOnUnavailable(v)
+	})
+}
+
+// AddFallbackGroupIDOnUnavailable adds v to the "fallback_group_id_on_unavailable" field.
+func (u *GroupUpsertOne) AddFallbackGroupIDOnUnavailable(v int64) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.AddFallbackGroupIDOnUnavailable(v)
+	})
+}
+
+// UpdateFallbackGroupIDOnUnavailable sets the "fallback_group_id_on_unavailable" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateFallbackGroupIDOnUnavailable() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateFallbackGroupIDOnUnavailable()
+	})
+}
+
+// ClearFallbackGroupIDOnUnavailable clears the value of the "fallback_group_id_on_unavailable" field.
+func (u *GroupUpsertOne) ClearFallbackGroupIDOnUnavailable() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearFallbackGroupIDOnUnavailable()
+	})
+}
+
 // SetFallbackGroupIDOnInvalidRequest sets the "fallback_group_id_on_invalid_request" field.
 func (u *GroupUpsertOne) SetFallbackGroupIDOnInvalidRequest(v int64) *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
@@ -4446,6 +4669,20 @@ func (u *GroupUpsertOne) UpdateModelRouting() *GroupUpsertOne {
 func (u *GroupUpsertOne) ClearModelRouting() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearModelRouting()
+	})
+}
+
+// SetStrictFailover sets the "strict_failover" field.
+func (u *GroupUpsertOne) SetStrictFailover(v domain.StrictFailoverConfig) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetStrictFailover(v)
+	})
+}
+
+// UpdateStrictFailover sets the "strict_failover" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateStrictFailover() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateStrictFailover()
 	})
 }
 
@@ -4551,6 +4788,20 @@ func (u *GroupUpsertOne) SetForceOpenaiFast(v bool) *GroupUpsertOne {
 func (u *GroupUpsertOne) UpdateForceOpenaiFast() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateForceOpenaiFast()
+	})
+}
+
+// SetForceOpenaiServiceTier sets the "force_openai_service_tier" field.
+func (u *GroupUpsertOne) SetForceOpenaiServiceTier(v string) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetForceOpenaiServiceTier(v)
+	})
+}
+
+// UpdateForceOpenaiServiceTier sets the "force_openai_service_tier" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateForceOpenaiServiceTier() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateForceOpenaiServiceTier()
 	})
 }
 
@@ -4670,6 +4921,27 @@ func (u *GroupUpsertOne) AddRpmLimit(v int) *GroupUpsertOne {
 func (u *GroupUpsertOne) UpdateRpmLimit() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateRpmLimit()
+	})
+}
+
+// SetUserConcurrencyLimit sets the "user_concurrency_limit" field.
+func (u *GroupUpsertOne) SetUserConcurrencyLimit(v int) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetUserConcurrencyLimit(v)
+	})
+}
+
+// AddUserConcurrencyLimit adds v to the "user_concurrency_limit" field.
+func (u *GroupUpsertOne) AddUserConcurrencyLimit(v int) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.AddUserConcurrencyLimit(v)
+	})
+}
+
+// UpdateUserConcurrencyLimit sets the "user_concurrency_limit" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateUserConcurrencyLimit() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateUserConcurrencyLimit()
 	})
 }
 
@@ -5979,6 +6251,34 @@ func (u *GroupUpsertBulk) ClearFallbackGroupID() *GroupUpsertBulk {
 	})
 }
 
+// SetFallbackGroupIDOnUnavailable sets the "fallback_group_id_on_unavailable" field.
+func (u *GroupUpsertBulk) SetFallbackGroupIDOnUnavailable(v int64) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetFallbackGroupIDOnUnavailable(v)
+	})
+}
+
+// AddFallbackGroupIDOnUnavailable adds v to the "fallback_group_id_on_unavailable" field.
+func (u *GroupUpsertBulk) AddFallbackGroupIDOnUnavailable(v int64) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.AddFallbackGroupIDOnUnavailable(v)
+	})
+}
+
+// UpdateFallbackGroupIDOnUnavailable sets the "fallback_group_id_on_unavailable" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateFallbackGroupIDOnUnavailable() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateFallbackGroupIDOnUnavailable()
+	})
+}
+
+// ClearFallbackGroupIDOnUnavailable clears the value of the "fallback_group_id_on_unavailable" field.
+func (u *GroupUpsertBulk) ClearFallbackGroupIDOnUnavailable() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearFallbackGroupIDOnUnavailable()
+	})
+}
+
 // SetFallbackGroupIDOnInvalidRequest sets the "fallback_group_id_on_invalid_request" field.
 func (u *GroupUpsertBulk) SetFallbackGroupIDOnInvalidRequest(v int64) *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
@@ -6067,6 +6367,20 @@ func (u *GroupUpsertBulk) UpdateModelRouting() *GroupUpsertBulk {
 func (u *GroupUpsertBulk) ClearModelRouting() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearModelRouting()
+	})
+}
+
+// SetStrictFailover sets the "strict_failover" field.
+func (u *GroupUpsertBulk) SetStrictFailover(v domain.StrictFailoverConfig) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetStrictFailover(v)
+	})
+}
+
+// UpdateStrictFailover sets the "strict_failover" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateStrictFailover() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateStrictFailover()
 	})
 }
 
@@ -6172,6 +6486,20 @@ func (u *GroupUpsertBulk) SetForceOpenaiFast(v bool) *GroupUpsertBulk {
 func (u *GroupUpsertBulk) UpdateForceOpenaiFast() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateForceOpenaiFast()
+	})
+}
+
+// SetForceOpenaiServiceTier sets the "force_openai_service_tier" field.
+func (u *GroupUpsertBulk) SetForceOpenaiServiceTier(v string) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetForceOpenaiServiceTier(v)
+	})
+}
+
+// UpdateForceOpenaiServiceTier sets the "force_openai_service_tier" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateForceOpenaiServiceTier() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateForceOpenaiServiceTier()
 	})
 }
 
@@ -6291,6 +6619,27 @@ func (u *GroupUpsertBulk) AddRpmLimit(v int) *GroupUpsertBulk {
 func (u *GroupUpsertBulk) UpdateRpmLimit() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateRpmLimit()
+	})
+}
+
+// SetUserConcurrencyLimit sets the "user_concurrency_limit" field.
+func (u *GroupUpsertBulk) SetUserConcurrencyLimit(v int) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetUserConcurrencyLimit(v)
+	})
+}
+
+// AddUserConcurrencyLimit adds v to the "user_concurrency_limit" field.
+func (u *GroupUpsertBulk) AddUserConcurrencyLimit(v int) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.AddUserConcurrencyLimit(v)
+	})
+}
+
+// UpdateUserConcurrencyLimit sets the "user_concurrency_limit" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateUserConcurrencyLimit() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateUserConcurrencyLimit()
 	})
 }
 

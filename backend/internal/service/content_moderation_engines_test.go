@@ -144,7 +144,7 @@ func TestContentModerationTypeSafeURLDoesNotRevalidateOtherProfile(t *testing.T)
 }
 
 func TestContentModerationEngineProfilesPreserveLegacy(t *testing.T) {
-	repo := &contentModerationTestSettingRepo{values: map[string]string{SettingKeyContentModerationConfig: `{"enabled":true,"mode":"pre_block","api_key":"old-openai-key","base_url":"https://openai.example","model":"omni","thresholds":{"sexual":0.65},"auto_ban_enabled":true}`}}
+	repo := &contentModerationTestSettingRepo{values: map[string]string{SettingKeyContentModerationConfig: `{"enabled":true,"all_groups":true,"mode":"pre_block","api_key":"old-openai-key","base_url":"https://openai.example","model":"omni","thresholds":{"sexual":0.65},"auto_ban_enabled":true}`}}
 	s := &ContentModerationService{settingRepo: repo}
 	view, err := s.GetConfig(context.Background())
 	require.NoError(t, err)

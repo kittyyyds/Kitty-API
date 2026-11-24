@@ -18,7 +18,9 @@ const (
 	// OAuth Client ID for OpenAI (Codex CLI official)
 	ClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
-	// ExcelClientID is retained only to reject legacy credentials safely.
+	// ExcelClientID identifies retired Excel add-in credentials (the removed Excel
+	// BPS route). Such accounts are never scheduled; refreshes keep this client's
+	// own token contract so the grant is never presented as a Codex identity.
 	ExcelClientID = "app_fnr0pYvVwwFDocDumLG3H2Bp"
 
 	// OAuth endpoints
@@ -44,15 +46,6 @@ const (
 
 // OAuthSession stores OAuth flow state for OpenAI
 type OAuthSession struct {
-	ConnectionID            string
-	ConnectionRevision      int64
-	ConnectionKind          string
-	SIWCAccountID           int64
-	SIWCNonce               string
-	SIWCHostID              string
-	SIWCPreviousGrant       string
-	SIWCExpectedCredentials map[string]any
-
 	State        string    `json:"state"`
 	CodeVerifier string    `json:"code_verifier"`
 	ClientID     string    `json:"client_id,omitempty"`
@@ -97,18 +90,6 @@ func (s *SessionStore) Get(sessionID string) (*OAuthSession, bool) {
 	}
 	// Check if expired
 	if time.Since(session.CreatedAt) > SessionTTL {
-		return nil, false
-	}
-	return session, true
-}
-
-// Take atomically consumes a session for one authorization exchange.
-func (s *SessionStore) Take(id string) (*OAuthSession, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	session, ok := s.sessions[id]
-	delete(s.sessions, id)
-	if !ok || time.Since(session.CreatedAt) > SessionTTL {
 		return nil, false
 	}
 	return session, true
@@ -266,7 +247,6 @@ type RefreshTokenRequest struct {
 type IDTokenClaims struct {
 	// Standard claims
 	Sub           string   `json:"sub"`
-	SID           string   `json:"sid"`
 	Email         string   `json:"email"`
 	EmailVerified bool     `json:"email_verified"`
 	Iss           string   `json:"iss"`
@@ -432,15 +412,6 @@ func (c *IDTokenClaims) GetUserInfo() *UserInfo {
 		if info.OrganizationID == "" && len(c.OpenAIAuth.Organizations) > 0 {
 			info.OrganizationID = c.OpenAIAuth.Organizations[0].ID
 		}
-		if info.ChatGPTUserID == "" {
-			info.ChatGPTUserID = c.OpenAIAuth.UserID
-		}
-	}
-	if info.ChatGPTAccountID == "" {
-		info.ChatGPTAccountID = c.SID
-	}
-	if info.ChatGPTUserID == "" {
-		info.ChatGPTUserID = c.Sub
 	}
 
 	return info

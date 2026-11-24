@@ -17,6 +17,8 @@ export interface BillingEstimatorTokens {
   output: number
   cacheWrite5m: number
   cacheWrite1h: number
+  cacheWrite30m: number
+  cacheWrite12h: number
   cacheRead: number
 }
 
@@ -62,6 +64,8 @@ export function useBillingEstimator() {
     output: 500_000,
     cacheWrite5m: 0,
     cacheWrite1h: 0,
+    cacheWrite30m: 0,
+    cacheWrite12h: 0,
     cacheRead: 0,
   })
 
@@ -122,18 +126,22 @@ export function useBillingEstimator() {
     const group = selectedGroup.value
     const model = selectedModel.value
     if (!group || !model) return null
-    const cacheWrite5m = toToken(tokens.cacheWrite5m)
-    const cacheWrite1h = toToken(tokens.cacheWrite1h)
+    const openai = model.platform === 'openai'
+    const cacheWrite5m = openai ? 0 : toToken(tokens.cacheWrite5m)
+    const cacheWrite1h = openai ? 0 : toToken(tokens.cacheWrite1h)
+    const cacheWrite30m = openai ? toToken(tokens.cacheWrite30m) : 0
+    const cacheWrite12h = openai ? toToken(tokens.cacheWrite12h) : 0
     return {
       group_id: group.id,
       model: model.name,
       model_platform: model.platform,
       input_tokens: toToken(tokens.input),
       output_tokens: toToken(tokens.output),
-      cache_creation_tokens: toToken(cacheWrite5m + cacheWrite1h),
+      cache_creation_tokens: toToken(cacheWrite5m + cacheWrite1h + cacheWrite30m + cacheWrite12h),
       cache_read_tokens: toToken(tokens.cacheRead),
       cache_creation_5m_tokens: cacheWrite5m,
       cache_creation_1h_tokens: cacheWrite1h,
+      ...(openai ? { cache_creation_30m_tokens: cacheWrite30m, cache_creation_12h_tokens: cacheWrite12h } : {}),
       service_tier: serviceTier.value,
     }
   }
@@ -196,6 +204,8 @@ export function useBillingEstimator() {
     tokens.output = 500_000
     tokens.cacheWrite5m = 0
     tokens.cacheWrite1h = 0
+    tokens.cacheWrite30m = 0
+    tokens.cacheWrite12h = 0
     tokens.cacheRead = 0
     serviceTier.value = ''
   }
@@ -217,6 +227,8 @@ export function useBillingEstimator() {
       () => tokens.output,
       () => tokens.cacheWrite5m,
       () => tokens.cacheWrite1h,
+      () => tokens.cacheWrite30m,
+      () => tokens.cacheWrite12h,
       () => tokens.cacheRead,
     ],
     scheduleEstimate,

@@ -69,7 +69,7 @@ func (s *AccountTestService) testTypeSafeAccountConnection(c *gin.Context, accou
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
-	resp, err := timedAccountTestUpstream(s.httpUpstream).Do(req, proxyURL, account.ID, account.Concurrency)
+	resp, err := s.doAccountTestHTTP(req, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", sanitizeUpstreamErrorMessage(err.Error())))
 	}
@@ -80,7 +80,7 @@ func (s *AccountTestService) testTypeSafeAccountConnection(c *gin.Context, accou
 		errMsg := fmt.Sprintf("API returned %d: %s", resp.StatusCode, truncateString(string(body), typeSafeTestMaxPreviewBytes))
 		// 401/403 表示 API Key 无效或被上游拒绝，标记为 error 状态。
 		if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && s.accountRepo != nil {
-			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+			_ = s.setAccountTestError(ctx, account.ID, errMsg)
 		}
 		return s.sendErrorAndEnd(c, errMsg)
 	}

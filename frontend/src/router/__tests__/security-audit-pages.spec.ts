@@ -1,3 +1,4 @@
+import { createPinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import { readFileSync } from 'node:fs'
@@ -51,11 +52,13 @@ function riskSnapshot(): IPRiskSnapshot {
 }
 let wrapper: ReturnType<typeof mount> | undefined
 async function open(url: string, locale: 'en' | 'zh' = 'en') {
+  wrapper?.unmount()
+  wrapper = undefined
   i18n.global.setLocaleMessage(locale, locale === 'en' ? en : zh)
   i18n.global.locale.value = locale
   await router.push(url)
   await router.isReady()
-  wrapper = mount(RouterView, { global: { plugins: [router, createI18n({ legacy: false, locale, messages: { en, zh } })], stubs: { RuntimeOverview: true, EndpointPool: true, PolicyPanel: true, PenaltyPolicyPanel: true, EventWorkspace: true, EventDetailDialog: true, FilterDeleteDialog: true, ConfirmDialog: true } } })
+  wrapper = mount(RouterView, { global: { plugins: [createPinia(), router, createI18n({ legacy: false, locale, messages: { en, zh } })], stubs: { RuntimeOverview: true, EndpointPool: true, PolicyPanel: true, PenaltyPolicyPanel: true, EventWorkspace: true, EventDetailDialog: true, FilterDeleteDialog: true, ConfirmDialog: true } } })
   await flushPromises()
   return wrapper
 }
@@ -141,15 +144,14 @@ describe('security audit real routes', () => {
     expect(state.prompt.getConfig).not.toHaveBeenCalled()
     expect(state.listIPAudit).not.toHaveBeenCalled()
   })
-  it('keeps Kitty administrator configuration accessible while audit enforcement is off', async () => {
+  it('keeps prompt feature gating without preventing IP-only audit access', async () => {
     state.app.cachedPublicSettings.risk_control_enabled = false
     const page = await open('/admin/ip-audit')
     expect(router.currentRoute.value.path).toBe('/admin/ip-audit')
     expect(page.find('a[href="/admin/prompt-audit"]').exists()).toBe(false)
     await router.push('/admin/prompt-audit?tab=config')
-    await flushPromises()
-    expect(router.currentRoute.value.path).toBe('/admin/prompt-audit')
-    expect(state.prompt.getConfig).toHaveBeenCalledOnce()
+    expect(router.currentRoute.value.path).toBe('/admin/settings')
+    expect(state.prompt.getConfig).not.toHaveBeenCalled()
   })
 })
 

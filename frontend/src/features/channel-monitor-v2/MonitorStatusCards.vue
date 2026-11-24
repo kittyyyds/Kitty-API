@@ -1,17 +1,24 @@
 <template>
-  <div class="space-y-7" data-testid="monitor-status-cards">
+  <div class="min-w-0 space-y-5" data-testid="monitor-status-cards">
+    <div v-if="platforms.length" class="flex min-w-0 gap-1 overflow-x-auto border-b border-gray-200 dark:border-dark-700" role="group" :aria-label="t('channelMonitorV2.filters.platform')" data-testid="monitor-platform-filters">
+      <button v-for="option in platformFilters" :key="option.name || 'all'" type="button"
+        class="inline-flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 px-4 py-3 text-sm font-medium transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary-500"
+        :class="selectedPlatform === option.name ? 'border-primary-500 text-primary-600 dark:border-primary-400 dark:text-primary-300' : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-900 dark:text-gray-400 dark:hover:border-dark-500 dark:hover:text-gray-100'"
+        :aria-pressed="selectedPlatform === option.name" :data-platform="option.name || 'all'"
+        @click="selectedPlatform = option.name">
+        <ProviderIcon v-if="option.name" :provider="option.name" :size="17" />
+        <Icon v-else name="grid" class="h-[17px] w-[17px]" />
+        <span>{{ option.name ? providerLabel(option.name) : t('channelMonitorV2.filters.allPlatforms') }}</span>
+        <span class="min-w-5 rounded-full px-1.5 py-0.5 text-center text-[11px] leading-4"
+          :class="selectedPlatform === option.name ? 'bg-primary-50 text-primary-600 dark:bg-primary-900/30 dark:text-primary-300' : 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400'">{{ option.count }}</span>
+      </button>
+    </div>
     <div v-if="loading && !items.length" class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
       <div v-for="index in 6" :key="index" class="h-72 animate-pulse rounded-3xl bg-gray-100 dark:bg-dark-800" />
     </div>
-    <div v-else-if="!items.length" class="card py-16 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('channelMonitorV2.empty.title') }}</div>
-    <section v-for="platform in platforms" :key="platform.name" class="space-y-3" :data-platform="platform.name">
-      <h2 class="flex items-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-200">
-        <span class="grid h-7 w-7 place-items-center rounded-full bg-gray-100 dark:bg-dark-700"><ProviderIcon :provider="platform.name" :size="17" /></span>
-        {{ providerLabel(platform.name) }}
-        <span class="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500 dark:bg-dark-700 dark:text-gray-400">{{ platform.items.length }}</span>
-      </h2>
-      <div class="grid grid-cols-1 items-start gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-        <article v-for="row in platform.items" :key="`${row.platform}-${row.group_id}`" class="min-w-0 rounded-3xl border border-gray-200/80 bg-white/80 p-5 shadow-sm dark:border-dark-700/70 dark:bg-dark-800/80" data-testid="monitor-group-card">
+    <div v-else-if="!visibleItems.length" class="card py-16 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('channelMonitorV2.empty.title') }}</div>
+    <div v-else class="grid grid-cols-1 items-start gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4" data-testid="monitor-card-grid">
+        <article v-for="row in visibleItems" :key="`${row.platform}-${row.group_id}`" class="min-w-0 rounded-3xl border border-gray-200/80 bg-white/80 p-5 shadow-sm dark:border-dark-700/70 dark:bg-dark-800/80" data-testid="monitor-group-card">
           <header class="flex items-start gap-3">
             <span class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-300"><ProviderIcon :provider="row.platform" :size="23" /></span>
             <div class="min-w-0 flex-1">
@@ -21,9 +28,10 @@
                 <span v-if="row.group_rate_multiplier != null" class="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-gray-500 dark:bg-dark-700 dark:text-gray-400">{{ t('channelMonitorV2.cards.groupRate', { value: row.group_rate_multiplier.toFixed(2) }) }}</span>
               </div>
             </div>
-            <span class="shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold" :class="healthBadge[row.health.overall]">{{ t(`channelMonitorV2.cards.health.${row.health.overall}`) }}</span>
+            <span class="shrink-0 rounded-full px-2 py-1 text-[10px] font-semibold" :class="healthBadge[row.health.overall]" :title="t('channelMonitorV2.cards.healthExplanation', { availability: formatMonitorPercent(1 - row.metrics.error_rate) })">{{ t(`channelMonitorV2.cards.health.${row.health.overall}`) }}</span>
           </header>
 
+          <button v-if="filter" type="button" class="mt-3 text-xs font-medium text-primary-600 underline-offset-4 hover:underline dark:text-primary-300" data-testid="monitor-model-details" @click="openModels(row)">{{ t('channelMonitorV2.cards.models') }}</button>
           <dl class="mt-5 grid grid-cols-3 gap-2">
             <div v-for="metric in metrics(row)" :key="metric.name" class="min-w-0 rounded-2xl border border-gray-100 bg-gray-50/70 px-2.5 py-3 dark:border-dark-700/60 dark:bg-dark-900/40">
               <dt class="truncate text-[10px] tracking-wide text-gray-500 dark:text-gray-400" :title="metric.title || metric.name">{{ metric.name }}</dt>
@@ -34,7 +42,7 @@
             <div class="mb-2 flex justify-between text-[10px] text-gray-500 dark:text-gray-400">
               <span>{{ timelineCaption(row) }}</span><span>{{ t('channelMonitorV2.cards.refreshIn', { seconds: countdown }) }}</span>
             </div>
-            <p v-if="timelineMode === 'samples' && !timelineBars(row).length" class="text-[10px] text-gray-400" data-testid="card-timeline-empty">{{ t('channelMonitorV2.cards.noSamples') }}</p>
+            <p v-if="!timelineBars(row).length" class="text-[10px] text-gray-400" data-testid="card-timeline-empty">{{ t('channelMonitorV2.cards.noSamples') }}</p>
             <template v-else>
               <div class="flex h-5 items-end gap-1" :aria-label="t('channelMonitorV2.cards.trafficHistory')">
                 <button v-for="(bar, index) in timelineBars(row)" :key="`${bar.start}-${index}`" type="button"
@@ -80,8 +88,8 @@
             </template>
           </section>
         </article>
-      </div>
-    </section>
+    </div>
+    <MonitorModelDetails v-if="filter" :group="modelGroup" :filter="filter" :admin="admin" :show-throughput="showThroughput" :refresh-key="items" @close="modelGroup = null" />
     <Teleport to="body">
       <div v-if="detail" :id="tooltipId" ref="tooltipElement" role="tooltip" tabindex="0"
         class="monitor-card-tooltip fixed z-[100] w-max max-w-[calc(100vw-24px)] rounded-xl border border-gray-300 bg-white px-3 py-2 text-xs leading-relaxed text-gray-800 shadow-xl dark:border-gray-400 dark:bg-dark-900 dark:text-gray-100"
@@ -93,11 +101,8 @@
           <p class="font-semibold">{{ detail.row.group_name || '#' + detail.row.group_id }}</p>
           <template v-if="detail.kind === 'traffic'">
             <p class="text-gray-500 dark:text-gray-400">{{ dateTime(detail.bar.start) }} - {{ dateTime(detail.bar.end) }} · {{ t('channelMonitorV2.cards.health.' + detail.bar.state) }}</p>
-            <p v-if="!detail.bar.buckets.length" class="mt-1">{{ t('channelMonitorV2.matrix.noTraffic') }}</p>
-            <template v-else>
-              <p class="mt-1 text-gray-500 dark:text-gray-400">{{ t('channelMonitorV2.cards.bucketDetails') }}</p>
-              <p v-for="bucket in detail.bar.buckets" :key="bucket.bucket_start" class="mt-1" data-testid="monitor-card-tooltip-sample">{{ trafficSample(bucket) }}</p>
-            </template>
+            <p class="mt-1 text-gray-500 dark:text-gray-400">{{ t('channelMonitorV2.cards.bucketDetails') }}</p>
+            <p v-for="bucket in detail.bar.buckets" :key="bucket.bucket_start" class="mt-1" data-testid="monitor-card-tooltip-sample">{{ trafficSample(bucket) }}</p>
           </template>
           <p v-else class="mt-1 whitespace-pre-wrap">{{ candyTooltip(detail.result, detail.model, detail.effort) }}</p>
         </div>
@@ -109,17 +114,27 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, useId, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { MonitorCandyResult, MonitorCoverage, MonitorMatrixBucket, MonitorMatrixRow } from '@/api/channelMonitorV2'
+import type { MonitorCandyResult, MonitorCoverage, MonitorMatrixBucket, MonitorMatrixRow, MonitorFilter } from '@/api/channelMonitorV2'
+import MonitorModelDetails from './MonitorModelDetails.vue'
 import ProviderIcon from '@/components/user/monitor/ProviderIcon.vue'
+import Icon from '@/components/icons/Icon.vue'
 import { useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
 import { formatMonitorMs, formatMonitorPercent } from './monitorFormat'
-import { candyDisplayState, candyHistoryLimit, candyHistorySlots, hasMonitorSamples, MONITOR_CARD_SLOT_COUNT, monitorCandyHistories, monitorCardTimeline, monitorCardTimelineMode, type MonitorCardTimelineMode } from './monitorCards'
+import { candyDisplayState, candyHistoryLimit, candyHistorySlots, hasMonitorSamples, MONITOR_CARD_SLOT_COUNT, monitorCandyHistories, monitorCardTimeline } from './monitorCards'
 
-const props = defineProps<{ items: MonitorMatrixRow[]; coverage?: MonitorCoverage; countdown: number; loading: boolean; now: number; platformOrder?: string[]; timelineMode?: MonitorCardTimelineMode }>()
+const props = defineProps<{ items: MonitorMatrixRow[]; coverage?: MonitorCoverage; countdown: number; loading: boolean; now: number; platformOrder?: string[]; filter?: MonitorFilter; admin?: boolean; showThroughput?: boolean }>()
 const { t, locale } = useI18n()
+const modelGroup = shallowRef<MonitorMatrixRow | null>(null)
+function openModels(row: MonitorMatrixRow) {
+  closeDetail()
+  modelGroup.value = row
+}
+watch(() => props.items, (items) => {
+  const selected = modelGroup.value
+  if (selected) modelGroup.value = items.find(row => row.platform === selected.platform && row.group_id === selected.group_id) || null
+})
 type TrafficBar = ReturnType<typeof monitorCardTimeline>[number]
 type CardDetail = { kind: 'traffic'; row: MonitorMatrixRow; bar: TrafficBar } | { kind: 'candy'; row: MonitorMatrixRow; result: MonitorCandyResult; model: string; effort: string }
-const timelineMode = computed(() => monitorCardTimelineMode(props.timelineMode))
 const tooltipId = useId()
 const detail = shallowRef<CardDetail | null>(null)
 const anchor = shallowRef<HTMLElement | null>(null)
@@ -178,11 +193,10 @@ function isCandyDetail(row: MonitorMatrixRow, result: MonitorCandyResult, model:
   return detail.value?.kind === 'candy' && detail.value.row === row && detail.value.model === model && detail.value.effort === effort && detail.value.result.checked_at === result.checked_at
 }
 function timelineBars(row: MonitorMatrixRow) {
-  return monitorCardTimeline(row, props.coverage, timelineMode.value)
+  return monitorCardTimeline(row, props.coverage)
 }
 function timelineCaption(row: MonitorMatrixRow) {
-  if (timelineMode.value === 'samples') return t('channelMonitorV2.cards.sampledWindows', { count: timelineBars(row).length, limit: MONITOR_CARD_SLOT_COUNT })
-  return t('channelMonitorV2.cards.windows', { count: MONITOR_CARD_SLOT_COUNT })
+  return t('channelMonitorV2.cards.sampledWindows', { count: timelineBars(row).length, limit: MONITOR_CARD_SLOT_COUNT })
 }
 function candyHistories(row: MonitorMatrixRow) {
   return monitorCandyHistories(row)
@@ -197,7 +211,7 @@ function latestCandyTime(row: MonitorMatrixRow) {
   }
   return Number.isFinite(latest) ? time(latest) : '—'
 }
-watch([() => props.items, () => props.coverage, () => props.timelineMode], closeDetail)
+watch([() => props.items, () => props.coverage], closeDetail)
 onMounted(() => {
   document.addEventListener('pointerdown', onOutsidePointer, true)
   document.addEventListener('keydown', onKeydown)
@@ -212,6 +226,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('scroll', onViewportChange, true)
 })
 const { providerLabel, providerBadgeClass } = useChannelMonitorFormat()
+const selectedPlatform = ref<string | null>(null)
 const platforms = computed(() => {
   const groups = new Map<string, MonitorMatrixRow[]>()
   for (const row of props.items) {
@@ -226,8 +241,24 @@ const platforms = computed(() => {
   }
   return [...groups].map(([name, items]) => ({ name, items })).sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name))
 })
+const platformFilters = computed(() => [
+  { name: null, count: platforms.value.reduce((count, platform) => count + platform.items.length, 0) },
+  ...platforms.value.map(platform => ({ name: platform.name, count: platform.items.length })),
+])
+const visibleItems = computed(() => platforms.value
+  .filter(platform => selectedPlatform.value == null || platform.name === selectedPlatform.value)
+  .flatMap(platform => platform.items))
+watch(platforms, (items) => {
+  if (selectedPlatform.value && !items.some(platform => platform.name === selectedPlatform.value)) selectedPlatform.value = null
+})
+watch(selectedPlatform, () => {
+  closeDetail()
+  modelGroup.value = null
+})
 const healthBadge = { healthy: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300', warning: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300', critical: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300', unknown: 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-gray-400' }
-const healthBar = { healthy: 'h-5 bg-emerald-400', warning: 'h-3 bg-amber-400', critical: 'h-2 bg-red-400', unknown: 'h-1 bg-gray-300 dark:bg-dark-600' }
+// Every bar is a sampled bucket and colour carries its state. Only a bucket the
+// server could not score is short, so a critical one cannot look empty.
+const healthBar = { healthy: 'h-5 bg-emerald-400', warning: 'h-5 bg-emerald-200', critical: 'h-5 bg-amber-400', unknown: 'h-1 bg-gray-300 dark:bg-dark-600' }
 const candyColor = { correct: 'bg-emerald-400', incorrect: 'bg-amber-400', error: 'bg-red-400', unknown: 'bg-gray-400', stale: 'bg-gray-400' }
 const time = (value: number | string) => new Date(value).toLocaleTimeString(locale.value, { hour: '2-digit', minute: '2-digit', hour12: false })
 function metrics(row: MonitorMatrixRow) {
@@ -255,5 +286,7 @@ function candyTooltip(result: MonitorCandyResult, model?: string, effort?: strin
   return (label ? label + ' · ' : '') + dateTime(result.checked_at) + ' · ' + t('channelMonitorV2.candy.states.' + result.verdict)
     + ' · ' + t('channelMonitorV2.metrics.durationValue', { value: formatMonitorMs(result.latency_ms) })
     + (result.answer_preview ? '\n' + result.answer_preview : '')
+    + (props.admin && result.reason && !['probe_failed', 'empty_answer', 'interrupted'].includes(result.reason)
+      ? '\n' + t('channelMonitorV2.errorCategories.' + result.reason) : '')
 }
 </script>

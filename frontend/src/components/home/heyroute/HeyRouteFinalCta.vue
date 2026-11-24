@@ -14,7 +14,7 @@ defineProps<Props>()
 <template>
   <section id="hr-cta" class="hr-final-section hr-content-stage" data-hr-section>
     <div class="hr-section-shell">
-      <div class="hr-final-cta" data-hr-tilt="4">
+      <div class="hr-final-cta">
         <div class="hr-cta-dots" aria-hidden="true" />
 
         <div class="hr-final-head">
@@ -112,10 +112,16 @@ defineProps<Props>()
   align-items: end;
 }
 
+/*
+ * Two columns only from 1181px. There the left column is at least 0.5875 * 100vw - 152px wide
+ * (allowing a 17px scrollbar) and the longest nowrap line ("Start with your", Montserrat 760) is
+ * 7.96em, so a title of 7.3vw - 19px always fits beside the right column. Narrower layouts stack
+ * and let the lines wrap (see the 1180px query).
+ */
 .hr-final-cta h2 {
   max-width: none;
   margin: 0;
-  font-size: 6.25rem;
+  font-size: clamp(4rem, calc(7.3vw - 19px), 6.25rem);
   font-weight: 760;
   letter-spacing: 0;
   line-height: 0.94;
@@ -297,11 +303,22 @@ defineProps<Props>()
   border-left-color: rgba(222, 228, 255, 0.2);
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1180px) {
+  .hr-final-head {
+    grid-template-columns: 1fr;
+    gap: 34px;
+  }
+
   .hr-final-cta h2 {
     font-size: 5rem;
   }
 
+  .hr-final-cta h2 span {
+    white-space: normal;
+  }
+}
+
+@media (max-width: 1100px) {
   .hr-final-lower {
     grid-template-columns: 1fr;
     gap: 34px;

@@ -96,6 +96,8 @@ export default {
         advanced: '高级计费项',
         cacheWrite5m: '缓存写入 Token · 5m',
         cacheWrite1h: '缓存写入 Token · 1h',
+        cacheWrite30m: '缓存写入 Token · 30m',
+        cacheWrite12h: '缓存写入 Token · 12h',
         cacheRead: '缓存读取 Token',
         serviceTier: '服务等级',
         tierStandard: '标准',

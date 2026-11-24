@@ -25,6 +25,7 @@ type SystemSettings struct {
 	InvitationCodeEnabled               bool
 	TotpEnabled                         bool // TOTP 双因素认证
 	PasskeyEnabled                      bool // Passkey 登录
+	MainlandWebBlockEnabled             bool // 中国大陆网页访问限制
 	SessionBindingEnabled               bool // 会话 IP/UA 绑定（变更即失效）
 	StepUpEnabled                       bool // 敏感操作 step-up 2FA 门控
 	AuditLogRetentionDays               int  // 审计日志保留天数（<=0 永久保留）
@@ -169,21 +170,22 @@ type SystemSettings struct {
 	CustomMenuItems             string // JSON array of custom menu items
 	CustomEndpoints             string // JSON array of custom endpoints
 
-	DefaultConcurrency                int
-	DefaultBalance                    float64
+	DefaultConcurrency int
+	DefaultBalance     float64
+
 	RiskControlEnabled                bool
 	CyberSessionBlockEnabled          bool
 	CyberSessionBlockTTLSeconds       int
 	CyberSessionIdentityStrictEnabled bool
-	AffiliateEnabled                  bool
-	AffiliateRebateRate               float64
-	AffiliateRebateFreezeHours        int
-	AffiliateRebateDurationDays       int
-	AffiliateRebatePerInviteeCap      float64
-	AdminRechargeRebateEnabled        bool
-	DefaultUserRPMLimit               int
-	DefaultSubscriptions              []DefaultSubscriptionSetting
 	CyberPolicyUserAllowlist          string
+	AffiliateEnabled             bool
+	AffiliateRebateRate          float64
+	AffiliateRebateFreezeHours   int
+	AffiliateRebateDurationDays  int
+	AffiliateRebatePerInviteeCap float64
+	AdminRechargeRebateEnabled   bool
+	DefaultUserRPMLimit          int
+	DefaultSubscriptions         []DefaultSubscriptionSetting
 
 	// Model fallback configuration
 	EnableModelFallback      bool   `json:"enable_model_fallback"`
@@ -203,16 +205,13 @@ type SystemSettings struct {
 	OpsMetricsIntervalSeconds    int
 
 	// Channel Monitor feature
+	ChannelQualityPublicEnabled          bool   `json:"channel_quality_public_enabled"`
 	ChannelMonitorEnabled                bool   `json:"channel_monitor_enabled"`
 	ChannelMonitorMode                   string `json:"channel_monitor_mode"`
 	ChannelMonitorDefaultIntervalSeconds int    `json:"channel_monitor_default_interval_seconds"`
 	ChannelMonitorHideThroughput         bool   `json:"channel_monitor_hide_throughput"`
 	ChannelMonitorShowQuota              bool   `json:"channel_monitor_show_quota"`
 	ChannelMonitorHideUserRanking        bool   `json:"channel_monitor_hide_user_ranking"`
-	PrismBrowserEnabled                  bool   `json:"prism_browser_enabled"`
-	PrismBrowserBaseURL                  string `json:"prism_browser_base_url"`
-	PrismBrowserAPIKeyConfigured         bool   `json:"prism_browser_api_key_configured"`
-	PrismBrowserAPIKey                   string `json:"-"`
 
 	// Grok model mapping policy (admin settings; empty mapping falls back to these).
 	GrokDefaultTextModel           string `json:"grok_default_text_model"`
@@ -222,10 +221,6 @@ type SystemSettings struct {
 
 	// Available Channels feature (user-facing aggregate view)
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
-
-	// Pelican showcase (user-facing gallery of scheduled Pelican HTML results)
-	PelicanShowcaseEnabled bool                  `json:"pelican_showcase_enabled"`
-	PelicanShowcase        PelicanShowcaseConfig `json:"pelican_showcase_config"`
 
 	// Subscription feature switch: gates the whole user-facing subscription surface
 	// (sidebar entries, purchase-page subscription tab, header progress badge,
@@ -256,6 +251,8 @@ type SystemSettings struct {
 	BackendModeEnabled bool
 
 	// Gateway forwarding behavior
+	UpstreamErrorRetry                     *UpstreamErrorRetrySettings
+	UpstreamErrorMessage                   string
 	OpenAITTFTMode                         string // Responses first_token_ms 统计口径（默认 semantic）
 	EnableFingerprintUnification           bool   // 是否统一 OAuth 账号的指纹头（默认 true）
 	EnableMetadataPassthrough              bool   // 是否透传客户端原始 metadata（默认 false）
@@ -357,6 +354,7 @@ type DefaultSubscriptionSetting struct {
 }
 
 type PublicSettings struct {
+	GPTDirectEnabled                    bool
 	RegistrationEnabled                 bool
 	EmailVerifyEnabled                  bool
 	ForceEmailOnThirdPartySignup        bool
@@ -406,6 +404,7 @@ type PublicSettings struct {
 	WeChatOAuthMPEnabled     bool
 	WeChatOAuthMobileEnabled bool
 	BackendModeEnabled       bool
+	MCPEnabled               bool // 由部署配置 MCP_PUBLIC_URL 决定，不可在后台修改
 	PaymentEnabled           bool
 	PaymentBalanceDisabled   bool
 	OIDCOAuthEnabled         bool
@@ -420,9 +419,9 @@ type PublicSettings struct {
 	BalanceLowNotifyRechargeURL string
 
 	// Protocol feature switches, exposed so account editors follow global controls.
-	PrismBrowserEnabled bool `json:"prism_browser_enabled"`
 
 	// Channel Monitor feature
+	ChannelQualityPublicEnabled          bool   `json:"channel_quality_public_enabled"`
 	ChannelMonitorEnabled                bool   `json:"channel_monitor_enabled"`
 	ChannelMonitorMode                   string `json:"channel_monitor_mode"`
 	ChannelMonitorDefaultIntervalSeconds int    `json:"channel_monitor_default_interval_seconds"`
@@ -437,9 +436,6 @@ type PublicSettings struct {
 
 	// Available Channels feature (user-facing aggregate view)
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
-
-	// Pelican showcase feature (user-facing gallery; limits stay admin-only)
-	PelicanShowcaseEnabled bool `json:"pelican_showcase_enabled"`
 
 	// Subscription feature switch (see SystemSettings.SubscriptionEnabled)
 	SubscriptionEnabled bool `json:"subscription_enabled"`

@@ -84,10 +84,11 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 	out := &APIKey{
 		ID:                 k.ID,
 		UserID:             k.UserID,
-		Key:                k.Key,
+		Key:                service.MaskAPIKey(k.Key),
 		Name:               k.Name,
 		GroupIDs:           k.ConfiguredGroupIDs(),
 		GroupID:            k.GroupID,
+		FallbackGroupID:    k.FallbackGroupID,
 		Status:             k.Status,
 		IPWhitelist:        k.IPWhitelist,
 		IPBlacklist:        k.IPBlacklist,
@@ -111,6 +112,7 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		Window7dStart:      k.Window7dStart,
 		User:               UserFromServiceShallow(k.User),
 		Group:              GroupFromServiceShallow(k.Group),
+		FallbackGroup:      GroupFromServiceShallow(k.FallbackGroup),
 	}
 	if k.Window5hStart != nil && !service.IsWindowExpired(k.Window5hStart, service.RateLimitWindow5h) {
 		t := k.Window5hStart.Add(service.RateLimitWindow5h)
@@ -152,28 +154,31 @@ func GroupFromServiceAdmin(g *service.Group) *AdminGroup {
 		return nil
 	}
 	out := &AdminGroup{
-		Group:                       groupFromServiceBase(g),
-		ForceOpenAIFast:             g.ForceOpenAIFast,
-		FreeOpenAIFast:              g.FreeOpenAIFast,
+		Group:                        groupFromServiceBase(g),
+		ForceOpenAIFast:              g.ForceOpenAIFast,
+		ForceOpenAIServiceTier:       g.ForceOpenAIServiceTier,
+		FreeOpenAIFast:               g.FreeOpenAIFast,
+		ProfitControlEnabled:         g.ProfitControlEnabled,
+		ProfitMinMargin:              g.ProfitMinMargin,
+		ProfitSafetyBuffer:           g.ProfitSafetyBuffer,
+		ModelPricing:                 g.ModelPricing,
+		ModelRouting:                 g.ModelRouting,
+		ModelRoutingEnabled:          g.ModelRoutingEnabled,
+		MCPXMLInject:                 g.MCPXMLInject,
+		DefaultMappedModel:           g.DefaultMappedModel,
+		MessagesDispatchModelConfig:  g.MessagesDispatchModelConfig,
+		ModelAllowlist:               g.ModelAllowlist,
+		CodexModelsManifestConfig:    g.CodexModelsManifestConfig,
+		StrictFailover:               service.CloneStrictFailoverConfig(g.StrictFailover),
+		FallbackGroupIDOnUnavailable: g.FallbackGroupIDOnUnavailable,
+		SupportedModelScopes:         g.SupportedModelScopes,
+		AccountCount:                 g.AccountCount,
+		ActiveAccountCount:           g.ActiveAccountCount,
+		RateLimitedAccountCount:      g.RateLimitedAccountCount,
+		SortOrder:                    g.SortOrder,
 		StreamOnly:                  g.StreamOnly,
 		CodexCLIOnly:                g.CodexCLIOnly,
 		BlockSubagents:              g.BlockSubagents,
-		ProfitControlEnabled:        g.ProfitControlEnabled,
-		ProfitMinMargin:             g.ProfitMinMargin,
-		ProfitSafetyBuffer:          g.ProfitSafetyBuffer,
-		ModelPricing:                g.ModelPricing,
-		ModelRouting:                g.ModelRouting,
-		ModelRoutingEnabled:         g.ModelRoutingEnabled,
-		MCPXMLInject:                g.MCPXMLInject,
-		DefaultMappedModel:          g.DefaultMappedModel,
-		MessagesDispatchModelConfig: g.MessagesDispatchModelConfig,
-		ModelAllowlist:              g.ModelAllowlist,
-		CodexModelsManifestConfig:   g.CodexModelsManifestConfig,
-		SupportedModelScopes:        g.SupportedModelScopes,
-		AccountCount:                g.AccountCount,
-		ActiveAccountCount:          g.ActiveAccountCount,
-		RateLimitedAccountCount:     g.RateLimitedAccountCount,
-		SortOrder:                   g.SortOrder,
 	}
 	if len(g.AccountGroups) > 0 {
 		out.AccountGroups = make([]AccountGroup, 0, len(g.AccountGroups))
@@ -237,6 +242,7 @@ func groupFromServiceBase(g *service.Group) Group {
 		RequireOAuthOnly:                g.RequireOAuthOnly,
 		RequirePrivacySet:               g.RequirePrivacySet,
 		RPMLimit:                        g.RPMLimit,
+		UserConcurrencyLimit:            g.UserConcurrencyLimit,
 		MaxReasoningEffort:              g.MaxReasoningEffort,
 		MaxReasoningEffortOverLimit:     g.MaxReasoningEffortOverLimit,
 		ReasoningEffortMappings:         g.ReasoningEffortMappings,
@@ -260,6 +266,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		openCodeGoUsage = state
 	}
 	out := &Account{
+		RetiredReason:           accountRetiredReason(a),
 		ID:                      a.ID,
 		Name:                    a.Name,
 		Notes:                   a.Notes,
@@ -271,6 +278,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		OllamaCloudUsage:        ollamaCloudUsage,
 		OpenCodeGoUsage:         openCodeGoUsage,
 		ProxyID:                 a.ProxyID,
+		ProxyIDs:                a.ProxyIDs,
 		ProxyFallbackOriginID:   a.ProxyFallbackOriginID,
 		ProxyFallbackOriginName: a.ProxyFallbackOriginName,
 		Concurrency:             a.Concurrency,
@@ -434,6 +442,15 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 	return out
 }
 
+// accountRetiredReason surfaces why a stored account is permanently kept out of
+// scheduling, so administrators can re-authorize or delete it.
+func accountRetiredReason(a *service.Account) string {
+	if a.IsRetiredBPSCredential() {
+		return service.RetiredBPSCredentialReason
+	}
+	return ""
+}
+
 func redactAccountManagedExtra(extra map[string]any) map[string]any {
 	if extra == nil {
 		return nil
@@ -441,18 +458,14 @@ func redactAccountManagedExtra(extra map[string]any) map[string]any {
 	redacted := make(map[string]any, len(extra))
 	for key, value := range extra {
 		switch {
-		case key == "openai_excel_bps_credential_state", key == service.OllamaCloudUsageSessionExtraKey,
+		case key == service.OllamaCloudUsageSessionExtraKey,
 			key == service.OllamaCloudUsageAutoRefreshExtraKey,
 			key == service.OllamaCloudUsageSnapshotExtraKey,
 			key == service.OpenCodeGoUsageAutoRefreshExtraKey,
-			key == service.OpenCodeGoUsageSnapshotExtraKey:
+			key == service.OpenCodeGoUsageSnapshotExtraKey,
+			service.IsOpenAITiboVerdictExtraKey(key):
 			continue
-		case key == "codex_fingerprint_seed",
-			key == "anti_degrade", key == "client_identity_compatibility",
-			key == "fingerprint_v2_seed", key == "client_installation_id":
-			// Retired identity snapshots retain private seeds and stay redacted.
-			continue
-		case service.IsRetiredAccountSecretKey(key):
+		case service.IsRetiredAccountExtraKey(key):
 			continue
 		default:
 			redacted[key] = value
@@ -493,11 +506,14 @@ func AccountListItemFromAccount(a *Account) *AccountListItem {
 	return &AccountListItem{
 		ID: a.ID, Name: a.Name, Notes: a.Notes, Platform: a.Platform, Type: a.Type,
 		Credentials: a.Credentials, CredentialsStatus: a.CredentialsStatus, Extra: a.Extra,
-		OllamaCloudUsage: a.OllamaCloudUsage,
-		ProxyID:          a.ProxyID, ProxyFallbackOriginID: a.ProxyFallbackOriginID, ProxyFallbackOriginName: a.ProxyFallbackOriginName,
-		Concurrency: a.Concurrency, LoadFactor: a.LoadFactor, Priority: a.Priority, RateMultiplier: a.RateMultiplier, GroupRateMultiplier: a.GroupRateMultiplier,
-		OpenCodeGoUsage: a.OpenCodeGoUsage,
-		Status:          a.Status, ErrorMessage: a.ErrorMessage, LastUsedAt: a.LastUsedAt, ExpiresAt: a.ExpiresAt,
+		OllamaCloudUsage:        a.OllamaCloudUsage,
+		OpenCodeGoUsage:         a.OpenCodeGoUsage,
+		OpenAITiboRoutes:        a.OpenAITiboRoutes,
+		RetiredReason:           a.RetiredReason,
+		ProxyIDs:                a.ProxyIDs,
+		ProxyID:                 a.ProxyID, ProxyFallbackOriginID: a.ProxyFallbackOriginID, ProxyFallbackOriginName: a.ProxyFallbackOriginName,
+		Concurrency: a.Concurrency, LoadFactor: a.LoadFactor, Priority: a.Priority, RateMultiplier: a.RateMultiplier,
+		Status: a.Status, ErrorMessage: a.ErrorMessage, LastUsedAt: a.LastUsedAt, ExpiresAt: a.ExpiresAt,
 		AutoPauseOnExpired: a.AutoPauseOnExpired, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 		Schedulable: a.Schedulable, RateLimitedAt: a.RateLimitedAt, RateLimitResetAt: a.RateLimitResetAt,
 		OverloadUntil: a.OverloadUntil, TempUnschedulableUntil: a.TempUnschedulableUntil,
@@ -558,8 +574,8 @@ func ProxyFromService(p *service.Proxy) *Proxy {
 		Protocol:       p.Protocol,
 		Host:           p.Host,
 		Port:           p.Port,
-		MihomoNodeID:   p.MihomoNodeID,
 		Username:       p.Username,
+		MihomoNodeID:   p.MihomoNodeID,
 		Status:         p.Status,
 		CreatedAt:      p.CreatedAt,
 		UpdatedAt:      p.UpdatedAt,
@@ -738,6 +754,8 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
 		CacheReadTokens:           l.CacheReadTokens,
 		CacheCreation5mTokens:     l.CacheCreation5mTokens,
 		CacheCreation1hTokens:     l.CacheCreation1hTokens,
+		CacheCreation30mTokens:    l.CacheCreation30mTokens,
+		CacheCreation12hTokens:    l.CacheCreation12hTokens,
 		InputCost:                 l.InputCost,
 		OutputCost:                l.OutputCost,
 		CacheCreationCost:         l.CacheCreationCost,
@@ -754,8 +772,6 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
 		DurationMs:                l.DurationMs,
 		FirstTokenMs:              l.FirstTokenMs,
 		QueueWaitMs:               l.QueueWaitMs,
-		QueueTiming:               l.QueueTiming,
-		ContentTiming:             l.ContentTiming,
 		ImageCount:                l.ImageCount,
 		ImageSize:                 l.ImageSize,
 		ImageInputSize:            l.ImageInputSize,
@@ -1021,36 +1037,10 @@ func PromoCodeUsageFromService(u *service.PromoCodeUsage) *PromoCodeUsage {
 }
 
 // SecurityPolicyKeywordFromService converts a service keyword to admin DTO.
-func SecurityPolicyKeywordFromService(w *service.SecurityPolicyKeyword) *SecurityPolicyKeyword {
-	if w == nil {
-		return nil
-	}
-	return &SecurityPolicyKeyword{
-		ID:        w.ID,
-		GroupID:   w.GroupID,
-		Keyword:   w.Keyword,
-		Category:  w.Category,
-		Enabled:   w.Enabled,
-		CreatedAt: w.CreatedAt,
-		UpdatedAt: w.UpdatedAt,
-	}
-}
 
 // SecurityPolicyKeywordsFromService converts a service keyword list to admin DTOs.
-func SecurityPolicyKeywordsFromService(words []service.SecurityPolicyKeyword) []SecurityPolicyKeyword {
-	out := make([]SecurityPolicyKeyword, 0, len(words))
-	for i := range words {
-		if dto := SecurityPolicyKeywordFromService(&words[i]); dto != nil {
-			out = append(out, *dto)
-		}
-	}
-	return out
-}
 
 // SecurityPolicyKeywordSeedFromService converts a builtin seed to admin DTO.
-func SecurityPolicyKeywordSeedFromService(seed service.SecurityPolicyKeywordSeed) SecurityPolicyKeywordSeed {
-	return SecurityPolicyKeywordSeed{Keyword: seed.Keyword, Category: seed.Category}
-}
 
 // ProxyWithAccountCountFromServiceAdmin converts a service ProxyWithAccountCount to AdminProxyWithAccountCount DTO.
 // It includes the password field - user-facing endpoints must not use this.

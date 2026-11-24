@@ -21,12 +21,11 @@ type PaginationParams struct {
 
 // PaginationResult 分页结果
 type PaginationResult struct {
-	// TotalLowerBound marks fast pagination without a COUNT query.
 	TotalLowerBound bool
-	Total           int64
-	Page            int
-	PageSize        int
-	Pages           int
+	Total    int64
+	Page     int
+	PageSize int
+	Pages    int
 }
 
 // DefaultPagination 默认分页参数

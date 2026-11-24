@@ -1,5 +1,12 @@
 export default {
   operations: {
+    todayWindow: '今日数据自 {date} 00:00 起统计 · {timezone}',
+    rechargeRanking: {
+      title: '今日充值排行', hint: '普通用户完成入账的充值额度', top50: '前50名',
+      window: '{date} 00:00 起 · {timezone}', totalAmount: '全体充值额度', totalUsers: '充值人数', totalCount: '充值笔数',
+      count: '{count} 笔', empty: '今日暂无完成入账的充值', loadFailed: '充值排行加载失败'
+    },
+
     profitIncomplete: '成本待补齐：业务 {requests} 条，监控 {monitors} 条',
     costBasis: "消费为请求计价；上游成本优先取已对账账单，再取冻结采购估算，未配置时使用请求当时的账号成本快照。毛利不等于现金净利润。",
     costCoverage: "本区间 {requests} 次：已对账 {reconciled}；采购估算 {procurement_estimated}；账号估算 {account_estimated}；成本待核算 {unknown}。待核算项不按零成本计利润。",
@@ -63,6 +70,9 @@ export default {
       noModels: '暂无模型消费数据',
       trend: '近期开支与盈利趋势',
       recharge: {
+        summaryTitle: '所选期间完成入账合计', summaryCount: '{count} 笔', summaryFailed: '合计加载失败，点击重试',
+        summaryHint: '按完成入账时间统计普通用户充值额度，退款不在此项扣减；随日期、渠道和邮箱变化，不受状态和分页影响。订单行时间为下单或兑换时间。',
+
         ordersTitle: '订单列表', ordersHint: '仅加载当前页，每页 25 条', timeRange: '订单时间范围',
         today: '今日', last7Days: '近七天', last30Days: '近30天', searchEmail: '搜索用户邮箱',
         status: '状态', channel: '充值渠道', all: '全部', paid: '已支付', unpaid: '未支付',

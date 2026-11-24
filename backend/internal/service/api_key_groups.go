@@ -154,7 +154,7 @@ func (s *APIKeyService) SelectRequestGroup(ctx context.Context, key *APIKey, mod
 	if key == nil || len(key.ConfiguredGroupIDs()) < 2 {
 		return key, nil
 	}
-	if s.groupRouter == nil || s.localAuth != nil {
+	if s.groupRouter == nil {
 		return nil, infraerrors.ServiceUnavailable("MULTI_GROUP_ROUTING_UNAVAILABLE", "Multi-group routing is unavailable on this gateway")
 	}
 	var candidates []apiKeyGroupCandidate

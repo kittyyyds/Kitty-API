@@ -50,6 +50,70 @@ func TestAPIKeyAuthRejectsOversizedCredentialsBeforeLookup(t *testing.T) {
 	require.Zero(t, calls.Load())
 }
 
+func TestAPIKeyAuthLookupFailureWhenClientGoneReturns499(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+
+	for _, tc := range []struct {
+		name   string
+		cancel bool
+		want   int
+	}{
+		{name: "client gone", cancel: true, want: statusClientClosedRequest},
+		{name: "server failure", cancel: false, want: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var cancel context.CancelFunc
+			repo := &stubApiKeyRepo{getByKey: func(lookupCtx context.Context, _ string) (*service.APIKey, error) {
+				if tc.cancel {
+					// 查库期间客户端断开：net/http 取消请求 ctx，驱动返回 context 错误。
+					cancel()
+					return nil, lookupCtx.Err()
+				}
+				return nil, errors.New("db unavailable")
+			}}
+			svc := service.NewAPIKeyService(repo, nil, nil, nil, nil, nil, cfg)
+
+			for _, mw := range []gin.HandlerFunc{
+				gin.HandlerFunc(NewAPIKeyAuthMiddleware(svc, nil, cfg)),
+				APIKeyAuthWithSubscriptionGoogle(svc, nil, cfg),
+			} {
+				var ctx context.Context
+				ctx, cancel = context.WithCancel(context.Background())
+				r := gin.New()
+				r.Use(mw)
+				r.GET("/t", func(c *gin.Context) { c.Status(http.StatusOK) })
+				w := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, "/t", nil).WithContext(ctx)
+				req.Header.Set("x-api-key", "sk-test-key")
+				req.Header.Set("x-goog-api-key", "sk-test-key")
+				r.ServeHTTP(w, req)
+				require.Equal(t, tc.want, w.Code)
+				cancel()
+			}
+		})
+	}
+}
+
+func TestAPIKeyAuthRejectsNonUTF8KeyAsInvalid(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &stubApiKeyRepo{getByKey: func(context.Context, string) (*service.APIKey, error) {
+		// Postgres 拒绝非 UTF-8 参数（SQLSTATE 22021），不应走到这里。
+		return nil, errors.New("invalid byte sequence for encoding UTF8")
+	}}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	svc := service.NewAPIKeyService(repo, nil, nil, nil, nil, nil, cfg)
+
+	r := gin.New()
+	r.Use(gin.HandlerFunc(NewAPIKeyAuthMiddleware(svc, nil, cfg)))
+	r.GET("/t", func(c *gin.Context) { c.Status(http.StatusOK) })
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/t", nil)
+	req.Header.Set("x-api-key", "sk-\xff\xfe")
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
 func TestSimpleModeBypassesQuotaCheck(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1283,83 +1347,6 @@ func TestAPIKeyAuthBillingInfoSkipsBillingAndSideEffects(t *testing.T) {
 	require.Zero(t, touchCalls)
 }
 
-func TestAPIKeyAuthVideoReadsSkipExhaustedBilling(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	tests := []struct {
-		name      string
-		path      string
-		balance   float64
-		keyStatus string
-		quota     float64
-		quotaUsed float64
-	}{
-		{
-			name:      "status remains readable with zero balance",
-			path:      "/v1/videos/request-1",
-			balance:   0,
-			keyStatus: service.StatusActive,
-		},
-		{
-			name:      "content remains readable with exhausted key quota",
-			path:      "/videos/request-1/content",
-			balance:   10,
-			keyStatus: service.StatusAPIKeyQuotaExhausted,
-			quota:     1,
-			quotaUsed: 1,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			user := &service.User{ID: 7, Role: service.RoleUser, Status: service.StatusActive, Balance: tt.balance}
-			apiKey := &service.APIKey{
-				ID: 100, UserID: user.ID, Key: "video-read-auth-only", Status: tt.keyStatus,
-				User: user, Quota: tt.quota, QuotaUsed: tt.quotaUsed,
-			}
-			apiKeyRepo := &stubApiKeyRepo{getByKey: func(context.Context, string) (*service.APIKey, error) {
-				clone := *apiKey
-				userClone := *user
-				clone.User = &userClone
-				return &clone, nil
-			}}
-			cfg := &config.Config{RunMode: config.RunModeStandard}
-			router := newAuthTestRouter(service.NewAPIKeyService(apiKeyRepo, nil, nil, nil, nil, nil, cfg), nil, cfg)
-
-			w := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
-			req.Header.Set("x-api-key", apiKey.Key)
-			router.ServeHTTP(w, req)
-
-			require.Equal(t, http.StatusOK, w.Code)
-		})
-	}
-}
-
-func TestIsVideoTaskRead(t *testing.T) {
-	tests := []struct {
-		method string
-		path   string
-		want   bool
-	}{
-		{method: http.MethodGet, path: "/v1/videos/request-1", want: true},
-		{method: http.MethodGet, path: "/v1/videos/request-1/content", want: true},
-		{method: http.MethodGet, path: "/videos/request-1", want: true},
-		{method: http.MethodGet, path: "/videos/request-1/content", want: true},
-		{method: http.MethodGet, path: "/openai/v1/videos/request-1/content", want: true},
-		{method: http.MethodPost, path: "/v1/videos/request-1", want: false},
-		{method: http.MethodGet, path: "/v1/videos/generations", want: false},
-		{method: http.MethodGet, path: "/v1/videos/request-1/other", want: false},
-		{method: http.MethodGet, path: "/v1/videos", want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
-			require.Equal(t, tt.want, isVideoTaskRead(tt.method, tt.path))
-		})
-	}
-}
-
 func TestAPIKeyAuthBillingInfoSkipsLastUsedInSimpleMode(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1501,7 +1488,7 @@ func TestAPIKeyAuthRejectsExhaustedBalance(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusForbidden, w.Code)
-	requireAPIKeyAuthError(t, w, "INSUFFICIENT_BALANCE", service.InsufficientUserBalanceMessage)
+	requireAPIKeyAuthError(t, w, "INSUFFICIENT_BALANCE", "Insufficient account balance")
 }
 
 func TestAPIKeyAuthOpenAIQuotaErrorFormat(t *testing.T) {
@@ -1587,11 +1574,6 @@ func newAuthTestRouter(apiKeyService *service.APIKeyService, subscriptionService
 	router.POST("/v1/messages", ok)
 	router.GET("/v1/usage", ok)
 	router.GET("/v1/sub2api/billing", ok)
-	router.POST("/v1/videos/generations", ok)
-	router.GET("/v1/videos/:request_id", ok)
-	router.GET("/v1/videos/:request_id/content", ok)
-	router.GET("/videos/:request_id", ok)
-	router.GET("/videos/:request_id/content", ok)
 	return router
 }
 

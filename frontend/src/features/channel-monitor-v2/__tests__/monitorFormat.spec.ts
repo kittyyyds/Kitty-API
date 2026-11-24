@@ -4,6 +4,9 @@ import {
   monitorCardPlatformOrder,
   formatLatencyPrivacy,
   formatMonitorMs,
+  formatMonitorCacheRate,
+  monitorCacheRate,
+  formatMonitorErrorRate,
   formatMonitorNumber,
   formatMonitorPercent,
   formatMonitorRate,
@@ -17,7 +20,7 @@ import {
   tokensPerSecondFromTpm,
   ttftDisplayState,
 } from '../monitorFormat'
-import type { MonitorHealth } from '@/api/channelMonitorV2'
+import type { MonitorHealth, MonitorMetric } from '@/api/channelMonitorV2'
 
 describe('monitorCardPlatformOrder', () => {
   it('keeps enabled snapshot platforms in saved order and skips disabled ones', () => {
@@ -90,6 +93,17 @@ describe('monitorFormat accuracy', () => {
     expect(formatMonitorSuccessRateFromError(0)).toBe('100.0%')
   })
 
+  it('suppresses success and error percentages when request samples are insufficient', () => {
+    for (const errorRate of [0, 0.5, 1]) {
+      expect(formatMonitorSuccessRateFromError(errorRate, 'unknown')).toBe('-')
+      expect(formatMonitorErrorRate(errorRate, 'unknown')).toBe('-')
+    }
+    expect(formatMonitorSuccessRateFromError(1, 'critical')).toBe('0.00%')
+    expect(formatMonitorErrorRate(1, 'critical')).toBe('100.0%')
+    expect(formatMonitorSuccessRateFromError(0, 'healthy')).toBe('100.0%')
+    expect(formatMonitorErrorRate(0, 'healthy')).toBe('0.00%')
+  })
+
   it('maps continuous scores to multi-stop bands', () => {
     expect(scoreToBand(100)).toBe('score10')
     expect(scoreToBand(95)).toBe('score10')
@@ -147,4 +161,13 @@ describe('monitorFormat accuracy', () => {
     expect(formatLatencyPrivacy(100, null, null, 300)).toBe('P50 100ms · P95 300ms')
     expect(formatLatencyPrivacy(null, null)).toBe('-')
   })
+})
+
+it('distinguishes no cache samples from zero hits, even after counters are redacted', () => {
+  const metric = { cache_rate: 0, cache_rate_denominator: 0, has_cache_samples: false } as MonitorMetric
+  expect(formatMonitorCacheRate(metric)).toBe('-')
+  expect(monitorCacheRate(metric)).toBeNull()
+  expect(formatMonitorCacheRate({ ...metric, has_cache_samples: true })).toBe('0.00%')
+  expect(formatMonitorCacheRate({ ...metric, has_cache_samples: true, cache_rate: 0.9 })).toBe('90.0%')
+  expect(formatMonitorCacheRate({ ...metric, has_cache_samples: undefined, cache_rate_denominator: 100 })).toBe('0.00%')
 })

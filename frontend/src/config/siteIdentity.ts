@@ -1,4 +1,4 @@
-export type KittySiteId = 'kittyapi' | 'kittyyyds'
+export type KittySiteId = 'kittyapi' | 'kittyyyds' | 'custom'
 
 export interface KittySiteIdentity {
   id: KittySiteId
@@ -9,6 +9,13 @@ export interface KittySiteIdentity {
 }
 
 const sites: Record<KittySiteId, KittySiteIdentity> = {
+  custom: {
+    id: 'custom',
+    primaryUrl: 'https://custom.kittyapi.xyz',
+    domesticUrl: 'https://custom.kittyapi.xyz',
+    assetPrefix: '/sites/kittyapi',
+    afterSalesGroupUrl: 'https://qm.qq.com/q/oRR8GUdEPK',
+  },
   kittyapi: {
     id: 'kittyapi',
     primaryUrl: 'https://kittyapi.xyz',
@@ -26,10 +33,14 @@ const sites: Record<KittySiteId, KittySiteIdentity> = {
   },
 }
 
-export function resolveKittySite(value?: string): KittySiteIdentity {
-  const id = value?.trim() || 'kittyyyds'
-  if (id !== 'kittyapi' && id !== 'kittyyyds') {
-    throw new Error(`Invalid VITE_KITTY_SITE "${id}"; expected kittyapi or kittyyyds`)
+export function resolveKittySite(value?: string, currentOrigin?: string): KittySiteIdentity {
+  const id = value?.trim() || 'custom'
+  if (id !== 'kittyapi' && id !== 'kittyyyds' && id !== 'custom') {
+    throw new Error(`Invalid VITE_KITTY_SITE "${id}"; expected custom, kittyapi or kittyyyds`)
+  }
+  if (id === 'custom' && currentOrigin && /^https?:\/\//.test(currentOrigin)) {
+    const origin = new URL(currentOrigin).origin
+    return { ...sites.custom, primaryUrl: origin, domesticUrl: origin }
   }
   return sites[id]
 }

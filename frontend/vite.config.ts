@@ -85,9 +85,9 @@ export default defineConfig(({ mode }) => {
   // 加载环境变量
   const env = loadEnv(mode, process.cwd(), '')
   // Fail at build startup if a deployment has a misspelled site selector.
-  const site = env.VITE_KITTY_SITE?.trim() || 'kittyyyds'
-  if (site !== 'kittyapi' && site !== 'kittyyyds') {
-    throw new Error(`Invalid VITE_KITTY_SITE "${site}"; expected kittyapi or kittyyyds`)
+  const site = env.VITE_KITTY_SITE?.trim() || 'custom'
+  if (site !== 'kittyapi' && site !== 'kittyyyds' && site !== 'custom') {
+    throw new Error(`Invalid VITE_KITTY_SITE "${site}"; expected custom, kittyapi or kittyyyds`)
   }
   const backendUrl = env.VITE_DEV_PROXY_TARGET || 'http://localhost:8080'
   const devPort = Number(env.VITE_DEV_PORT || 3000)
@@ -103,14 +103,10 @@ export default defineConfig(({ mode }) => {
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src'),
-      // 使用 vue-i18n 运行时版本，避免 CSP unsafe-eval 问题
+      // 使用 vue-i18n 运行时版本，避免 CSP unsafe-eval 问题；
+      // v10 起 JIT 编译恒开启，消息编译为 AST 对象而非 JS 代码，无需 unsafe-eval
       'vue-i18n': 'vue-i18n/dist/vue-i18n.runtime.esm-bundler.js'
     }
-  },
-  define: {
-    // 启用 vue-i18n JIT 编译，在 CSP 环境下处理消息插值
-    // JIT 编译器生成 AST 对象而非 JS 代码，无需 unsafe-eval
-    __INTLIFY_JIT_COMPILATION__: true
   },
   build: {
     outDir: '../backend/internal/web/dist',

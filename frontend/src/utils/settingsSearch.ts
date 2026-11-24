@@ -1,6 +1,6 @@
 import type { SearchNavItem } from '@/utils/featureSearch'
 
-export const SETTINGS_TABS = ['general', 'agreement', 'features', 'security', 'users', 'gateway', 'payment', 'email', 'backup'] as const
+export const SETTINGS_TABS = ['general', 'gptDirect', 'openai-vm', 'guide', 'agreement', 'features', 'security', 'users', 'gateway', 'payment', 'email', 'backup'] as const
 export type SettingsTab = typeof SETTINGS_TABS[number]
 
 interface SettingsSection {
@@ -14,6 +14,7 @@ interface SettingsSection {
 // Match the headings and stable anchors in SettingsView. These are settings
 // entry points, including switches for features whose business pages are hidden.
 export const SETTINGS_SECTIONS: SettingsSection[] = [
+  { tab: 'guide', id: 'guide', titleKey: 'admin.settings.guideEditor.title' },
   { tab: 'security', id: 'admin-api-key', titleKey: 'admin.settings.adminApiKey.title' },
   { tab: 'gateway', id: 'overload-cooldown', titleKey: 'admin.settings.overloadCooldown.title' },
   { tab: 'gateway', id: 'rate-limit429cooldown', titleKey: 'admin.settings.rateLimit429Cooldown.title' },
@@ -45,15 +46,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { tab: 'general', id: 'site', titleKey: 'admin.settings.site.title' },
   { tab: 'general', id: 'custom-menu', titleKey: 'admin.settings.customMenu.title' },
   { tab: 'agreement', id: 'login-agreement', title: ['登录条款确认', 'Login agreement'] },
-  { tab: 'features', id: 'request-capture', titleKey: 'admin.requestCapture.title' },
+  { tab: 'features', id: 'features-channel-quality-public', titleKey: 'admin.settings.features.channelQualityPublic.title' },
   { tab: 'features', id: 'features-channel-monitor', titleKey: 'admin.settings.features.channelMonitor.title' },
   { tab: 'features', id: 'features-available-channels', titleKey: 'admin.settings.features.availableChannels.title' },
-  { tab: 'features', id: 'features-pelican-showcase', titleKey: 'admin.settings.features.pelicanShowcase.title' },
   { tab: 'features', id: 'features-model-plaza', titleKey: 'admin.settings.features.modelPlaza.title' },
   { tab: 'features', id: 'features-site-billing-mode', titleKey: 'admin.settings.features.siteBillingMode.title' },
   { tab: 'features', id: 'features-plugin-management', titleKey: 'admin.settings.features.pluginManagement.title' },
-  { tab: 'features', id: 'features-support-tickets', titleKey: 'admin.settings.features.supportTickets.title', keywordKeys: ['enabled', 'categories', 'maxOpen', 'notice'].map(key => `admin.settings.features.supportTickets.${key}`) },
   { tab: 'features', id: 'features-risk-control', titleKey: 'admin.settings.features.riskControl.title', keywordKeys: ['enabled', 'cyberSessionBlock', 'cyberSessionBlockTTL', 'cyberSessionIdentityStrict'].map(key => `admin.settings.features.riskControl.${key}`) },
+  { tab: 'features', id: 'features-support-tickets', titleKey: 'admin.settings.features.supportTickets.title', keywordKeys: ['enabled', 'categories', 'maxOpen', 'notice'].map(key => `admin.settings.features.supportTickets.${key}`) },
   { tab: 'features', id: 'features-affiliate', titleKey: 'admin.settings.features.affiliate.title' },
   { tab: 'payment', id: 'payment', titleKey: 'admin.settings.payment.title' },
   { tab: 'email', id: 'smtp', titleKey: 'admin.settings.smtp.title' },

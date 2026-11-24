@@ -23,6 +23,10 @@ var (
 	ErrTotpTooManyAttempts = infraerrors.TooManyRequests("TOTP_TOO_MANY_ATTEMPTS", "too many verification attempts, please try again later")
 	ErrVerifyCodeRequired  = infraerrors.BadRequest("VERIFY_CODE_REQUIRED", "email verification code is required")
 	ErrPasswordRequired    = infraerrors.BadRequest("PASSWORD_REQUIRED", "password is required")
+
+	// ErrTotpLoginSessionExpired: the temp_token issued by password login for the
+	// 2FA step is unknown or has expired; the user must log in again.
+	ErrTotpLoginSessionExpired = infraerrors.BadRequest("TOTP_LOGIN_SESSION_EXPIRED", "Invalid or expired 2FA session")
 )
 
 // TotpCache defines cache operations for TOTP service
@@ -146,7 +150,7 @@ func (s *TotpService) GetStatus(ctx context.Context, userID int64) (*TotpStatus,
 // 且管理员凭证失守时攻击者往往同时控制通知邮箱，邮箱验证码不构成有效防线。
 // 普通用户维持原有行为：开启邮箱验证时用邮箱验证码，否则用密码。
 func (s *TotpService) usesEmailVerification(ctx context.Context, user *User) bool {
-	return !user.IsAdmin() && s.settingService.IsEmailVerifyEnabled(ctx)
+	return user.Role != RoleAdmin && s.settingService.IsEmailVerifyEnabled(ctx)
 }
 
 // verifyIdentity 按 usesEmailVerification 的结果校验邮箱验证码或密码。

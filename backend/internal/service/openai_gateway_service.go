@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"log/slog"
 	"math/rand"
 	"net/http"
@@ -17,7 +16,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -39,7 +37,7 @@ const (
 	// {originator}/{version} ({OS} {OS_version}; {arch}) {terminal}
 	// 缺少 OS/架构/终端后缀的形态易被上游指纹识别为非官方客户端。
 	// 该后缀是 UA 形态的唯一定义处，buildCodexCLIUserAgent 按运行时版本号复用它。
-	codexCLIUserAgentSuffix = " (Ubuntu 22.4.0; x86_64) xterm-256color"
+	codexCLIUserAgentSuffix = " (Ubuntu 26.4.0; x86_64) xterm-256color"
 	// codexCLIUserAgent 是编译期兜底 UA；运行时优先使用由后台版本号拼出的规范 UA。
 	// 版本段必须来自 codexCLIVersion：UA 与 version 头是同一个版本声明的两个出口，
 	// 各自硬编码会漂移成互相矛盾的身份。
@@ -63,7 +61,7 @@ const (
 	// 陈旧版本可能被优先丢弃（HTTP 200 + 流内 server_is_overloaded）；非官方客户端配不出
 	// 官方身份时整体回退到本常量，因此它必须跟随官方 CLI 的当前发布版本，
 	// 落后多个版本会让这些请求稳定落在被优先丢弃的一侧。
-	codexCLIVersion = "0.146.0"
+	codexCLIVersion = "0.166.0"
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
 	// 配额自动暂停时，超过该时长仍未刷新的 used% 快照视为陈旧，不再据此暂停账号。
@@ -74,38 +72,42 @@ const (
 
 // OpenAI allowed headers whitelist (for non-passthrough).
 var openaiAllowedHeaders = map[string]bool{
-	"accept-language":         true,
-	"content-type":            true,
-	"conversation_id":         true,
-	"openai-beta":             true,
-	"user-agent":              true,
-	"originator":              true,
-	"session_id":              true,
-	"x-codex-beta-features":   true,
-	"x-codex-installation-id": true,
-	"x-codex-turn-state":      true,
-	"x-codex-turn-metadata":   true,
-	"x-codex-window-id":       true,
-	responsesLiteHeaderKey:    true,
+	"accept-language":          true,
+	"content-type":             true,
+	"conversation_id":          true,
+	"openai-beta":              true,
+	"user-agent":               true,
+	"originator":               true,
+	"session_id":               true,
+	"x-codex-beta-features":    true,
+	"x-codex-installation-id":  true,
+	"x-codex-turn-state":       true,
+	"x-codex-turn-metadata":    true,
+	"x-codex-window-id":        true,
+	"x-codex-parent-thread-id": true,
+	"x-openai-subagent":        true,
+	responsesLiteHeaderKey:     true,
 }
 
 // OpenAI passthrough allowed headers whitelist.
 // 透传模式下仅放行这些低风险请求头，避免将非标准/环境噪声头传给上游触发风控。
 var openaiPassthroughAllowedHeaders = map[string]bool{
-	"accept":                  true,
-	"accept-language":         true,
-	"content-type":            true,
-	"conversation_id":         true,
-	"openai-beta":             true,
-	"user-agent":              true,
-	"originator":              true,
-	"session_id":              true,
-	"x-codex-beta-features":   true,
-	"x-codex-installation-id": true,
-	"x-codex-turn-state":      true,
-	"x-codex-turn-metadata":   true,
-	"x-codex-window-id":       true,
-	responsesLiteHeaderKey:    true,
+	"accept":                   true,
+	"accept-language":          true,
+	"content-type":             true,
+	"conversation_id":          true,
+	"openai-beta":              true,
+	"user-agent":               true,
+	"originator":               true,
+	"session_id":               true,
+	"x-codex-beta-features":    true,
+	"x-codex-installation-id":  true,
+	"x-codex-turn-state":       true,
+	"x-codex-turn-metadata":    true,
+	"x-codex-window-id":        true,
+	"x-codex-parent-thread-id": true,
+	"x-openai-subagent":        true,
+	responsesLiteHeaderKey:     true,
 }
 
 // codex_cli_only 拒绝时记录的请求头白名单（仅用于诊断日志，不参与上游透传）
@@ -224,33 +226,39 @@ func (s *OpenAICodexUsageSnapshot) Normalize() *NormalizedCodexLimits {
 
 // OpenAIUsage represents OpenAI API response usage
 type OpenAIUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	ImageInputTokens         int `json:"image_input_tokens,omitempty"`
-	ImageCacheReadTokens     int `json:"image_cache_read_tokens,omitempty"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
-	ImageOutputTokens        int `json:"image_output_tokens,omitempty"`
+	CacheReadKnown              bool `json:"-"`
+	cacheReadMediaObserved      bool
+	CacheUsageReported          bool `json:"-"`
+	InputTokens                 int  `json:"input_tokens"`
+	ImageInputTokens            int  `json:"image_input_tokens,omitempty"`
+	ImageCacheReadTokens        int  `json:"image_cache_read_tokens,omitempty"`
+	OutputTokens                int  `json:"output_tokens"`
+	CacheCreationInputTokens    int  `json:"cache_creation_input_tokens,omitempty"`
+	CacheCreation30mInputTokens int  `json:"cache_creation_30m_input_tokens,omitempty"`
+	CacheCreation12hInputTokens int  `json:"cache_creation_12h_input_tokens,omitempty"`
+	CacheReadInputTokens        int  `json:"cache_read_input_tokens,omitempty"`
+	ImageOutputTokens           int  `json:"image_output_tokens,omitempty"`
 }
 
 // OpenAIForwardResult represents the result of forwarding
 type OpenAIForwardResult struct {
-	AuthConnectionID string
-	// RegionalMetered prevents the legacy asynchronous path from double charging.
-	RegionalMetered bool
-	RequestID       string
-	ResponseID      string
+	ImageOutputObservations []ImageOutputObservation
+	ImageOutputUnprocessed  bool
+	VideoLegacyPricing      bool
+
+	UsageAudit           *UsageAudit
+	UsageUnavailable     bool
+	SuanliImageUnitPrice *float64
+	SuanliImageTaskID    string
+	VideoProvider        string
+	VideoPriceSnapshot   *VideoPriceSnapshot
+	MiniMaxH3BaseCost    *float64
+	RequestID            string
+	ResponseID           string
 	// UpstreamHeaders 是直接上游的响应头，用于按账户配置解析上游请求标识。
 	UpstreamHeaders http.Header
 	Usage           OpenAIUsage
-	UsageAudit      *UsageAudit
-	// UsageUnavailable prevents a protocol without upstream usage from being
-	// recorded or billed as if it reported an authoritative zero-token result.
-	UsageUnavailable bool
-	// ObservedUsageOnError permits settlement of authoritative usage on a strict
-	// smart session error, without interpreting absent output as non-execution.
-	ObservedUsageOnError bool
-	Model                string // 原始模型（用于响应和日志显示）
+	Model           string // 原始模型（用于响应和日志显示）
 	// BillingModel is the model used for cost calculation.
 	// When non-empty, CalculateCost uses this instead of Model.
 	// This is set by the Anthropic Messages conversion path where
@@ -270,8 +278,7 @@ type OpenAIForwardResult struct {
 	// It avoids guessing when one downstream protocol can use multiple upstream endpoints.
 	UpstreamEndpoint string
 	// ServiceTier is the final tier sent upstream after policy rewriting.
-	// The upstream response declaration remains separate above and is reconciled
-	// at usage-recording time, where the credential protocol is available.
+	// Every tier is billed as requested; the response declaration is diagnostic only.
 	ServiceTier *string
 	// ReasoningEffort is extracted from request body (reasoning.effort) or derived from model suffix
 	// after group policy rewriting and model-family remapping.
@@ -282,51 +289,27 @@ type OpenAIForwardResult struct {
 	RequestedReasoningEffort *string
 	Stream                   bool
 	OpenAIWSMode             bool
-	UpstreamProtocol         string
-	ProtocolDecisionReason   string
-	FirstUpstreamEventMs     *int
-	FirstActualContentMs     *int
-	FirstActualContentKind   string
 	// UpstreamTerminalEvent is the normalized terminal event observed on an
 	// upstream Responses WebSocket turn. Empty preserves legacy/non-WS success.
 	UpstreamTerminalEvent string
 	ResponseHeaders       http.Header
 	Duration              time.Duration
 	FirstTokenMs          *int
-	// QueueWait records pre-forward elapsed time. Legacy timers have protocol-specific
-	// overlap; consumers use QueueTiming instead of blindly adding it.
-	QueueWait time.Duration
-	// QueueWaitMeasured distinguishes a measured zero wait from a path without
-	// an ingress clock (historical/other endpoints), so usage rows can record
-	// 0 for new non-queued requests and NULL for unknown.
-	QueueTiming       *QueueTiming
-	QueueWaitMeasured bool
-	// HeaderTimeoutRetries counts submitted attempts that timed out waiting for
-	// response headers before the successful attempt. Kitty retains this for
-	// diagnostics only; retries never multiply the customer charge.
-	HeaderTimeoutRetries int
-	ClientDisconnect     bool
-	ImageCount           int
+	ClientDisconnect      bool
+	ImageCount            int
 	// ImageEndpoint 标记请求来自专用图片端点；分组 image_count_billing 开关
 	// 只对这类请求生效，混合 Responses/Chat/WS 请求仍按 token 计费。
-	ImageEndpoint        bool
-	ImageSize            string
-	ImageInputSize       string
-	ImageOutputSize      string
-	ImageOutputSizes     []string
-	ImageSizeSource      string
-	ImageSizeBreakdown   map[string]int
-	VideoCount           int
-	VideoResolution      string
-	SuanliImageUnitPrice *float64
-	SuanliImageTaskID    string
-	VideoProvider        string
-	VideoPriceSnapshot   *VideoPriceSnapshot
-	VideoLegacyPricing   bool // authenticated pre-migration task with a legacy pending record
+	ImageEndpoint      bool
+	ImageSize          string
+	ImageInputSize     string
+	ImageOutputSize    string
+	ImageOutputSizes   []string
+	ImageSizeSource    string
+	ImageSizeBreakdown map[string]int
+	VideoCount         int
+	VideoResolution    string
 	// VideoDurationSeconds 是提交时请求的生成时长（xAI 按输出秒数计费），已归一化到 1-15 秒。
 	VideoDurationSeconds int
-	// MiniMaxH3BaseCost is a server-only create-time tariff snapshot in USD.
-	MiniMaxH3BaseCost *float64
 	// WebSearchCalls 是 Codex alpha/search 网页搜索调用次数（每次成功请求为 1）。
 	// 上游不返回 usage 字段，>0 时走按次计费（分组单价 × 次数 × 倍率）。
 	WebSearchCalls int
@@ -335,41 +318,29 @@ type OpenAIForwardResult struct {
 	// AudioUsage carries Voice billing units when present.
 	AudioUsage *AudioUsage
 
+	// Internal model rounds retain their own pricing context. Summed prompt
+	// tokens must not turn several short rounds into one long-context request.
+	hostedSearchRounds           []*OpenAIForwardResult
+	hostedSearchRoundCosts       []*CostBreakdown
 	wsReplayInput                []json.RawMessage
 	wsReplayInputExists          bool
+	wsReplayInputComplete        bool
 	wsAccountFailoverReplayInput []json.RawMessage
-	// Local stream-read timeout is not an observed upstream terminal event.
-	// Keep observed partial usage without reporting a successful generation.
-	streamReadIncomplete bool
+	upstreamFailed               bool
+	streamReadIncomplete         bool
 }
 
-const maxOpenAIQueueWait = time.Hour
-
-// openAIQueueWait returns the wait between request arrival and the start of the
-// upstream forward attempt, plus whether an ingress clock was actually present.
-// The logger middleware stores request arrival in ctxkey.RequestStartTime;
-// callers that do not have it (tests, internal jobs) report unmeasured rather
-// than guessing a zero.
-func openAIQueueWait(ctx context.Context, forwardStart time.Time) (time.Duration, bool) {
-	if ctx == nil || forwardStart.IsZero() {
-		return 0, false
-	}
-	requestStart, ok := ctx.Value(ctxkey.RequestStartTime).(time.Time)
-	if !ok || requestStart.IsZero() || forwardStart.Before(requestStart) {
-		return 0, false
-	}
-	wait := forwardStart.Sub(requestStart)
-	if wait > maxOpenAIQueueWait {
-		wait = maxOpenAIQueueWait
-	}
-	return wait, true
+// HasHostedSearchRounds reports whether the result carries billed hosted
+// web_search rounds whose usage must not be dropped on worker-pool overflow.
+func (r *OpenAIForwardResult) HasHostedSearchRounds() bool {
+	return r != nil && len(r.hostedSearchRounds) > 0
 }
 
 // SucceededForScheduling reports whether this result is an upstream success
 // that may clear model-scoped transient state. The zero value remains a success
 // for existing non-WS callers.
 func (r *OpenAIForwardResult) SucceededForScheduling() bool {
-	if r != nil && r.streamReadIncomplete {
+	if r != nil && (r.upstreamFailed || r.streamReadIncomplete) {
 		return false
 	}
 	if r == nil || !r.OpenAIWSMode || r.UpstreamTerminalEvent == "" {
@@ -467,19 +438,12 @@ type accountWriteThrottle struct {
 	minInterval time.Duration
 	mu          sync.Mutex
 	lastByID    map[int64]time.Time
-	pending     map[codexWriteKey]*codexPendingWrite
-	ctx         context.Context
-	cancel      context.CancelFunc
-	workers     sync.WaitGroup
-	closed      bool
 }
 
 func newAccountWriteThrottle(minInterval time.Duration) *accountWriteThrottle {
-	ctx, cancel := context.WithCancel(context.Background())
 	return &accountWriteThrottle{
 		minInterval: minInterval,
 		lastByID:    make(map[int64]time.Time),
-		ctx:         ctx, cancel: cancel,
 	}
 }
 
@@ -516,25 +480,15 @@ var ErrNoAvailableCompactAccounts = errors.New("no available accounts support /r
 
 // OpenAIGatewayService handles OpenAI API gateway operations
 type OpenAIGatewayService struct {
-	smartProtocolHistory  openAISmartProtocolHistory
-	requestTimezoneEgress openAIRequestTimezoneEgress
-	requestTimezoneProber ProxyExitInfoProber
-	proxyTimezone         *proxyTimezoneResolver
-	videoTaskWorkerMu     sync.Mutex
-	videoTaskWorkerCancel context.CancelFunc
-	videoTaskWorkerDone   chan struct{}
-
-	stopAstraSetup        func()
-	codexWSAnchors        codexWSAnchorStore
-	priorityScheduling    prioritySchedulingState
-	accountRepo           AccountRepository
+	userCacheDiagnostic   openAICacheDiagnosticStore
+	openaiIPv6            *OpenAIIPv6Service
 	proxyRepo             ProxyRepository
+	accountRepo           AccountRepository
 	usageLogRepo          UsageLogRepository
 	usageBillingRepo      UsageBillingRepository
 	userRepo              UserRepository
 	userSubRepo           UserSubscriptionRepository
 	cache                 GatewayCache
-	rpmCache              RPMCache
 	cfg                   *config.Config
 	codexDetector         CodexClientRestrictionDetector
 	schedulerSnapshot     *SchedulerSnapshotService
@@ -544,11 +498,9 @@ type OpenAIGatewayService struct {
 	billingCacheService   *BillingCacheService
 	userGroupRateResolver *userGroupRateResolver
 	httpUpstream          HTTPUpstream
-	pluginManager         *PluginManager
-	safetyPromptStore     *SafetyPromptStore
+	openaiVM              *OpenAIVMService
 	deferredService       *DeferredService
 	openAITokenProvider   *OpenAITokenProvider
-	openAIOAuthReauth     *OpenAIOAuthReauthService
 	grokTokenProvider     *GrokTokenProvider
 	toolCorrector         *CodexToolCorrector
 	openaiWSResolver      OpenAIWSProtocolResolver
@@ -556,20 +508,28 @@ type OpenAIGatewayService struct {
 	channelService        *ChannelService
 	balanceNotifyService  *BalanceNotifyService
 	settingService        *SettingService
+	// safetyPromptStore is attached by ProvideOpenAIGatewayService; nil leaves the safety-prompt module inert.
+	safetyPromptStore     *SafetyPromptStore
 	userPlatformQuotaRepo UserPlatformQuotaRepository
 	liveAttestation       liveattestation.Provider
 	liveAttestationCipher SecretEncryptor
+	// nativeReplayRuntime restores native Responses state for Chat Completions
+	// clients (native_reasoning_*.go). nil keeps the plain compat conversion.
+	nativeReplayRuntime   *nativeReasoningRuntime
+	videoTaskWorkerMu     sync.Mutex
+	videoTaskWorkerCancel context.CancelFunc
+	videoTaskWorkerDone   chan struct{}
 
 	openaiWSPoolOnce               sync.Once
+	openaiWSEdgeBackoffOnce        sync.Once
 	openaiWSStateStoreOnce         sync.Once
-	openaiWSNodeOwnerOnce          sync.Once
-	openaiWSNodeOwnerToken         string
 	openaiSchedulerOnce            sync.Once
 	openaiProxyStreamCircuitOnce   sync.Once
 	openaiWSPassthroughDialerOnce  sync.Once
 	openaiModelTransientOnce       sync.Once
 	agentIdentityTaskMu            sync.Mutex
 	openaiWSPool                   *openAIWSConnPool
+	openaiWSEdgeBackoff            *openAIWSEdgeBackoff
 	openaiWSStateStore             OpenAIWSStateStore
 	openaiScheduler                OpenAIAccountScheduler
 	openaiWSPassthroughDialer      openAIWSClientDialer
@@ -588,42 +548,37 @@ type OpenAIGatewayService struct {
 	grokCredentialMutationLocks         sync.Map // key: int64(accountID), value: *sync.Mutex
 	openaiOAuth429WindowStartUnixNano   atomic.Int64
 	openaiOAuth429WindowCount           atomic.Int64
-	openAITurnAdmissionCache            openAITurnAdmissionLocalCache
 	openaiWSRetryMetrics                openAIWSRetryMetrics
 	responseHeaderFilter                *responseheaders.CompiledHeaderFilter
 	codexSnapshotThrottle               *accountWriteThrottle
-	codexSnapshotMu                     sync.Mutex
-	codexSnapshotClosed                 bool
 	openAIModelsCache                   openAIModelsCache
-	openaiCompatSessionResponses        sync.Map
-	openaiCompatAnthropicDigestSessions sync.Map
+	openaiCompatSessionResponses        sessionMemoryCache
+	openaiCompatAnthropicDigestSessions sessionMemoryCache
 	// openaiCodexTurnStateOrigins: 下游会话 seed → openAICodexTurnStateOrigin，
 	// 记录最近一次向该会话下发 x-codex-turn-state 的铸造账号，供出站守卫
 	// 剥离跨账号回带（openai_codex_turn_state.go）。
 	openaiCodexTurnStateOrigins sync.Map
 	openaiCodexTurnStateWrites  atomic.Uint64
 
-	requireLatestTurnAdmission bool
-	regionalMetering           *RegionalMetering
-}
-
-type OpenAIGatewayOption func(*OpenAIGatewayService)
-
-// WithOpenAIRPMCache enables strict RPM accounting for OpenAI OAuth accounts.
-func WithOpenAIRPMCache(cache RPMCache) OpenAIGatewayOption {
-	return func(s *OpenAIGatewayService) { s.rpmCache = cache }
-}
-
-// WithOpenAIAuthConnections supplies the durable grant service to standalone
-// gateway embedders. Application Wire supplies it after resolving the cycle.
-func WithOpenAIAuthConnections(connections *OpenAIOAuthReauthService) OpenAIGatewayOption {
-	return func(s *OpenAIGatewayService) { s.openAIOAuthReauth = connections }
+	// openaiTiboRoutes: accountID → *openAITiboAccountState (openai_tibo_route.go).
+	openaiTiboRoutes       sync.Map
+	openaiTiboProbeSem     chan struct{}
+	openaiTiboProbeSemOnce sync.Once
+	// openaiTiboProbeWG tracks background Tibo probes (tests wait on it).
+	openaiTiboProbeWG     sync.WaitGroup
+	openaiTiboLoaded      atomic.Bool
+	openaiTiboEnrolledAt  atomic.Int64
+	openaiTiboStats       openAITiboStats
+	openaiTiboMismatchLog sync.Map
+	// Tibo probe loop lifecycle (openai_tibo_probe_loop.go).
+	openaiTiboLoopMu     sync.Mutex
+	openaiTiboLoopCancel context.CancelFunc
+	openaiTiboLoopDone   chan struct{}
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
 func NewOpenAIGatewayService(
 	accountRepo AccountRepository,
-	proxyRepo ProxyRepository,
 	usageLogRepo UsageLogRepository,
 	usageBillingRepo UsageBillingRepository,
 	userRepo UserRepository,
@@ -645,16 +600,15 @@ func NewOpenAIGatewayService(
 	balanceNotifyService *BalanceNotifyService,
 	settingService *SettingService,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
-	options ...OpenAIGatewayOption,
 ) *OpenAIGatewayService {
 	// enforceCodexIdentityHeaders 是 HTTP / 透传 / WS / 探针 等出站路径共用的纯函数收口点，
 	// 拿不到配置，故在此发布进程级开关快照。配置取反义，零值即「强制统一出口开启」。
 	if cfg != nil {
 		SetCodexIdentityEnforcementEnabled(!cfg.Gateway.DisableCodexIdentityEnforcement)
+		SetOpenAICreditsGuardEnabled(!cfg.Gateway.OpenAICreditsGuardDisabled)
 	}
 	svc := &OpenAIGatewayService{
 		accountRepo:         accountRepo,
-		proxyRepo:           proxyRepo,
 		usageLogRepo:        usageLogRepo,
 		usageBillingRepo:    usageBillingRepo,
 		userRepo:            userRepo,
@@ -690,17 +644,14 @@ func NewOpenAIGatewayService(
 		responseHeaderFilter:  compileResponseHeaderFilter(cfg),
 		codexSnapshotThrottle: newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval),
 		openaiModelTransient:  newOpenAIAccountModelTransientState(openAIModelTransientDefaultMax),
-
-		requireLatestTurnAdmission: true,
 	}
 	if rateLimitService != nil {
 		rateLimitService.SetAccountRuntimeBlocker(svc)
+		rateLimitService.SetOpenAICodexProbeSender(svc)
 	}
+	svc.initNativeReasoningReplay()
 	if openAITokenProvider != nil {
 		openAITokenProvider.SetAccountRuntimeBlocker(svc)
-	}
-	for _, option := range options {
-		option(svc)
 	}
 	svc.logOpenAIWSModeBootstrap()
 	return svc
@@ -712,6 +663,24 @@ func (s *OpenAIGatewayService) ResolveChannelMapping(ctx context.Context, groupI
 		return ChannelMappingResult{MappedModel: model}
 	}
 	return s.channelService.ResolveChannelMapping(ctx, groupID, model)
+}
+
+// GetActiveSubscriptionForGroup loads the user's active subscription for the
+// effective routed group. It is intentionally a small gateway-service method
+// so asynchronous handlers can rehydrate the subscription after an API-key
+// fallback route has been restored.
+func (s *OpenAIGatewayService) GetActiveSubscriptionForGroup(
+	ctx context.Context,
+	userID, groupID int64,
+) (*UserSubscription, error) {
+	if s == nil || s.userSubRepo == nil || userID <= 0 || groupID <= 0 {
+		return nil, ErrSubscriptionInvalid
+	}
+	subscription, err := s.userSubRepo.GetActiveByUserIDAndGroupID(ctx, userID, groupID)
+	if err != nil || subscription == nil || subscription.GroupID != groupID {
+		return nil, ErrSubscriptionInvalid
+	}
+	return subscription, nil
 }
 
 // IsModelRestricted 检查模型是否被渠道限制（代理到 ChannelService）
@@ -737,9 +706,6 @@ func (s *OpenAIGatewayService) ResolveChannelMappingAndRestrict(ctx context.Cont
 // 因此非 OpenAI 平台账号一律不桥接，后续再按账号 → 渠道 → 全局的优先级取开关。
 func (s *OpenAIGatewayService) isCodexImageGenerationBridgeEnabled(ctx context.Context, account *Account, apiKey *APIKey) bool {
 	if account == nil || account.Platform != PlatformOpenAI {
-		return false
-	}
-	if openAIImageRequestRejection(WithOpenAIImageGenerationIntent(ctx), account, "gpt-image-2") != "" {
 		return false
 	}
 	if override := account.CodexImageGenerationBridgeOverride(); override != nil {
@@ -804,18 +770,10 @@ func (s *OpenAIGatewayService) ReplaceModelInBody(body []byte, newModel string) 
 }
 
 func (s *OpenAIGatewayService) getCodexSnapshotThrottle() *accountWriteThrottle {
-	if s == nil {
-		return defaultOpenAICodexSnapshotPersistThrottle
+	if s != nil && s.codexSnapshotThrottle != nil {
+		return s.codexSnapshotThrottle
 	}
-	s.codexSnapshotMu.Lock()
-	defer s.codexSnapshotMu.Unlock()
-	if s.codexSnapshotThrottle == nil {
-		s.codexSnapshotThrottle = newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval)
-		if s.codexSnapshotClosed {
-			s.codexSnapshotThrottle.close()
-		}
-	}
-	return s.codexSnapshotThrottle
+	return defaultOpenAICodexSnapshotPersistThrottle
 }
 
 func (s *OpenAIGatewayService) billingDeps() *billingDeps {
@@ -830,26 +788,15 @@ func (s *OpenAIGatewayService) billingDeps() *billingDeps {
 	}
 }
 
-// CloseOpenAIWSPool 关闭 OpenAI WebSocket 连接池的后台 worker 和空闲连接。
+// CloseOpenAIWSPool 关闭 OpenAI WebSocket 连接池、后台 worker 和会话缓存清理 timer。
 // 应在应用优雅关闭时调用。
 func (s *OpenAIGatewayService) CloseOpenAIWSPool() {
-	if s != nil {
-		s.StopVideoTaskWorker()
-		s.codexSnapshotMu.Lock()
-		s.codexSnapshotClosed = true
-		throttle := s.codexSnapshotThrottle
-		s.codexSnapshotMu.Unlock()
-		if throttle != nil {
-			throttle.close()
-		}
+	if s == nil {
+		return
 	}
-	if s != nil && s.regionalMetering != nil && s.regionalMetering.Stop != nil {
-		s.regionalMetering.Stop()
-	}
-	if s != nil && s.stopAstraSetup != nil {
-		s.stopAstraSetup()
-	}
-	if s != nil && s.openaiWSPool != nil {
+	s.openaiCompatSessionResponses.Close()
+	s.openaiCompatAnthropicDigestSessions.Close()
+	if s.openaiWSPool != nil {
 		s.openaiWSPool.Close()
 	}
 }
@@ -928,6 +875,7 @@ func classifyOpenAIWSReconnectReason(err error) (string, bool) {
 		"upgrade_required",
 		"ws_unsupported",
 		"auth_failed",
+		openAIWSEdgeBackoffReason,
 		"invalid_encrypted_content",
 		"previous_response_not_found":
 		return reason, false
@@ -1353,36 +1301,26 @@ func hashSensitiveValueForLog(raw string) string {
 
 // GetAccessToken gets the access token for an OpenAI account
 func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Account) (string, string, error) {
-	if account != nil && account.IsVideo() && account.Type != AccountTypeAPIKey {
-		return "", "", errors.New("video accounts require API key authentication")
-	}
-	defer requesttiming.Observe(ctx, "upstream_credentials")()
-	if err := validateOpenAIConnectionKind(account); err != nil {
-		return "", "", err
-	}
-	if s.openAIOAuthReauth != nil {
-		if err := s.openAIOAuthReauth.validateAuthConnectionPolicy(ctx, account); err != nil {
+	if s.openaiVM != nil && account.IsOpenAIOAuth() {
+		bound, err := s.openaiVM.RouteBound(ctx, account)
+		if err != nil {
 			return "", "", err
 		}
-	}
-	if account != nil && account.AuthConnectionID != "" {
-		if s.openAIOAuthReauth == nil {
-			return "", "", errors.New("authorization connection service unavailable")
+		// Keep the original shadow identity until the credential resolver below
+		// has validated its parent, including the Excel-only credential boundary.
+		if bound && !account.IsShadow() {
+			current, err := s.accountRepo.GetByID(ctx, openAIVMOwnerID(account))
+			if err != nil {
+				return "", "", err
+			}
+			account = current
 		}
-		token, err := s.openAIOAuthReauth.ConnectionAccessToken(ctx, account.ID, account.AuthConnectionID)
-		kind := account.GetExtraString("openai_connection_kind")
-		if kind == "siwc" {
-			return token, "siwc", err
-		}
-		if kind == "api_key" {
-			return token, "apikey", err
-		}
-		return token, "oauth", err
 	}
-	if account.HasManagedOpenAIConnections() {
-		return "", "", errors.New("select a capable authorization connection before requesting credentials")
+	// The runtime holds a VM2-managed account's credential. Callers get an empty
+	// token and send through the bridge, which authenticates with its own secret.
+	if account.IsOpenAIVMManaged() {
+		return "", OpenAIAuthModeVMManaged, nil
 	}
-	selectedSIWC := account.IsSIWCEnabled()
 	if account.IsShadow() {
 		credAccount, err := resolveCredentialAccount(ctx, s.accountRepo, account)
 		if err != nil {
@@ -1390,16 +1328,8 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 		}
 		account = credAccount
 	}
-	if selectedSIWC {
-		if s.openAIOAuthReauth == nil {
-			return "", "", errors.New("SIWC credential service is unavailable")
-		}
-		var cache OpenAITokenCache
-		if s.openAITokenProvider != nil {
-			cache = s.openAITokenProvider.tokenCache
-		}
-		token, err := s.openAIOAuthReauth.SIWCAccessToken(ctx, account, cache)
-		return token, "siwc", err
+	if account.IsVideo() && account.Type != AccountTypeAPIKey {
+		return "", "", errors.New("video accounts require API key authentication")
 	}
 	switch account.Type {
 	case AccountTypeOAuth:
@@ -1446,7 +1376,7 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 		}
 		return accessToken, "oauth", nil
 	case AccountTypeAPIKey:
-		if account.Platform == PlatformGrok || account.Platform == PlatformVideo {
+		if account.IsGrokMediaAccount() {
 			apiKey := strings.TrimSpace(account.GetCredential("api_key"))
 			if apiKey == "" {
 				return "", "", errors.New("api_key not found in credentials")

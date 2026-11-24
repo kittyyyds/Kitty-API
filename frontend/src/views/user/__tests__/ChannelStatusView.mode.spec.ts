@@ -38,8 +38,8 @@ describe('ChannelStatusView mode switch', () => {
     window.history.replaceState({}, '', '/monitor')
   })
 
-  it('keeps V3 as the default in V2/passive mode', () => {
-    expect(rendered(mount(ChannelStatusView))).toEqual(['v3'])
+  it('renders the configured V2 without requiring a hidden query parameter', () => {
+    expect(rendered(mount(ChannelStatusView))).toEqual(['v2'])
   })
 
   it('renders V1 when in v1 mode', () => {
@@ -52,8 +52,10 @@ describe('ChannelStatusView mode switch', () => {
     expect(rendered(mount(ChannelStatusView))).toEqual(['v3'])
   })
 
-  it('keeps the explicit V2 rollback query', () => {
+  it('does not let stale V2 query parameters override the configured V3', () => {
+    isV2.mockReturnValue(false)
+    isV3.mockReturnValue(true)
     window.history.replaceState({}, '', '/monitor?monitor_view=v2')
-    expect(rendered(mount(ChannelStatusView))).toEqual(['v2'])
+    expect(rendered(mount(ChannelStatusView))).toEqual(['v3'])
   })
 })

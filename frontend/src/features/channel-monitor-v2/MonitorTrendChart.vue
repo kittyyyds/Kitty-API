@@ -24,6 +24,7 @@
         <span class="flex shrink-0 items-center gap-1">
           <span class="h-2 w-2 rounded-full bg-sky-500"></span>{{ t('channelMonitorV2.chart.ttftLegend') }}
         </span>
+        <span class="flex shrink-0 items-center gap-1"><span class="h-2 w-2 rounded-full bg-violet-500"></span>{{ t('channelMonitorV2.chart.tpsLegend') }}</span>
         <span class="badge badge-gray shrink-0">{{ bucketLabel }}</span>
         <button
           type="button"
@@ -75,7 +76,7 @@ import { Line } from 'vue-chartjs'
 import EmptyState from '@/components/common/EmptyState.vue'
 import Icon from '@/components/icons/Icon.vue'
 import type { MonitorCoverage, MonitorMetric, MonitorHealth } from '@/api/channelMonitorV2'
-import { formatMonitorMs, formatMonitorPercent } from '@/features/channel-monitor-v2/monitorFormat'
+import { formatMonitorMs, formatMonitorPercent, formatMonitorOutputTps, monitorCacheRate } from '@/features/channel-monitor-v2/monitorFormat'
 import {
   applyWheelZoom,
   clientXRatio,
@@ -123,7 +124,10 @@ const chartData = computed(() => {
     }).format(new Date(p.bucket_start))
   )
   const errorRates = smoothTrend(points.map((p) => (p.metrics.error_rate || 0) * 100))
-  const cacheRates = smoothTrend(points.map((p) => (p.metrics.cache_rate || 0) * 100))
+  const cacheRates = points.map((p) => {
+    const rate = monitorCacheRate(p.metrics)
+    return rate == null ? null : rate * 100
+  })
   const ttftP50 = smoothTrend(points.map((p) => p.metrics.ttft?.p50_ms ?? null))
   return {
     labels,
@@ -170,6 +174,12 @@ const chartData = computed(() => {
         pointHitRadius: 10,
         borderWidth: 2,
         spanGaps: true,
+      },
+      {
+        label: t('channelMonitorV2.chart.tpsDataset'), data: points.map(p => p.metrics.output_tps ?? null),
+        borderColor: '#8b5cf6', backgroundColor: 'rgba(139, 92, 246, 0.08)', yAxisID: 'yTps',
+        tension: 0.4, cubicInterpolationMode: 'monotone' as const, fill: false,
+        pointRadius: 0, pointHoverRadius: 4, pointHitRadius: 10, borderWidth: 2, spanGaps: false,
       },
     ],
   }
@@ -232,6 +242,7 @@ const chartOptions = computed(() => {
             if (label === t('channelMonitorV2.chart.errorDataset') || label === t('channelMonitorV2.chart.cacheDataset')) {
               return `${label}: ${formatMonitorPercent(y / 100)}`
             }
+            if (label === t('channelMonitorV2.chart.tpsDataset')) return `${label}: ${formatMonitorOutputTps(y)}`
             return `${label}: ${formatMonitorMs(y)}`
           },
         },
@@ -254,6 +265,11 @@ const chartOptions = computed(() => {
         },
         grid: { color: grid, borderDash: [4, 4] },
         title: { display: true, text: t('channelMonitorV2.chart.percentAxis'), color: text, font: { size: 11 } },
+      },
+      yTps: {
+        type: 'linear' as const, position: 'right' as const, min: 0,
+        ticks: { color: '#8b5cf6', font: { size: 10 } }, grid: { display: false },
+        title: { display: true, text: t('channelMonitorV2.metrics.outputTps'), color: '#8b5cf6', font: { size: 11 } },
       },
       yTtft: {
         type: 'linear' as const,

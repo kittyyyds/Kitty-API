@@ -213,6 +213,14 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 	return models, err
 }
 
+// ReplaceModelMappingWithUpstream fetches an authoritative live model list and
+// replaces the account whitelist with one identity mapping per upstream model.
+// It deliberately does not use the configured-model fallback: when the upstream
+// list cannot be fetched, the existing account configuration is left untouched.
+func (s *AccountTestService) ReplaceModelMappingWithUpstream(ctx context.Context, account *Account) (*UpstreamModelCatalog, error) {
+	return s.syncUpstreamModelCatalog(ctx, account, true)
+}
+
 // SyncUpstreamModelCatalog fetches the account's live model list, enriches
 // missing capability fields from the provider registry used by the upstream,
 // and persists a normalized account snapshot when complete metadata is available.
@@ -223,6 +231,10 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 // snapshot. When no model is complete, the existing account snapshot is left
 // untouched.
 func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, account *Account) (*UpstreamModelCatalog, error) {
+	return s.syncUpstreamModelCatalog(ctx, account, false)
+}
+
+func (s *AccountTestService) syncUpstreamModelCatalog(ctx context.Context, account *Account, replaceMapping bool) (*UpstreamModelCatalog, error) {
 	fetched, err := s.fetchUpstreamModelListWithObservation(ctx, account)
 	var (
 		models          []string
@@ -236,13 +248,12 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 	}
 	liveListAvailable := err == nil
 	if err != nil {
-		if account.IsVideo() {
-			// Video sync must report the supplier's live catalog. Reusing a local
-			// whitelist after an HTTP error would look like a successful sync.
+		if account != nil && account.IsVideo() {
 			return nil, err
 		}
+
 		configuredModels := configuredUpstreamModelsForCapabilitySync(account)
-		if !upstreamModelListEndpointUnsupported(err) || len(configuredModels) == 0 {
+		if replaceMapping || !upstreamModelListEndpointUnsupported(err) || len(configuredModels) == 0 {
 			s.keepGrokCatalogFailure(ctx, account, grokObservation)
 			return nil, err
 		}
@@ -265,6 +276,9 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 	} else if saveErr := s.saveGrokCatalogObservation(ctx, account, grokObservation); saveErr != nil {
 		return nil, newUpstreamModelSyncInternalError("Failed to save upstream model catalog", saveErr)
 	}
+	if replaceMapping && len(models) == 0 {
+		return nil, newUpstreamModelSyncUpstreamError("Upstream returned no supported models", nil)
+	}
 	catalog := &UpstreamModelCatalog{Models: models, Metadata: make(map[string]UpstreamModelMetadata)}
 	if account != nil && account.IsGrok() {
 		if grokObservation != nil && grokObservation.Attempt.Status == grokCatalogStatusConfiguredFallback {
@@ -283,17 +297,41 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 			catalog.Metadata = directMetadata
 		}
 	}
-	if account.IsVideo() {
-		// Video model IDs (including provider-specific Chinese names) are not
-		// Codex agent models and do not require reasoning/context metadata.
-		// Keep direct supplier metadata, without registry calls or warnings.
+
+	if account != nil && account.IsVideo() {
+		// Video catalogs do not require language-model capability enrichment.
+		if replaceMapping {
+			if account.ID <= 0 || s.accountRepo == nil {
+				return nil, newUpstreamModelSyncInternalError("Account repository is required to save upstream models", nil)
+			}
+			mapping := make(map[string]any, len(models))
+			for _, model := range models {
+				mapping[model] = model
+			}
+			rows, err := s.accountRepo.BulkUpdate(ctx, []int64{account.ID}, AccountBulkUpdate{Credentials: map[string]any{"model_mapping": mapping}})
+			if err != nil {
+				return nil, newUpstreamModelSyncInternalError("Failed to save upstream model list", err)
+			}
+			if rows != 1 {
+				return nil, newUpstreamModelSyncInternalError("Account no longer exists", ErrAccountNotFound)
+			}
+			account.Credentials = shallowCopyMap(account.Credentials)
+			if account.Credentials == nil {
+				account.Credentials = make(map[string]any)
+			}
+			account.Credentials["model_mapping"] = mapping
+		}
 		return catalog, nil
 	}
 
 	// Capability enrichment also covers concrete model_mapping targets. Admins may
 	// whitelist models that the live /models list omitted; those still need registry
 	// metadata so Codex catalogs can advertise reasoning and modalities.
-	enrichIDs := dedupeAndSortModelIDs(append(append([]string{}, models...), configuredUpstreamModelsForCapabilitySync(account)...))
+	enrichIDs := append([]string{}, models...)
+	if !replaceMapping {
+		enrichIDs = append(enrichIDs, configuredUpstreamModelsForCapabilitySync(account)...)
+	}
+	enrichIDs = dedupeAndSortModelIDs(enrichIDs)
 	// Dedicated image/video generators are not Codex agent catalog entries and often
 	// omit context windows in public registries. Keep them out of completeness checks
 	// so they do not mask successful agent-model capability sync.
@@ -321,7 +359,14 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 
 	completeMetadata := completeUpstreamModelMetadataSubset(capabilityIDs, catalog.Metadata)
 	persistedCapabilities := false
-	if len(completeMetadata) > 0 && account != nil && account.ID > 0 && s.accountRepo != nil {
+	if replaceMapping && (account == nil || account.ID <= 0 || s.accountRepo == nil) {
+		return nil, newUpstreamModelSyncInternalError("Account repository is required to save upstream models", nil)
+	}
+	if (replaceMapping || len(completeMetadata) > 0) && account != nil && account.ID > 0 && s.accountRepo != nil {
+		persistedCapabilities = len(completeMetadata) > 0
+		if completeMetadata == nil {
+			completeMetadata = make(map[string]UpstreamModelMetadata)
+		}
 		// Retain known metadata only for models still listed or explicitly mapped.
 		if previous := account.GetUpstreamModelMetadataSnapshot(); previous != nil {
 			retainedModels := capabilityIDs
@@ -352,11 +397,33 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 			SyncedAt: time.Now().UTC().Format(time.RFC3339),
 			Models:   completeMetadata,
 		}
-		if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{UpstreamModelMetadataExtraKey: snapshot}); err != nil {
+		extra := map[string]any{UpstreamModelMetadataExtraKey: snapshot}
+		if replaceMapping {
+			mapping := make(map[string]any, len(models))
+			for _, modelID := range models {
+				mapping[modelID] = modelID
+			}
+			// Merge only these top-level keys, atomically replacing the nested mapping
+			// and snapshot without overwriting concurrently refreshed credentials.
+			rows, err := s.accountRepo.BulkUpdate(ctx, []int64{account.ID}, AccountBulkUpdate{
+				Credentials: map[string]any{"model_mapping": mapping},
+				Extra:       extra,
+			})
+			if err != nil {
+				return nil, newUpstreamModelSyncInternalError("Failed to save upstream model list", err)
+			}
+			if rows != 1 {
+				return nil, newUpstreamModelSyncInternalError("Account no longer exists", ErrAccountNotFound)
+			}
+			account.Credentials = shallowCopyMap(account.Credentials)
+			if account.Credentials == nil {
+				account.Credentials = make(map[string]any)
+			}
+			account.Credentials["model_mapping"] = mapping
+		} else if err := s.accountRepo.UpdateExtra(ctx, account.ID, extra); err != nil {
 			return nil, newUpstreamModelSyncInternalError("Failed to save upstream model metadata", err)
 		}
 		account.SetUpstreamModelMetadataSnapshot(snapshot)
-		persistedCapabilities = true
 	}
 
 	if upstreamCatalogNeedsRegistry(capabilityIDs, catalog.Metadata) {
@@ -370,14 +437,6 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 				Code:    UpstreamModelMetadataIncompleteCode,
 				Message: "Model IDs were synced, but capability metadata is incomplete.",
 			})
-		}
-	}
-	// Capability metadata may be incomplete even when the live ID list is
-	// authoritative. Only that live list can invalidate old quality rejections;
-	// configured-model fallback after an unsupported endpoint must not do so.
-	if liveListAvailable {
-		if err := s.resetSyncedQualityModelRejections(ctx, account, models); err != nil {
-			return nil, newUpstreamModelSyncInternalError("Failed to reset synced quality model rejections", err)
 		}
 	}
 	return catalog, nil
@@ -825,6 +884,7 @@ func (s *AccountTestService) fetchUpstreamModelListRequest(ctx context.Context, 
 		models, body, err := s.fetchAntigravityOAuthUpstreamModels(ctx, account)
 		return models, body, nil, err
 	}
+
 	if s.httpUpstream == nil {
 		return nil, nil, nil, newUpstreamModelSyncConfigError("Upstream HTTP client is not configured", nil)
 	}
@@ -886,9 +946,6 @@ func (s *AccountTestService) keepGrokCatalogFailure(ctx context.Context, account
 
 // readUpstreamModelsResponse 发送模型列表请求并读取受限大小的响应体；非 2xx 返回带状态码的同步错误。
 func (s *AccountTestService) readUpstreamModelsResponse(req *http.Request, account *Account) ([]byte, error) {
-	if err := ValidateConfiguredAccountProxy(account, upstreamModelsProxyURL(account)); err != nil {
-		return nil, newUpstreamModelSyncConfigError("Configured proxy is unavailable", err)
-	}
 	resp, err := s.doUpstreamModelsRequest(req, upstreamModelsProxyURL(account), account)
 	if err != nil {
 		return nil, newUpstreamModelSyncUpstreamError("Failed to request upstream model list", err)
@@ -1307,7 +1364,7 @@ func (s *AccountTestService) buildOpenAIOAuthUpstreamModelsRequest(ctx context.C
 				req.Header.Add(key, value)
 			}
 		}
-	} else {
+	} else if !credentialAccount.IsOpenAIVMManaged() {
 		accessToken := strings.TrimSpace(credentialAccount.GetOpenAIAccessToken())
 		if accessToken == "" {
 			return nil, newUpstreamModelSyncConfigError("No OpenAI access token is available", nil)
@@ -1315,14 +1372,14 @@ func (s *AccountTestService) buildOpenAIOAuthUpstreamModelsRequest(ctx context.C
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 	}
 
-	identity := resolveCodexOutboundIdentity(credentialAccount.GetOpenAIUserAgent())
+	identity := resolveCodexOutboundIdentity(codexAccountIdentityOverrideUA(credentialAccount))
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Originator", identity.originator)
 	req.Header.Set("User-Agent", identity.userAgent)
 	req.Header.Set("Version", identity.version)
 	setOpenAIChatGPTAccountHeaders(req.Header, credentialAccount)
 	credentialAccount.ApplyHeaderOverrides(req.Header)
-	enforceCodexIdentityHeadersWithUA(req.Header, credentialAccount.GetOpenAIUserAgent())
+	enforceCodexIdentityHeadersWithUA(req.Header, codexAccountIdentityOverrideUA(credentialAccount))
 	return req, nil
 }
 
@@ -1418,6 +1475,14 @@ func (s *AccountTestService) fetchAntigravityOAuthUpstreamModels(ctx context.Con
 }
 
 func (s *AccountTestService) doUpstreamModelsRequest(req *http.Request, proxyURL string, account *Account) (*http.Response, error) {
+	if s.openaiVM != nil {
+		if response, handled, err := s.openaiVM.RoundTrip(req, account); handled {
+			return response, err
+		}
+	}
+	if err := validateOpenAIVMProxy(account, account.Proxy); err != nil {
+		return nil, err
+	}
 	if s.tlsFPProfileService == nil {
 		return s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, nil)
 	}

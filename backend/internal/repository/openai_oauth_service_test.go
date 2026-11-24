@@ -2,7 +2,9 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -78,14 +80,14 @@ func (s *OpenAIOAuthServiceSuite) TestExchangeCode_DefaultRedirectURI() {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		wantUA, wantOriginator := service.CodexCanonicalAuthIdentity()
-		if got := r.Header.Get("User-Agent"); got != wantUA {
-			errCh <- "user-agent mismatch"
+		// codex-login's OAuthClient sends no User-Agent/originator on this grant.
+		if got := r.Header.Get("User-Agent"); got != "" {
+			errCh <- "user-agent must be absent"
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if got := r.Header.Get("originator"); got != wantOriginator {
-			errCh <- "originator mismatch"
+		if got := r.Header.Get("originator"); got != "" {
+			errCh <- "originator must be absent"
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -105,31 +107,29 @@ func (s *OpenAIOAuthServiceSuite) TestExchangeCode_DefaultRedirectURI() {
 	require.Equal(s.T(), "rt", resp.RefreshToken)
 }
 
-func (s *OpenAIOAuthServiceSuite) TestRefreshToken_FormFields() {
+func (s *OpenAIOAuthServiceSuite) TestRefreshToken_JSONContract() {
 	errCh := make(chan string, 1)
 	s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			errCh <- "ParseForm failed"
+		var payload map[string]string
+		mediaType, _, parseErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if parseErr != nil || mediaType != "application/json" || json.NewDecoder(r.Body).Decode(&payload) != nil {
+			errCh <- "expected JSON refresh request"
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if got := r.PostForm.Get("grant_type"); got != "refresh_token" {
-			errCh <- "grant_type mismatch"
+		if payload["grant_type"] != "refresh_token" || payload["refresh_token"] != "rt" || payload["client_id"] != openai.ClientID {
+			errCh <- "refresh credential contract mismatch"
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if got := r.PostForm.Get("refresh_token"); got != "rt" {
-			errCh <- "refresh_token mismatch"
+		// Explicit/manual refresh without a trigger reports "forced".
+		if payload["refresh_reason"] != "forced" {
+			errCh <- "refresh_reason mismatch"
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if got := r.PostForm.Get("client_id"); got != openai.ClientID {
-			errCh <- "client_id mismatch"
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		if got := r.PostForm.Get("scope"); got != openai.RefreshScopes {
-			errCh <- "scope mismatch"
+		if _, exists := payload["scope"]; exists {
+			errCh <- "refresh must not request replacement scopes"
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -165,11 +165,12 @@ func (s *OpenAIOAuthServiceSuite) TestRefreshToken_FormFields() {
 func (s *OpenAIOAuthServiceSuite) TestRefreshToken_DefaultsToOpenAIClientID() {
 	var seenClientIDs []string
 	s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
+		var payload map[string]string
+		if json.NewDecoder(r.Body).Decode(&payload) != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		clientID := r.PostForm.Get("client_id")
+		clientID := payload["client_id"]
 		seenClientIDs = append(seenClientIDs, clientID)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"access_token":"at","refresh_token":"rt","token_type":"bearer","expires_in":3600}`)
@@ -186,11 +187,12 @@ func (s *OpenAIOAuthServiceSuite) TestRefreshToken_UseProvidedClientID() {
 	const customClientID = "custom-client-id"
 	var seenClientIDs []string
 	s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
+		var payload map[string]string
+		if json.NewDecoder(r.Body).Decode(&payload) != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		clientID := r.PostForm.Get("client_id")
+		clientID := payload["client_id"]
 		seenClientIDs = append(seenClientIDs, clientID)
 		if clientID != customClientID {
 			w.WriteHeader(http.StatusBadRequest)

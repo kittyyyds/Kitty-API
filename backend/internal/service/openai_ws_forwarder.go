@@ -202,7 +202,7 @@ func isOpenAIWSIngressPreviousResponseNotFound(err error) bool {
 }
 
 // NewOpenAIWSClientCloseError 创建一个客户端 WS 关闭错误。
-func NewOpenAIWSClientCloseError(statusCode coderws.StatusCode, reason string, err error) *OpenAIWSClientCloseError {
+func NewOpenAIWSClientCloseError(statusCode coderws.StatusCode, reason string, err error) error {
 	return &OpenAIWSClientCloseError{
 		statusCode: statusCode,
 		reason:     strings.TrimSpace(reason),
@@ -253,8 +253,6 @@ type OpenAIWSIngressHooks struct {
 	InitialRequestModel string
 	// InitialTurnStartedAt freezes when the first response.create was accepted.
 	InitialTurnStartedAt time.Time
-	// InitialFrameArrivedAt precedes capture/preflight; separate from the legacy baseline.
-	InitialFrameArrivedAt time.Time
 	// MaxReasoningEffort limits explicit reasoning effort values for this WS session.
 	MaxReasoningEffort string
 	// MaxReasoningEffortOverLimit is the access control when an explicit effort
@@ -265,41 +263,11 @@ type OpenAIWSIngressHooks struct {
 	TurnStarted             func(turn int, startedAt time.Time)
 	BeforeTurn              func(turn int) error
 	BeforeRequest           func(turn int, payload []byte, originalModel string) error
-	// BeforeRequestWithClientPayload runs at the same admission boundary as
-	// BeforeRequest. clientPayload is the original client frame, before outbound
-	// normalization; use it only for local client identity validation. payload
-	// retains the processed request used by all other admission checks.
-	BeforeRequestWithClientPayload func(turn int, payload, clientPayload []byte, originalModel string) error
-	// BeforePayloadParse runs synchronously before parsing a follow-up client
-	// frame on the native/bridge path. Handlers run one bounded fresh
-	// authorization here and install the current frame's immutable permissions,
-	// so permission-dependent parser decisions (image permission rejection,
-	// Codex image bridge injection) read the latest revalidation instead of the
-	// previous turn's holder value. Optional; nil keeps the previous behavior.
-	BeforePayloadParse func(turn int, raw []byte, effectiveModel string) error
-	// TransformPayload runs once per follow-up response.create, before upstream model mapping.
-	TransformPayload func(raw []byte, effectiveModel string) ([]byte, error)
+	TransformPayload        func(raw []byte, effectiveModel string) ([]byte, error)
 	// MapRequestModel resolves the current turn's client model to the model
 	// that must be written into the upstream response.create frame.
 	MapRequestModel func(turn int, originalModel string) (string, error)
 	AfterTurn       func(turn int, result *OpenAIForwardResult, turnErr error)
-}
-
-// beforeRequest preserves both admission callbacks when an embedding installs
-// the original hook alongside the handler's client-aware admission hook.
-func (h *OpenAIWSIngressHooks) beforeRequest(turn int, payload, clientPayload []byte, originalModel string) error {
-	if h == nil {
-		return nil
-	}
-	if h.BeforeRequestWithClientPayload != nil {
-		if err := h.BeforeRequestWithClientPayload(turn, payload, clientPayload, originalModel); err != nil {
-			return err
-		}
-	}
-	if h.BeforeRequest != nil {
-		return h.BeforeRequest(turn, payload, originalModel)
-	}
-	return nil
 }
 
 func (s *OpenAIGatewayService) getOpenAIWSConnPool() *openAIWSConnPool {
@@ -320,7 +288,7 @@ func (s *OpenAIGatewayService) getOpenAIWSPassthroughDialer() openAIWSClientDial
 	}
 	s.openaiWSPassthroughDialerOnce.Do(func() {
 		if s.openaiWSPassthroughDialer == nil {
-			s.openaiWSPassthroughDialer = newConfiguredOpenAIWSClientDialer(s.cfg)
+			s.openaiWSPassthroughDialer = newDefaultOpenAIWSClientDialer()
 		}
 	})
 	return s.openaiWSPassthroughDialer

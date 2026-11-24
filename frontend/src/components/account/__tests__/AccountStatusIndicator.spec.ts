@@ -51,34 +51,70 @@ function makeAccount(overrides: Partial<Account>): Account {
 }
 
 describe('AccountStatusIndicator', () => {
-  it('keeps quality cooldown visible after its deadline without a credits bypass', () => {
+  it('shows partial model restrictions alongside the active account badge', () => {
+    const wrapper = mount(AccountStatusIndicator, { props: { account: makeAccount({
+      extra: { active_test_model_states: {
+        'model-a': { status: 'blocked', reason: '能力检测未通过' },
+        'model-b': { status: 'normal' },
+        'model-c': { status: 'pending' },
+      } },
+    }) } })
+    expect(wrapper.get('.badge-success').text()).toBe('admin.accounts.status.active')
+    expect(wrapper.find('[data-testid="quality-paused-status"]').exists()).toBe(false)
+    const quality = wrapper.get('[data-testid="quality-model-status"]')
+    expect(quality.text()).toContain('admin.accounts.qualityDetails.modelsPartial')
+    expect(quality.findAll('[data-quality-model]').map(row => [row.text(), row.attributes('data-model-status')])).toEqual([
+      ['model-aadmin.accounts.qualityDetails.modelStatus.blocked', 'blocked'],
+      ['model-badmin.accounts.qualityDetails.modelStatus.normal', 'normal'],
+      ['model-cadmin.accounts.qualityDetails.modelStatus.pending', 'pending'],
+    ])
+  })
+
+  it('does not hide a manual stop or a cooldown behind a partial model hold', () => {
+    const account = makeAccount({ schedulable: false, extra: { active_test_model_holds: { 'model-a': 'failed' } } })
+    const wrapper = mount(AccountStatusIndicator, { props: { account } })
+    expect(wrapper.get('.badge-gray').text()).toBe('admin.accounts.status.paused')
+    expect(wrapper.get('[data-testid="quality-model-status"]').text()).toContain('model-a')
+    wrapper.unmount()
+    const limited = mount(AccountStatusIndicator, { props: { account: { ...account, schedulable: true, rate_limit_reset_at: '2099-01-01T00:00:00Z' } } })
+    expect(limited.text()).toContain('admin.accounts.status.rateLimited')
+    expect(limited.find('[data-testid="quality-model-status"]').exists()).toBe(true)
+  })
+
+  it('keeps normal model results visible after recovery and ignores disabled legacy hold entries', () => {
+    const wrapper = mount(AccountStatusIndicator, { props: { account: makeAccount({ extra: {
+      active_test_model_states: { 'model-a': { status: 'normal' }, 'model-b': { status: 'normal' } },
+      active_test_model_holds: { 'model-a': false, 'model-b': { blocked: false } },
+    } }) } })
+    const quality = wrapper.get('[data-testid="quality-model-status"]')
+    expect(quality.text()).toContain('admin.accounts.qualityDetails.modelsNormal')
+    expect(quality.findAll('[data-model-status="normal"]')).toHaveLength(2)
+  })
+
+  it('shows quality protection and its reason ahead of transient cooldowns', () => {
     const wrapper = mount(AccountStatusIndicator, {
-      props: {
-        account: makeAccount({
-          extra: {
-            allow_overages: true,
-            model_rate_limits: {
-              'gpt-6.1-sol': { reason: 'quality_rule:7', rate_limited_at: '2020-01-01T00:00:00Z', rate_limit_reset_at: '2020-01-02T00:00:00Z' },
-              'expired-native': { reason: 'upstream_429', rate_limited_at: '2020-01-01T00:00:00Z', rate_limit_reset_at: '2020-01-02T00:00:00Z' }
-            }
-          }
-        })
-      },
-      global: { stubs: { Icon: true } }
+      props: { account: makeAccount({
+        status: 'quality_paused',
+        extra: { quality_protection_reason: '最近一小时成功率低于阈值' },
+        rate_limit_reset_at: '2099-01-01T00:00:00Z'
+      }) }
     })
-    expect(wrapper.text()).toContain('gpt-6.1-sol')
-    expect(wrapper.text()).toContain('qualityOps.waitingForRecovery')
-    expect(wrapper.text()).not.toContain('expired-native')
-    expect(wrapper.text()).not.toContain('⚡')
+    const status = wrapper.get('[data-testid="quality-paused-status"]')
+    expect(status.get('.badge').text()).toBe('admin.accounts.status.qualityPaused')
+    expect(status.text()).toContain('最近一小时成功率低于阈值')
+    expect(status.attributes('aria-haspopup')).toBe('dialog')
+    expect(status.text()).not.toContain('qualityPausedManualStop')
   })
-  it('shows the RPM pause reason and clears it when refreshed after reset', async () => {
-    const account = makeAccount({ platform: 'openai', base_rpm: 10, current_rpm: 10, rpm_paused: true, rpm_reset_at: 1_900_000_020 })
-    const wrapper = mount(AccountStatusIndicator, { props: { account }, global: { stubs: { Icon: true } } })
-    expect(wrapper.text()).toContain('admin.accounts.status.rpmPaused')
-    expect(wrapper.text()).toContain('admin.accounts.status.rpmPausedUntil')
-    await wrapper.setProps({ account: { ...account, current_rpm: 0, rpm_paused: false, rpm_reset_at: undefined } })
-    expect(wrapper.text()).not.toContain('admin.accounts.status.rpmPaused')
+
+  it('distinguishes a manual scheduling stop while quality protection remains active', () => {
+    const wrapper = mount(AccountStatusIndicator, {
+      props: { account: makeAccount({ status: 'quality_paused', schedulable: false }) }
+    })
+    expect(wrapper.text()).toContain('admin.accounts.status.qualityPaused')
+    expect(wrapper.text()).toContain('admin.accounts.status.qualityPausedManualStop')
   })
+
+
   it('Claude 5 系列模型限流时显示 Opus 和 Sonnet 的短别名', () => {
     const wrapper = mount(AccountStatusIndicator, {
       props: {
@@ -112,6 +148,30 @@ describe('AccountStatusIndicator', () => {
     expect(wrapper.text()).toContain('CSon5')
     expect(wrapper.text()).toContain('CSon55')
     expect(wrapper.text()).not.toContain('claude-sonnet-5')
+  })
+
+  it.each([
+    ['claude-fable-5-2', 'CFable52'],
+    ['claude-mythos-5-2', 'CMythos52']
+  ])('shows a short rate-limit badge for %s', (model, alias) => {
+    const wrapper = mount(AccountStatusIndicator, {
+      props: {
+        account: makeAccount({
+          platform: 'anthropic',
+          extra: {
+            model_rate_limits: {
+              [model]: {
+                rate_limited_at: '2026-11-10T00:00:00Z',
+                rate_limit_reset_at: '2099-11-10T00:00:00Z'
+              }
+            }
+          }
+        })
+      },
+      global: { stubs: { Icon: true } }
+    })
+    expect(wrapper.text()).toContain(alias)
+    expect(wrapper.text()).not.toContain(model)
   })
 
   it('Grok 账号额度限流时显示自动恢复时间而非临时不可调度', () => {

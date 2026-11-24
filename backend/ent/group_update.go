@@ -935,6 +935,33 @@ func (_u *GroupUpdate) ClearFallbackGroupID() *GroupUpdate {
 	return _u
 }
 
+// SetFallbackGroupIDOnUnavailable sets the "fallback_group_id_on_unavailable" field.
+func (_u *GroupUpdate) SetFallbackGroupIDOnUnavailable(v int64) *GroupUpdate {
+	_u.mutation.ResetFallbackGroupIDOnUnavailable()
+	_u.mutation.SetFallbackGroupIDOnUnavailable(v)
+	return _u
+}
+
+// SetNillableFallbackGroupIDOnUnavailable sets the "fallback_group_id_on_unavailable" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableFallbackGroupIDOnUnavailable(v *int64) *GroupUpdate {
+	if v != nil {
+		_u.SetFallbackGroupIDOnUnavailable(*v)
+	}
+	return _u
+}
+
+// AddFallbackGroupIDOnUnavailable adds value to the "fallback_group_id_on_unavailable" field.
+func (_u *GroupUpdate) AddFallbackGroupIDOnUnavailable(v int64) *GroupUpdate {
+	_u.mutation.AddFallbackGroupIDOnUnavailable(v)
+	return _u
+}
+
+// ClearFallbackGroupIDOnUnavailable clears the value of the "fallback_group_id_on_unavailable" field.
+func (_u *GroupUpdate) ClearFallbackGroupIDOnUnavailable() *GroupUpdate {
+	_u.mutation.ClearFallbackGroupIDOnUnavailable()
+	return _u
+}
+
 // SetFallbackGroupIDOnInvalidRequest sets the "fallback_group_id_on_invalid_request" field.
 func (_u *GroupUpdate) SetFallbackGroupIDOnInvalidRequest(v int64) *GroupUpdate {
 	_u.mutation.ResetFallbackGroupIDOnInvalidRequest()
@@ -1013,6 +1040,20 @@ func (_u *GroupUpdate) SetModelRouting(v map[string][]int64) *GroupUpdate {
 // ClearModelRouting clears the value of the "model_routing" field.
 func (_u *GroupUpdate) ClearModelRouting() *GroupUpdate {
 	_u.mutation.ClearModelRouting()
+	return _u
+}
+
+// SetStrictFailover sets the "strict_failover" field.
+func (_u *GroupUpdate) SetStrictFailover(v domain.StrictFailoverConfig) *GroupUpdate {
+	_u.mutation.SetStrictFailover(v)
+	return _u
+}
+
+// SetNillableStrictFailover sets the "strict_failover" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableStrictFailover(v *domain.StrictFailoverConfig) *GroupUpdate {
+	if v != nil {
+		_u.SetStrictFailover(*v)
+	}
 	return _u
 }
 
@@ -1115,6 +1156,20 @@ func (_u *GroupUpdate) SetForceOpenaiFast(v bool) *GroupUpdate {
 func (_u *GroupUpdate) SetNillableForceOpenaiFast(v *bool) *GroupUpdate {
 	if v != nil {
 		_u.SetForceOpenaiFast(*v)
+	}
+	return _u
+}
+
+// SetForceOpenaiServiceTier sets the "force_openai_service_tier" field.
+func (_u *GroupUpdate) SetForceOpenaiServiceTier(v string) *GroupUpdate {
+	_u.mutation.SetForceOpenaiServiceTier(v)
+	return _u
+}
+
+// SetNillableForceOpenaiServiceTier sets the "force_openai_service_tier" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableForceOpenaiServiceTier(v *string) *GroupUpdate {
+	if v != nil {
+		_u.SetForceOpenaiServiceTier(*v)
 	}
 	return _u
 }
@@ -1235,6 +1290,27 @@ func (_u *GroupUpdate) SetNillableRpmLimit(v *int) *GroupUpdate {
 // AddRpmLimit adds value to the "rpm_limit" field.
 func (_u *GroupUpdate) AddRpmLimit(v int) *GroupUpdate {
 	_u.mutation.AddRpmLimit(v)
+	return _u
+}
+
+// SetUserConcurrencyLimit sets the "user_concurrency_limit" field.
+func (_u *GroupUpdate) SetUserConcurrencyLimit(v int) *GroupUpdate {
+	_u.mutation.ResetUserConcurrencyLimit()
+	_u.mutation.SetUserConcurrencyLimit(v)
+	return _u
+}
+
+// SetNillableUserConcurrencyLimit sets the "user_concurrency_limit" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableUserConcurrencyLimit(v *int) *GroupUpdate {
+	if v != nil {
+		_u.SetUserConcurrencyLimit(*v)
+	}
+	return _u
+}
+
+// AddUserConcurrencyLimit adds value to the "user_concurrency_limit" field.
+func (_u *GroupUpdate) AddUserConcurrencyLimit(v int) *GroupUpdate {
+	_u.mutation.AddUserConcurrencyLimit(v)
 	return _u
 }
 
@@ -1391,6 +1467,21 @@ func (_u *GroupUpdate) AddAPIKeys(v ...*APIKey) *GroupUpdate {
 	return _u.AddAPIKeyIDs(ids...)
 }
 
+// AddFallbackAPIKeyIDs adds the "fallback_api_keys" edge to the APIKey entity by IDs.
+func (_u *GroupUpdate) AddFallbackAPIKeyIDs(ids ...int64) *GroupUpdate {
+	_u.mutation.AddFallbackAPIKeyIDs(ids...)
+	return _u
+}
+
+// AddFallbackAPIKeys adds the "fallback_api_keys" edges to the APIKey entity.
+func (_u *GroupUpdate) AddFallbackAPIKeys(v ...*APIKey) *GroupUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddFallbackAPIKeyIDs(ids...)
+}
+
 // AddRedeemCodeIDs adds the "redeem_codes" edge to the RedeemCode entity by IDs.
 func (_u *GroupUpdate) AddRedeemCodeIDs(ids ...int64) *GroupUpdate {
 	_u.mutation.AddRedeemCodeIDs(ids...)
@@ -1490,6 +1581,27 @@ func (_u *GroupUpdate) RemoveAPIKeys(v ...*APIKey) *GroupUpdate {
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveAPIKeyIDs(ids...)
+}
+
+// ClearFallbackAPIKeys clears all "fallback_api_keys" edges to the APIKey entity.
+func (_u *GroupUpdate) ClearFallbackAPIKeys() *GroupUpdate {
+	_u.mutation.ClearFallbackAPIKeys()
+	return _u
+}
+
+// RemoveFallbackAPIKeyIDs removes the "fallback_api_keys" edge to APIKey entities by IDs.
+func (_u *GroupUpdate) RemoveFallbackAPIKeyIDs(ids ...int64) *GroupUpdate {
+	_u.mutation.RemoveFallbackAPIKeyIDs(ids...)
+	return _u
+}
+
+// RemoveFallbackAPIKeys removes "fallback_api_keys" edges to APIKey entities.
+func (_u *GroupUpdate) RemoveFallbackAPIKeys(v ...*APIKey) *GroupUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveFallbackAPIKeyIDs(ids...)
 }
 
 // ClearRedeemCodes clears all "redeem_codes" edges to the RedeemCode entity.
@@ -1694,6 +1806,11 @@ func (_u *GroupUpdate) check() error {
 	if v, ok := _u.mutation.AudioSttPricePerHour(); ok {
 		if err := group.AudioSttPricePerHourValidator(v); err != nil {
 			return &ValidationError{Name: "audio_stt_price_per_hour", err: fmt.Errorf(`ent: validator failed for field "Group.audio_stt_price_per_hour": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ForceOpenaiServiceTier(); ok {
+		if err := group.ForceOpenaiServiceTierValidator(v); err != nil {
+			return &ValidationError{Name: "force_openai_service_tier", err: fmt.Errorf(`ent: validator failed for field "Group.force_openai_service_tier": %w`, err)}
 		}
 	}
 	if v, ok := _u.mutation.DefaultMappedModel(); ok {
@@ -2006,6 +2123,15 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if _u.mutation.FallbackGroupIDCleared() {
 		_spec.ClearField(group.FieldFallbackGroupID, field.TypeInt64)
 	}
+	if value, ok := _u.mutation.FallbackGroupIDOnUnavailable(); ok {
+		_spec.SetField(group.FieldFallbackGroupIDOnUnavailable, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedFallbackGroupIDOnUnavailable(); ok {
+		_spec.AddField(group.FieldFallbackGroupIDOnUnavailable, field.TypeInt64, value)
+	}
+	if _u.mutation.FallbackGroupIDOnUnavailableCleared() {
+		_spec.ClearField(group.FieldFallbackGroupIDOnUnavailable, field.TypeInt64)
+	}
 	if value, ok := _u.mutation.FallbackGroupIDOnInvalidRequest(); ok {
 		_spec.SetField(group.FieldFallbackGroupIDOnInvalidRequest, field.TypeInt64, value)
 	}
@@ -2029,6 +2155,9 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.ModelRoutingCleared() {
 		_spec.ClearField(group.FieldModelRouting, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.StrictFailover(); ok {
+		_spec.SetField(group.FieldStrictFailover, field.TypeJSON, value)
 	}
 	if value, ok := _u.mutation.ModelRoutingEnabled(); ok {
 		_spec.SetField(group.FieldModelRoutingEnabled, field.TypeBool, value)
@@ -2059,6 +2188,9 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.ForceOpenaiFast(); ok {
 		_spec.SetField(group.FieldForceOpenaiFast, field.TypeBool, value)
 	}
+	if value, ok := _u.mutation.ForceOpenaiServiceTier(); ok {
+		_spec.SetField(group.FieldForceOpenaiServiceTier, field.TypeString, value)
+	}
 	if value, ok := _u.mutation.FreeOpenaiFast(); ok {
 		_spec.SetField(group.FieldFreeOpenaiFast, field.TypeBool, value)
 	}
@@ -2085,6 +2217,12 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.AddedRpmLimit(); ok {
 		_spec.AddField(group.FieldRpmLimit, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.UserConcurrencyLimit(); ok {
+		_spec.SetField(group.FieldUserConcurrencyLimit, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedUserConcurrencyLimit(); ok {
+		_spec.AddField(group.FieldUserConcurrencyLimit, field.TypeInt, value)
 	}
 	if value, ok := _u.mutation.MaxReasoningEffort(); ok {
 		_spec.SetField(group.FieldMaxReasoningEffort, field.TypeString, value)
@@ -2159,6 +2297,51 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 			Inverse: false,
 			Table:   group.APIKeysTable,
 			Columns: []string{group.APIKeysColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(apikey.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.FallbackAPIKeysCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.FallbackAPIKeysTable,
+			Columns: []string{group.FallbackAPIKeysColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(apikey.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedFallbackAPIKeysIDs(); len(nodes) > 0 && !_u.mutation.FallbackAPIKeysCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.FallbackAPIKeysTable,
+			Columns: []string{group.FallbackAPIKeysColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(apikey.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.FallbackAPIKeysIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.FallbackAPIKeysTable,
+			Columns: []string{group.FallbackAPIKeysColumn},
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(apikey.FieldID, field.TypeInt64),
@@ -3336,6 +3519,33 @@ func (_u *GroupUpdateOne) ClearFallbackGroupID() *GroupUpdateOne {
 	return _u
 }
 
+// SetFallbackGroupIDOnUnavailable sets the "fallback_group_id_on_unavailable" field.
+func (_u *GroupUpdateOne) SetFallbackGroupIDOnUnavailable(v int64) *GroupUpdateOne {
+	_u.mutation.ResetFallbackGroupIDOnUnavailable()
+	_u.mutation.SetFallbackGroupIDOnUnavailable(v)
+	return _u
+}
+
+// SetNillableFallbackGroupIDOnUnavailable sets the "fallback_group_id_on_unavailable" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableFallbackGroupIDOnUnavailable(v *int64) *GroupUpdateOne {
+	if v != nil {
+		_u.SetFallbackGroupIDOnUnavailable(*v)
+	}
+	return _u
+}
+
+// AddFallbackGroupIDOnUnavailable adds value to the "fallback_group_id_on_unavailable" field.
+func (_u *GroupUpdateOne) AddFallbackGroupIDOnUnavailable(v int64) *GroupUpdateOne {
+	_u.mutation.AddFallbackGroupIDOnUnavailable(v)
+	return _u
+}
+
+// ClearFallbackGroupIDOnUnavailable clears the value of the "fallback_group_id_on_unavailable" field.
+func (_u *GroupUpdateOne) ClearFallbackGroupIDOnUnavailable() *GroupUpdateOne {
+	_u.mutation.ClearFallbackGroupIDOnUnavailable()
+	return _u
+}
+
 // SetFallbackGroupIDOnInvalidRequest sets the "fallback_group_id_on_invalid_request" field.
 func (_u *GroupUpdateOne) SetFallbackGroupIDOnInvalidRequest(v int64) *GroupUpdateOne {
 	_u.mutation.ResetFallbackGroupIDOnInvalidRequest()
@@ -3414,6 +3624,20 @@ func (_u *GroupUpdateOne) SetModelRouting(v map[string][]int64) *GroupUpdateOne 
 // ClearModelRouting clears the value of the "model_routing" field.
 func (_u *GroupUpdateOne) ClearModelRouting() *GroupUpdateOne {
 	_u.mutation.ClearModelRouting()
+	return _u
+}
+
+// SetStrictFailover sets the "strict_failover" field.
+func (_u *GroupUpdateOne) SetStrictFailover(v domain.StrictFailoverConfig) *GroupUpdateOne {
+	_u.mutation.SetStrictFailover(v)
+	return _u
+}
+
+// SetNillableStrictFailover sets the "strict_failover" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableStrictFailover(v *domain.StrictFailoverConfig) *GroupUpdateOne {
+	if v != nil {
+		_u.SetStrictFailover(*v)
+	}
 	return _u
 }
 
@@ -3516,6 +3740,20 @@ func (_u *GroupUpdateOne) SetForceOpenaiFast(v bool) *GroupUpdateOne {
 func (_u *GroupUpdateOne) SetNillableForceOpenaiFast(v *bool) *GroupUpdateOne {
 	if v != nil {
 		_u.SetForceOpenaiFast(*v)
+	}
+	return _u
+}
+
+// SetForceOpenaiServiceTier sets the "force_openai_service_tier" field.
+func (_u *GroupUpdateOne) SetForceOpenaiServiceTier(v string) *GroupUpdateOne {
+	_u.mutation.SetForceOpenaiServiceTier(v)
+	return _u
+}
+
+// SetNillableForceOpenaiServiceTier sets the "force_openai_service_tier" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableForceOpenaiServiceTier(v *string) *GroupUpdateOne {
+	if v != nil {
+		_u.SetForceOpenaiServiceTier(*v)
 	}
 	return _u
 }
@@ -3636,6 +3874,27 @@ func (_u *GroupUpdateOne) SetNillableRpmLimit(v *int) *GroupUpdateOne {
 // AddRpmLimit adds value to the "rpm_limit" field.
 func (_u *GroupUpdateOne) AddRpmLimit(v int) *GroupUpdateOne {
 	_u.mutation.AddRpmLimit(v)
+	return _u
+}
+
+// SetUserConcurrencyLimit sets the "user_concurrency_limit" field.
+func (_u *GroupUpdateOne) SetUserConcurrencyLimit(v int) *GroupUpdateOne {
+	_u.mutation.ResetUserConcurrencyLimit()
+	_u.mutation.SetUserConcurrencyLimit(v)
+	return _u
+}
+
+// SetNillableUserConcurrencyLimit sets the "user_concurrency_limit" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableUserConcurrencyLimit(v *int) *GroupUpdateOne {
+	if v != nil {
+		_u.SetUserConcurrencyLimit(*v)
+	}
+	return _u
+}
+
+// AddUserConcurrencyLimit adds value to the "user_concurrency_limit" field.
+func (_u *GroupUpdateOne) AddUserConcurrencyLimit(v int) *GroupUpdateOne {
+	_u.mutation.AddUserConcurrencyLimit(v)
 	return _u
 }
 
@@ -3792,6 +4051,21 @@ func (_u *GroupUpdateOne) AddAPIKeys(v ...*APIKey) *GroupUpdateOne {
 	return _u.AddAPIKeyIDs(ids...)
 }
 
+// AddFallbackAPIKeyIDs adds the "fallback_api_keys" edge to the APIKey entity by IDs.
+func (_u *GroupUpdateOne) AddFallbackAPIKeyIDs(ids ...int64) *GroupUpdateOne {
+	_u.mutation.AddFallbackAPIKeyIDs(ids...)
+	return _u
+}
+
+// AddFallbackAPIKeys adds the "fallback_api_keys" edges to the APIKey entity.
+func (_u *GroupUpdateOne) AddFallbackAPIKeys(v ...*APIKey) *GroupUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddFallbackAPIKeyIDs(ids...)
+}
+
 // AddRedeemCodeIDs adds the "redeem_codes" edge to the RedeemCode entity by IDs.
 func (_u *GroupUpdateOne) AddRedeemCodeIDs(ids ...int64) *GroupUpdateOne {
 	_u.mutation.AddRedeemCodeIDs(ids...)
@@ -3891,6 +4165,27 @@ func (_u *GroupUpdateOne) RemoveAPIKeys(v ...*APIKey) *GroupUpdateOne {
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveAPIKeyIDs(ids...)
+}
+
+// ClearFallbackAPIKeys clears all "fallback_api_keys" edges to the APIKey entity.
+func (_u *GroupUpdateOne) ClearFallbackAPIKeys() *GroupUpdateOne {
+	_u.mutation.ClearFallbackAPIKeys()
+	return _u
+}
+
+// RemoveFallbackAPIKeyIDs removes the "fallback_api_keys" edge to APIKey entities by IDs.
+func (_u *GroupUpdateOne) RemoveFallbackAPIKeyIDs(ids ...int64) *GroupUpdateOne {
+	_u.mutation.RemoveFallbackAPIKeyIDs(ids...)
+	return _u
+}
+
+// RemoveFallbackAPIKeys removes "fallback_api_keys" edges to APIKey entities.
+func (_u *GroupUpdateOne) RemoveFallbackAPIKeys(v ...*APIKey) *GroupUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveFallbackAPIKeyIDs(ids...)
 }
 
 // ClearRedeemCodes clears all "redeem_codes" edges to the RedeemCode entity.
@@ -4108,6 +4403,11 @@ func (_u *GroupUpdateOne) check() error {
 	if v, ok := _u.mutation.AudioSttPricePerHour(); ok {
 		if err := group.AudioSttPricePerHourValidator(v); err != nil {
 			return &ValidationError{Name: "audio_stt_price_per_hour", err: fmt.Errorf(`ent: validator failed for field "Group.audio_stt_price_per_hour": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ForceOpenaiServiceTier(); ok {
+		if err := group.ForceOpenaiServiceTierValidator(v); err != nil {
+			return &ValidationError{Name: "force_openai_service_tier", err: fmt.Errorf(`ent: validator failed for field "Group.force_openai_service_tier": %w`, err)}
 		}
 	}
 	if v, ok := _u.mutation.DefaultMappedModel(); ok {
@@ -4437,6 +4737,15 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	if _u.mutation.FallbackGroupIDCleared() {
 		_spec.ClearField(group.FieldFallbackGroupID, field.TypeInt64)
 	}
+	if value, ok := _u.mutation.FallbackGroupIDOnUnavailable(); ok {
+		_spec.SetField(group.FieldFallbackGroupIDOnUnavailable, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedFallbackGroupIDOnUnavailable(); ok {
+		_spec.AddField(group.FieldFallbackGroupIDOnUnavailable, field.TypeInt64, value)
+	}
+	if _u.mutation.FallbackGroupIDOnUnavailableCleared() {
+		_spec.ClearField(group.FieldFallbackGroupIDOnUnavailable, field.TypeInt64)
+	}
 	if value, ok := _u.mutation.FallbackGroupIDOnInvalidRequest(); ok {
 		_spec.SetField(group.FieldFallbackGroupIDOnInvalidRequest, field.TypeInt64, value)
 	}
@@ -4460,6 +4769,9 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if _u.mutation.ModelRoutingCleared() {
 		_spec.ClearField(group.FieldModelRouting, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.StrictFailover(); ok {
+		_spec.SetField(group.FieldStrictFailover, field.TypeJSON, value)
 	}
 	if value, ok := _u.mutation.ModelRoutingEnabled(); ok {
 		_spec.SetField(group.FieldModelRoutingEnabled, field.TypeBool, value)
@@ -4490,6 +4802,9 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	if value, ok := _u.mutation.ForceOpenaiFast(); ok {
 		_spec.SetField(group.FieldForceOpenaiFast, field.TypeBool, value)
 	}
+	if value, ok := _u.mutation.ForceOpenaiServiceTier(); ok {
+		_spec.SetField(group.FieldForceOpenaiServiceTier, field.TypeString, value)
+	}
 	if value, ok := _u.mutation.FreeOpenaiFast(); ok {
 		_spec.SetField(group.FieldFreeOpenaiFast, field.TypeBool, value)
 	}
@@ -4516,6 +4831,12 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if value, ok := _u.mutation.AddedRpmLimit(); ok {
 		_spec.AddField(group.FieldRpmLimit, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.UserConcurrencyLimit(); ok {
+		_spec.SetField(group.FieldUserConcurrencyLimit, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedUserConcurrencyLimit(); ok {
+		_spec.AddField(group.FieldUserConcurrencyLimit, field.TypeInt, value)
 	}
 	if value, ok := _u.mutation.MaxReasoningEffort(); ok {
 		_spec.SetField(group.FieldMaxReasoningEffort, field.TypeString, value)
@@ -4590,6 +4911,51 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 			Inverse: false,
 			Table:   group.APIKeysTable,
 			Columns: []string{group.APIKeysColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(apikey.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.FallbackAPIKeysCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.FallbackAPIKeysTable,
+			Columns: []string{group.FallbackAPIKeysColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(apikey.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedFallbackAPIKeysIDs(); len(nodes) > 0 && !_u.mutation.FallbackAPIKeysCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.FallbackAPIKeysTable,
+			Columns: []string{group.FallbackAPIKeysColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(apikey.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.FallbackAPIKeysIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   group.FallbackAPIKeysTable,
+			Columns: []string{group.FallbackAPIKeysColumn},
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(apikey.FieldID, field.TypeInt64),

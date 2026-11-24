@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/managedinstance"
+"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 )
@@ -359,12 +360,14 @@ func (s *OpenAIGatewayService) StopVideoTaskWorker() {
 		return
 	}
 	s.videoTaskWorkerMu.Lock()
+	defer s.videoTaskWorkerMu.Unlock()
 	cancel, done := s.videoTaskWorkerCancel, s.videoTaskWorkerDone
-	s.videoTaskWorkerMu.Unlock()
 	if cancel != nil {
 		cancel()
 		<-done
 	}
+	s.videoTaskWorkerCancel = nil
+	s.videoTaskWorkerDone = nil
 }
 
 func (s *OpenAIGatewayService) pollVideoTask(ctx context.Context, task *VideoTask, keys *APIKeyService) error {
@@ -445,4 +448,11 @@ func (s *OpenAIGatewayService) pollVideoTask(ctx context.Context, task *VideoTas
 		return s.finishVideoTask(ctx, task, "failed", "supplier returned terminal failure; no charge")
 	}
 	return nil
+}
+
+// ConfigureMediaTaskRuntime starts recoverable media settlement and automatic
+// price refresh only on the node responsible for background jobs.
+func ConfigureMediaTaskRuntime(s *OpenAIGatewayService, keys *APIKeyService, cfg *config.Config) {
+	if s == nil || keys == nil || !cfg.RunsBackgroundJobs() { return }
+	managedinstance.Register("media-task-worker", func() { s.StartVideoTaskWorker(keys) }, s.StopVideoTaskWorker)
 }

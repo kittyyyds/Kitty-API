@@ -8,8 +8,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/iprisk"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/gin-gonic/gin"
 )
 
@@ -31,9 +29,12 @@ const (
 	IngressRejectInvalidAuthRateLimited IngressRejectReason = "invalid_auth_rate_limited"
 	IngressRejectAPIKeyAuthOverloaded   IngressRejectReason = "api_key_auth_overloaded"
 	IngressRejectModelNotAllowed        IngressRejectReason = "model_not_allowed"
-	IngressRejectStreamRequired         IngressRejectReason = "stream_required"
-	IngressRejectSubagentsBlocked       IngressRejectReason = "subagents_blocked"
-	IngressRejectCodexClientRequired    IngressRejectReason = "codex_client_required"
+)
+
+const (
+	IngressRejectStreamRequired IngressRejectReason = "stream_required"
+	IngressRejectSubagentsBlocked IngressRejectReason = "subagents_blocked"
+	IngressRejectCodexClientRequired IngressRejectReason = "codex_client_required"
 )
 
 const ingressRejectReasonContextKey = "ingress_reject_reason"
@@ -43,11 +44,7 @@ type IngressRejectRecorder interface {
 }
 
 func invalidAuthClientKey(c *gin.Context) string {
-	network := iprisk.AnonymousNetwork(ip.GetTrustedClientIP(c))
-	if network == "" {
-		return ""
-	}
-	return netip.MustParsePrefix(network).Addr().String()
+	return normalizeIngressRejectIP(SecurityClientIP(c))
 }
 
 func rejectInvalidAuthAbuse(c *gin.Context, apiKeyService interface {

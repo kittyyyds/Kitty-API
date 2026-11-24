@@ -1,5 +1,12 @@
 export default {
   operations: {
+    todayWindow: 'Today since {date} 00:00 · {timezone}',
+    rechargeRanking: {
+      title: "Today's recharge ranking", hint: 'Completed credits for ordinary users', top50: 'Top 50',
+      window: 'Since {date} 00:00 · {timezone}', totalAmount: 'All credited amount', totalUsers: 'Recharging users', totalCount: 'Recharge count',
+      count: '{count} credits', empty: 'No completed credits today', loadFailed: 'Failed to load recharge ranking'
+    },
+
     profitIncomplete: 'Missing costs: {requests} requests, {monitors} monitor checks',
     costBasis: "Consumption is request valuation. Costs use reconciled invoices, frozen procurement estimates, then the account cost recorded with the request. Margin is not cash profit.",
     costCoverage: "{requests} requests: {reconciled} reconciled; {procurement_estimated} procurement estimates; {account_estimated} account estimates; {unknown} unpriced. Unknown costs do not count as zero.",
@@ -63,6 +70,9 @@ export default {
       noModels: 'No model spending data',
       trend: 'Recent spend and profit trend',
       recharge: {
+        summaryTitle: 'Completed credits in selected period', summaryCount: '{count} credits', summaryFailed: 'Totals failed; retry',
+        summaryHint: 'Ordinary-user credits by completion time, without deducting refunds. Follows dates, channel and email, independent of status and page. Rows show creation or redemption time.',
+
         ordersTitle: 'Orders', ordersHint: 'Current page only · 25 per page', timeRange: 'Order time range',
         today: 'Today', last7Days: 'Last 7 days', last30Days: 'Last 30 days', searchEmail: 'Search user email',
         status: 'Status', channel: 'Recharge channel', all: 'All', paid: 'Paid', unpaid: 'Unpaid',

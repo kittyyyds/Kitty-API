@@ -13,6 +13,7 @@ const messages: Record<string, string> = {
   'usage.cacheBreakdown': 'Cache Token Breakdown',
   'usage.cacheCreationTokensLabel': 'Cache Creation',
   'usage.cacheReadTokensLabel': 'Cache Read',
+  'usage.cacheHitRate': 'Cache hit rate',
   'usage.totalCost': 'Total Cost',
   'usage.accountCost': 'Cost',
   'usage.standardCost': 'Standard',
@@ -30,6 +31,7 @@ vi.mock('vue-i18n', async () => {
 })
 
 const stats = {
+  cache_hit_rate: 22 / 134,
   total_requests: 1,
   total_input_tokens: 100,
   total_output_tokens: 50,
@@ -75,6 +77,7 @@ describe('UsageStatsCards', () => {
     expect(text).toContain('12')
     expect(text).toContain('Cache Read')
     expect(text).toContain('22')
+    expect(text).toContain('Cache hit rate: 16.4%')
   })
 
   it('shows every token component without requiring hover', () => {
@@ -93,3 +96,14 @@ describe('UsageStatsCards', () => {
     expect(wrapper.findAll('li').map(item => item.text())).toEqual(['In100', 'Out50', 'Cache Creation12', 'Cache Read22'])
   })
 })
+
+ it.each([[null, '-'], [undefined, '-'], [0, '0.0%'], [0.8, '80.0%']] as const)(
+  'uses eligible rate %s without recomputing from total traffic', (rate, expected) => {
+    const wrapper = mount(UsageStatsCards, {
+      props: { stats: { ...stats, total_input_tokens: 1000000, cache_hit_rate: rate } },
+      global: { stubs: { Icon: true } },
+    })
+    expect(wrapper.get('[data-testid="total-cache-hit-rate"]').text()).toBe('Cache hit rate: ' + expected)
+    expect(wrapper.get('ul').text()).toContain('In1.00M')
+  },
+)

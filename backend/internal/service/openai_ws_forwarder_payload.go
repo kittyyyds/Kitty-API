@@ -3,11 +3,13 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -20,7 +22,7 @@ func validateOpenAIWSBearerToken(account *Account, token string) error {
 	if account == nil {
 		return errors.New("account is nil")
 	}
-	if strings.TrimSpace(token) == "" && !account.IsOpenAIAgentIdentity() {
+	if strings.TrimSpace(token) == "" && !account.IsOpenAIAgentIdentity() && !account.IsOpenAIVMManaged() {
 		return errors.New("token is empty")
 	}
 	return nil
@@ -29,9 +31,6 @@ func validateOpenAIWSBearerToken(account *Account, token string) error {
 func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (string, error) {
 	if account == nil {
 		return "", errors.New("account is nil")
-	}
-	if account.IsExcelOAuth() {
-		return "", errExcelOAuthRouteUnavailable
 	}
 	var targetURL string
 	switch account.Type {
@@ -91,17 +90,17 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	routingModel string,
 	routingServiceTier string,
 ) (http.Header, openAIWSSessionHeaderResolution, error) {
-	if codexAccountIdentitySource(c, account).IsExcelOAuth() {
-		return nil, openAIWSSessionHeaderResolution{}, errExcelOAuthRouteUnavailable
-	}
 	headers := make(http.Header)
 	if account == nil || !account.IsOpenAIAgentIdentity() {
 		headers.Set("authorization", "Bearer "+token)
 	}
 
 	sessionResolution := resolveOpenAIWSSessionHeaders(c, promptCacheKey)
+	identityLane := codexIdentityLaneAccount(account)
 	if c != nil && c.Request != nil {
-		if v := strings.TrimSpace(c.Request.Header.Get("accept-language")); v != "" {
+		// accept-language：官方 Codex WS 握手不发该头（reqwest 不写它），Codex
+		// 身份通道从源头就不再引入；其它账号保持原透传。
+		if v := strings.TrimSpace(c.Request.Header.Get("accept-language")); v != "" && !identityLane {
 			headers.Set("accept-language", v)
 		}
 		for _, value := range c.Request.Header.Values("x-codex-beta-features") {
@@ -112,12 +111,21 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		for _, name := range [...]string{
 			"x-codex-window-id",
 			"x-codex-installation-id",
+			"x-codex-parent-thread-id",
+			"x-openai-subagent",
 			"session-id",
 			"thread-id",
 			"x-client-request-id",
 		} {
 			if value := c.Request.Header.Get(name); strings.TrimSpace(value) != "" {
 				headers.Set(name, value)
+			}
+		}
+		if identityLane {
+			for _, name := range [...]string{"x-openai-memgen-request", "x-responsesapi-include-timing-metrics"} {
+				if value := strings.TrimSpace(c.Request.Header.Get(name)); value != "" {
+					headers.Set(name, value)
+				}
 			}
 		}
 	}
@@ -151,7 +159,19 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		headers.Set(openAIWSTurnMetadataHeader, metadata)
 	}
 	applyCodexAccountIdentityHeaders(headers, codexAccountIdentitySource(c, account), getAPIKeyIDFromContext(c))
+	// 官方握手只发连字符 session-id / thread-id（headers.rs:5-11）。客户端没带
+	// session-id 时，上面按 prompt_cache_key 派生的隔离值只落在了官方不发的
+	// session_id 上；线序收口删除该头后会同时丢掉多用户隔离。这里把同一份隔离
+	// 值复制到官方字段（不做二次 namespace 变换，避免与帧内 client_metadata
+	// 的单次作用域不一致），再交给后面的收口删除非官方名。
+	if identityLane && strings.TrimSpace(headers.Get("session-id")) == "" {
+		if isolated := strings.TrimSpace(headers.Get("session_id")); isolated != "" {
+			headers.Set("session-id", canonicalCodexSessionHeaderValue(isolated))
+		}
+	}
 	applyStagedCodexFingerprintHeaders(c, account, headers)
+	applyCodexFingerprintConvergenceHeaders(c, codexAccountIdentitySource(c, account), headers)
+	applyCodexDeviceWireProfile(c, account, headers, true)
 
 	if account != nil && account.UsesOpenAICodexProtocol() {
 		if err := resolveAndSetOpenAIChatGPTAccountHeaders(ctx, s.accountRepo, headers, account); err != nil {
@@ -161,7 +181,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	}
 
 	betaValue := openAIWSBetaV2Value
-	if decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
+	// Official Codex uses the V2 Responses WebSocket contract for ChatGPT
+	// OAuth/SetupToken accounts; never downgrade the Codex identity lane.
+	if !identityLane && decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
 		betaValue = openAIWSBetaV1Value
 	}
 	headers.Set("OpenAI-Beta", betaValue)
@@ -184,11 +206,11 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	// 管理员显式配置传入（上面写进 headers 的值只在强制统一被关闭时才参与配对）。
 	if account != nil && account.UsesOpenAICodexProtocol() {
 		enforceCodexIdentityHeadersWithUA(headers, s.codexIdentityOverrideUA(account))
+		s.applyCodexSessionIdentity(c, account, nil, headers)
 	}
 
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）。
 	// 覆盖所有 WS 模式（ctx_pool/dedicated/passthrough）的握手头。
-	applyOpenAIAPIKeyIdentityHeaders(headers, account, s.codexIdentityOverrideUA(account))
 	account.ApplyHeaderOverrides(headers)
 	setOpenAICodexRoutingHint(headers, account, routingModel, routingServiceTier)
 	logOpenAIRoutingDiagnostics(
@@ -200,9 +222,16 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		strings.TrimSpace(headers.Get(openAICodexRoutingHintHeader)) != "",
 		"soft_routing_hint",
 	)
-	if c != nil && c.Request != nil {
-		s.requestTimezoneHeaders(ctx, account, c.Request.Header, headers)
+
+	// WS 握手线序收口：官方握手集 = build_responses_headers + originator +
+	// x-client-request-id + session-id/thread-id + 兼容头 + routing hint +
+	// OpenAI-Beta (core/src/client.rs:1304-1337)。下划线 ID、installation-id 与
+	// accept-language 删除；OpenAI-Beta 与 x-client-request-id 留在 WS 通道。
+	// 各 WS 通道在 normalizeCodexRequestMetadata* 之后还会再收口一次。
+	if identityLane {
+		projectCodexOutboundHeaders(headers, true)
 	}
+
 	return headers, sessionResolution, nil
 }
 
@@ -224,7 +253,121 @@ func (s *OpenAIGatewayService) buildOpenAIWSCreatePayload(reqBody map[string]any
 	if account != nil && account.UsesOpenAICodexProtocol() && !s.isOpenAIWSStoreRecoveryAllowed(account) {
 		payload["store"] = false
 	}
+	// 官方 Codex 的 WS 帧（ResponseCreateWsRequest，codex-rs/codex-api/src/common.rs）
+	// 没有 instructions 字段：系统提示在官方客户端由 prompt 装配为 input 首位的
+	// developer message。把顶层 instructions 下沉成同形态 item，既保住语义（官方
+	// 也靠这条 input 路径下达 instructions），又避免多出一个官方帧里不存在的尾字段。
+	if codexIdentityLaneAccount(account) {
+		prependCodexWSInstructionsItem(payload)
+	}
 	return payload
+}
+
+// prependCodexWSInstructionsItem 把顶层 instructions 转成首位 developer message
+// 并从顶层删除。非字符串 instructions、或 input 不是消息数组形态时不改写——保持
+// 客户端原始意图透传，避免吞掉无法保真的请求结构。
+func prependCodexWSInstructionsItem(payload map[string]any) {
+	instructions, ok := payload["instructions"].(string)
+	if !ok || strings.TrimSpace(instructions) == "" {
+		return
+	}
+	// item 必须按官方 serde 声明序（type,id,role,content,metadata）逐字节构造：
+	// map 序列化会字典化键序，与基线 item 的字段序不符。RawMessage 挂在
+	// []any input 首位时 writer 原样透传。id 按内容确定性派生而非随机：
+	// 同一 instructions 在相邻请求里生成同一逻辑 item，delta 链的前缀哈希
+	// 才能稳定命中（官方客户端在 prompt 装配期生成并复用该 item id）。
+	var item bytes.Buffer
+	item.WriteString(`{"type":"message","id":`)                                                                             //nolint:errcheck // bytes.Buffer 写入不会失败
+	item.WriteString(strconv.Quote(codexWSInstructionsItemID(instructions)))                                                //nolint:errcheck // bytes.Buffer 写入不会失败
+	item.WriteString(`,"role":"developer","content":[{"type":"input_text","text":`)                                         //nolint:errcheck // bytes.Buffer 写入不会失败
+	item.WriteString(strconv.Quote(instructions))                                                                           //nolint:errcheck // bytes.Buffer 写入不会失败
+	item.WriteString(`}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["model.base_instructions"]}}`) //nolint:errcheck // bytes.Buffer 写入不会失败
+	raw := json.RawMessage(item.Bytes())
+	switch input := payload["input"].(type) {
+	case []any:
+		payload["input"] = append([]any{raw}, input...)
+	case []json.RawMessage:
+		payload["input"] = append([]json.RawMessage{raw}, input...)
+	case nil:
+		payload["input"] = []any{raw}
+	default:
+		return // 字符串等其它 input 形态不规整，顶层 instructions 原样透传
+	}
+	delete(payload, "instructions")
+}
+
+// codexInputCarriesBaseInstructions reports whether the request already
+// carries Codex base instructions as an input item (the shape Codex ≥ 0.162
+// sends instead of top-level instructions): a developer message whose
+// internal_chat_message_metadata_passthrough.content_item_kinds contains
+// "model.base_instructions".
+func codexInputCarriesBaseInstructions(body []byte) bool {
+	found := false
+	gjson.GetBytes(body, "input").ForEach(func(_, item gjson.Result) bool {
+		if item.Get("role").String() != "developer" {
+			return true
+		}
+		item.Get("internal_chat_message_metadata_passthrough.content_item_kinds").ForEach(func(_, kind gjson.Result) bool {
+			if kind.String() == "model.base_instructions" {
+				found = true
+				return false
+			}
+			return true
+		})
+		return !found
+	})
+	return found
+}
+
+// codexInputLeadsWithDeveloperMessage reports whether input[0] is a developer
+// message, which is where Codex >= 0.162 places its base prompt.
+func codexInputLeadsWithDeveloperMessage(body []byte) bool {
+	first := gjson.GetBytes(body, "input.0")
+	return first.IsObject() && first.Get("role").String() == "developer" &&
+		first.Get("type").String() != "additional_tools"
+}
+
+// codexInputMapCarriesBaseInstructions is codexInputCarriesBaseInstructions
+// for a decoded body.
+func codexInputMapCarriesBaseInstructions(reqBody map[string]any) bool {
+	input, ok := reqBody["input"].([]any)
+	if !ok {
+		return false
+	}
+	for _, raw := range input {
+		var item map[string]any
+		switch v := raw.(type) {
+		case map[string]any:
+			item = v
+		case json.RawMessage:
+			if err := json.Unmarshal(v, &item); err != nil {
+				continue
+			}
+		default:
+			continue
+		}
+		if item["role"] != "developer" {
+			continue
+		}
+		meta, _ := item["internal_chat_message_metadata_passthrough"].(map[string]any)
+		kinds, _ := meta["content_item_kinds"].([]any)
+		for _, k := range kinds {
+			if k == "model.base_instructions" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// codexWSInstructionsItemID 按 instructions 内容派生确定性 msg_ id：
+// sha256 前 16 字节格式化为 uuid v5 形态（版本/变体位与官方 uuid 形状一致）。
+func codexWSInstructionsItemID(instructions string) string {
+	sum := sha256.Sum256([]byte(instructions))
+	sum[6] = (sum[6] & 0x0f) | 0x50 // version 5
+	sum[8] = (sum[8] & 0x3f) | 0x80 // variant 10
+	return "msg_" + fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
 }
 
 func setOpenAIWSTurnMetadata(payload map[string]any, turnMetadata string) {
@@ -407,27 +550,20 @@ func openAIWSPayloadCodexWindowID(payload []byte) string {
 	return strings.TrimSpace(gjson.Get(turnMetadata, "window_id").String())
 }
 
-// normalizeOpenAIWSContextWindowBoundary breaks a Responses continuation chain
-// when Codex moves to a new local context window. WebSocket response.create can
-// still carry the previous window's previous_response_id after new_context,
-// while HTTP starts the new window without that continuation anchor. The current
-// window must come from the client frame before handshake/identity normalization.
+// normalizeOpenAIWSContextWindowBoundary observes a local context-window
+// change. That metadata alone cannot prove that an explicit upstream anchor is
+// redundant, so the request retains its continuation identity.
 func normalizeOpenAIWSContextWindowBoundary(
 	payload []byte,
 	previousWindowID string,
-	currentWindowID string,
 ) ([]byte, openAIWSContextWindowBoundary, error) {
+	currentWindowID := openAIWSPayloadCodexWindowID(payload)
 	boundary := openAIWSContextWindowBoundary{WindowID: currentWindowID}
 	if previousWindowID == "" || currentWindowID == "" || currentWindowID == previousWindowID {
 		return payload, boundary, nil
 	}
 	boundary.Changed = true
-	updated, removed, err := dropPreviousResponseIDFromRawPayload(payload)
-	if err != nil {
-		return payload, boundary, err
-	}
-	boundary.PreviousResponseIDRemoved = removed
-	return updated, boundary, nil
+	return payload, boundary, nil
 }
 
 func shouldInferIngressFunctionCallOutputPreviousResponseID(
@@ -540,6 +676,47 @@ func normalizeOpenAIWSJSONForCompareOrRaw(raw []byte) []byte {
 	return normalized
 }
 
+// normalizeOpenAIWSInputItemForCompareOrRaw recognizes only the documented
+// user-message shorthand represented by input:string. Other fields and shapes
+// retain their full comparison identity; original wire items are never edited.
+func normalizeOpenAIWSInputItemForCompareOrRaw(raw []byte) []byte {
+	if !openAIUnambiguousJSONObject(raw) {
+		return bytes.TrimSpace(raw)
+	}
+	item := gjson.ParseBytes(raw)
+	known := item.Get("role").Type == gjson.String && item.Get("role").String() == "user"
+	item.ForEach(func(key, value gjson.Result) bool {
+		switch key.String() {
+		case "role", "content":
+		case "type":
+			known = known && value.Type == gjson.String && value.String() == "message"
+		default:
+			known = false
+		}
+		return known
+	})
+	content := item.Get("content")
+	if known && content.IsArray() {
+		parts := content.Array()
+		if len(parts) != 1 || !parts[0].IsObject() {
+			known = false
+		} else {
+			part := parts[0]
+			known = part.Get("type").Type == gjson.String && part.Get("type").String() == "input_text"
+			part.ForEach(func(key, _ gjson.Result) bool {
+				known = known && (key.String() == "type" || key.String() == "text")
+				return known
+			})
+			content = part.Get("text")
+		}
+	}
+	if !known || content.Type != gjson.String {
+		return normalizeOpenAIWSJSONForCompareOrRaw(raw)
+	}
+	normalized, _ := json.Marshal(map[string]any{"type": "message", "role": "user", "content": content.String()})
+	return normalized
+}
+
 func normalizeOpenAIWSPayloadWithoutInputAndPreviousResponseID(payload []byte) ([]byte, error) {
 	if len(payload) == 0 {
 		return nil, errors.New("payload is empty")
@@ -592,7 +769,10 @@ func openAIWSExtractNormalizedInputSequence(payload []byte) ([]json.RawMessage, 
 		return []json.RawMessage{openAIWSRawMessageFromResult(payload, inputValue)}, true, nil
 	}
 	if inputValue.Type == gjson.String {
-		encoded, _ := json.Marshal(inputValue.String())
+		// Responses input:string is shorthand for a user message. Store the
+		// equivalent typed item when combining turns, not an invalid bare
+		// string element inside the later input array.
+		encoded, _ := json.Marshal(map[string]any{"type": "message", "role": "user", "content": inputValue.String()})
 		return []json.RawMessage{encoded}, true, nil
 	}
 	return []json.RawMessage{openAIWSRawMessageFromResult(payload, inputValue)}, true, nil
@@ -621,8 +801,8 @@ func openAIWSInputIsPrefixExtended(previousPayload, currentPayload []byte) (bool
 	}
 
 	for idx := range previousItems {
-		previousNormalized := normalizeOpenAIWSJSONForCompareOrRaw(previousItems[idx])
-		currentNormalized := normalizeOpenAIWSJSONForCompareOrRaw(currentItems[idx])
+		previousNormalized := normalizeOpenAIWSInputItemForCompareOrRaw(previousItems[idx])
+		currentNormalized := normalizeOpenAIWSInputItemForCompareOrRaw(currentItems[idx])
 		if !bytes.Equal(previousNormalized, currentNormalized) {
 			return false, nil
 		}
@@ -642,8 +822,8 @@ func openAIWSRawItemsHasPrefix(items []json.RawMessage, prefix []json.RawMessage
 		if bytes.Equal(bytes.TrimSpace(prefix[idx]), bytes.TrimSpace(items[idx])) {
 			continue
 		}
-		previousNormalized := normalizeOpenAIWSJSONForCompareOrRaw(prefix[idx])
-		currentNormalized := normalizeOpenAIWSJSONForCompareOrRaw(items[idx])
+		previousNormalized := normalizeOpenAIWSInputItemForCompareOrRaw(prefix[idx])
+		currentNormalized := normalizeOpenAIWSInputItemForCompareOrRaw(items[idx])
 		if !bytes.Equal(previousNormalized, currentNormalized) {
 			return false
 		}
@@ -661,119 +841,20 @@ func openAIWSRawItemsHasFunctionCallOutput(items []json.RawMessage) bool {
 }
 
 func openAIWSRawItemsHaveToolCallContextForOutputs(items []json.RawMessage) bool {
-	if len(items) == 0 {
+	body, err := json.Marshal(map[string]any{"input": items})
+	if err != nil {
 		return false
 	}
-	contextCallIDs := make(map[string]struct{})
-	outputCallIDs := make(map[string]struct{})
-	for _, item := range items {
-		itemType := gjson.GetBytes(item, "type").String()
-		callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
-		switch {
-		case isCodexToolCallContextItemType(itemType):
-			if callID != "" {
-				contextCallIDs[callID] = struct{}{}
-			}
-		case isCodexToolCallOutputItemType(itemType):
-			if callID == "" {
-				return false
-			}
-			outputCallIDs[callID] = struct{}{}
-		}
-	}
-	if len(outputCallIDs) == 0 || len(contextCallIDs) == 0 {
-		return false
-	}
-	for callID := range outputCallIDs {
-		if _, ok := contextCallIDs[callID]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-// openAIWSRawItemsContainNonPortableContext reports context that cannot be
-// safely replayed on a replacement credential.  previous_response_id is an
-// upstream-owned pointer, while encrypted reasoning/compaction content and
-// item_reference values are tied to the credential/session that produced them.
-// Treating those fields as ordinary JSON and silently sending them to another
-// account can turn a recoverable upstream failure into a corrupted or
-// unauthorized continuation.  This guard is intentionally used only for
-// cross-account current-turn retry; same-account continuation keeps its
-// existing, stricter upstream affinity rules.
-func openAIWSRawItemsContainNonPortableContext(items []json.RawMessage) bool {
-	var contains func(any) bool
-	contains = func(value any) bool {
-		switch typed := value.(type) {
-		case map[string]any:
-			if itemType, ok := typed["type"].(string); ok && strings.TrimSpace(itemType) == "item_reference" {
-				return true
-			}
-			if encrypted, ok := typed["encrypted_content"].(string); ok && strings.TrimSpace(encrypted) != "" {
-				return true
-			}
-			for _, child := range typed {
-				if contains(child) {
-					return true
-				}
-			}
-		case []any:
-			for _, child := range typed {
-				if contains(child) {
-					return true
-				}
-			}
-		}
-		return false
-	}
-
-	for _, item := range items {
-		var decoded any
-		if err := json.Unmarshal(item, &decoded); err != nil {
-			// The caller already validated the request.  If a replay item is
-			// malformed here, fail closed rather than infer portability.
-			return true
-		}
-		if contains(decoded) {
-			return true
-		}
-	}
-	return false
+	proof := AnalyzeOpenAIContinuationReplayProof(body)
+	return proof.HasToolOutput && proof.Verdict == OpenAIContinuationProofInline
 }
 
 // sanitizeOpenAIWSHistoricalReplayToolCalls 返回的新头数组与 previousItems 共享正文。
-func sanitizeOpenAIWSHistoricalReplayToolCalls(
-	previousItems []json.RawMessage,
-	currentItems []json.RawMessage,
-) []json.RawMessage {
-	if len(previousItems) == 0 {
-		return previousItems
-	}
-	outputCallIDs := make(map[string]struct{})
-	collectOutputCallIDs := func(items []json.RawMessage) {
-		for _, item := range items {
-			if !isCodexToolCallOutputItemType(gjson.GetBytes(item, "type").String()) {
-				continue
-			}
-			if callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String()); callID != "" {
-				outputCallIDs[callID] = struct{}{}
-			}
-		}
-	}
-	collectOutputCallIDs(previousItems)
-	collectOutputCallIDs(currentItems)
-
-	sanitized := make([]json.RawMessage, 0, len(previousItems))
-	for _, item := range previousItems {
-		if isCodexToolCallContextItemType(gjson.GetBytes(item, "type").String()) {
-			callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
-			if _, paired := outputCallIDs[callID]; !paired {
-				continue
-			}
-		}
-		sanitized = append(sanitized, item)
-	}
-	return sanitized
+func sanitizeOpenAIWSHistoricalReplayToolCalls(previousItems []json.RawMessage, _ []json.RawMessage) []json.RawMessage {
+	// An unmatched historical call is still history. Retain it and decline
+	// replay if dependency validation fails; never erase it to manufacture a
+	// reconstructible sequence.
+	return previousItems
 }
 
 func openAIWSRawPayloadHasToolCallOutput(payload []byte) bool {
@@ -798,6 +879,84 @@ func openAIWSRawPayloadHasToolCallOutput(payload []byte) bool {
 	return false
 }
 
+// openAIWSObservedOutputProvenance is local to one ingress connection and its
+// current complete response chain. Client input never adds evidence to this set.
+// Only full collector output from a successful turn may be observed by callers.
+type openAIWSObservedOutputProvenance struct {
+	digests   map[[sha256.Size]byte]struct{}
+	exhausted bool
+	// Other platforms retain their pre-existing prefix policy.
+	legacyPrefix bool
+}
+
+func openAIWSObservedOutputDigest(item json.RawMessage) ([sha256.Size]byte, bool) {
+	var zero [sha256.Size]byte
+	fields := gjson.GetManyBytes(item, "type", "role", "id", "call_id")
+	if fields[0].Type != gjson.String || fields[0].String() == "" || fields[0].String() == "item_reference" {
+		return zero, false
+	}
+	if fields[0].String() == "message" && fields[1].String() != "assistant" {
+		return zero, false
+	}
+	identified := false
+	for _, field := range fields[2:] {
+		identified = identified || (field.Type == gjson.String && len(field.String()) > 0 && len(field.String()) <= openAIContinuationProofMaxID)
+	}
+	if !identified || !openAIUnambiguousJSONObject(item) {
+		return zero, false
+	}
+	normalized, err := normalizeOpenAIWSJSONForCompare(item)
+	if err != nil {
+		return zero, false
+	}
+	return sha256.Sum256(normalized), true
+}
+
+func (p *openAIWSObservedOutputProvenance) reset() {
+	*p = openAIWSObservedOutputProvenance{legacyPrefix: p.legacyPrefix}
+}
+
+func (p *openAIWSObservedOutputProvenance) observeCompleteOutput(items []json.RawMessage) {
+	if p == nil || p.exhausted {
+		return
+	}
+	for _, item := range items {
+		digest, ok := openAIWSObservedOutputDigest(item)
+		if !ok {
+			continue
+		}
+		if _, exists := p.digests[digest]; exists {
+			continue
+		}
+		if len(p.digests) >= openAIContinuationProofMaxItems {
+			p.digests = nil
+			p.exhausted = true
+			return
+		}
+		if p.digests == nil {
+			p.digests = make(map[[sha256.Size]byte]struct{})
+		}
+		p.digests[digest] = struct{}{}
+	}
+}
+
+func (p *openAIWSObservedOutputProvenance) provesPrefix(items []json.RawMessage) bool {
+	if p != nil && p.legacyPrefix {
+		return true
+	}
+	if p == nil || p.exhausted || len(p.digests) == 0 || len(items) > openAIContinuationProofMaxItems {
+		return false
+	}
+	for _, item := range items {
+		if digest, ok := openAIWSObservedOutputDigest(item); ok {
+			if _, observed := p.digests[digest]; observed {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // buildOpenAIWSReplayInputSequenceFromItems 基于已解析的当前 turn input 构建
 // replay 序列。返回序列的正文与 previousFullInput/currentItems 共享所有权
 // （见 combineOpenAIWSReplayItems 上方的所有权不变式），头数组可能直接转移自
@@ -808,6 +967,7 @@ func buildOpenAIWSReplayInputSequenceFromItems(
 	currentItems []json.RawMessage,
 	currentExists bool,
 	hasPreviousResponseID bool,
+	observedOutputs ...*openAIWSObservedOutputProvenance,
 ) ([]json.RawMessage, bool) {
 	if !hasPreviousResponseID || !previousFullInputExists {
 		return currentItems, currentExists
@@ -816,7 +976,11 @@ func buildOpenAIWSReplayInputSequenceFromItems(
 	if !currentExists || len(currentItems) == 0 {
 		return previousFullInput, true
 	}
-	if openAIWSRawItemsHasPrefix(currentItems, previousFullInput) {
+	// An anchored request is an incremental input by default. Text overlap,
+	// length, and client-supplied output-looking IDs do not prove full history.
+	// A complete prefix may replace history only when it contains an exact
+	// identified output actually collected on this response chain.
+	if len(observedOutputs) == 1 && observedOutputs[0].provesPrefix(previousFullInput) && openAIWSRawItemsHasPrefix(currentItems, previousFullInput) {
 		return currentItems, true
 	}
 	merged := make([]json.RawMessage, 0, len(previousFullInput)+len(currentItems))
@@ -830,6 +994,7 @@ func buildOpenAIWSReplayInputSequence(
 	previousFullInputExists bool,
 	currentPayload []byte,
 	hasPreviousResponseID bool,
+	observedOutputs ...*openAIWSObservedOutputProvenance,
 ) ([]json.RawMessage, bool, error) {
 	currentItems, currentExists, currentErr := openAIWSExtractNormalizedInputSequence(currentPayload)
 	if currentErr != nil {
@@ -841,6 +1006,7 @@ func buildOpenAIWSReplayInputSequence(
 		currentItems,
 		currentExists,
 		hasPreviousResponseID,
+		observedOutputs...,
 	)
 	return items, exists, nil
 }
@@ -870,19 +1036,20 @@ func buildOpenAIWSCurrentTurnRetryPayload(
 	fullInput []json.RawMessage,
 	fullInputExists bool,
 	originalModel string,
+	sameOwner ...bool,
 ) ([]byte, bool, error) {
 	if !fullInputExists {
-		return nil, false, nil
-	}
-	if openAIWSRawItemsContainNonPortableContext(fullInput) {
-		// Do not strip previous_response_id and replay opaque account-bound
-		// material on a replacement account.  The caller will close/fail over
-		// conservatively and the client can reconnect with fresh context.
 		return nil, false, nil
 	}
 	retryPayload, err := setOpenAIWSPayloadInputSequence(payload, fullInput, true)
 	if err != nil {
 		return nil, false, err
+	}
+	// fullInputExists is supplied only after the caller proves the complete
+	// root and every preceding response on this connection. Tool matching is
+	// an additional portability check, never that history/ownership proof.
+	if !openAIContinuationProofPermitsReplay(analyzeOpenAIContinuationReplayProof(retryPayload, len(sameOwner) == 1 && sameOwner[0])) {
+		return nil, false, nil
 	}
 	retryPayload = RemovePreviousResponseIDFromBody(retryPayload)
 	if model := strings.TrimSpace(originalModel); model != "" {
@@ -890,10 +1057,6 @@ func buildOpenAIWSCurrentTurnRetryPayload(
 		if err != nil {
 			return nil, false, err
 		}
-	}
-	coverage := AnalyzeToolCallOutputContextCoverageBytes(retryPayload)
-	if coverage.HasFunctionCallOutput && !coverage.ContextCoversAllCallIDs {
-		return nil, false, nil
 	}
 	return retryPayload, true, nil
 }
@@ -985,4 +1148,25 @@ func shouldKeepIngressPreviousResponseIDWithStrictState(
 		return false, "non_input_changed", nil
 	}
 	return true, "strict_incremental_ok", nil
+}
+
+// Native incremental requests have no base prompt in their input tail. Typed
+// per-item turn metadata ties them to the request's explicit continuation.
+// This gates compatibility normalization only; it grants no identity or access.
+func codexNativeContinuation(body map[string]any) bool {
+	previous, _ := body["previous_response_id"].(string)
+	metadata, _ := body["client_metadata"].(map[string]any)
+	turn, _ := metadata["turn_id"].(string)
+	if previous == "" || turn == "" {
+		return false
+	}
+	input, _ := body["input"].([]any)
+	for _, raw := range input {
+		item, _ := raw.(map[string]any)
+		meta, _ := item["internal_chat_message_metadata_passthrough"].(map[string]any)
+		if value, ok := meta["turn_id"].(string); ok && value == turn {
+			return true
+		}
+	}
+	return false
 }

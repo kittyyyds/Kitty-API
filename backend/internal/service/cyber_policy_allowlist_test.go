@@ -41,7 +41,7 @@ func TestCyberPolicyAllowlistCoversAllUserKeysAndRefreshes(t *testing.T) {
 func TestRecordCyberPolicyEventLogOnlyPreservesEvidenceWithoutSideEffects(t *testing.T) {
 	repo := &banCountArgsTestRepo{}
 	svc := NewContentModerationService(
-		&contentModerationTestSettingRepo{values: map[string]string{SettingKeyRiskControlEnabled: "true"}},
+		&contentModerationTestSettingRepo{values: map[string]string{SettingKeyRiskControlEnabled: "true", SettingKeyContentModerationConfig: `{"all_groups":true}`}},
 		repo, nil, nil, nil, nil, nil, &EmailService{},
 	)
 	// An unconfigured email service must never be invoked in log-only mode.

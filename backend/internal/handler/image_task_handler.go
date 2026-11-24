@@ -5,12 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/Wei-Shaw/sub2api/internal/managedinstance"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/managedinstance"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
@@ -78,11 +79,12 @@ func (h *AsyncImageHandler) Submit(c *gin.Context) {
 
 	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
 	if err != nil {
-		if maxErr, ok := extractMaxBytesError(err); ok {
-			imageTaskJSONError(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
+		bodyLog := requestLogger(c, "handler.image_task.create")
+		if handleRequestBodyReadError(c, bodyLog, err) {
 			return
 		}
-		imageTaskJSONError(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		status, message := requestBodyReadFailure(bodyLog, c.Request, err)
+		imageTaskJSONError(c, status, "invalid_request_error", message)
 		return
 	}
 	if len(body) == 0 {
@@ -101,7 +103,13 @@ func (h *AsyncImageHandler) Submit(c *gin.Context) {
 		return
 	}
 
-	taskCtx, recorder, cancel := newAsyncImageContext(c, body, h.tasks.ExecutionTimeout())
+	taskCtx, recorder, cancel, err := newAsyncImageContext(c, body, h.tasks.ExecutionTimeout())
+	if err != nil {
+		if !middleware2.RejectRequestBodyMemoryOverload(c, err) {
+			imageTaskError(c, service.ErrImageTaskUnavailable)
+		}
+		return
+	}
 	task, err := h.tasks.Create(c.Request.Context(), service.ImageTaskOwner{UserID: apiKey.UserID, APIKeyID: apiKey.ID})
 	if err != nil {
 		cancel()
@@ -125,42 +133,6 @@ func (h *AsyncImageHandler) Submit(c *gin.Context) {
 
 	managedDone := managedinstance.Track()
 	go func() { defer managedDone(); h.run(task.ID, platform, taskCtx, recorder, cancel) }()
-}
-
-func (h *AsyncImageHandler) checkSecurityAuditBeforeSubmit(c *gin.Context, apiKey *service.APIKey, platform string, body []byte) bool {
-	if h == nil || h.openAI == nil {
-		return true
-	}
-	subject, ok := middleware2.GetAuthSubjectFromContext(c)
-	if !ok {
-		imageTaskJSONError(c, http.StatusInternalServerError, "api_error", "User context not found")
-		return false
-	}
-	model := ""
-	moderationBody := body
-	if platform == service.PlatformGrok {
-		parsed := service.ParseGrokMediaRequest(c.GetHeader("Content-Type"), body)
-		model, moderationBody = parsed.Model, parsed.ModerationBody()
-	} else if h.openAI.gatewayService != nil {
-		parsed, err := h.openAI.gatewayService.ParseOpenAIImagesRequest(c, body)
-		if err != nil {
-			imageTaskValidationError(c, err)
-			return false
-		}
-		model, moderationBody = parsed.Model, parsed.ModerationBody()
-	}
-	if len(moderationBody) == 0 {
-		c.Set(securityAuditCompletedContextKey, true)
-		return true
-	}
-	reqLog := requestLogger(c, "handler.async_image.security_audit",
-		zap.Int64("user_id", subject.UserID), zap.Int64("api_key_id", apiKey.ID), zap.String("model", model))
-	decision := h.openAI.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, model, moderationBody)
-	if decision != nil && !decision.AllowNextStage {
-		h.openAI.openAISecurityAuditError(c, decision)
-		return false
-	}
-	return true
 }
 
 func (h *AsyncImageHandler) Get(c *gin.Context) {
@@ -249,15 +221,59 @@ func (h *AsyncImageHandler) run(taskID, platform string, taskCtx *gin.Context, r
 		}
 	}()
 
-	h.execute(platform, taskCtx)
-	body := bytes.TrimSpace(recorder.Body.Bytes())
+	var ops *service.OpsService
+	if h.openAI != nil {
+		ops = h.openAI.opsService
+	}
+	var body []byte
+	var statusCode int
+	var inBandError bool
+	// Detached execution does not traverse the submission route's middleware.
+	// Capture the original response and upstream diagnostics before task polling
+	// applies the configured client-facing message.
+	OpsErrorLoggerMiddleware(ops, func(c *gin.Context) {
+		h.execute(platform, c)
+		body = bytes.TrimSpace(recorder.Body.Bytes())
+		statusCode = recorder.Code
+		if statusCode == 0 {
+			statusCode = http.StatusOK
+		}
+		inBandError = statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices &&
+			service.IsUpstreamErrorPayload(body, "")
+		if !inBandError {
+			return
+		}
+		parsed := parseOpsErrorResponse(body)
+		statusCode = inferStreamFailureStatus(c, parsed)
+		upstreamStatus := 0
+		if !hasOpsUpstreamErrorContext(c) {
+			upstreamStatus = statusCode
+		}
+		message := ""
+		if strings.TrimSpace(c.GetString(service.OpsUpstreamErrorMessageKey)) == "" {
+			message = parsed.Message
+		}
+		detail := ""
+		if strings.TrimSpace(c.GetString(service.OpsUpstreamErrorDetailKey)) == "" {
+			detail = string(body)
+		}
+		service.SetOpsUpstreamError(c, upstreamStatus, message, detail)
+		service.MarkOpsStreamErrorValue(c, service.OpsStreamError{
+			ErrType: parsed.ErrorType, Code: parsed.Code, Message: parsed.Message,
+			IntendedStatus: statusCode, CountTowardsSLA: true, NonStream: true,
+		})
+	})(taskCtx)
 	if err := taskCtx.Request.Context().Err(); err != nil && len(body) == 0 {
 		h.failTask(taskID, http.StatusGatewayTimeout, imageTaskErrorPayload("timeout_error", "image generation task timed out"))
 		return
 	}
-	statusCode := recorder.Code
-	if statusCode == 0 {
-		statusCode = http.StatusOK
+	// JSON whitespace keepalives may commit 200 before a local policy denial.
+	// The worker's semantic result is independent of that transport status.
+	if status, ok := taskCtx.Get(upstreamAuditFailureStatusKey); ok {
+		if code, ok := status.(int); ok && code >= 400 {
+			h.failTask(taskID, code, extractImageTaskError(body))
+			return
+		}
 	}
 	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
 		if len(body) == 0 || !json.Valid(body) {
@@ -269,22 +285,39 @@ func (h *AsyncImageHandler) run(taskID, platform string, taskCtx *gin.Context, r
 		}
 		return
 	}
-	h.failTask(taskID, statusCode, extractImageTaskError(body))
+	parsed := parseOpsErrorResponse(body)
+	phase, _, _, _ := classifyOpsErrorLog(taskCtx, parsed.ErrorType, parsed.Message, parsed.Code, statusCode)
+	upstream := inBandError || hasOpsUpstreamErrorContext(taskCtx) || phase == "upstream" || phase == "account_auth" || phase == "network"
+	h.failTaskWithSource(taskID, statusCode, extractImageTaskError(body), upstream)
 }
 
 func (h *AsyncImageHandler) failTask(taskID string, statusCode int, taskErr json.RawMessage) {
-	if err := h.tasks.Fail(context.Background(), taskID, statusCode, taskErr); err != nil {
+	h.failTaskWithSource(taskID, statusCode, taskErr, false)
+}
+
+func (h *AsyncImageHandler) failTaskWithSource(taskID string, statusCode int, taskErr json.RawMessage, upstream bool) {
+	if err := h.tasks.FailWithSource(context.Background(), taskID, statusCode, taskErr, upstream); err != nil {
 		logger.L().Error("image_task.failure_store_failed", zap.String("task_id", taskID), zap.Error(err))
 	}
 }
 
-func newAsyncImageContext(c *gin.Context, body []byte, timeoutDuration time.Duration) (*gin.Context, *httptest.ResponseRecorder, context.CancelFunc) {
-	base := context.WithoutCancel(c.Request.Context())
-	executionCtx, cancel := context.WithTimeout(base, timeoutDuration)
+func newAsyncImageContext(c *gin.Context, body []byte, timeoutDuration time.Duration) (*gin.Context, *httptest.ResponseRecorder, context.CancelFunc, error) {
+	// The task keeps body after Submit returns and the ingress reservation is
+	// released, so it holds the body, and whatever it buffers, on its own one.
+	retained, releaseBody, err := pkghttputil.DetachRequestBodyMemory(c.Request.Context(), int64(len(body)))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	base := context.WithoutCancel(retained)
+	executionCtx, cancelExecution := context.WithTimeout(base, timeoutDuration)
+	cancel := func() {
+		cancelExecution()
+		releaseBody()
+	}
 	request := c.Request.Clone(executionCtx)
-	request.Body = io.NopCloser(bytes.NewReader(body))
+	request.Body = pkghttputil.NewPrereadBody(body)
 	request.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(body)), nil
+		return pkghttputil.NewPrereadBody(body), nil
 	}
 	request.ContentLength = int64(len(body))
 	request.URL.Path = strings.TrimSuffix(request.URL.Path, "/async")
@@ -294,7 +327,7 @@ func newAsyncImageContext(c *gin.Context, body []byte, timeoutDuration time.Dura
 	recorderCtx, _ := gin.CreateTestContext(recorder)
 	taskCtx.Writer = recorderCtx.Writer
 	taskCtx.Request = request
-	return taskCtx, recorder, cancel
+	return taskCtx, recorder, cancel, nil
 }
 
 func asyncImageRequestStreams(contentType string, body []byte) bool {
@@ -357,4 +390,40 @@ func imageTaskValidationError(c *gin.Context, err error) {
 		return
 	}
 	imageTaskJSONError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+}
+
+func (h *AsyncImageHandler) checkSecurityAuditBeforeSubmit(c *gin.Context, apiKey *service.APIKey, platform string, body []byte) bool {
+	if h == nil || h.openAI == nil {
+		return true
+	}
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		imageTaskJSONError(c, http.StatusInternalServerError, "api_error", "User context not found")
+		return false
+	}
+	model := ""
+	moderationBody := body
+	if platform == service.PlatformGrok {
+		parsed := service.ParseGrokMediaRequest(c.GetHeader("Content-Type"), body)
+		model, moderationBody = parsed.Model, parsed.ModerationBody()
+	} else if h.openAI.gatewayService != nil {
+		parsed, err := h.openAI.gatewayService.ParseOpenAIImagesRequest(c, body)
+		if err != nil {
+			imageTaskValidationError(c, err)
+			return false
+		}
+		model, moderationBody = parsed.Model, parsed.ModerationBody()
+	}
+	if len(moderationBody) == 0 {
+		c.Set(securityAuditCompletedContextKey, true)
+		return true
+	}
+	reqLog := requestLogger(c, "handler.async_image.security_audit",
+		zap.Int64("user_id", subject.UserID), zap.Int64("api_key_id", apiKey.ID), zap.String("model", model))
+	decision := h.openAI.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, model, moderationBody)
+	if decision != nil && !decision.AllowNextStage {
+		h.openAI.openAISecurityAuditError(c, decision)
+		return false
+	}
+	return true
 }

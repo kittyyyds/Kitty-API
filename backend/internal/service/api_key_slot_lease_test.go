@@ -149,6 +149,11 @@ type grokLeaseBarrierConn struct {
 	started, stopping, allowStop chan struct{}
 }
 
+func (c *grokLeaseBarrierConn) ReadMessage(ctx context.Context) ([]byte, error) {
+	_, body, err := c.ReadFrame(ctx)
+	return body, err
+}
+
 func (c *grokLeaseBarrierConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
 	close(c.started)
 	<-ctx.Done()

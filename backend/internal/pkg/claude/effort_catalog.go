@@ -42,17 +42,6 @@ func EffortLevelsForModel(model string) []string {
 	return nil
 }
 
-// SupportsAdaptiveThinking reports whether a model accepts thinking.type=adaptive.
-// Every model in the effort catalog does except Claude Opus 4.5, which takes
-// output_config.effort but still enables thinking with a token budget.
-func SupportsAdaptiveThinking(model string) bool {
-	id := normalizeEffortModelID(model)
-	if id == "claude-opus-4-5" || strings.HasPrefix(id, "claude-opus-4-5-") {
-		return false
-	}
-	return EffortLevelsForModel(model) != nil
-}
-
 // IsOpus55 identifies the fixed Opus 5.5 ID after provider/local suffix normalization.
 func IsOpus55(model string) bool {
 	return normalizeEffortModelID(model) == "claude-opus-5-5"
@@ -66,6 +55,16 @@ func IsSonnet55(model string) bool {
 // IsHaiku55 identifies the fixed Haiku 5.5 ID after provider/local suffix normalization.
 func IsHaiku55(model string) bool {
 	return normalizeEffortModelID(model) == "claude-haiku-5-5"
+}
+
+// IsFable52 identifies Fable 5.2 after provider/local suffix normalization.
+func IsFable52(model string) bool {
+	return normalizeEffortModelID(model) == "claude-fable-5-2"
+}
+
+// IsMythos52 identifies Mythos 5.2 after provider/local suffix normalization.
+func IsMythos52(model string) bool {
+	return normalizeEffortModelID(model) == "claude-mythos-5-2"
 }
 
 func normalizeEffortModelID(model string) string {

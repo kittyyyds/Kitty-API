@@ -39,8 +39,14 @@ func TestScopedAdminReviewGroupPriorityAndStatus(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close(); _, _ = base.Exec(`DROP SCHEMA ` + name + ` CASCADE`); _ = base.Close() })
 	driver := entsql.OpenDB(dialect.Postgres, db)
 	client := dbent.NewClient(dbent.Driver(driver))
-	require.NoError(t, migrate.Create(context.Background(), migrate.NewSchema(driver), []*schema.Table{migrate.ProxiesTable, migrate.AccountsTable, migrate.GroupsTable, migrate.AccountGroupsTable}, migrate.WithForeignKeys(false)))
+	require.NoError(t, migrate.Create(context.Background(), migrate.NewSchema(driver), []*schema.Table{migrate.ProxiesTable, migrate.AccountsTable, migrate.GroupsTable, migrate.AccountGroupsTable, migrate.AccountProxiesTable}, migrate.WithForeignKeys(false)))
 	_, err = db.Exec(`CREATE TABLE scheduler_outbox(id BIGSERIAL PRIMARY KEY,event_type TEXT,account_id BIGINT,group_id BIGINT,payload JSONB,dedup_key TEXT,created_at TIMESTAMPTZ DEFAULT NOW());CREATE UNIQUE INDEX review_outbox_dedup ON scheduler_outbox(dedup_key) WHERE dedup_key IS NOT NULL`)
+	require.NoError(t, err)
+	_, err = db.Exec(`CREATE TABLE scheduled_test_plans(id BIGINT PRIMARY KEY,account_id BIGINT,latest_run_id TEXT,group_ids BIGINT[]);
+ CREATE TABLE scheduled_test_protection_states(plan_id BIGINT,account_id BIGINT);
+ CREATE TABLE scheduled_test_combination_states(plan_id BIGINT,account_id BIGINT);
+ CREATE TABLE scheduled_test_pass_rate_states(plan_id BIGINT,account_id BIGINT);
+ CREATE TABLE scheduled_test_results(plan_id BIGINT,account_id BIGINT,run_id TEXT,protection_revoked BOOLEAN DEFAULT FALSE);`)
 	require.NoError(t, err)
 	cache := &scopedReviewSchedulerCache{accounts: make(map[int64]*service.Account)}
 	repo := NewAdminAccountRepository(client, db, cache)
@@ -141,8 +147,7 @@ CREATE CONSTRAINT TRIGGER reject_review_schedulable AFTER UPDATE ON accounts DEF
 		}
 	})
 	t.Run("删除提交后立即清缓存且失败保留缓存", func(t *testing.T) {
-		_, err := db.Exec(`CREATE TABLE scheduled_test_plans(account_id BIGINT);
-  CREATE FUNCTION reject_review_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION '模拟提交失败'; RETURN NULL; END $$;
+		_, err := db.Exec(`CREATE FUNCTION reject_review_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION '模拟提交失败'; RETURN NULL; END $$;
   CREATE CONSTRAINT TRIGGER reject_review_delete AFTER UPDATE ON accounts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.name='删除回滚' AND NEW.deleted_at IS NOT NULL) EXECUTE FUNCTION reject_review_delete();`)
 		require.NoError(t, err)
 		deleteCtx := adminaccess.WithPrincipal(context.Background(), &adminaccess.Principal{Policy: adminaccess.Policy{Rules: []adminaccess.Rule{{Permissions: []string{"accounts.delete"}, GroupIDs: []int64{a.ID}, AccountTypes: []string{"apikey"}}}}})

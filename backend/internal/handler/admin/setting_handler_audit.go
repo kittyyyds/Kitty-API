@@ -82,6 +82,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.PasskeyEnabled != after.PasskeyEnabled {
 		changed = append(changed, "passkey_enabled")
 	}
+	if before.MainlandWebBlockEnabled != after.MainlandWebBlockEnabled {
+		changed = append(changed, "mainland_web_block_enabled")
+	}
 	if before.SessionBindingEnabled != after.SessionBindingEnabled {
 		changed = append(changed, "session_binding_enabled")
 	}
@@ -478,6 +481,12 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.EnableFingerprintUnification != after.EnableFingerprintUnification {
 		changed = append(changed, "enable_fingerprint_unification")
 	}
+	if before.UpstreamErrorMessage != after.UpstreamErrorMessage {
+		changed = append(changed, "upstream_error_message")
+	}
+	if !reflect.DeepEqual(before.UpstreamErrorRetry, after.UpstreamErrorRetry) {
+		changed = append(changed, "upstream_error_retry")
+	}
 	if before.OpenAITTFTMode != after.OpenAITTFTMode {
 		changed = append(changed, "openai_ttft_mode")
 	}
@@ -608,6 +617,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if !equalNotifyEmailEntries(before.AccountQuotaNotifyEmails, after.AccountQuotaNotifyEmails) {
 		changed = append(changed, "account_quota_notify_emails")
 	}
+	if before.ChannelQualityPublicEnabled != after.ChannelQualityPublicEnabled {
+		changed = append(changed, "channel_quality_public_enabled")
+	}
 	if before.ChannelMonitorEnabled != after.ChannelMonitorEnabled {
 		changed = append(changed, "channel_monitor_enabled")
 	}
@@ -617,12 +629,7 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.AvailableChannelsEnabled != after.AvailableChannelsEnabled {
 		changed = append(changed, "available_channels_enabled")
 	}
-	if before.PelicanShowcaseEnabled != after.PelicanShowcaseEnabled {
-		changed = append(changed, "pelican_showcase_enabled")
-	}
-	if pelicanShowcaseConfigChanged(before.PelicanShowcase, after.PelicanShowcase) {
-		changed = append(changed, "pelican_showcase_config")
-	}
+
 	if before.SubscriptionEnabled != after.SubscriptionEnabled {
 		changed = append(changed, "subscription_enabled")
 	}
@@ -659,6 +666,7 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.CyberSessionIdentityStrictEnabled != after.CyberSessionIdentityStrictEnabled {
 		changed = append(changed, "cyber_session_identity_strict_enabled")
 	}
+
 	// Default platform quotas（JSON map，整体比较）
 	if !equalPlatformQuotaSettings(before.DefaultPlatformQuotas, after.DefaultPlatformQuotas) {
 		changed = append(changed, service.SettingKeyDefaultPlatformQuotas)
@@ -934,8 +942,3 @@ func supportTicketConfigChanged(before, after service.SupportTicketConfig) bool 
 
 // pelicanShowcaseConfigChanged compares normalized configs: the request may leave limits
 // at zero, which the stored config fills with defaults.
-func pelicanShowcaseConfigChanged(before, after service.PelicanShowcaseConfig) bool {
-	normalizedBefore, errBefore := service.NormalizePelicanShowcaseConfig(before)
-	normalizedAfter, errAfter := service.NormalizePelicanShowcaseConfig(after)
-	return errBefore != nil || errAfter != nil || !reflect.DeepEqual(normalizedBefore, normalizedAfter)
-}

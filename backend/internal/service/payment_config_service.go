@@ -40,6 +40,11 @@ const (
 	SettingCancelWindowMode              = "CANCEL_RATE_LIMIT_WINDOW_MODE"
 	SettingAlipayForceQRCode             = "ALIPAY_FORCE_QRCODE"
 	SettingAlipayMobilePrecreateDeepLink = "ALIPAY_MOBILE_PRECREATE_DEEP_LINK"
+	SettingInvoiceEnabled                = "PAYMENT_INVOICE_ENABLED"
+	SettingInvoiceMinAmount              = "PAYMENT_INVOICE_MIN_AMOUNT"
+	SettingInvoiceFeeRate                = "PAYMENT_INVOICE_FEE_RATE"
+	SettingInvoiceFeeMinAmount           = "PAYMENT_INVOICE_FEE_MIN_AMOUNT"
+	SettingInvoiceInstructions           = "PAYMENT_INVOICE_INSTRUCTIONS"
 )
 
 // Default values for payment configuration settings.
@@ -85,11 +90,21 @@ type PaymentConfig struct {
 	// Force Alipay mobile users to use QR code instead of mobile redirect
 	AlipayForceQRCode bool `json:"alipay_force_qrcode"`
 	// Use Alipay face-to-face precreate and an app deep link on mobile clients.
-	AlipayMobilePrecreateDeepLink bool `json:"alipay_mobile_precreate_deep_link"`
+	AlipayMobilePrecreateDeepLink bool    `json:"alipay_mobile_precreate_deep_link"`
+	InvoiceEnabled                bool    `json:"invoice_enabled"`
+	InvoiceMinAmount              float64 `json:"invoice_min_amount"`
+	InvoiceFeeRate                float64 `json:"invoice_fee_rate"`
+	InvoiceFeeMinAmount           float64 `json:"invoice_fee_min_amount"`
+	InvoiceInstructions           string  `json:"invoice_instructions"`
 }
 
 // UpdatePaymentConfigRequest contains fields to update payment configuration.
 type UpdatePaymentConfigRequest struct {
+	InvoiceEnabled            *bool    `json:"invoice_enabled"`
+	InvoiceMinAmount          *float64 `json:"invoice_min_amount"`
+	InvoiceFeeRate            *float64 `json:"invoice_fee_rate"`
+	InvoiceFeeMinAmount       *float64 `json:"invoice_fee_min_amount"`
+	InvoiceInstructions       *string  `json:"invoice_instructions"`
 	Enabled                   *bool    `json:"enabled"`
 	MinAmount                 *float64 `json:"min_amount"`
 	MaxAmount                 *float64 `json:"max_amount"`
@@ -236,6 +251,8 @@ func (s *PaymentConfigService) GetPaymentConfig(ctx context.Context) (*PaymentCo
 		SettingCancelRateLimitOn, SettingCancelRateLimitMax,
 		SettingCancelWindowSize, SettingCancelWindowUnit, SettingCancelWindowMode,
 		SettingAlipayForceQRCode, SettingAlipayMobilePrecreateDeepLink,
+		SettingInvoiceEnabled, SettingInvoiceMinAmount, SettingInvoiceInstructions,
+		SettingInvoiceFeeRate, SettingInvoiceFeeMinAmount,
 		SettingPaymentVisibleMethodAlipayEnabled, SettingPaymentVisibleMethodAlipaySource,
 		SettingPaymentVisibleMethodWxpayEnabled, SettingPaymentVisibleMethodWxpaySource,
 	}
@@ -277,6 +294,11 @@ func (s *PaymentConfigService) parsePaymentConfig(vals map[string]string) *Payme
 
 		AlipayForceQRCode:             vals[SettingAlipayForceQRCode] == "true",
 		AlipayMobilePrecreateDeepLink: vals[SettingAlipayMobilePrecreateDeepLink] == "true",
+		InvoiceEnabled:                vals[SettingInvoiceEnabled] == "true",
+		InvoiceMinAmount:              normalizedInvoiceMinAmount(vals[SettingInvoiceMinAmount]),
+		InvoiceFeeRate:                normalizedInvoiceFeeRate(vals[SettingInvoiceFeeRate]),
+		InvoiceFeeMinAmount:           normalizedInvoiceFeeMinAmount(vals[SettingInvoiceFeeMinAmount]),
+		InvoiceInstructions:           vals[SettingInvoiceInstructions],
 	}
 	cfg.RechargeBonusMode, _ = NormalizeRechargeBonusMode(vals[SettingRechargeBonusMode])
 	cfg.AlipayMobilePrecreateDeepLink = pcEnvBoolOverride(
@@ -336,9 +358,27 @@ func (s *PaymentConfigService) getStripePublishableKey(ctx context.Context) stri
 // nil-check before serialisation — this is inherent to patch-style update patterns
 // and cannot be meaningfully decomposed without introducing unnecessary abstraction.
 func (s *PaymentConfigService) UpdatePaymentConfig(ctx context.Context, req UpdatePaymentConfigRequest) error {
+	if req.InvoiceMinAmount != nil && !validInvoiceMinAmount(*req.InvoiceMinAmount) {
+		return infraerrors.BadRequest("INVALID_INVOICE_MIN_AMOUNT", "minimum invoice amount must be positive, at most 1000000000, with at most 2 decimal places")
+	}
+	if req.InvoiceFeeRate != nil && !validInvoiceFeeRate(*req.InvoiceFeeRate) {
+		return infraerrors.BadRequest("INVALID_INVOICE_FEE_RATE", "invoice fee rate must be between 0 and 100, with at most 2 decimal places")
+	}
+	if req.InvoiceFeeMinAmount != nil && !validInvoiceFeeMinAmount(*req.InvoiceFeeMinAmount) {
+		return infraerrors.BadRequest("INVALID_INVOICE_FEE_MIN_AMOUNT", "minimum invoice fee must be between 0 and 1000000000, with at most 2 decimal places")
+	}
+	if req.InvoiceInstructions != nil && len([]rune(*req.InvoiceInstructions)) > 5000 {
+		return infraerrors.BadRequest("INVALID_INVOICE_INSTRUCTIONS", "invoice instructions must not exceed 5000 characters")
+	}
 	if req.BalanceRechargeMultiplier != nil {
-		if math.IsNaN(*req.BalanceRechargeMultiplier) || math.IsInf(*req.BalanceRechargeMultiplier, 0) || *req.BalanceRechargeMultiplier <= 0 {
+		v := *req.BalanceRechargeMultiplier
+		if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
 			return infraerrors.BadRequest("INVALID_BALANCE_RECHARGE_MULTIPLIER", "balance recharge multiplier must be greater than 0")
+		}
+		// 6 位小数可容纳实时汇率（如 1 USD = 7.100000 CNY → 0.140845），
+		// 到账金额仍按结算币种精度取整，余额不会被放大精度。
+		if balanceRechargeMultiplierHasExcessPrecision(v) {
+			return infraerrors.BadRequest("INVALID_BALANCE_RECHARGE_MULTIPLIER", "balance recharge multiplier allows at most 6 decimal places")
 		}
 	}
 	if req.SubscriptionUSDToCNYRate != nil {
@@ -367,6 +407,21 @@ func (s *PaymentConfigService) UpdatePaymentConfig(ctx context.Context, req Upda
 		}
 	}
 	m := make(map[string]string)
+	if req.InvoiceEnabled != nil {
+		m[SettingInvoiceEnabled] = strconv.FormatBool(*req.InvoiceEnabled)
+	}
+	if req.InvoiceMinAmount != nil {
+		m[SettingInvoiceMinAmount] = strconv.FormatFloat(*req.InvoiceMinAmount, 'f', 2, 64)
+	}
+	if req.InvoiceFeeRate != nil {
+		m[SettingInvoiceFeeRate] = strconv.FormatFloat(*req.InvoiceFeeRate, 'f', 2, 64)
+	}
+	if req.InvoiceFeeMinAmount != nil {
+		m[SettingInvoiceFeeMinAmount] = strconv.FormatFloat(*req.InvoiceFeeMinAmount, 'f', 2, 64)
+	}
+	if req.InvoiceInstructions != nil {
+		m[SettingInvoiceInstructions] = strings.TrimSpace(*req.InvoiceInstructions)
+	}
 	if req.Enabled != nil {
 		m[SettingPaymentEnabled] = formatBoolOrEmpty(req.Enabled)
 	}
@@ -392,7 +447,7 @@ func (s *PaymentConfigService) UpdatePaymentConfig(ctx context.Context, req Upda
 		m[SettingBalancePayDisabled] = formatBoolOrEmpty(req.BalanceDisabled)
 	}
 	if req.BalanceRechargeMultiplier != nil {
-		m[SettingBalanceRechargeMult] = formatPositiveFloat(req.BalanceRechargeMultiplier)
+		m[SettingBalanceRechargeMult] = formatBalanceRechargeMultiplier(req.BalanceRechargeMultiplier)
 	}
 	if req.SubscriptionUSDToCNYRate != nil {
 		m[SettingSubscriptionUSDToCNYRate] = formatPositiveFloatExact(req.SubscriptionUSDToCNYRate)
@@ -472,6 +527,21 @@ func formatPositiveFloat(v *float64) string {
 		return "" // empty → parsePaymentConfig uses default
 	}
 	return strconv.FormatFloat(*v, 'f', 2, 64)
+}
+
+const balanceRechargeMultiplierMaxDecimals = 6
+
+func balanceRechargeMultiplierHasExcessPrecision(v float64) bool {
+	scaled := v * math.Pow(10, balanceRechargeMultiplierMaxDecimals)
+	return math.Abs(scaled-math.Round(scaled)) > 1e-6
+}
+
+func formatBalanceRechargeMultiplier(v *float64) string {
+	if v == nil || *v <= 0 {
+		return "" // empty → parsePaymentConfig uses default
+	}
+	rounded := math.Round(*v*math.Pow(10, balanceRechargeMultiplierMaxDecimals)) / math.Pow(10, balanceRechargeMultiplierMaxDecimals)
+	return strconv.FormatFloat(rounded, 'f', -1, 64)
 }
 
 // formatPositiveFloatExact 保留完整精度，用于汇率等对小数位敏感的配置。

@@ -26,8 +26,8 @@ const appStore = vi.hoisted(() => ({
   publicSettingsLoaded: false,
   cachedPublicSettings: null as null | {
     payment_enabled?: boolean
-    risk_control_enabled?: boolean
     channel_monitor_enabled?: boolean
+    channel_quality_public_enabled?: boolean
     subscription_enabled?: boolean
     support_ticket_enabled?: boolean
     custom_menu_items?: []
@@ -161,6 +161,7 @@ describe('feature route guard', () => {
   it.each([
     ['payment', { requiresPayment: true }, '/purchase'],
     ['channel monitor', { requiresChannelMonitor: true }, '/monitor'],
+    ['quality results', { requiresChannelQualityPublic: true }, '/test-results'],
     ['subscription', { requiresSubscription: true }, '/subscriptions'],
   ])('does not treat a failed %s settings load as explicitly disabled', async (_name, meta, path) => {
     appStore.fetchPublicSettings.mockResolvedValue(null)
@@ -185,6 +186,29 @@ describe('feature route guard', () => {
     expect(next).toHaveBeenCalledWith('/dashboard')
   })
 
+  it.each([false, true])('blocks the quality results direct URL for admin=%s without blocking background settings', async (admin) => {
+    authStore.isAdmin = admin
+    appStore.cachedPublicSettings = { channel_quality_public_enabled: false, channel_monitor_enabled: true }
+    appStore.publicSettingsLoaded = true
+    const { navigation, next } = runRegisteredGuard('/test-results')
+    await navigation
+    expect(next).toHaveBeenCalledWith(admin ? '/admin/dashboard' : '/dashboard')
+    const monitor = runGuard({ requiresChannelMonitor: true }, '/monitor')
+    await monitor.navigation
+    expect(monitor.next).toHaveBeenCalledWith()
+  })
+
+  it('waits for settings before opening the quality results page', async () => {
+    appStore.fetchPublicSettings.mockImplementation(async () => {
+      appStore.cachedPublicSettings = { channel_quality_public_enabled: false }
+      appStore.publicSettingsLoaded = true
+    })
+    const { navigation, next } = runRegisteredGuard('/test-results')
+    await navigation
+    expect(appStore.fetchPublicSettings).toHaveBeenCalledOnce()
+    expect(next).toHaveBeenCalledWith('/dashboard')
+  })
+
   it.each([
     ['payment', { requiresPayment: true }, { payment_enabled: false }, '/dashboard'],
     ['subscription', { requiresSubscription: true }, { subscription_enabled: false }, '/dashboard'],
@@ -201,27 +225,31 @@ describe('feature route guard', () => {
   })
 
   describe.each([
-    '/admin/risk-control',
-    '/admin/prompt-audit',
-    '/admin/security-policy',
-  ])('Security Audit configuration route %s', (path) => {
-    it.each([false, true])('allows administrators when risk control is %s', async (enabled) => {
+    '/admin/orders',
+    '/admin/orders/dashboard',
+    '/admin/orders/coupons',
+    '/admin/orders/invoices',
+    '/admin/orders/plans',
+  ])('Payment administration route %s', (path) => {
+    it.each([false, true])('allows administrators when collecting payments is %s', async (enabled) => {
       authStore.isAdmin = true
       appStore.publicSettingsLoaded = true
-      appStore.cachedPublicSettings = { risk_control_enabled: enabled }
+      appStore.cachedPublicSettings = { payment_enabled: enabled }
 
+      expect(routerHarness.routes.filter(r => r.path === path)).toHaveLength(1)
       const { navigation, next } = runRegisteredGuard(path)
       await navigation
 
       expect(next).toHaveBeenCalledOnce()
       expect(next).toHaveBeenCalledWith()
-      expect(appStore.cachedPublicSettings.risk_control_enabled).toBe(enabled)
+      expect(appStore.cachedPublicSettings.payment_enabled).toBe(enabled)
     })
 
     it('rejects authenticated users without administrator access', async () => {
       appStore.publicSettingsLoaded = true
-      appStore.cachedPublicSettings = { risk_control_enabled: false }
+      appStore.cachedPublicSettings = { payment_enabled: false }
 
+      expect(routerHarness.routes.filter(r => r.path === path)).toHaveLength(1)
       const { navigation, next } = runRegisteredGuard(path)
       await navigation
 
@@ -232,6 +260,7 @@ describe('feature route guard', () => {
     it('requires login before configuration can be viewed', async () => {
       authStore.isAuthenticated = false
 
+      expect(routerHarness.routes.filter(r => r.path === path)).toHaveLength(1)
       const { navigation, next } = runRegisteredGuard(path)
       await navigation
 

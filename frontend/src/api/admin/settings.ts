@@ -15,6 +15,109 @@ import type {
 import type { RechargeBonusTier } from "@/utils/rechargeBonus";
 import type { SupportTicketConfig } from "@/api/supportTickets";
 
+export interface GuideAsset {
+  id: string;
+  name: string;
+  size: number;
+  inline: boolean;
+  url: string;
+  uploaded_at: string;
+}
+
+/** One independently editable chapter. `slug` is the permanent anchor id. */
+export interface GuideChapterPayload {
+  slug: string;
+  title: string;
+  content: string;
+}
+
+export interface GuideRevision {
+  version: number;
+  /** Absent on revisions published by the chapter editor. */
+  content?: string;
+  chapters?: GuideChapterPayload[];
+  updated_at: string;
+}
+
+export interface GuideSettings {
+  /** Whole-document form, kept for guides published before chapters existed. */
+  content?: string;
+  chapters?: GuideChapterPayload[];
+  version: number;
+  updated_at: string;
+  has_custom_content: boolean;
+  revisions: GuideRevision[];
+}
+
+
+export async function getGuideSettings(): Promise<GuideSettings> {
+  const { data } = await apiClient.get<GuideSettings>("/admin/settings/guide");
+  return data;
+}
+
+export async function listGuideAssets(): Promise<GuideAsset[]> {
+  const { data } = await apiClient.get<GuideAsset[]>(
+    "/admin/settings/guide/assets",
+  );
+  return data ?? [];
+}
+
+export async function uploadGuideAsset(file: File): Promise<GuideAsset> {
+  const form = new FormData();
+  form.append("file", file);
+  const { data } = await apiClient.post<GuideAsset>(
+    "/admin/settings/guide/assets",
+    form,
+  );
+  return data;
+}
+
+export async function deleteGuideAsset(id: string): Promise<void> {
+  await apiClient.delete(
+    `/admin/settings/guide/assets/${encodeURIComponent(id)}`,
+  );
+}
+
+export async function updateGuideSettings(payload: {
+  chapters: GuideChapterPayload[];
+  expected_version: number;
+}): Promise<GuideSettings> {
+  const { data } = await apiClient.put<GuideSettings>(
+    "/admin/settings/guide",
+    payload,
+  );
+  return data;
+}
+
+export async function restoreGuideSettings(payload: {
+  revision_version: number;
+  expected_version: number;
+}): Promise<GuideSettings> {
+  const { data } = await apiClient.post<GuideSettings>(
+    "/admin/settings/guide/restore",
+    payload,
+  );
+  return data;
+}
+
+export async function resetGuideSettings(payload: {
+  expected_version: number;
+}): Promise<GuideSettings> {
+  const { data } = await apiClient.post<GuideSettings>(
+    "/admin/settings/guide/reset",
+    payload,
+  );
+  return data;
+}
+
+
+export interface UpstreamErrorRetrySettings {
+  enabled: boolean;
+  max_retries: number;
+  delay_ms: number;
+  errors: string;
+}
+
 export interface DefaultSubscriptionSetting {
   group_id: number;
   validity_days: number;
@@ -404,9 +507,6 @@ export function deriveWeChatConnectStoredMode(
  * System settings interface
  */
 export interface SystemSettings {
-	prism_browser_enabled: boolean;
-	prism_browser_base_url: string;
-	prism_browser_api_key_configured: boolean;
   // Registration settings
   registration_enabled: boolean;
   login_rate_limit_enabled: boolean;
@@ -426,6 +526,7 @@ export interface SystemSettings {
   passkey_rp_id: string;
   passkey_rp_origins: string[];
   session_binding_enabled: boolean; // 会话 IP/UA 绑定
+  mainland_web_block_enabled: boolean; // 中国大陆网页访问限制，仅 /、/login、/home
   step_up_enabled: boolean; // 敏感操作 step-up 2FA
   audit_log_retention_days: number; // 审计日志保留天数
   login_agreement_enabled: boolean;
@@ -639,10 +740,11 @@ export interface SystemSettings {
   account_group_priority_enabled: boolean;
 
   // Gateway forwarding behavior
+  upstream_error_retry: UpstreamErrorRetrySettings;
+  upstream_error_message: string;
   openai_ttft_mode: string;
   enable_fingerprint_unification: boolean;
   enable_metadata_passthrough: boolean;
-  enable_cch_signing: boolean;
   enable_claude_oauth_system_prompt_injection: boolean;
   claude_oauth_system_prompt: string;
   claude_oauth_system_prompt_blocks: string;
@@ -670,13 +772,8 @@ export interface SystemSettings {
 
   // Payment configuration
   payment_enabled: boolean;
-  risk_control_enabled: boolean;
 
   // Cyber session block
-  cyber_policy_user_allowlist: string;
-  cyber_session_block_enabled: boolean;
-  cyber_session_block_ttl_seconds: number;
-  cyber_session_identity_strict_enabled: boolean;
 
   payment_min_amount: number;
   payment_max_amount: number;
@@ -745,6 +842,7 @@ export interface SystemSettings {
   account_quota_notify_emails: NotifyEmailEntry[];
 
   // Channel Monitor feature switch
+  channel_quality_public_enabled: boolean;
   channel_monitor_enabled: boolean;
   channel_monitor_mode?: 'v1' | 'v2' | 'v3';
   channel_monitor_default_interval_seconds: number;
@@ -755,7 +853,6 @@ export interface SystemSettings {
   // Available Channels feature switch
   available_channels_enabled: boolean;
 
-  // The Pelican showcase settings are edited on the Smart Ops page (api/admin/pelicanTests).
 
   // Subscription feature switch (user sidebar "My Subscriptions" entry)
   subscription_enabled: boolean;
@@ -772,6 +869,13 @@ export interface SystemSettings {
 
   // Affiliate (邀请返利) feature switch
   affiliate_enabled: boolean;
+  risk_control_enabled: boolean;
+
+  // Cyber session block
+  cyber_policy_user_allowlist: string;
+  cyber_session_block_enabled: boolean;
+  cyber_session_block_ttl_seconds: number;
+  cyber_session_identity_strict_enabled: boolean;
 
   // OpenAI fast/flex policy
   openai_fast_policy_settings?: OpenAIFastPolicySettings;
@@ -788,9 +892,6 @@ export interface SystemSettings {
 }
 
 export interface UpdateSettingsRequest {
-	prism_browser_enabled?: boolean;
-	prism_browser_base_url?: string;
-	prism_browser_api_key?: string;
   registration_enabled?: boolean;
   login_rate_limit_enabled?: boolean;
   registration_ip_limit_enabled?: boolean;
@@ -805,6 +906,7 @@ export interface UpdateSettingsRequest {
   totp_enabled?: boolean; // TOTP 双因素认证
   passkey_enabled?: boolean;
   session_binding_enabled?: boolean; // 会话 IP/UA 绑定
+  mainland_web_block_enabled?: boolean;
   step_up_enabled?: boolean; // 敏感操作 step-up 2FA
   audit_log_retention_days?: number; // 审计日志保留天数
   login_agreement_enabled?: boolean;
@@ -991,11 +1093,12 @@ export interface UpdateSettingsRequest {
   min_claude_code_version?: string;
   max_claude_code_version?: string;
   allow_ungrouped_key_scheduling?: boolean;
+  upstream_error_retry?: UpstreamErrorRetrySettings;
+  upstream_error_message?: string;
   account_group_priority_enabled?: boolean;
   openai_ttft_mode?: string;
   enable_fingerprint_unification?: boolean;
   enable_metadata_passthrough?: boolean;
-  enable_cch_signing?: boolean;
   enable_claude_oauth_system_prompt_injection?: boolean;
   claude_oauth_system_prompt?: string;
   claude_oauth_system_prompt_blocks?: string;
@@ -1019,13 +1122,8 @@ export interface UpdateSettingsRequest {
   codex_cli_only_engine_fingerprint_signals?: string;
   // Payment configuration
   payment_enabled?: boolean;
-  risk_control_enabled?: boolean;
 
   // Cyber session block
-  cyber_policy_user_allowlist?: string;
-  cyber_session_block_enabled?: boolean;
-  cyber_session_block_ttl_seconds?: number;
-  cyber_session_identity_strict_enabled?: boolean;
 
   payment_min_amount?: number;
   payment_max_amount?: number;
@@ -1082,6 +1180,7 @@ export interface UpdateSettingsRequest {
   account_quota_notify_emails?: NotifyEmailEntry[];
 
   // Channel Monitor feature switch
+  channel_quality_public_enabled?: boolean;
   channel_monitor_enabled?: boolean;
   channel_monitor_mode?: 'v1' | 'v2' | 'v3';
   channel_monitor_default_interval_seconds?: number;
@@ -1107,6 +1206,13 @@ export interface UpdateSettingsRequest {
 
   // Affiliate (邀请返利) feature switch
   affiliate_enabled?: boolean;
+  risk_control_enabled?: boolean;
+
+  // Cyber session block
+  cyber_policy_user_allowlist?: string;
+  cyber_session_block_enabled?: boolean;
+  cyber_session_block_ttl_seconds?: number;
+  cyber_session_identity_strict_enabled?: boolean;
 
   // OpenAI fast/flex policy
   openai_fast_policy_settings?: OpenAIFastPolicySettings;
@@ -1408,6 +1514,36 @@ export interface PanelRateLimitSettings {
   public_ip_rpm: number;
 }
 
+
+/** Exact registration email blacklist (matched by inbox identity). */
+export interface RegistrationEmailBlacklist {
+  emails: string[];
+  max: number;
+}
+
+export interface UpdateRegistrationEmailBlacklistResponse extends RegistrationEmailBlacklist {
+  /** Entries not present in the previously saved list. */
+  added: string[];
+}
+
+export async function getRegistrationEmailBlacklist(): Promise<RegistrationEmailBlacklist> {
+  const { data } = await apiClient.get<RegistrationEmailBlacklist>(
+    "/admin/settings/registration-email-blacklist",
+  );
+  return data;
+}
+
+/** Replace the whole exact email blacklist; an empty array clears it. */
+export async function updateRegistrationEmailBlacklist(
+  emails: string[],
+): Promise<UpdateRegistrationEmailBlacklistResponse> {
+  const { data } = await apiClient.put<UpdateRegistrationEmailBlacklistResponse>(
+    "/admin/settings/registration-email-blacklist",
+    { emails },
+  );
+  return data;
+}
+
 export async function getPanelRateLimitSettings(): Promise<PanelRateLimitSettings> {
   const { data } = await apiClient.get<PanelRateLimitSettings>(
     "/admin/settings/panel-rate-limit",
@@ -1490,9 +1626,6 @@ export async function updateOpenAIResponseHeaderTimeoutSettings(
 
 // ==================== Rectifier Settings ====================
 
-/**
- * Rectifier settings interface
- */
 export interface RectifierSettings {
   enabled: boolean;
   thinking_signature_enabled: boolean;
@@ -1660,6 +1793,14 @@ export async function resetWebSearchUsage(payload: {
 }
 
 export const settingsAPI = {
+  getGuideSettings,
+  listGuideAssets,
+  uploadGuideAsset,
+  deleteGuideAsset,
+  updateGuideSettings,
+  restoreGuideSettings,
+  resetGuideSettings,
+
   getSettings,
   updateSettings,
   testSmtpConnection,
@@ -1676,6 +1817,8 @@ export const settingsAPI = {
   updateOverloadCooldownSettings,
   getRateLimit429CooldownSettings,
   updateRateLimit429CooldownSettings,
+  getRegistrationEmailBlacklist,
+  updateRegistrationEmailBlacklist,
   getPanelRateLimitSettings,
   updatePanelRateLimitSettings,
   getStreamTimeoutSettings,

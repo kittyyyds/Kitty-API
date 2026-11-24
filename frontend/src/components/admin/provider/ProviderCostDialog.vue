@@ -46,6 +46,7 @@
           <label v-else-if="rule.method === 'standard_multiplier'" class="block"><span class="input-label">{{ t('admin.upstream.costs.multiplier') }}</span><input v-model.number="rule.multiplier" class="input" type="number" min="0" step="any" required /></label>
           <div v-else-if="rule.method === 'tokens'" class="grid grid-cols-2 gap-3">
             <label v-for="field in tokenFields" :key="field"><span class="input-label">{{ t(`providerHub.${{input_price:'inputPrice',output_price:'outputPrice',cache_read_price:'cacheReadPrice',cache_write_price:'cacheWritePrice'}[field]}`) }} · USD / 1M</span><input v-model.number="rule[field]" class="input" type="number" min="0" step="any" required /></label>
+            <label class="col-span-2"><span class="input-label">{{ t('providerHub.cacheWrite12hPrice') }} · USD / 1M</span><input v-model.number="rule.cache_write_12h_price" class="input" type="number" min="0" step="any" :placeholder="t('providerHub.cacheWrite12hFallback')" /><span class="mt-1 block text-xs text-gray-500">{{ t('providerHub.cacheWrite12hFallback') }}</span></label>
           </div>
           <label v-else class="block"><span class="input-label">{{ t('admin.upstream.costs.unitPrice') }}</span><input v-model.number="rule.unit_price" class="input" type="number" min="0" step="any" required /></label>
           <button class="btn btn-primary" :disabled="busy || (rule.method === 'account_credits' && wallet.credit_cost == null)">{{ t('admin.upstream.costs.saveRule') }}</button>
@@ -75,7 +76,7 @@ const rules = computed(() => state.value?.rules.filter(r => r.wallet_id === wall
 const methods = ['account_credits', 'standard_multiplier', 'tokens', 'image', 'video_second', 'video_item', 'request']
 const tokenFields = ['input_price', 'output_price', 'cache_read_price', 'cache_write_price'] as const
 const purchase = reactive({ cash: 0, credits: 0, bonus: 0, reference: '', time: '', operation_id: '' })
-const rule = reactive({ model: '*', method: 'account_credits', multiplier: 1, fx_to_usd: null as number | null, input_price: 0, output_price: 0, cache_read_price: 0, cache_write_price: 0, unit_price: 0 })
+const rule = reactive({ model: '*', method: 'account_credits', multiplier: 1, fx_to_usd: null as number | null, input_price: 0, output_price: 0, cache_read_price: 0, cache_write_price: 0, cache_write_12h_price: '' as number | string, unit_price: 0 })
 let sequence = 0
 async function load() {
   const provider = props.provider, seq = ++sequence
@@ -90,7 +91,7 @@ async function load() {
 }
 watch(() => props.provider?.id, () => {
   ++sequence; state.value = null; error.value = ''; message.value = ''; selectedAccounts.value = []
-  Object.assign(rule, { model: '*', method: 'account_credits', multiplier: 1, fx_to_usd: null, input_price: 0, output_price: 0, cache_read_price: 0, cache_write_price: 0, unit_price: 0 })
+  Object.assign(rule, { model: '*', method: 'account_credits', multiplier: 1, fx_to_usd: null, input_price: 0, output_price: 0, cache_read_price: 0, cache_write_price: 0, cache_write_12h_price: '' as number | string, unit_price: 0 })
   const now = new Date(); now.setMinutes(now.getMinutes() - now.getTimezoneOffset())
   Object.assign(purchase, { cash: 0, credits: 0, bonus: 0, reference: '', time: now.toISOString().slice(0, 16), operation_id: crypto.randomUUID() })
   if (props.provider) void load()
@@ -114,6 +115,6 @@ async function savePurchase() {
 }
 async function saveRule() {
   if (!wallet.value) return
-  await mutate(`/wallets/${wallet.value.id}/rules`, { ...rule, revision: wallet.value.revision, currency: rule.method === 'account_credits' ? 'CNY' : 'USD', fx_to_usd: rule.method === 'account_credits' ? rule.fx_to_usd : 1 })
+  await mutate(`/wallets/${wallet.value.id}/rules`, { ...rule, cache_write_12h_price: rule.cache_write_12h_price === '' ? null : Number(rule.cache_write_12h_price), revision: wallet.value.revision, currency: rule.method === 'account_credits' ? 'CNY' : 'USD', fx_to_usd: rule.method === 'account_credits' ? rule.fx_to_usd : 1 })
 }
 </script>

@@ -1,10 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   LOCALE_KEY,
   LOCALE_SOURCE_KEY,
   detectPreferredLocale,
-  localeFromTrace,
   localeFromTimezone,
   normalizeLocaleCode,
 } from '../localeDetection'
@@ -18,6 +17,10 @@ function storage(values: Record<string, string> = {}): Pick<Storage, 'getItem'> 
 }
 
 describe('locale detection', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   it('normalizes browser-style locale aliases for manual switching', () => {
     expect(normalizeLocaleCode('zh-CN')).toBe('zh')
     expect(normalizeLocaleCode('zh_TW')).toBe('zh')
@@ -25,59 +28,60 @@ describe('locale detection', () => {
     expect(normalizeLocaleCode('ja-JP')).toBeNull()
   })
 
-  it('keeps a legacy or explicitly manual selection ahead of region signals', async () => {
-    await expect(detectPreferredLocale({
+  it('keeps a legacy or explicitly manual selection ahead of local signals', () => {
+    expect(detectPreferredLocale({
       storage: storage({ [LOCALE_KEY]: 'zh' }),
-      fetchTrace: async () => 'loc=US',
       timezone: 'America/New_York',
       browserLanguage: 'en-US',
-    })).resolves.toBe('zh')
+    })).toBe('zh')
 
-    await expect(detectPreferredLocale({
+    expect(detectPreferredLocale({
       storage: storage({ [LOCALE_KEY]: 'en', [LOCALE_SOURCE_KEY]: 'manual' }),
-      fetchTrace: async () => 'loc=CN',
       timezone: 'Asia/Shanghai',
       browserLanguage: 'zh-CN',
-    })).resolves.toBe('en')
+    })).toBe('en')
   })
 
-  it('uses Cloudflare country before timezone and browser language', async () => {
-    await expect(detectPreferredLocale({
+  it('uses the timezone, then the browser language', () => {
+    expect(detectPreferredLocale({
       storage: storage(),
-      fetchTrace: async () => 'fl=1\nloc=CN\ntls=TLSv1.3',
+      timezone: 'Asia/Shanghai',
+      browserLanguage: 'en-US',
+    })).toBe('zh')
+
+    expect(detectPreferredLocale({
+      storage: storage(),
       timezone: 'America/Los_Angeles',
-      browserLanguage: 'en-US',
-    })).resolves.toBe('zh')
-
-    await expect(detectPreferredLocale({
-      storage: storage(),
-      fetchTrace: async () => 'loc=US',
-      timezone: 'Asia/Shanghai',
       browserLanguage: 'zh-CN',
-    })).resolves.toBe('en')
-  })
+    })).toBe('en')
 
-  it('falls back from an unavailable trace to timezone and then browser language', async () => {
-    await expect(detectPreferredLocale({
+    expect(detectPreferredLocale({
       storage: storage(),
-      fetchTrace: async () => null,
-      timezone: 'Asia/Shanghai',
-      browserLanguage: 'en-US',
-    })).resolves.toBe('zh')
-
-    await expect(detectPreferredLocale({
-      storage: storage(),
-      fetchTrace: async () => null,
       timezone: undefined,
       browserLanguage: 'zh-TW',
-    })).resolves.toBe('zh')
+    })).toBe('zh')
+
+    expect(detectPreferredLocale({
+      storage: storage(),
+      timezone: undefined,
+      browserLanguage: undefined,
+    })).toBe('en')
   })
 
-  it('parses valid trace locations and Chinese-region timezones', () => {
-    expect(localeFromTrace('ip=203.0.113.1\nloc=CN')).toBe('zh')
-    expect(localeFromTrace('loc=DE')).toBe('en')
-    expect(localeFromTrace('<!doctype html>')).toBeNull()
+  it('decides without any network request, so the first screen never waits', () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const locale = detectPreferredLocale({ storage: storage(), timezone: 'Asia/Shanghai', browserLanguage: 'zh-CN' })
+
+    expect(locale).toBe('zh')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('maps Chinese-region timezones', () => {
     expect(localeFromTimezone('Asia/Hong_Kong')).toBe('zh')
+    expect(localeFromTimezone('Asia/Taipei')).toBe('zh')
     expect(localeFromTimezone('Europe/London')).toBe('en')
+    expect(localeFromTimezone(undefined)).toBeNull()
   })
 })

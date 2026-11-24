@@ -284,7 +284,8 @@ export function useHeyRouteFluidCanvas(
       alpha: true,
       antialias: false,
       depth: false,
-      powerPreference: 'high-performance',
+      // A decorative background must not wake the discrete GPU on dual-GPU laptops.
+      powerPreference: 'default',
       preserveDrawingBuffer: false,
     })
     if (!gl) return

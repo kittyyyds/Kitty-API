@@ -211,7 +211,9 @@
         :countdown="countdown"
         :now="clockNow"
         :platform-order="cardPlatformOrder"
-        :timeline-mode="cardTimelineMode"
+        :filter="filter"
+        :admin="isAdmin"
+        :show-throughput="showThroughput"
       />
       <template v-else>
       <!-- Overview KPI: success · TTFT · tokens/s(optional) · cache · (+ RPM when throughput visible) -->
@@ -237,9 +239,9 @@
         <MetricCell
           v-if="showThroughput"
           :label="t('channelMonitorV2.metrics.tps')"
-          :value="formatTps(snapshot.metrics.tpm)"
+          :value="formatTps(snapshot.metrics.output_tps)"
           :detail="t('channelMonitorV2.metrics.tpsDetail')"
-          :title="exactTps(snapshot.metrics.tpm)"
+          :title="exactTps(snapshot.metrics.output_tps)"
         />
         <MetricCell
           :label="t('channelMonitorV2.metrics.cacheRate')"
@@ -346,7 +348,7 @@
                     <span class="block">{{ formatMs(row.metrics.ttft.p50_ms) }}</span>
                     <small class="text-xs text-gray-400">{{ latencyDetail(row.metrics.ttft) }}</small>
                   </td>
-                  <td v-if="showThroughput" :title="exactTps(row.metrics.tpm)">{{ formatTps(row.metrics.tpm) }}</td>
+                  <td v-if="showThroughput" :title="exactTps(row.metrics.output_tps)">{{ formatTps(row.metrics.output_tps) }}</td>
                   <td>{{ formatPercent(row.metrics.cache_rate) }}</td>
                   <td v-if="showThroughput">{{ formatRate(row.metrics.rpm) }}</td>
                 </tr>
@@ -447,7 +449,7 @@
                     <span class="block">{{ formatMs(row.metrics.ttft.p50_ms) }}</span>
                     <small class="text-xs text-gray-400">{{ latencyDetail(row.metrics.ttft) }}</small>
                   </td>
-                  <td v-if="showThroughput" :title="exactTps(row.metrics.tpm)">{{ formatTps(row.metrics.tpm) }}</td>
+                  <td v-if="showThroughput" :title="exactTps(row.metrics.output_tps)">{{ formatTps(row.metrics.output_tps) }}</td>
                   <td>{{ formatPercent(row.metrics.cache_rate) }}</td>
                   <td v-if="showThroughput">{{ formatRate(row.metrics.rpm) }}</td>
                 </tr>
@@ -520,8 +522,7 @@ import {
   formatMonitorMs,
   formatMonitorPercent,
   formatMonitorThroughput,
-  formatMonitorTokensPerSecond,
-  tokensPerSecondFromTpm,
+  formatMonitorOutputTPS,
   healthScoreClass,
   monitorErrorCategoryLabel,
   ttftDisplayState,
@@ -592,7 +593,6 @@ const snapshot = ref<MonitorSnapshot | null>(null)
 // Dimensions load only in analytics mode. Cards are the default view, so their
 // order comes from the snapshot config fetched with the matrix.
 const cardPlatformOrder = computed(() => monitorCardPlatformOrder(snapshot.value?.config?.platforms))
-const cardTimelineMode = computed(() => snapshot.value?.config?.card_timeline_mode === 'samples' ? 'samples' : 'windows')
 const matrix = ref<MonitorMatrixResponse | null>(null)
 const modelRows = ref<MonitorModelRow[]>([])
 const errorRows = ref<MonitorErrorRow[]>([])
@@ -871,13 +871,11 @@ function formatRate(value: number) {
 function exactRate(value: number) {
   return Intl.NumberFormat(locale.value || undefined, { maximumFractionDigits: 2 }).format(value || 0)
 }
-function formatTps(tpm: number | null | undefined) {
-  return formatMonitorTokensPerSecond(tpm)
+function formatTps(value: number | null | undefined) {
+  return formatMonitorOutputTPS(value)
 }
-function exactTps(tpm: number | null | undefined) {
-  return Intl.NumberFormat(locale.value || undefined, { maximumFractionDigits: 3 }).format(
-    tokensPerSecondFromTpm(tpm),
-  )
+function exactTps(value: number | null | undefined) {
+  return value == null ? '—' : Intl.NumberFormat(locale.value || undefined, { maximumFractionDigits: 3 }).format(value)
 }
 function formatPercent(value: number) {
   return formatMonitorPercent(value)

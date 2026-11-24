@@ -26,8 +26,11 @@ func TestSanitizeAdminPaymentOrderForResponseAddsCurrency(t *testing.T) {
 		CreatedAt:   now,
 		UpdatedAt:   now,
 		ProviderSnapshot: map[string]any{
-			"schema_version": 2,
-			"currency":       "USD",
+			"schema_version":         2,
+			"currency":               "USD",
+			"recharge_coupon_id":     float64(42),
+			"coupon_name":            "coupon test",
+			"coupon_review_required": true,
 		},
 	}
 
@@ -37,6 +40,9 @@ func TestSanitizeAdminPaymentOrderForResponseAddsCurrency(t *testing.T) {
 	}
 	if got.Currency != "USD" {
 		t.Fatalf("expected currency USD, got %q", got.Currency)
+	}
+	if got.Coupon == nil || got.Coupon.ID != 42 || !got.Coupon.ReviewRequired {
+		t.Fatalf("expected safe coupon summary for the admin review confirmation, got %#v", got.Coupon)
 	}
 
 	body, err := json.Marshal(got)

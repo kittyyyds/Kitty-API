@@ -218,7 +218,8 @@ export interface LoginAgreementDocument {
 }
 
 export interface PublicSettings {
-  prism_browser_enabled?: boolean
+  gpt_direct_enabled?: boolean
+  mcp_enabled?: boolean
   registration_enabled: boolean
   email_verify_enabled: boolean
   force_email_on_third_party_signup: boolean
@@ -253,7 +254,6 @@ export interface PublicSettings {
   compact_home_enabled: boolean
   hide_ccs_import_button: boolean
   payment_enabled: boolean
-  risk_control_enabled: boolean
   table_default_page_size: number
   table_page_size_options: number[]
   custom_menu_items: CustomMenuItem[]
@@ -277,6 +277,7 @@ export interface PublicSettings {
   balance_low_notify_enabled: boolean
   account_quota_notify_enabled: boolean
   balance_low_notify_threshold: number
+  channel_quality_public_enabled: boolean
   channel_monitor_enabled: boolean
   /** Exclusive mode: v1 active probes or v2 passive aggregation. Default v2. */
   channel_monitor_mode?: 'v1' | 'v2' | 'v3'
@@ -289,7 +290,6 @@ export interface PublicSettings {
   channel_monitor_hide_user_ranking?: boolean
   available_channels_enabled: boolean
   /** Opt-in user gallery of scheduled Pelican HTML results (sidebar「鹈鹕测智」). */
-  pelican_showcase_enabled?: boolean
   /** When false, the whole user-facing subscription surface is hidden. Default true. */
   subscription_enabled: boolean
   /** Mirrors payment config BALANCE_PAYMENT_DISABLED; true = balance top-up closed (subscription-only site). */
@@ -301,6 +301,7 @@ export interface PublicSettings {
   support_ticket_enabled?: boolean
   service_quota_enabled: boolean
   affiliate_enabled: boolean
+  risk_control_enabled?: boolean
   allow_user_view_error_requests?: boolean
   /** Usage 表中长上下文计费 x2 徽标的展示开关（后端默认开启，缺失时按开启处理） */
   usage_show_long_context_badge?: boolean
@@ -607,8 +608,9 @@ export interface Group {
   platform: GroupPlatform
   rate_multiplier: number
   rpm_limit?: number // Group-level RPM cap (0 = unlimited); overrides user-level rpm_limit when set
-  max_reasoning_effort?: string // Anthropic/OpenAI reasoning ceiling; empty means unlimited
-  max_reasoning_effort_over_limit?: string // downgrade (default) or deny when over the ceiling
+	max_reasoning_effort?: string // Anthropic/OpenAI reasoning ceiling; empty means unlimited
+	max_reasoning_effort_over_limit?: string // downgrade (default) or deny when over the ceiling
+	user_concurrency_limit?: number // Per-user concurrent request cap inside this group (0 = unlimited)
   reasoning_effort_mappings?: ReasoningEffortMapping[]
   is_exclusive: boolean
   status: 'active' | 'inactive'
@@ -667,6 +669,8 @@ export interface Group {
   updated_at: string
 }
 
+export type GroupOpenAIServiceTier = '' | 'priority' | 'ultrafast'
+
 export interface AccountGroup {
   account_id: number
   group_id: number
@@ -676,9 +680,11 @@ export interface AccountGroup {
 }
 
 export interface AdminGroup extends Group {
+  fallback_group_id_on_unavailable?: number | null
   // 管理端的 name / description 始终是原字段，各语言译文另放在 i18n 里
   i18n?: GroupI18n
   force_openai_fast: boolean
+  force_openai_service_tier?: GroupOpenAIServiceTier
   free_openai_fast: boolean
   // 仅允许流式请求（管理端请求策略，用户侧分组不返回）
   stream_only: boolean
@@ -712,6 +718,7 @@ export interface AdminGroup extends Group {
   messages_dispatch_model_config?: OpenAIMessagesDispatchModelConfig
   model_allowlist?: ModelAllowlist
   codex_models_manifest_config?: CodexModelsManifestConfig
+  strict_failover?: StrictFailoverConfig
 
   // 分组排序
   sort_order: number
@@ -732,6 +739,11 @@ export interface ModelAllowlist {
 }
 
 // 固定账号获取 Codex Model Manifest 配置（仅 openai 分组）
+export interface StrictFailoverConfig {
+  enabled: boolean
+  tiers: number[][]
+}
+
 export interface CodexModelsManifestConfig {
   enabled: boolean
   account_ids: number[]
@@ -798,12 +810,14 @@ export interface CompositeRouteDecision {
 export interface ApiKey {
   id: number
   user_id: number
+  /** Display mask; a full credential is returned only when secret_available is true. */
   key: string
   /** 脱敏展示（prefix + ********），列表/详情统一用它；完整 key 仅创建响应返回一次 */
   key_display: string
   key_prefix: string
   name: string
   group_id: number | null
+  fallback_group_id: number | null
   status: 'active' | 'inactive' | 'quota_exhausted' | 'expired'
   ip_whitelist: string[]
   ip_blacklist: string[]
@@ -817,6 +831,7 @@ export interface ApiKey {
   current_concurrency: number
   concurrency_limit: number // 0 = no additional key limit
   group?: Group
+  fallback_group?: Group
   rate_limit_5h: number
   rate_limit_1d: number
   rate_limit_7d: number
@@ -848,6 +863,7 @@ export interface CreateApiKeyRequest {
   name: string
   concurrency_limit?: number // 0 = no additional key limit
   group_id?: number | null
+  fallback_group_id?: number | null
   custom_key?: string // Optional custom API Key
   ip_whitelist?: string[]
   ip_blacklist?: string[]
@@ -863,6 +879,7 @@ export interface UpdateApiKeyRequest {
   name?: string
   concurrency_limit?: number // Omitted = no change, 0 = no additional key limit
   group_id?: number | null
+  fallback_group_id?: number | null
   status?: 'active' | 'inactive'
   ip_whitelist?: string[]
   ip_blacklist?: string[]
@@ -889,6 +906,7 @@ export interface CreateGroupRequest {
   monthly_limit_usd?: number | null
   long_context_pricing_enabled?: boolean
   force_openai_fast?: boolean
+  force_openai_service_tier?: GroupOpenAIServiceTier
   free_openai_fast?: boolean
   stream_only?: boolean
   codex_cli_only?: boolean
@@ -927,6 +945,7 @@ export interface CreateGroupRequest {
   claude_code_only?: boolean
   fallback_group_id?: number | null
   fallback_group_id_on_invalid_request?: number | null
+  fallback_group_id_on_unavailable?: number | null
   // 专属代理 ID；nil 不设置，<=0 清除
   proxy_id?: number | null
   // 分组安全策略（默认关闭）
@@ -937,6 +956,7 @@ export interface CreateGroupRequest {
   supported_model_scopes?: string[]
   model_allowlist?: ModelAllowlist
   codex_models_manifest_config?: CodexModelsManifestConfig
+  strict_failover?: StrictFailoverConfig
   allow_messages_dispatch?: boolean
   allow_live?: boolean
   default_mapped_model?: string
@@ -944,6 +964,7 @@ export interface CreateGroupRequest {
   model_routing?: Record<string, number[]> | null
   model_routing_enabled?: boolean
   rpm_limit?: number
+  user_concurrency_limit?: number
   max_reasoning_effort?: string
   max_reasoning_effort_over_limit?: string
   reasoning_effort_mappings?: ReasoningEffortMapping[]
@@ -967,6 +988,7 @@ export interface UpdateGroupRequest {
   monthly_limit_usd?: number | null
   long_context_pricing_enabled?: boolean
   force_openai_fast?: boolean
+  force_openai_service_tier?: GroupOpenAIServiceTier
   free_openai_fast?: boolean
   stream_only?: boolean
   codex_cli_only?: boolean
@@ -1005,6 +1027,7 @@ export interface UpdateGroupRequest {
   claude_code_only?: boolean
   fallback_group_id?: number | null
   fallback_group_id_on_invalid_request?: number | null
+  fallback_group_id_on_unavailable?: number | null
   // 专属代理 ID；nil 不修改，<=0 清除
   proxy_id?: number | null
   // 分组安全策略；nil 不修改
@@ -1015,6 +1038,7 @@ export interface UpdateGroupRequest {
   supported_model_scopes?: string[]
   model_allowlist?: ModelAllowlist
   codex_models_manifest_config?: CodexModelsManifestConfig
+  strict_failover?: StrictFailoverConfig
   allow_messages_dispatch?: boolean
   allow_live?: boolean
   default_mapped_model?: string
@@ -1022,6 +1046,7 @@ export interface UpdateGroupRequest {
   model_routing?: Record<string, number[]> | null
   model_routing_enabled?: boolean
   rpm_limit?: number
+  user_concurrency_limit?: number
   max_reasoning_effort?: string
   max_reasoning_effort_over_limit?: string
   reasoning_effort_mappings?: ReasoningEffortMapping[]
@@ -1312,6 +1337,10 @@ export interface UpstreamBalanceSnapshot {
 export type VideoSupplierCatalog = VideoCatalog
 
 export interface UpstreamBillingProbeSnapshot {
+  protocol?: string
+  upstream_version?: string
+  rate_source?: string
+  probe_stage?: string
   kind?: 'video_model_prices' | 'image_model_prices'
   image_pricing?: ImageCatalog
   video_pricing?: VideoSupplierCatalog
@@ -1367,6 +1396,9 @@ export interface NewAPIUpstreamPreview {
 export interface UpstreamBillingProbeSettings {
   enabled: boolean
   interval_minutes: number
+  rate_change_notify_enabled?: boolean
+  rate_change_notify_email?: string
+  rate_change_notify_epoch?: string
 }
 
 export interface UpstreamBillingProbeResult {
@@ -1509,7 +1541,38 @@ export interface GrokModelDiagnostics {
   mappings: GrokModelDiagnosticItem[]
 }
 
+export type TiboRouteVerdict = 'healthy' | 'unknown' | 'degraded' | 'unavailable'
+
+// Admin view of the Tibo HTTP route of an OpenAI account. `verdict` is the
+// effective verdict; `confirmed` is the last confirmed one and may differ from
+// it once the confirmation goes stale.
+export interface TiboRouteStatus {
+  route: 'http' | string
+  verdict: TiboRouteVerdict
+  confirmed?: 'healthy' | 'degraded'
+  checked_at?: string
+  flipped_at?: string
+  next_probe_at?: string
+  held_until?: string
+  parked?: boolean
+  client_error_streak?: number
+  pending_votes?: ('healthy' | 'degraded')[]
+  last_sample?: 'healthy' | 'unknown' | 'degraded'
+  last_http?: number
+  last_answer?: string
+  recent_samples?: { verdict: TiboRouteVerdict; at?: string }[]
+  probes_hour: number
+  flips_hour: number
+  vote_windows?: number
+  vote_confirmed?: number
+  vote_rejected?: number
+}
+
 export interface Account {
+  /** Whether this account may be selected as an upstream moderation/audit scope target. */
+  moderation_scope_eligible?: boolean
+  /** Why the account can never be scheduled (retired Excel OAuth / BPS credentials). */
+  retired_reason?: string
   anti_degradation?: boolean
   protection_scope?: 'codex_v3' | 'generic_v1' | 'legacy' | 'disabled'
   /** Concrete strategy: mode1, mode2, legacy, generic, or disabled. */
@@ -1527,8 +1590,11 @@ export interface Account {
   credentials_status?: Record<string, boolean>
   ollama_cloud_usage?: OllamaCloudUsageState
   opencode_go_usage?: OpenCodeGoUsageState
+  // Tibo probe verdict and sparkline (gpt-6-astra); omitted when probing is off or does not apply.
+  openai_tibo_routes?: TiboRouteStatus[]
   // Extra fields including Codex usage, OpenAI compact capability, and model-level rate limits.
   extra?: (CodexUsageSnapshot & OpenAICompactState & {
+    openai_credits_enabled?: boolean
     model_rate_limits?: Record<string, { rate_limited_at: string; rate_limit_reset_at: string }>
     antigravity_credits_overages?: Record<string, { activated_at: string; active_until: string }>
     upstream_billing_provider?: 'new_api'
@@ -1545,6 +1611,7 @@ export interface Account {
     }
     codex_referral_snapshot?: import('./openaiReferrals').OpenAIReferralEligibility | null
     auto_reset_credit_enabled?: boolean
+    auto_reset_credit_opt_in_version?: number | null
     auto_reset_credit_5h_threshold?: number
     auto_reset_credit_7d_threshold?: number
     codex_auto_reset_credit_state?: {
@@ -1557,8 +1624,8 @@ export interface Account {
     }
   } & Record<string, unknown>)
   proxy_id: number | null
-  proxy_pool?: number[]
-  proxy_concurrencies?: Record<string, number>
+  proxy_ids?: number[]
+  proxy_pool?: Array<{ proxy_id: number; proxy_name: string; current_concurrency: number; max_concurrency: number }>
   proxy_fallback_origin_id?: number | null
   proxy_fallback_origin_name?: string | null
   concurrency: number
@@ -1573,8 +1640,8 @@ export interface Account {
   scheduler_scores?: AccountSchedulerGroupScore[] | null
   priority: number
   rate_multiplier?: number // Account billing multiplier (>=0, 0 means free)
-  group_rate_multiplier?: number // Account-level multiplier applied to group billing
-  status: 'active' | 'inactive' | 'error'
+  group_rate_multiplier?: number
+  status: 'active' | 'inactive' | 'error' | 'quality_paused'
   error_message: string | null
   last_used_at: string | null
   expires_at: number | null
@@ -1688,8 +1755,10 @@ export interface WindowStats {
   cost: number // Account cost (account multiplier)
   standard_cost?: number
   user_cost?: number
+  lifetime_requests?: number
   lifetime_tokens?: number // All-time totals (no time filter)
   lifetime_cost?: number
+  lifetime_user_cost?: number
 }
 
 export interface UsageProgress {
@@ -1702,6 +1771,19 @@ export interface UsageProgress {
 }
 
 // Antigravity 单个模型的配额信息
+export interface AntigravityQuotaWindow {
+  window: string // '5h' or 'weekly'
+  utilization: number // 0-100
+  resets_at: string | null
+}
+
+export interface AntigravityQuotaGroup {
+  key: string // bucket prefix: 'gemini' or '3p' (Claude and GPT)
+  name: string
+  description?: string
+  windows: AntigravityQuotaWindow[]
+}
+
 export interface AntigravityModelQuota {
   utilization: number // 使用率 0-100
   reset_time: string  // 重置时间 ISO8601
@@ -1765,6 +1847,8 @@ export interface AccountUsageInfo {
   gemini_pro_minute?: UsageProgress | null
   gemini_flash_minute?: UsageProgress | null
   antigravity_quota?: Record<string, AntigravityModelQuota> | null
+  // Per-group 5-hour and weekly windows (retrieveUserQuotaSummary); every model of a group shares them.
+  antigravity_quota_groups?: AntigravityQuotaGroup[] | null
   grok_request_quota?: GrokQuotaWindow | null
   grok_token_quota?: GrokQuotaWindow | null
   grok_retry_after_seconds?: number | null
@@ -1856,6 +1940,7 @@ export interface CreateAccountRequest {
   credentials: Record<string, unknown>
   extra?: Record<string, unknown>
   proxy_id?: number | null
+  proxy_ids?: number[]
   concurrency?: number
   load_factor?: number | null
   priority?: number
@@ -1890,7 +1975,7 @@ export interface UpdateAccountRequest {
   priority?: number
   rate_multiplier?: number // Account billing multiplier (>=0, 0 means free)
   schedulable?: boolean
-  status?: 'active' | 'inactive' | 'error'
+  status?: 'active' | 'inactive' | 'error' | 'quality_paused'
   group_ids?: number[]
   // Replaces the per-group model limits; groups not listed become unrestricted.
   group_allowed_models?: Record<number, string[]>
@@ -2020,9 +2105,11 @@ export interface CodexSessionImportRequest {
   notes?: string | null
   group_ids?: number[]
   proxy_id?: number | null
+  proxy_ids?: number[]
   concurrency?: number
   priority?: number
   rate_multiplier?: number
+  group_rate_multiplier?: number
   load_factor?: number | null
   expires_at?: number | null
   auto_pause_on_expired?: boolean
@@ -2034,6 +2121,7 @@ export interface CodexSessionImportRequest {
 }
 
 export interface OpenAICodexPATCreateRequest {
+  proxy_ids?: number[]
   access_token: string
   name?: string
   notes?: string | null
@@ -2042,6 +2130,7 @@ export interface OpenAICodexPATCreateRequest {
   concurrency?: number
   priority?: number
   rate_multiplier?: number
+  group_rate_multiplier?: number
   load_factor?: number | null
   expires_at?: number | null
   auto_pause_on_expired?: boolean
@@ -2104,7 +2193,14 @@ export interface UsageAuditDeviation {
   output_tokens?: number
 }
 
+export interface ImageOutputEvidence {
+ version: number; requested_model?: string; upstream_model?: string; reported_model?: string;
+ model_status: 'consistent' | 'different' | 'missing'; requested_size?: string;
+ size_status: 'consistent' | 'different' | 'unverified' | 'auto'; size_evidence: string;
+ outputs?: { declared_size?: string; measured_size?: string }[]; postprocessed?: boolean;
+}
 export interface UsageAudit {
+  image_output_evidence?: ImageOutputEvidence
   version: number
   status: UsageAuditStatus
   confidence: UsageAuditConfidence
@@ -2142,6 +2238,8 @@ export interface UsageLog {
   cache_read_tokens: number
   cache_creation_5m_tokens: number
   cache_creation_1h_tokens: number
+  cache_creation_30m_tokens?: number
+  cache_creation_12h_tokens?: number
 
   input_cost: number
   output_cost: number
@@ -2363,6 +2461,7 @@ export interface DashboardStats {
 }
 
 export interface UsageStatsResponse {
+  cache_hit_rate?: number | null
   period?: string
   total_requests: number
   total_input_tokens: number
@@ -2383,6 +2482,7 @@ export interface UsageStatsResponse {
 // ==================== Trend & Chart Types ====================
 
 export interface TrendDataPoint {
+  cache_hit_rate?: number | null
   date: string
   requests: number
   input_tokens: number
@@ -2863,7 +2963,7 @@ export interface QualityJudgment {
 }
 export interface QualityPolicy {
   trigger_on_upstream_5xx?: boolean
-  admission?: import('@/utils/openaiTwoFAAdmission').OpenAITwoFAAdmissionConfig
+  admission?: never
   judge?: QualityJudgeConfig
   expected_answer: string
   action: 'openai_two_fa_admission' | 'isolate_models' | 'remove_groups' | 'remove_models' | 'disable_scheduling' | 'observe_only'
@@ -2928,7 +3028,45 @@ export interface ScheduledTestPlan {
   updated_at: string
 }
 
+export interface TestTokenUsage {
+  input_tokens: number | null
+  output_tokens: number | null
+  reasoning_tokens: number | null
+  cache_read_tokens: number | null
+  cache_creation_tokens: number | null
+}
+export interface TestRequestAttempt extends TestTokenUsage {
+  started_at: string
+  http_status?: number
+  failure_kind?: string
+  retry_after?: string | null
+}
+export interface TestAutoReview {
+  verdict: 'pass' | 'fail' | 'pending'
+  reason: string
+  judge_account_id: number
+  judge_model: string
+  attempts: number
+  reviewed_at: string
+  failure_stage?: 'configuration' | 'queue' | 'render' | 'judge' | 'budget' | 'independence'
+  error_code?: string
+  render_attempts?: number
+  render_duration_ms?: number
+  render_retryable?: boolean
+  criteria?: { key: string; passed: boolean; reason: string }[]
+}
+export interface TestExecutionInfo extends TestTokenUsage {
+  auto_review?: TestAutoReview
+  capability?: import('@/utils/qualityCapability').CapabilityResult
+  attempts: TestRequestAttempt[]
+  failure_kind?: string
+  retry_after?: string | null
+  next_check_at?: string | null
+  consecutive_failures?: number
+}
+
 export interface ScheduledTestResult {
+  execution_info?: TestExecutionInfo | null
   quality_judgment?: QualityJudgment
   quality_round_id?: string
   quality_action?: string
@@ -2964,6 +3102,279 @@ export interface UpdateScheduledTestPlanRequest {
   max_results?: number
   auto_recover?: boolean
 }
+
+/** Generalized configurable health-test definitions and execution history. */
+export interface TestType {
+  id: number
+  name: string
+  key: string
+  description?: string | null
+  output_kind: 'html' | 'number' | 'text' | 'model_check' | string
+  /** 0 keeps the default budget for this protocol. */
+  max_output_tokens?: number
+  prompt: string
+  enabled: boolean
+  /** Controls the order of detection types in each account's quality results. */
+  sort_order?: number
+  created_at?: string
+  updated_at?: string
+}
+
+export interface TestSchedulePeriod {
+  start: string
+  end: string
+  interval_minutes: number
+}
+
+export interface TestSchedule {
+  timezone: string
+  periods: TestSchedulePeriod[]
+}
+
+export interface TestPlan {
+  id: number
+  /** Ordered strategy groups; this order is also used by the user result tabs. */
+  group_ids: number[]
+  excluded_account_ids?: number[]
+  migration_note?: string
+  name?: string
+  /** Controls the display order of this strategy. */
+  sort_order?: number
+  test_definition_id?: number | null
+  test_definition_ids?: number[]
+  group_id?: number | null
+  account_id?: number | null
+  /** Execution target selected by the administrator. */
+  target_mode?: 'group' | 'all_accounts' | 'account'
+  test_definition?: TestType | null
+  test_definitions?: TestType[]
+  model_id?: string
+  /** Models executed independently by this plan. Older plans expose model_id only. */
+  model_ids?: string[]
+  /** Optional effort forwarded to the selected model (Codex-style). */
+  reasoning_effort?: string | null
+  cron_expression?: string
+  schedule?: TestSchedule | null
+  enabled: boolean
+  max_results?: number
+  protection?: TestProtectionConfig
+  last_run_at?: string | null
+  next_run_at?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export type TestProtectionMetric = 'latency_ms' | 'output_numeric'
+export interface TestProtectionThreshold {
+  metric: TestProtectionMetric
+  operator: 'lt' | 'gt'
+  value: number
+}
+export interface TestOutcomeAction {
+  scheduling: 'keep' | 'pause' | 'resume'
+  group_mode: 'keep' | 'assign'
+  group_ids?: number[]
+}
+export interface TestProtectionVote {
+  enabled: boolean
+  public_enabled?: boolean
+  reject_above: number
+  pass_at_least: number
+}
+export interface TestPassRateConfig {
+  enabled: boolean
+  window_size: number
+  window_seconds: number
+  pause_below: number
+  recover_at_least: number
+  recover_consecutive: number
+  pause_on_single_failure: boolean
+}
+export interface TestPassRateSummary {
+  samples: number
+  passed: number
+  pass_rate: number | null
+  window_size: number
+  window_seconds: number
+  pause_below: number
+  recover_at_least: number
+  recover_consecutive: number
+  consecutive_passes: number
+  blocked: boolean
+  ready: boolean
+  stale: boolean
+  reason: string
+  latest_at?: string
+  latest_verdict: string
+  rule_version: string
+  model: string
+}
+export interface TestProtectionRule {
+  auto_review?: { enabled: boolean }
+  test_definition_id: number
+  priority: number
+  required_pass: boolean
+  thresholds?: TestProtectionThreshold[]
+  min_samples?: number
+  pause_on_failure?: boolean
+  expected_answer?: string
+  answer_match?: 'exact' | 'contains' | 'numeric'
+  model_match?: 'exact' | 'snapshot'
+  vote?: TestProtectionVote
+  on_pass?: TestOutcomeAction
+  on_fail?: TestOutcomeAction
+  pass_rate?: TestPassRateConfig
+}
+export interface TestAllPassProgress {
+  required: number
+  consecutive_passes: number
+  round_verdict: 'pass' | 'fail' | 'pending'
+  blocked: boolean
+}
+
+export interface TestProtectionConfig {
+  enabled: boolean
+  mode?: 'per_test' | 'combined' | 'all_pass'
+  /** Complete successful rounds required before the all-pass action runs; defaults to 1. */
+  required_consecutive_passes?: number
+  pass_group_ids?: number[]
+  on_pass?: TestOutcomeAction
+  on_fail?: TestOutcomeAction
+  rules: TestProtectionRule[]
+  combinations?: TestCombinationRule[]
+}
+export interface TestCombinationCondition {
+  operator: 'all' | 'any' | 'test'
+  conditions?: TestCombinationCondition[]
+  test_definition_id?: number
+  verdict?: 'pass' | 'fail'
+}
+export interface TestCombinationRule {
+  id: string
+  name: string
+  priority: number
+  condition: TestCombinationCondition
+  action: TestOutcomeAction
+}
+export type TestVote = 'pass' | 'fail'
+export interface TestVoteResult {
+  result: TestResult
+  voting: {
+    enabled: boolean
+    open: boolean
+    pass_count: number
+    fail_count: number
+    my_vote?: TestVote
+    reject_above: number
+    pass_at_least: number
+    reference_answer?: string
+    account_paused: boolean
+  }
+}
+
+export interface TestOutputModelCheck {
+  requested_model: string
+  upstream_model: string
+  returned_models: string[]
+  match_mode: 'exact' | 'snapshot'
+  verdict: 'pass' | 'fail' | 'unknown'
+  reason: 'match' | 'mismatch' | 'missing_model' | 'missing_upstream_model' | 'upstream_error' | 'invalid_evidence'
+}
+
+export interface TestProtectionDecision {
+  status?: 'applied' | 'unchanged' | 'pending' | 'disabled' | 'skipped' | 'error'
+  verdict: 'pass' | 'fail' | 'pending' | string
+  reason?: string
+  scheduling?: 'keep' | 'pause' | 'resume' | string
+  group_ids?: number[]
+  added_group_ids?: number[]
+  removed_group_ids?: number[]
+}
+
+export interface TestResult {
+  /** Current plan/account/model round streak, independent of individual check pass rates. */
+  all_pass_progress?: TestAllPassProgress | null
+  /** Current rolling evidence, not a historical snapshot at this result's time. */
+  pass_rate?: TestPassRateSummary | null
+  test_key?: string
+  /** Saved quality verdict; transport success does not imply a pass. */
+  quality_verdict?: 'pass' | 'fail' | 'pending' | ''
+  /** Execution was deferred/skipped; raw diagnostic text remains private. */
+  execution_skipped?: boolean
+  execution_info?: TestExecutionInfo | null
+  /** Current account status and scheduling switch; absent for account-free results. */
+  account_schedulable?: boolean | null
+  /** Current scheduling availability for this result's model, independent of other models. */
+  model_schedulable?: boolean | null
+  /** Returned only by administrator result endpoints. */
+  account_name?: string
+  plan_name?: string
+  test_name?: string
+  /** Configured check type order within the account's quality results. */
+  test_order?: number
+  /** Configured model order within the originating test plan, starting at zero. */
+  model_order?: number
+  /** Configured display order of the originating test rule/plan. */
+  plan_order?: number
+  /** Live display order of the account's current group; preferred over plan_order. */
+  group_order?: number
+  group_name?: string
+  account_id?: number | null
+  target_mode?: 'group' | 'all_accounts' | 'account'
+  id: number
+  plan_id?: number
+  test_definition_id?: number
+  test_definition?: TestType | null
+  plan?: TestPlan | null
+  group_id?: number | null
+  model_id?: string
+  /** Reasoning level used for this test execution, when explicitly selected. */
+  reasoning_effort?: string | null
+  status: string
+  output_kind: 'html' | 'number' | 'text' | 'model_check' | string
+  output_html?: string | null
+  output_numeric?: number | null
+  output_model_check?: TestOutputModelCheck | null
+  protection_decision?: TestProtectionDecision | null
+  response_text?: string | null
+  error_message?: string | null
+  latency_ms?: number | null
+  started_at?: string
+  finished_at?: string
+  created_at?: string
+}
+
+export interface CreateTestTypeRequest {
+  name: string
+  key: string
+  description?: string
+  output_kind: string
+  /** 0 keeps the default budget for this protocol. */
+  max_output_tokens?: number
+  prompt: string
+  enabled?: boolean
+  sort_order?: number
+}
+
+export interface UpdateTestTypeRequest extends Partial<CreateTestTypeRequest> {}
+
+export interface CreateTestPlanRequest {
+  name?: string
+  sort_order?: number
+  group_ids: number[]
+  excluded_account_ids?: number[]
+  test_definition_ids: number[]
+  model_id: string
+  model_ids?: string[]
+  reasoning_effort?: string | null
+  cron_expression?: string
+  schedule?: TestSchedule | null
+  enabled?: boolean
+  max_results?: number
+  protection?: TestProtectionConfig
+}
+
+export type UpdateTestPlanRequest = Partial<CreateTestPlanRequest>
 
 // Payment types
 export type { SubscriptionPlan, PaymentOrder, CheckoutInfoResponse } from './payment'

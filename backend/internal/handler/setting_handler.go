@@ -15,6 +15,7 @@ import (
 
 // SettingHandler 公开设置处理器（无需认证）
 type SettingHandler struct {
+	guideAssets              *service.GuideAssetStore
 	settingService           *service.SettingService
 	notificationEmailService *service.NotificationEmailService
 	version                  string
@@ -44,6 +45,7 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 	}
 
 	response.Success(c, dto.PublicSettings{
+		GPTDirectEnabled:                    settings.GPTDirectEnabled,
 		RegistrationEnabled:                 settings.RegistrationEnabled,
 		EmailVerifyEnabled:                  settings.EmailVerifyEnabled,
 		ForceEmailOnThirdPartySignup:        settings.ForceEmailOnThirdPartySignup,
@@ -95,6 +97,7 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 		GitHubOAuthEnabled:                  settings.GitHubOAuthEnabled,
 		GoogleOAuthEnabled:                  settings.GoogleOAuthEnabled,
 		BackendModeEnabled:                  settings.BackendModeEnabled,
+		MCPEnabled:                          settings.MCPEnabled,
 		PaymentEnabled:                      settings.PaymentEnabled,
 		PaymentBalanceDisabled:              settings.PaymentBalanceDisabled,
 		Version:                             h.version,
@@ -105,7 +108,7 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 		BalanceLowNotifyThreshold:           settings.BalanceLowNotifyThreshold,
 		BalanceLowNotifyRechargeURL:         settings.BalanceLowNotifyRechargeURL,
 
-		PrismBrowserEnabled: settings.PrismBrowserEnabled,
+		ChannelQualityPublicEnabled: settings.ChannelQualityPublicEnabled,
 
 		ChannelMonitorEnabled:                settings.ChannelMonitorEnabled,
 		ChannelMonitorMode:                   settings.ChannelMonitorMode,
@@ -115,7 +118,6 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 		ChannelMonitorHideUserRanking:        settings.ChannelMonitorHideUserRanking,
 
 		AvailableChannelsEnabled: settings.AvailableChannelsEnabled,
-		PelicanShowcaseEnabled:   settings.PelicanShowcaseEnabled,
 		SubscriptionEnabled:      settings.SubscriptionEnabled,
 
 		ModelPlazaEnabled:       settings.ModelPlazaEnabled,
@@ -168,3 +170,5 @@ func publicLoginAgreementDocumentsToDTO(items []service.LoginAgreementDocument) 
 	}
 	return result
 }
+
+func (h *SettingHandler) SetGuideAssetStore(store *service.GuideAssetStore) { h.guideAssets = store }

@@ -31,6 +31,9 @@ func (e *SystemOneUpstreamError) Error() string {
 }
 
 func (s *GatewayService) ForwardSystemOne(ctx context.Context, c *gin.Context, account *Account, body []byte) (*SystemOneForwardResult, error) {
+	if err := CheckUpstreamModeration(ctx, c, account); err != nil {
+		return nil, err
+	}
 	started := time.Now()
 	if account == nil || !account.IsTypeSafe() || account.Type != AccountTypeAPIKey {
 		return nil, errors.New("invalid typesafe account")
@@ -153,6 +156,7 @@ func (s *GatewayService) handleSystemOneErrorResponse(ctx context.Context, c *gi
 	event.Kind = "failover"
 	appendOpsUpstreamError(c, event)
 	failoverErr := &UpstreamFailoverError{
+		ObservedUpstreamStatus: resp.StatusCode,
 		StatusCode:             resp.StatusCode,
 		ResponseBody:           respBody,
 		ResponseHeaders:        resp.Header.Clone(),

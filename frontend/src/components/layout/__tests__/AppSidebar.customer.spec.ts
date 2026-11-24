@@ -4,6 +4,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AppSidebar from '../AppSidebar.vue'
+import type { PublicSettings } from '@/types'
 
 const appStore = reactive({
   backendModeEnabled: false,
@@ -13,7 +14,7 @@ const appStore = reactive({
   siteLogo: '',
   siteVersion: 'test',
   publicSettingsLoaded: true,
-  cachedPublicSettings: { custom_menu_items: [] },
+  cachedPublicSettings: { custom_menu_items: [] } as Partial<PublicSettings>,
   sidebarScrollTop: 0,
   toggleSidebar: vi.fn(),
   setMobileOpen: vi.fn()
@@ -53,6 +54,7 @@ vi.mock('@/composables/useBatchImageAccess', () => ({
 
 vi.mock('@/utils/featureFlags', () => ({
   FeatureFlags: {
+    channelQualityPublic: 'channelQualityPublic',
     channelMonitor: 'channelMonitor',
     payment: 'payment',
     subscription: 'subscription',
@@ -63,7 +65,9 @@ vi.mock('@/utils/featureFlags', () => ({
     pluginManagement: 'pluginManagement',
     pelicanShowcase: 'pelicanShowcase'
   },
-  makeSidebarFlag: () => () => true,
+  makeSidebarFlag: (flag: string) => () => flag === 'availableChannels'
+    ? appStore.cachedPublicSettings.available_channels_enabled !== false
+    : flag !== 'channelQualityPublic' || appStore.cachedPublicSettings.channel_quality_public_enabled !== false,
   resolveFeatureFlag: () => true
 }))
 
@@ -73,7 +77,6 @@ vi.mock('vue-i18n', async () => {
     'nav.appCenter': 'Kitty生图',
     'nav.onlineChat': '在线聊天',
     'nav.hotRecommendation': '火爆推荐',
-    'nav.affiliateBadge': '邀请返现',
     'nav.limitedOffer': '充值有礼',
     'nav.canvasMediaBadge': '生图+视频'
   }
@@ -96,6 +99,22 @@ beforeEach(() => {
 })
 
 describe('AppSidebar customer grouped navigation', () => {
+  it.each([false, true])('hides the user-facing quality link for admin=%s while keeping monitor navigation', async (admin) => {
+    authStore.isAdmin = admin
+    appStore.sidebarCollapsed = false
+    appStore.cachedPublicSettings.channel_quality_public_enabled = false
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] })
+    await router.push(admin ? '/admin/dashboard' : '/dashboard')
+    await router.isReady()
+    const wrapper = mount(AppSidebar, { global: { plugins: [router], stubs: { VersionBadge: true } } })
+    expect(wrapper.find('a[href="/test-results"]').exists()).toBe(false)
+    expect(wrapper.find('a[href="/monitor"]').exists()).toBe(true)
+    appStore.cachedPublicSettings.channel_quality_public_enabled = true
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('a[href="/test-results"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('keeps the current route visible and active in collapsed and expanded states', async () => {
     const router = createRouter({
       history: createMemoryHistory(),
@@ -162,13 +181,16 @@ describe('AppSidebar customer grouped navigation', () => {
     expect(wrapper.find('a[href="/custom/billing-rules"]').exists()).toBe(false)
     expect(wrapper.findAll('a[href="/custom/docs"]')).toHaveLength(1)
 
-    for (const retiredMenu of ['/chat','/subscriptions','/billing','/available-channels']) {
+    for (const retiredMenu of ['/chat']) {
       expect(wrapper.find(`a[href="${retiredMenu}"]`).exists()).toBe(false)
     }
     const paths = (section: string) => wrapper.findAll(`[data-customer-section="${section}"] > div > a`).map(link => link.attributes('href'))
-    expect(paths('api')).toEqual(['/keys','/usage','/model-plaza?embedded=1','/monitor','/custom/docs'])
+    expect(paths('api')).toEqual(expect.arrayContaining(['/keys','/usage','/model-plaza?embedded=1','/monitor','/custom/docs']))
+    expect(new Set(paths('api')).size).toBe(paths('api').length)
+    expect(paths('api')).not.toContain('/available-channels')
     expect(wrapper.findAll('[data-customer-section]').map(section => section.attributes('data-customer-section'))).toEqual(['overview', 'api', 'media', 'billing', 'other'])
-    expect(paths('billing')).toEqual(['/purchase','/orders','/redeem','/affiliate'])
+    // Orders, invoices, redeem and coupons are tabs on the billing and recharge pages.
+    expect(paths('billing')).toEqual(['/billing','/subscriptions','/purchase','/affiliate'])
     expect(paths('media')).toEqual(['/canvas/canvas?kitty_version=test','/video-tasks'])
     expect(wrapper.find('a[href="/apps"]').exists()).toBe(false)
     const canvasLink = wrapper.get('a[href="/canvas/canvas?kitty_version=test"]')
@@ -181,7 +203,8 @@ describe('AppSidebar customer grouped navigation', () => {
     expect(push).not.toHaveBeenCalled()
     expect(router.currentRoute.value.fullPath).toBe('/dashboard')
     push.mockRestore()
-    expect(paths('other')).toEqual(['/profile','/support-tickets','/pelican-showcase'])
+    // The guide is a tab of the docs entry; the community link lives in the header.
+    expect(paths('other')).toEqual(['/settings/mcp','/profile','/support-tickets'])
     expect(wrapper.find('button.sidebar-category').exists()).toBe(false)
     for (const section of ['api', 'billing', 'media', 'other']) expect(wrapper.get(`#sidebar-category-${section}`).isVisible()).toBe(true)
     const contacts = wrapper.findAll('[data-customer-section="other"] > div > button')
@@ -192,19 +215,58 @@ describe('AppSidebar customer grouped navigation', () => {
     wrapper.unmount()
   })
 
-  it('shows the three requested badges only while expanded, without a studio link', async () => {
+  it('shows the two text-only badges only while expanded, without a studio link', async () => {
     appStore.sidebarCollapsed = false
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] })
     await router.push('/dashboard')
     await router.isReady()
     const wrapper = mount(AppSidebar, { global: { plugins: [router], stubs: { VersionBadge: true } } })
-    expect(wrapper.get('a[href="/purchase"] .sidebar-promo-badge').text()).toBe('🎁充值有礼')
-    expect(wrapper.get('a[href="/affiliate"] .sidebar-promo-badge').text()).toBe('💸邀请返现')
-    expect(wrapper.get('a[href^="/canvas/canvas"] .sidebar-promo-badge').text()).toBe('🎨生图+视频')
+    expect(wrapper.get('a[href="/purchase"] .sidebar-promo-badge').text()).toBe('充值有礼')
+    expect(wrapper.get('a[href^="/canvas/canvas"] .sidebar-promo-badge').text()).toBe('生图+视频')
+    expect(wrapper.find('a[href="/affiliate"]').exists()).toBe(true)
+    expect(wrapper.find('a[href="/affiliate"] .sidebar-promo-badge').exists()).toBe(false)
+    expect(wrapper.findAll('.sidebar-promo-badge')).toHaveLength(2)
     expect(wrapper.find('a[href="/apps"]').exists()).toBe(false)
     appStore.sidebarCollapsed = true
     await wrapper.vm.$nextTick()
     expect(wrapper.findAll('.sidebar-promo-badge')).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  it('merges related pages into one entry that stays highlighted on every member route', async () => {
+    appStore.sidebarCollapsed = false
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] })
+    await router.push('/orders')
+    await router.isReady()
+    const wrapper = mount(AppSidebar, { global: { plugins: [router], stubs: { VersionBadge: true } } })
+    const label = (href: string) => wrapper.get(`.sidebar-nav a[href="${href}"] .sidebar-label-text`).text()
+    expect(label('/monitor')).toBe('nav.channelsGroup')
+    expect(label('/custom/docs')).toBe('nav.usageDocs')
+    expect(label('/billing')).toBe('nav.billingRecordsGroup')
+    expect(label('/purchase')).toBe('nav.rechargeCenterGroup')
+    for (const merged of ['/available-channels', '/guide', '/orders', '/invoices', '/redeem', '/coupons', '/community']) {
+      expect(wrapper.find(`.sidebar-nav a[href="${merged}"]`).exists()).toBe(false)
+    }
+    const active = () => wrapper.findAll('.sidebar-nav .sidebar-link-active').map(link => link.attributes('href'))
+    expect(active()).toEqual(['/billing'])
+    await router.push('/available-channels')
+    await wrapper.vm.$nextTick()
+    expect(active()).toEqual(['/monitor'])
+    await router.push('/coupons')
+    await wrapper.vm.$nextTick()
+    expect(active()).toEqual(['/purchase'])
+    wrapper.unmount()
+  })
+
+  it('keeps a page under its own name when the rest of its group is switched off', async () => {
+    appStore.sidebarCollapsed = false
+    appStore.cachedPublicSettings.available_channels_enabled = false
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] })
+    await router.push('/dashboard')
+    await router.isReady()
+    const wrapper = mount(AppSidebar, { global: { plugins: [router], stubs: { VersionBadge: true } } })
+    expect(wrapper.get('.sidebar-nav a[href="/monitor"] .sidebar-label-text').text()).toBe('nav.channelStatus')
+    expect(wrapper.find('.sidebar-nav a[href="/available-channels"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -239,16 +301,6 @@ describe('AppSidebar customer grouped navigation', () => {
     expect(push).not.toHaveBeenCalled()
     expect(router.currentRoute.value.fullPath).toBe('/admin/dashboard')
     push.mockRestore()
-
-    const smartOpsGroup = wrapper
-      .findAll('.sidebar-nav > .sidebar-section:first-child > button.sidebar-link')
-      .find((button) => button.text().includes('accountOps.smartTitle'))
-    expect(smartOpsGroup).toBeDefined()
-    expect(wrapper.find('a[href="/admin/account-quality"]').exists()).toBe(false)
-    await smartOpsGroup!.trigger('click')
-    for (const path of ['/admin/account-quality', '/admin/account-ops', '/admin/token-guard']) {
-      expect(wrapper.find(`a[href="${path}"]`).exists()).toBe(true)
-    }
 
     const orderGroup = wrapper
       .findAll('.sidebar-nav > .sidebar-section:first-child > button.sidebar-link')

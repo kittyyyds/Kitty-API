@@ -97,15 +97,17 @@ describe('AppSidebar regular-user grouped navigation contract', () => {
     expect(componentSource).not.toContain('data-user-nav-group')
   })
 
-  it('shows requested promo badges and retires the standalone studio entry', () => {
+  it('shows the two text-only promo badges and retires the standalone studio entry', () => {
     expect(componentSource).toContain(':data-sidebar-promo="item.badge.tone"')
     expect(componentSource).toContain("label: t('nav.canvasMediaBadge')")
     expect(componentSource).toContain("label: t('nav.limitedOffer')")
     expect(componentSource).toContain("tone: 'deal'")
-    expect(componentSource).toContain("label: t('nav.affiliateBadge')")
-    expect(componentSource).toContain("tone: 'rebate'")
+    // The affiliate badge and the badge emoji were retired at the owner's request.
+    expect(componentSource).not.toContain("label: t('nav.affiliateBadge')")
+    expect(componentSource).not.toContain("tone: 'rebate'")
+    expect(componentSource).not.toContain('item.badge.emoji')
     expect(componentSource).not.toContain("path: '/apps'")
-    expect(componentSource).toContain("path: '/chat'")
+    expect(componentSource).not.toContain("path: '/chat'")
     expect(componentSource).not.toContain("buildNativeFeatureNavItem('image-generator')")
   })
 
@@ -140,22 +142,12 @@ describe('AppSidebar subscription feature flag', () => {
   })
 })
 
-describe('AppSidebar smart operations group', () => {
-  const smartOpsBlock = componentSource.match(/path: '\/admin\/smart-ops'[\s\S]*?\n {4}\] \},/)?.[0] ?? ''
-  const pathsIn = (source: string) => [...source.matchAll(/path: '([^']+)'/g)].map(match => match[1])
-
-  it('nests request capture under 智能运维 and removes ticket harvesting', () => {
-    expect(smartOpsBlock).not.toBe('')
-    expect(smartOpsBlock).toMatch(/path: '\/admin\/request-captures'[^\n]*featureFlag: \(\) => adminSettingsStore\.requestCaptureEnabled/)
-    expect(smartOpsBlock).not.toContain("path: '/admin/harvest-flow'")
-    // Each entry is declared once, so neither is still a top-level item.
-    expect(componentSource.match(/path: '\/admin\/request-captures'/g)).toHaveLength(1)
-    expect(componentSource.match(/path: '\/admin\/harvest-flow'/g)).toBeNull()
-  })
-
-  it('keeps the group in the same order as the 智能运维 tab bar', () => {
-    const navSource = readFileSync(resolve(dirname(componentPath), '../admin/operations/SmartOpsNav.vue'), 'utf8')
-    expect(pathsIn(smartOpsBlock).slice(1)).toEqual(pathsIn(navSource))
+describe('AppSidebar retired operations pages', () => {
+  it('removes retired supplier balance and audit entries', () => {
+    expect(componentSource).not.toContain("path: '/admin/supplier-balances'")
+    for (const path of ['/admin/channel-operations', '/admin/profit-operations', '/admin/finance-overview', '/admin/request-captures', '/admin/harvest-flow']) {
+      expect(componentSource).not.toContain(`path: '${path}'`)
+    }
   })
 })
 
@@ -171,5 +163,14 @@ describe('AppSidebar support tickets', () => {
     expect(componentSource.match(/data-testid="sidebar-nav-badge"/g)).toHaveLength(3)
     expect(componentSource).toContain("return count > 99 ? '99+' : String(count)")
     expect(componentSource).toContain('.sidebar-nav-badge-collapsed {')
+  })
+})
+
+describe('AppSidebar MCP entry', () => {
+  it('uses the MCP logo and shows the entry only when the deployment enables MCP', () => {
+    expect(componentSource).toContain("render: () => h(Icon, { name: 'mcp' })")
+    expect(componentSource).toContain('const flagMCP = makeSidebarFlag(FeatureFlags.mcp)')
+    expect(componentSource).toMatch(/path: '\/settings\/mcp'[^\n]*icon: MCPIcon, featureFlag: flagMCP/)
+    expect(componentSource).not.toMatch(/path: '\/settings\/mcp'[^\n]*PluginIcon/)
   })
 })

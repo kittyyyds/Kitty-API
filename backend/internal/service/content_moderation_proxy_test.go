@@ -33,10 +33,6 @@ func (r *contentModerationTestProxyRepo) GetByID(ctx context.Context, id int64) 
 	return nil, errors.New("proxy not found")
 }
 
-func (r *contentModerationTestProxyRepo) CountGroupsByProxyID(ctx context.Context, id int64) (int64, error) {
-	return 0, nil
-}
-
 func (r *contentModerationTestProxyRepo) Create(ctx context.Context, proxy *Proxy) error {
 	panic("not implemented")
 }
@@ -211,8 +207,8 @@ func TestContentModerationUpdateConfigProxyIDSemantics(t *testing.T) {
 	}
 
 	// nil 表示不修改，代理保持不变。
-	enabled := true
-	view, err = svc.UpdateConfig(ctx, UpdateContentModerationConfigInput{Enabled: &enabled})
+	enabled, allGroups := true, true
+	view, err = svc.UpdateConfig(ctx, UpdateContentModerationConfigInput{Enabled: &enabled, AllGroups: &allGroups})
 	if err != nil {
 		t.Fatalf("update unrelated field: %v", err)
 	}

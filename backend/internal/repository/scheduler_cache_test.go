@@ -1,8 +1,10 @@
 package repository
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
@@ -10,44 +12,12 @@ import (
 
 func TestFilterSchedulerCredentialsKeepsSubscriptionPlanType(t *testing.T) {
 	filtered := filterSchedulerCredentials(map[string]any{
-		"plan_type":         "plus",
-		"subscription_tier": "SuperGrok Heavy",
-		"access_token":      "secret-access-token",
-		"refresh_token":     "secret-refresh-token",
+		"plan_type":     "plus",
+		"access_token":  "secret-access-token",
+		"refresh_token": "secret-refresh-token",
 	})
 
 	require.Equal(t, "plus", filtered["plan_type"])
-	require.Equal(t, "SuperGrok Heavy", filtered["subscription_tier"])
-	require.NotContains(t, filtered, "access_token")
-	require.NotContains(t, filtered, "refresh_token")
-}
-
-func TestSchedulerMetadataAccountKeepsGrokSubscriptionFieldsInExtra(t *testing.T) {
-	metadata := buildSchedulerMetadataAccount(service.Account{
-		Platform: service.PlatformGrok,
-		Type:     service.AccountTypeOAuth,
-		Extra: map[string]any{
-			"subscription_tier": "SuperGrok",
-			"plan_type":         "pro",
-		},
-	})
-
-	require.Equal(t, "SuperGrok", metadata.GetExtraString("subscription_tier"))
-	require.Equal(t, "pro", metadata.GetExtraString("plan_type"))
-}
-
-func TestFilterSchedulerCredentialsOmitsCodexTicketIdentity(t *testing.T) {
-	filtered := filterSchedulerCredentials(map[string]any{
-		"plan_type":          "plus",
-		"chatgpt_account_id": "acc-1",
-		"email":              "user@example.com",
-		"access_token":       "secret-access-token",
-		"refresh_token":      "secret-refresh-token",
-	})
-
-	require.Equal(t, "plus", filtered["plan_type"])
-	require.NotContains(t, filtered, "chatgpt_account_id")
-	require.NotContains(t, filtered, "email")
 	require.NotContains(t, filtered, "access_token")
 	require.NotContains(t, filtered, "refresh_token")
 }
@@ -75,19 +45,66 @@ func TestSchedulerMetadataAccountKeepsOpenAISubscriptionIdentity(t *testing.T) {
 		Platform: service.PlatformOpenAI,
 		Type:     service.AccountTypeOAuth,
 		Credentials: map[string]any{
-			"plan_type":          "plus",
-			"chatgpt_account_id": "acc-1",
-			"email":              "user@example.com",
-			"access_token":       "secret-access-token",
+			"plan_type":    "plus",
+			"access_token": "secret-access-token",
 		},
 	}
 
 	metadata := buildSchedulerMetadataAccount(account)
 
 	require.True(t, metadata.IsOpenAIChatGPTSubscription())
-	require.Empty(t, metadata.GetCredential("chatgpt_account_id"))
-	require.Empty(t, metadata.GetCredential("email"))
 	require.Empty(t, metadata.GetCredential("access_token"))
+}
+
+// The candidate filter runs on this projection: the credits-guard switch and
+// the VM2-managed exemption must survive it, while Tibo probe history stays out.
+func TestSchedulerMetadataAccountKeepsOpenAICreditsGuardInputs(t *testing.T) {
+	account := service.Account{
+		ID: 26, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
+		Extra: map[string]any{
+			service.OpenAICreditsEnabledExtraKey: true,
+			service.OpenAIVMManagedExtraKey:      true,
+			"codex_7d_used_percent":              100.0,
+			"codex_tibo_verdict:http":            map[string]any{"verdict": "healthy"},
+		},
+	}
+
+	metadata := buildSchedulerMetadataAccount(account)
+
+	require.True(t, metadata.IsOpenAICreditsEnabled())
+	require.True(t, metadata.IsOpenAIVMManaged())
+	require.Equal(t, 100.0, metadata.Extra["codex_7d_used_percent"])
+	require.NotContains(t, metadata.Extra, "codex_tibo_verdict:http")
+	require.False(t, shouldEnqueueSchedulerOutboxForExtraUpdates(map[string]any{"codex_tibo_verdict:http": map[string]any{}}),
+		"a probe result refreshes one account snapshot, not the scheduler buckets")
+}
+
+func TestSchedulerMetadataAccountKeepsProArgonQuotaIsolation(t *testing.T) {
+	account := service.Account{
+		ID: 25, Platform: service.PlatformAntigravity, Type: service.AccountTypeOAuth,
+		Status: service.StatusActive, Schedulable: true,
+		Credentials: map[string]any{
+			"plan_type": "Pro", "access_token": "secret-access-token", "refresh_token": "secret-refresh-token",
+		},
+		Extra: map[string]any{
+			"model_rate_limits": map[string]any{
+				"antigravity:gemini:argon": map[string]any{
+					"rate_limit_reset_at": time.Now().Add(time.Hour).Format(time.RFC3339),
+				},
+			},
+		},
+	}
+	_, payload, err := marshalSchedulerCacheAccount(account)
+	require.NoError(t, err)
+	var metadata service.Account
+	require.NoError(t, json.Unmarshal([]byte(payload), &metadata))
+	require.Equal(t, "Pro", metadata.GetCredential("plan_type"))
+	require.Empty(t, metadata.GetCredential("access_token"))
+	require.Empty(t, metadata.GetCredential("refresh_token"))
+	require.False(t, metadata.IsSchedulableForModel("gemini-4-argon-low"))
+	require.Positive(t, metadata.GetRateLimitRemainingTime("gemini-4-argon-low"))
+	require.True(t, metadata.IsSchedulableForModel("gemini-3.8-flash"))
+	require.Zero(t, metadata.GetRateLimitRemainingTime("gemini-3.8-flash"))
 }
 
 func TestSchedulerMetadataAccountProjectsUpstreamBillingProbe(t *testing.T) {

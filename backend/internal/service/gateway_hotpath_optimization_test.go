@@ -25,44 +25,6 @@ type userGroupRateRepoHotpathStub struct {
 	calls atomic.Int64
 }
 
-func TestGetAvailableModels_HidesGrokMediaCompatibilityAliases(t *testing.T) {
-	groupID := int64(91)
-	repo := &modelsListAccountRepoStub{
-		byGroup: map[int64][]Account{
-			groupID: {
-				{ID: 1, Platform: PlatformGrok},
-				{
-					ID:       2,
-					Platform: PlatformGrok,
-					Credentials: map[string]any{
-						"model_mapping": map[string]any{
-							"customer-video":    "grok-imagine-video-1.5",
-							"grok-imagine-edit": "vendor-image-edit",
-						},
-					},
-				},
-			},
-		},
-	}
-	svc := &GatewayService{accountRepo: repo}
-
-	models := svc.GetAvailableModels(context.Background(), &groupID, PlatformGrok)
-
-	require.Contains(t, models, "customer-video")
-	require.Contains(t, models, "grok-imagine-image")
-	require.Contains(t, models, "grok-imagine-image-quality")
-	require.Contains(t, models, "grok-imagine-video")
-	require.Contains(t, models, "grok-imagine-video-1.5")
-	for _, alias := range []string{
-		"grok-imagine",
-		"grok-imagine-edit",
-		"grok-imagine-image-pro",
-		"grok-imagine-video-1.5-preview",
-	} {
-		require.NotContains(t, models, alias)
-	}
-}
-
 func (s *userGroupRateRepoHotpathStub) GetByUserAndGroup(ctx context.Context, userID, groupID int64) (*float64, error) {
 	s.calls.Add(1)
 	if s.wait != nil {
@@ -730,24 +692,6 @@ func TestGetAvailableModels_OpenAIPassthroughUsesDefaultFallback(t *testing.T) {
 				},
 			},
 			want: dedupeAndSortModelIDs(append([]string{"configured-model"}, openai.DefaultModelIDs()...)),
-		},
-		{
-			name: "restricted passthrough preserves group allowlist without defaults",
-			accounts: []Account{
-				{
-					ID:            5,
-					Platform:      PlatformOpenAI,
-					Credentials:   map[string]any{"model_mapping": map[string]any{"stale-model": "upstream-model"}},
-					Extra:         map[string]any{"openai_passthrough": true},
-					AccountGroups: []AccountGroup{{GroupID: groupID, AllowedModels: []string{"allowed-model"}}},
-				},
-				{
-					ID:          6,
-					Platform:    PlatformOpenAI,
-					Credentials: map[string]any{"model_mapping": map[string]any{"configured-model": "configured-upstream"}},
-				},
-			},
-			want: []string{"allowed-model", "configured-model"},
 		},
 		{
 			name: "ordinary accounts preserve mapped whitelist",

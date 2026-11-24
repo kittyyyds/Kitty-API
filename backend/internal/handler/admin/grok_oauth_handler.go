@@ -3,7 +3,6 @@ package admin
 import (
 	"context"
 	"fmt"
-	"github.com/Wei-Shaw/sub2api/internal/managedinstance"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -318,20 +317,22 @@ func (h *GrokOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 }
 
 type GrokSSOToOAuthRequest struct {
-	SSOTokens          []string       `json:"sso_tokens"`
-	SSOToken           string         `json:"sso_token"`
-	Name               string         `json:"name"`
-	Notes              *string        `json:"notes"`
-	ProxyID            *int64         `json:"proxy_id"`
-	GroupIDs           []int64        `json:"group_ids"`
-	Credentials        map[string]any `json:"credentials"`
-	Extra              map[string]any `json:"extra"`
-	Concurrency        int            `json:"concurrency"`
-	LoadFactor         *int           `json:"load_factor"`
-	Priority           int            `json:"priority"`
-	RateMultiplier     *float64       `json:"rate_multiplier"`
-	ExpiresAt          *int64         `json:"expires_at"`
-	AutoPauseOnExpired *bool          `json:"auto_pause_on_expired"`
+	SSOTokens           []string       `json:"sso_tokens"`
+	SSOToken            string         `json:"sso_token"`
+	Name                string         `json:"name"`
+	Notes               *string        `json:"notes"`
+	ProxyIDs            []int64        `json:"proxy_ids"`
+	ProxyID             *int64         `json:"proxy_id"`
+	GroupIDs            []int64        `json:"group_ids"`
+	Credentials         map[string]any `json:"credentials"`
+	Extra               map[string]any `json:"extra"`
+	Concurrency         int            `json:"concurrency"`
+	LoadFactor          *int           `json:"load_factor"`
+	Priority            int            `json:"priority"`
+	RateMultiplier      *float64       `json:"rate_multiplier"`
+	GroupRateMultiplier *float64       `json:"group_rate_multiplier"`
+	ExpiresAt           *int64         `json:"expires_at"`
+	AutoPauseOnExpired  *bool          `json:"auto_pause_on_expired"`
 }
 
 type GrokSSOToOAuthItemResult struct {
@@ -379,9 +380,7 @@ func (h *GrokOAuthHandler) CreateAccountsFromSSO(c *gin.Context) {
 	var wg sync.WaitGroup
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
-		managedDone := managedinstance.Track()
 		go func() {
-			defer managedDone()
 			defer wg.Done()
 			for job := range jobs {
 				items[job.index] = h.safeCreateAccountFromSSOToken(ctx, req, job.token, job.index+1, len(tokens))
@@ -424,20 +423,6 @@ func (h *GrokOAuthHandler) safeCreateAccountFromSSOToken(ctx context.Context, re
 }
 
 func (h *GrokOAuthHandler) createAccountFromSSOToken(ctx context.Context, req GrokSSOToOAuthRequest, token string, index, total int) grokSSOImportWorkerResult {
-	var ticketID string
-	if coordinator, ok := h.adminService.(service.AccountImportCoordinator); ok {
-		ticket, err := coordinator.PrepareAccountImport(ctx, service.PlatformGrok, "oauth", req.ProxyID, "")
-		if err != nil {
-			return grokSSOImportWorkerResult{item: GrokSSOToOAuthItemResult{Index: index, Error: err.Error()}}
-		}
-		ticketID = ticket.ID
-		req.ProxyID = ticket.ProxyID
-		defer func() {
-			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = coordinator.CancelAccountImport(cleanup, ticketID)
-		}()
-	}
 	tokenInfo, err := h.grokOAuthService.ConvertFromSSO(ctx, token, req.ProxyID)
 	if err != nil {
 		return grokSSOImportWorkerResult{item: GrokSSOToOAuthItemResult{Index: index, Error: grokSSOImportErrorMessage(err)}}
@@ -447,21 +432,22 @@ func (h *GrokOAuthHandler) createAccountFromSSOToken(ctx context.Context, req Gr
 	name := grokSSOImportAccountName(req.Name, tokenInfo, index, total)
 	expiresAt, autoPauseOnExpired := grokSSOImportExpiry(req.ExpiresAt, req.AutoPauseOnExpired, tokenInfo)
 	account, err := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
-		ImportTicket:       ticketID,
-		Name:               name,
-		Notes:              req.Notes,
-		Platform:           service.PlatformGrok,
-		Type:               service.AccountTypeOAuth,
-		Credentials:        credentials,
-		Extra:              cloneGrokSSOMap(req.Extra),
-		ProxyID:            req.ProxyID,
-		Concurrency:        req.Concurrency,
-		LoadFactor:         req.LoadFactor,
-		Priority:           req.Priority,
-		RateMultiplier:     req.RateMultiplier,
-		GroupIDs:           append([]int64(nil), req.GroupIDs...),
-		ExpiresAt:          expiresAt,
-		AutoPauseOnExpired: autoPauseOnExpired,
+		Name:                name,
+		Notes:               req.Notes,
+		Platform:            service.PlatformGrok,
+		Type:                service.AccountTypeOAuth,
+		Credentials:         credentials,
+		Extra:               cloneGrokSSOMap(req.Extra),
+		ProxyID:             req.ProxyID,
+		ProxyIDs:            req.ProxyIDs,
+		Concurrency:         req.Concurrency,
+		LoadFactor:          req.LoadFactor,
+		Priority:            req.Priority,
+		RateMultiplier:      req.RateMultiplier,
+		GroupRateMultiplier: req.GroupRateMultiplier,
+		GroupIDs:            append([]int64(nil), req.GroupIDs...),
+		ExpiresAt:           expiresAt,
+		AutoPauseOnExpired:  autoPauseOnExpired,
 	})
 	if err != nil {
 		return grokSSOImportWorkerResult{item: GrokSSOToOAuthItemResult{Index: index, Name: name, Email: tokenInfo.Email, Error: grokSSOImportErrorMessage(err)}}

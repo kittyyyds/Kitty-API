@@ -3,10 +3,11 @@ import { flushPromises, mount } from '@vue/test-utils'
 import OperationsView from '../OperationsView.vue'
 import type { OperationsDashboardResponse, OperationsUserSpendResponse } from '@/api/admin/dashboard'
 
-const { getOperationsDashboard, getOperationsUserSpend, getOperationsUserSuggestions, getOperationsRechargeOrders, getOperationsRechargeRisks } = vi.hoisted(() => ({
-  getOperationsDashboard: vi.fn(), getOperationsUserSpend: vi.fn(), getOperationsUserSuggestions: vi.fn(), getOperationsRechargeOrders: vi.fn(), getOperationsRechargeRisks: vi.fn()
+const { getOperationsDashboard, getOperationsUserSpend, getOperationsUserSuggestions, getOperationsRechargeOrders, getOperationsRechargeRisks, getOperationsRechargeRanking, getOperationsRechargeSummary } = vi.hoisted(() => ({
+  getOperationsDashboard: vi.fn(), getOperationsUserSpend: vi.fn(), getOperationsUserSuggestions: vi.fn(), getOperationsRechargeOrders: vi.fn(), getOperationsRechargeRisks: vi.fn(), getOperationsRechargeRanking: vi.fn(), getOperationsRechargeSummary: vi.fn()
 }))
-vi.mock('@/api/admin', () => ({ adminAPI: { dashboard: { getOperationsDashboard, getOperationsUserSpend, getOperationsUserSuggestions, getOperationsRechargeOrders, getOperationsRechargeRisks } } }))
+vi.mock('@/api/admin', () => ({ adminAPI: { dashboard: { getOperationsDashboard, getOperationsUserSpend, getOperationsUserSuggestions, getOperationsRechargeOrders, getOperationsRechargeRisks, getOperationsRechargeRanking, getOperationsRechargeSummary } } }))
+vi.mock('@/stores/app', () => ({ useAppStore: () => ({ cachedPublicSettings: { server_timezone: 'Asia/Shanghai' }, fetchPublicSettings: async () => ({ server_timezone: 'Asia/Shanghai' }) }) }))
 vi.mock('vue-i18n', async () => ({
   ...(await vi.importActual<typeof import('vue-i18n')>('vue-i18n')),
   useI18n: () => ({ t: (key: string) => key })
@@ -49,6 +50,8 @@ describe('OperationsView', () => {
     getOperationsUserSuggestions.mockReset().mockResolvedValue([{ user_id: 1, email: 'alice@example.com' }])
     getOperationsRechargeOrders.mockReset().mockResolvedValue({ items: [], total: 0, page: 1, pages: 1 })
     getOperationsRechargeRisks.mockReset().mockResolvedValue([])
+    getOperationsRechargeRanking.mockReset().mockResolvedValue({ users: [{ user_id: 1, email: 'alice@example.com', amount: 100, recharge_count: 2 }], total_amount: 900, total_users: 63, total_count: 80, date: '2026-11-11', site_timezone: 'Asia/Shanghai' })
+    getOperationsRechargeSummary.mockReset().mockResolvedValue({ amount: 900, count: 80 })
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1280 })
   })
 
@@ -69,6 +72,44 @@ describe('OperationsView', () => {
     await wrapper.get('[data-order-status="unpaid"]').trigger('click')
     await flushPromises()
     expect(getOperationsRechargeOrders.mock.lastCall?.[0]).toMatchObject({ page: 1, status: 'unpaid' })
+    wrapper.unmount()
+  })
+
+  it('shows full-population recharge totals and keeps summary independent of status/page', async () => {
+    getOperationsRechargeOrders.mockResolvedValue({ items: [], total: 26, page: 1, pages: 2 })
+    const wrapper = mountPage()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="recharge-ranking-total"]').text()).toBe('$900.00')
+    expect(wrapper.get('[data-testid="recharge-ranking-users"]').text()).toBe('63')
+    expect(wrapper.get('[data-testid="recharge-ranking-count"]').text()).toBe('80')
+    expect(getOperationsRechargeSummary).toHaveBeenCalledTimes(1)
+    expect(getOperationsRechargeSummary.mock.lastCall?.[0]).toMatchObject({ timezone: 'Asia/Shanghai' })
+    expect(getOperationsDashboard.mock.lastCall?.[0].timezone).toBe('Asia/Shanghai')
+    expect(getOperationsUserSpend.mock.lastCall?.[0].timezone).toBe('Asia/Shanghai')
+    await wrapper.get('[data-order-status="unpaid"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="recharge-orders-panel"]').findAll('button').find(b => b.text() === 'admin.operations.recharge.next')!.trigger('click')
+    await flushPromises()
+    expect(getOperationsRechargeSummary).toHaveBeenCalledTimes(1)
+    await wrapper.get('[data-order-channel="direct"]').trigger('click')
+    await flushPromises()
+    expect(getOperationsRechargeSummary).toHaveBeenCalledTimes(2)
+    expect(getOperationsRechargeSummary.mock.lastCall?.[0].channel).toBe('direct')
+    expect(getOperationsRechargeSummary.mock.lastCall?.[0].status).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('ignores an older recharge summary response after changing channel', async () => {
+    let resolveOld!: (value: { amount: number; count: number }) => void
+    getOperationsRechargeSummary.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve }))
+    const wrapper = mountPage()
+    await flushPromises()
+    await wrapper.get('[data-order-channel="direct"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="recharge-summary"]').text()).toContain('$900.00')
+    resolveOld({ amount: 1, count: 1 })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="recharge-summary"]').text()).toContain('$900.00')
     wrapper.unmount()
   })
 

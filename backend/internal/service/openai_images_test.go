@@ -100,51 +100,6 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_MultipartEdit(t *testing.T
 	require.Equal(t, OpenAIImagesCapabilityNative, parsed.RequiredCapability)
 }
 
-func TestOpenAIImagesRequestModerationBody_JSONEditIncludesInputImageURLs(t *testing.T) {
-	parsed := &OpenAIImagesRequest{
-		Endpoint:       openAIImagesEditsEndpoint,
-		Prompt:         "replace background",
-		InputImageURLs: []string{"https://example.com/source.png"},
-		MaskImageURL:   "https://example.com/mask.png",
-	}
-
-	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIImages, parsed.ModerationBody())
-
-	require.Equal(t, "replace background", input.Text)
-	require.Equal(t, []string{"https://example.com/source.png", "https://example.com/mask.png"}, input.Images)
-}
-
-func TestOpenAIImagesRequestModerationBody_MultipartEditIncludesUploadsInMemory(t *testing.T) {
-	parsed := &OpenAIImagesRequest{
-		Endpoint: openAIImagesEditsEndpoint,
-		Prompt:   "replace background",
-		Uploads: []OpenAIImagesUpload{{
-			FieldName:   "image",
-			FileName:    "source.png",
-			ContentType: "image/png",
-			Data:        []byte("fake-image-bytes"),
-		}},
-		MaskUpload: &OpenAIImagesUpload{
-			FieldName:   "mask",
-			FileName:    "mask.png",
-			ContentType: "image/png",
-			Data:        []byte("fake-mask-bytes"),
-		},
-	}
-
-	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIImages, parsed.ModerationBody())
-
-	require.Equal(t, "replace background", input.Text)
-	require.Equal(t, []string{
-		"data:image/png;base64,ZmFrZS1pbWFnZS1ieXRlcw==",
-		"data:image/png;base64,ZmFrZS1tYXNrLWJ5dGVz",
-	}, input.Images)
-
-	log := (&ContentModerationService{}).buildLog(ContentModerationCheckInput{}, defaultContentModerationConfig(), ContentModerationActionAllow, false, "", 0, nil, input.ExcerptText(), nil, nil, "")
-	require.Equal(t, "replace background", log.InputExcerpt)
-	require.NotContains(t, log.InputExcerpt, "ZmFrZS")
-}
-
 func TestOpenAIGatewayServiceParseOpenAIImagesRequest_NormalizesOfficialAndCustomSizes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -345,12 +300,7 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_RejectsNonImageModel(t *te
 func TestOpenAIGatewayServiceParseOpenAIImagesRequest_AllowsGrokImageModels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	for _, model := range []string{
-		"grok-imagine-image",
-		"grok-imagine-image-2026-03-02",
-		"grok-imagine-image-quality",
-		"grok-imagine-image-pro",
-	} {
+	for _, model := range []string{"grok-imagine", "grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-edit"} {
 		t.Run(model, func(t *testing.T) {
 			body := []byte(fmt.Sprintf(`{"model":%q,"prompt":"draw a cat","response_format":"b64_json"}`, model))
 			req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
@@ -365,49 +315,6 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_AllowsGrokImageModels(t *t
 			require.NotNil(t, parsed)
 			require.Equal(t, model, parsed.Model)
 			require.Equal(t, OpenAIImagesCapabilityNative, parsed.RequiredCapability)
-		})
-	}
-}
-
-func TestOpenAIGatewayServiceParseOpenAIImagesRequest_AllowsLegacyAndMappedGrokImageAliases(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	for _, model := range []string{"grok-imagine", "grok-imagine-edit", "grok-imagine-image-hd"} {
-		t.Run(model, func(t *testing.T) {
-			body := []byte(fmt.Sprintf(`{"model":%q,"prompt":"draw a cat"}`, model))
-			req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			rec := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(rec)
-			c.Request = req
-
-			parsed, err := (&OpenAIGatewayService{}).ParseOpenAIImagesRequest(c, body)
-			require.NoError(t, err)
-			require.NotNil(t, parsed)
-			require.Equal(t, model, parsed.Model)
-			require.Equal(t, OpenAIImagesCapabilityNative, parsed.RequiredCapability)
-		})
-	}
-}
-
-func TestOpenAIGatewayServiceParseOpenAIImagesRequest_AllowsGeminiAndBananaImageModels(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	for _, model := range []string{"gemini-3.1-flash-image", "banana2-4k"} {
-		t.Run(model, func(t *testing.T) {
-			body := []byte(fmt.Sprintf(`{"model":%q,"prompt":"draw a cat"}`, model))
-			req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			rec := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(rec)
-			c.Request = req
-
-			svc := &OpenAIGatewayService{}
-			parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-			require.NoError(t, err)
-			require.NotNil(t, parsed)
-			require.Equal(t, model, parsed.Model)
-			require.Equal(t, OpenAIImagesCapabilityAPIKey, parsed.RequiredCapability)
 		})
 	}
 }
@@ -919,7 +826,7 @@ func TestOpenAIGatewayServiceForwardImages_OAuthPassesNAndReturnsAllImages(t *te
 
 func TestParseOpenAIImagesSSEUsageBytes_ToolUsagePrecedenceAndFallback(t *testing.T) {
 	svc := &OpenAIGatewayService{}
-	fallback := OpenAIUsage{InputTokens: 3, OutputTokens: 4, ImageOutputTokens: 2}
+	fallback := OpenAIUsage{InputTokens: 3, OutputTokens: 4, ImageOutputTokens: 2, cacheReadMediaObserved: true}
 	tests := []struct {
 		name      string
 		toolUsage string
@@ -961,7 +868,7 @@ func TestParseOpenAIImagesSSEUsageBytes_MalformedCompletedDoesNotOverrideUsage(t
 	svc.parseOpenAIImagesSSEUsageBytes([]byte(`{"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":4,"output_tokens_details":{"image_tokens":2}}}}`), &usage)
 	svc.parseOpenAIImagesSSEUsageBytes([]byte(`{"type":"response.completed","response":{"tool_usage":{"image_gen":{"input_tokens":46,"output_tokens":2459,"output_tokens_details":{"image_tokens":2459}}}}} trailing`), &usage)
 
-	require.Equal(t, OpenAIUsage{InputTokens: 3, OutputTokens: 4, ImageOutputTokens: 2}, usage)
+	require.Equal(t, OpenAIUsage{InputTokens: 3, OutputTokens: 4, ImageOutputTokens: 2, cacheReadMediaObserved: true}, usage)
 }
 
 func TestBoundedJSONNonNegativeInt(t *testing.T) {

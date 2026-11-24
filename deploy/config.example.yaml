@@ -1,49 +1,16 @@
-# Process role: full retains the dashboard and global background jobs (default).
-# gateway exposes model gateway APIs only and keeps request-local workers running.
-# Keep exactly one full instance until every enabled global job has a shared lease.
-runtime:
-  role: "full"
-  # Optional opaque node label for structured logs. No hostname/IP/secret.
-  # If WS node owner is enabled, use the same node_id there.
-  node_id: ""
-  # Opt-in native store=false WS safety gate; no node routing or replay.
-  # Each process must use a unique, stable node_id; boot identity is generated.
-  ws_node_owner:
-    enabled: false
-    node_id: "" # e.g. node-a, safe lowercase identifier only
-  # auto: full publishes scheduler snapshots; gateway only reads shared snapshots.
-  # reader rejects account-cache misses without database fallback or rebuilding.
-  # Keep exactly one full writer; gateway + writer is rejected.
-  # See docs/multi-host-scheduler-snapshots.md before upgrading request replicas.
-  scheduler_snapshot_mode: "auto"
-  # Opt in only after upgrading the full writer; see docs/multi-host-scheduler-snapshots.md.
-  # These scopes must cover the traffic assigned to a shared-Redis gateway.
-  scheduler_readiness:
-    enabled: false
-    buckets: [] # e.g. ["17:openai:single"] (synthetic group ID)
-    max_age_seconds: 900
-
 # Sub2API Configuration File
 # Sub2API 配置文件
 #
 # Copy this file to /etc/sub2api/config.yaml and modify as needed
 # 复制此文件到 /etc/sub2api/config.yaml 并根据需要修改
 #
-# Documentation / 文档: https://github.com/Wei-Shaw/sub2api
+# Documentation / 文档: https://github.com/DeanZFC/sub2api-custom
 
 # =============================================================================
 # Server Configuration
 # 服务器配置
 # =============================================================================
 server:
-  # Shared PostgreSQL/Redis readiness budget: 0 = 1s (default), allowed 1..60s.
-  # If changed, Kubernetes readinessProbe.timeoutSeconds must exceed this budget.
-  readiness_timeout_seconds: 0
-  # HTTP/WS request drain budget after load-balancer withdrawal (seconds).
-  # Default 5 preserves existing deployments; Kubernetes example uses 240.
-  graceful_shutdown_timeout: 5
-  # Fail readiness/reject new work, then wait for endpoint propagation.
-  shutdown_drain_delay: 0
   # Bind address (0.0.0.0 for all interfaces)
   # 绑定地址（0.0.0.0 表示监听所有网络接口）
   host: "0.0.0.0"
@@ -69,19 +36,12 @@ server:
   # Keep-alive idle timeout in seconds.
   # Keep-Alive 空闲连接超时（秒）。
   idle_timeout: 120
-  # Trusted proxies used by auth IP abuse guards, and by other IP consumers when
-  # security.trust_forwarded_ip_for_api_key_acl is false.
+  # Trusted proxies used when security.trust_forwarded_ip_for_api_key_acl is false.
   # List only the exact proxy addresses that connect directly to Sub2API.
-  # When omitted, only 127.0.0.1/32 and ::1/128 are trusted (local Nginx/1Panel).
-  # Local processes can supply forwarding headers within this trust boundary.
   # Set [] explicitly to disable forwarded-IP trust in high-security mode.
-  # 网页注册额度/登录封禁始终使用本可信代理链；其他 IP 使用方在
-  # security.trust_forwarded_ip_for_api_key_acl=false 时使用。
+  # security.trust_forwarded_ip_for_api_key_acl=false 时使用的可信代理。
   # 只填写直接连接 Sub2API 的精确代理地址；显式设置 [] 可在高安全模式下
   # 禁用转发 IP 信任。
-  # 未配置时仅信任 127.0.0.1/32 和 ::1/128；Docker 桥接/远程代理需显式配置。
-  # Docker + 宿主机 Nginx 排障与持久化步骤见 docs/docker-trusted-proxies.md。
-  # SERVER_TRUSTED_PROXIES 环境变量优先于此列表；显式空值会禁用信任。
   trusted_proxies:
     - 127.0.0.1/32
     - ::1/128
@@ -161,10 +121,33 @@ cors:
   allow_credentials: true
 
 # =============================================================================
+# MCP OAuth Configuration / MCP OAuth 配置
+# =============================================================================
+mcp:
+  # Canonical public MCP endpoint, e.g. https://example.com/api/v1/mcp.
+  # 固定的 MCP 对外地址，例如 https://example.com/api/v1/mcp。
+  # Leave empty to keep the management MCP and its OAuth endpoints disabled (default).
+  # 留空则关闭 MCP 及其 OAuth 接口（默认），不会回落到前端地址或请求中的 Host。
+  # HTTPS is required except localhost/loopback development; site-root /api/v1/mcp path, no trailing slash.
+  # 除 localhost/回环 IP 开发环境外必须使用 HTTPS；路径固定为站点根下的 /api/v1/mcp，末尾不加斜杠。
+  # Environment / 环境变量: MCP_PUBLIC_URL
+  public_url: ""
+
+# =============================================================================
 # Security Configuration
 # 安全配置
 # =============================================================================
 security:
+  # Restrict mainland China IPs on exactly /, /login and /home (one domain).
+  # Only those paths return the built-in 403 page; APIs and other paths are unchanged.
+  # Uses local bundled IPv4 + IPv6 CIDRs; no external calls during requests.
+  # Requires accurate server.trusted_proxies and rewritten forwarding headers.
+  # Optional CIDR file must contain both IPv4 and IPv6. Restart after changing it.
+  # SECURITY_MAINLAND_WEB_BLOCK_ENABLED / SECURITY_MAINLAND_WEB_BLOCK_CIDR_FILE
+  # Administrator website saves override enabled immediately without restarting.
+  mainland_web_block:
+    enabled: false
+    cidr_file: ""
   # Legacy compatibility switch. When true, raw forwarded headers take over
   # server.trusted_proxies. Set false to enforce the trusted proxy chain above.
   # 旧版兼容开关。开启时原始转发头会接管 server.trusted_proxies；关闭后严格
@@ -230,7 +213,7 @@ security:
     # 默认 CSP 策略（如果静态资源托管在其他域名，请自行覆盖）
     # Note: __CSP_NONCE__ will be replaced with 'nonce-xxx' at request time for inline script security
     # 注意：__CSP_NONCE__ 会在请求时被替换为 'nonce-xxx'，用于内联脚本安全
-    policy: "default-src 'self'; worker-src 'self' blob:; script-src 'self' __CSP_NONCE__ https://challenges.cloudflare.com https://*.alicdn.com https://static.cloudflareinsights.com https://turing.captcha.qcloud.com https://turing.captcha.gtimg.com https://ca.turing.captcha.qcloud.com https://global.turing.captcha.gtimg.com https://www.tycaptcha.com https://cloudcache.tencentcs.com https://*.stripe.com https://static.airwallex.com https://checkout.airwallex.com https://static-demo.airwallex.com https://checkout-demo.airwallex.com; style-src 'self' 'unsafe-inline' https://*.captcha.gtimg.com https://fonts.googleapis.com https://*.alicdn.com https://static.airwallex.com https://checkout.airwallex.com https://static-demo.airwallex.com https://checkout-demo.airwallex.com; img-src 'self' data: blob: https:; media-src 'self' blob: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://turing.captcha.qcloud.com https://www.tycaptcha.com https://rce.tencentrio.com https:; frame-src 'self' https://challenges.cloudflare.com https://turing.captcha.qcloud.com https://ca.turing.captcha.qcloud.com https://www.tycaptcha.com https://*.stripe.com https://checkout.airwallex.com https://checkout-demo.airwallex.com https://vcn7nwjngah3.feishu.cn https://accounts.feishu.cn https://login.feishu.cn; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    policy: "default-src 'self'; worker-src 'self' blob:; script-src 'self' __CSP_NONCE__ https://challenges.cloudflare.com https://*.alicdn.com https://static.cloudflareinsights.com https://turing.captcha.qcloud.com https://turing.captcha.gtimg.com https://ca.turing.captcha.qcloud.com https://global.turing.captcha.gtimg.com https://www.tycaptcha.com https://cloudcache.tencentcs.com https://*.stripe.com https://static.airwallex.com https://checkout.airwallex.com https://static-demo.airwallex.com https://checkout-demo.airwallex.com; style-src 'self' 'unsafe-inline' https://*.captcha.gtimg.com https://fonts.googleapis.com https://*.alicdn.com https://static.airwallex.com https://checkout.airwallex.com https://static-demo.airwallex.com https://checkout-demo.airwallex.com; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://turing.captcha.qcloud.com https://www.tycaptcha.com https://rce.tencentrio.com https:; frame-src 'self' https://challenges.cloudflare.com https://turing.captcha.qcloud.com https://ca.turing.captcha.qcloud.com https://www.tycaptcha.com https://*.stripe.com https://checkout.airwallex.com https://checkout-demo.airwallex.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
   proxy_probe:
     # Allow skipping TLS verification for proxy probe (debug only)
     # 允许代理探测时跳过 TLS 证书验证（仅用于调试）
@@ -257,36 +240,21 @@ security:
 # 网关配置
 # =============================================================================
 gateway:
-  # Route upstream hosts through operator-managed regional HTTP(S)/SOCKS5 exits.
-  # Disabled by default; reload requires a process restart. Explicit account
-  # proxies keep their configured exit policy.
-  upstream_routing:
-    enabled: false
-    regions: []
-    rules: []
-    # regions:
-    #   - id: us
-    #     proxy_url_env: SUB2API_EGRESS_US_PROXY_URL
-    # rules:
-    #   - domain: api.vendor.example
-    #     region: us
-    #     account_ids: [123] # optional upstream account IDs, not client API Key IDs
-    #   - domain: "*.us.vendor.example"
-    #     region: us
-    # Inject SUB2API_EGRESS_US_PROXY_URL via Secret/EnvironmentFile, for example
-    # socks5h://127.0.0.1:11080 (SSH SOCKS tunnel terminating on a US host).
   # Minimum max_output_tokens when converting Chat Completions or Anthropic requests to Responses (minimum 16, default 128)
   # Chat Completions 或 Anthropic 请求转换为 Responses 时的最小 max_output_tokens（最小 16，默认 128）
   min_output_tokens: 128
   # Timeout for waiting upstream response headers (seconds)
   # 等待上游响应头超时时间（秒）
   response_header_timeout: 600
-  # OpenAI/Codex upstream response header timeout (seconds; default 20, 0=disabled)
-  # OpenAI/Codex 等待上游响应头超时时间（秒；默认 20，0=禁用本地响应头超时）
-  # Starts after upload; slow nonstream/SSE headers can time out. Submitted requests are not replayed.
-  # 已提交请求超时后终止，不表示上游停止执行或费用为零；已收到响应头的正文流不受此计时器影响。
-  # 0 disables this timer without inheriting the generic 600s timeout.
-  openai_response_header_timeout: 20
+  # OpenAI/Codex upstream response header timeout (seconds, 0=disabled)
+  # OpenAI/Codex 等待上游响应头超时时间（秒，0=禁用本地响应头超时）
+  openai_response_header_timeout: 0
+  # Opt out of the fixed 10-minute account cooldown for persistent OpenAI transport failures (DNS/proxy/network).
+  # Env: GATEWAY_DISABLE_OPENAI_TRANSPORT_ERROR_COOLDOWN=true; default false retains protection.
+  # Errors/Ops and bounded request failover remain; HTTP 401/403/429, quota/model limits,
+  # stream timeouts and token-refresh cooldowns are unchanged. Existing cooldowns and admin pauses are not cleared.
+  # With shared egress still broken, later requests retry it: this does not repair DNS/proxies or guarantee faster models.
+  disable_openai_transport_error_cooldown: false
   # Grok text Responses first-byte timeout (seconds, 0=disabled; default 120)
   # Grok 文本 Responses 首字节超时时间（秒，0=禁用；默认 120）
   grok_response_header_timeout: 120
@@ -297,19 +265,87 @@ gateway:
   # Pre-output attempt staging is capped at 8 MiB; overflow fails over without exposing partial SSE data.
   # 首次输出前的单次尝试暂存上限为 8 MiB；溢出时切号且不暴露不完整 SSE 数据。
   openai_first_output_timeout_seconds: 0
-  # Opt-in HTTP upload/submission deadline shared across account/proxy retries.
-  # accounts.extra.openai_upload_timeout_seconds overrides it (0 disables).
-  openai_upload_timeout_seconds: 0
-  # Shared HTTP time budget until model output; does not cap normal long SSE.
-  openai_pre_output_budget_seconds: 0
   # Optional high/xhigh/max override (seconds, 0=use the standard timeout)
   openai_high_effort_first_output_timeout_seconds: 0
-  # Maximum account switches after first-output timeouts (1-10).
-  # Higher values improve failover coverage but can duplicate upstream billing.
-  openai_first_output_max_switches: 1
+  # --- OpenAI 账号保护调度 ---
+  # 点数保护（默认开启）：未在账号上打开"额度用尽后消耗点数"的 OpenAI OAuth/Setup Token 账号，
+  # 5h 或 7d 窗口用到 100% 后按 429 限流到窗口重置，避免上游自动扣除购买的点数。
+  # 设为 true 可全局关闭。VM2 托管账号与 Spark 影子账号不受此项影响。
+  # GATEWAY_OPENAI_CREDITS_GUARD_DISABLED
+  openai_credits_guard_disabled: false
+  # OpenAI 账号连续 429 多少次后才写入正式冷却（默认 30；成功一次清零；进程内计数）。
+  # 设为 1 表示第一次 429 就冷却（旧行为）。账号凭据 disable_429_cooling=true 则永不冷却。
+  openai_429_soft_threshold: 30
+  # 429 正式冷却期间按 30s/1m/2m/5m/15m 发一条极小的 Codex 请求探测，成功则提前解除限流。
+  # VM 绑定/托管、Excel、Agent Identity、Spark 影子、代理池账号不探测。设为 true 关闭。
+  openai_429_recovery_probe_disabled: false
+  # 95% 临界账号优先：5h/7d 窗口用量 >=95% 且快照新鲜的账号，在粘性会话之后、负载均衡之前优先使用。
+  # 设为 true 关闭。
+  openai_near_limit_disabled: false
+  # 临界账号的有效并发上限、429 后的进程内退避（秒）、首字慢阈值（毫秒）及其退避（秒）。
+  openai_near_limit_max_concurrency: 20
+  openai_near_limit_429_probe_backoff_seconds: 2
+  openai_near_limit_ttft_threshold_ms: 15000
+  openai_near_limit_ttft_backoff_seconds: 30
+  # Chat Completions 原生推理续接的存储预算（只对 Codex OAuth 直连账号生效，VM 绑定/托管、Excel 不参与）。
+  # 开关和用户范围不在这里：由管理员在 settings 表写 openai_native_reasoning_replay_config，
+  # 例如 {"mode":"observe","user_ids":[428]}；缺失、非法或读取失败一律视为 off（默认关闭）。
+  # 下面各项 0 表示用默认值，负数或超过默认值（即硬上限）拒绝启动。
+  native_reasoning_replay:
+    ttl_seconds: 3600
+    io_timeout_ms: 100
+    # 单条记录上限（含摘要头与密文）
+    max_entry_bytes: 262144
+    max_entries_per_user: 64
+    max_entries_global: 1024
+    # 每个请求最多查询的记录数
+    max_lookups: 32
+    max_history_bytes: 4194304
+    max_output_items: 128
+  # Tibo 探测：后台定期用账号自己的凭据和代理向 gpt-6-astra（思考强度 xhigh）发一条固定问题，
+  # 回答 True 记为健康，否则记为降智；账号列表显示最近 24 次结果的圆点。
+  # 注意：每次探测都是一条真实请求，会消耗被探测账号的额度。
+  # 每个账号约每 interval 探一次，实际间隔在 ±spread 内均匀随机（默认 10m ± 5m，约 6 次/小时、144 次/天）；
+  # 结论要翻转时按 confirm_spacing 追加确认探测；每账号每小时不超过 max_probes_per_hour 次。
+  # 只在后台节点（runtime.role=full）探测；VM 绑定/托管、Excel、Agent Identity、Spark 影子、代理池账号不探测。
+  openai_tibo_route:
+    # 全局开关，默认关闭（源分支默认开）。设为 true 才会发探测请求、显示圆点；设为 false 停止所有探测。
+    # GATEWAY_OPENAI_TIBO_ROUTE_ENABLED
+    enabled: false
+    # 是否也探测 OpenAI API Key 账号（含自定义 base_url 的兼容网关）。
+    probe_api_key_accounts: true
+    # 是否继续探测被手动暂停调度的 OAuth 账号（探测不会让它恢复调度）。
+    probe_paused_accounts: true
+    # 后台循环检查"哪些账号到期该探了"的间隔，不是每账号的探测频率。
+    tick_interval: 6s
+    interval: 10m
+    spread: 5m
+    confirm_samples: 3
+    confirm_spacing: 20s
+    # degraded 切回 healthy 至少间隔多久；负数表示不限制。
+    min_degraded_dwell: 10m
+    # 超过该时长没有新的确定样本，有效状态变为 unknown。
+    max_stale: 45m
+    # 每账号每小时的探测上限（含确认探测）；全进程同时进行的探测数上限。
+    max_probes_per_hour: 20
+    probe_concurrency: 4
+    # 调度按健康度软排序（healthy > unknown > degraded），并在有健康账号时解除降智账号的粘性会话。
+    # 默认关闭：探测结果只展示，不影响选号。
+    scheduler_prefer_healthy_route: false
   # Max request body size in bytes (default: 256MB)
   # 请求体最大字节数（默认 256MB）
   max_body_size: 268435456
+  # Per-instance ingress allocation budget. Unreferenced intermediates are released after each phase.
+  # Final bodies (and still-referenced preread buffers) remain charged until the handler returns.
+  # Include all concurrent long-lived requests and upload/decode workspace; see EDGE_SECURITY.md.
+  # Unset (default): 1/4 of the memory limit (min of RAM, cgroup limit, GOMEMLIMIT), at least 1 GiB.
+  # 实例级请求体分配预算；超出返回 503 + Retry-After，0 禁用。
+  # 不配置时自动取内存上限（物理内存/cgroup 限额/GOMEMLIMIT 的最小值）的 1/4，最低 1GiB；显式配置后不再自适应。
+  # request_body_memory_budget_bytes: 1073741824
+  # Individual socket read/write idle deadlines, not the entire SSE lifetime; 0 disables.
+  # 上传单次读取、下游单次写入/flush 超时（秒），不会限制正常长流的总时长；0 禁用。
+  request_body_read_timeout_seconds: 120
+  downstream_write_timeout_seconds: 120
   # Pure-text endpoint body limit (embeddings and alpha/search), default 32 MiB.
   # 纯文本端点请求体上限（embeddings、alpha/search），默认 32 MiB。
   text_max_body_size: 33554432
@@ -325,10 +361,6 @@ gateway:
   # Enable Gemini upstream response header debug logs (default: false)
   # 是否开启 Gemini 上游响应头调试日志（默认 false）
   gemini_debug_response_headers: false
-  # Gemini HTTP-error retries on the same account, excluding the initial request.
-  # 0 disables these retries; allowed 0..10, default 4. Transport errors still exit.
-  # Gemini 同账号重试次数（不含首次请求），0 关闭，默认 4，范围 0–10。
-  max_same_account_retries_gemini: 4
   # Maximum TTL (seconds) a Gemini explicit context cache may be created or extended to (default: 86400)
   # Gemini 显式上下文缓存单次可设置的最长有效期（秒，默认 86400）；存储费在创建/延长请求中一次性收取
   gemini_cached_content_max_ttl_seconds: 86400
@@ -393,6 +425,13 @@ gateway:
   # OpenAI 透传模式是否放行客户端超时头（如 x-stainless-timeout）
   # 默认 false：过滤超时头，降低上游提前断流风险。
   openai_passthrough_allow_timeout_headers: false
+  # Opt in to zstd compression for OpenAI OAuth /responses HTTP requests.
+  # Default false avoids upstream bare 400 errors for otherwise valid JSON.
+  # OpenAI OAuth 的 /responses HTTP 请求默认发送原 JSON；设为 true 恢复 zstd 压缩。
+  # 仅控制 HTTP 请求体压缩，不改变身份头、TLS 或 WebSocket 行为；修改后需重启。
+  # 启用压缩仍需 openai_ws.exact_fidelity_enabled=true；默认关闭压缩不影响该保真设置。
+  # Env: GATEWAY_OPENAI_REQUEST_COMPRESSION_ENABLED=false
+  openai_request_compression_enabled: false
   # Model used for OpenAI /responses/compact upstream requests (default: gpt-5.5).
   # OpenAI /responses/compact 上游模型（默认 gpt-5.5）。
   # Use this to avoid compact failures when newer models are not yet supported by the compact endpoint.
@@ -437,10 +476,13 @@ gateway:
     store_disabled_force_new_conn: true
     # 是否启用 WSv2 generate=false 预热（默认 false）
     prewarm_generate_enabled: false
-    # HTTP 流式 WS 加速：编码后的消息超过此字节数时，在发送前保留 HTTP/SSE。
-    # 包含 JSON 换行；默认 15 MiB 是保守路由阈值，不代表上游公布的消息大小限制。
-    # 必须为正数；不影响原生 WS 入口。环境变量 GATEWAY_OPENAI_WS_SSE_ACCELERATION_MAX_PAYLOAD_BYTES。
-    sse_acceleration_max_payload_bytes: 15728640
+    # 增量上下文：网关管理的 WSv2 上游转发里，Codex 身份通道账号（OpenAI OAuth/SetupToken，
+    # 非 VM 绑定/托管）在同一上游连接上已有成功 checkpoint、且本轮 input 是其严格前缀扩展时，
+    # 只发送尾部新增 items + previous_response_id（官方 Codex CLI 协议）。客户端自带
+    # previous_response_id、前缀/参数不一致、工具未配对、压缩边界、连接已换或超过 10 分钟时发完整 input；
+    # 上游拒绝推断的锚点（previous_response_not_found / 缺工具结果）且尚无输出时，同账号用完整 input 重放一次。
+    # GATEWAY_OPENAI_WS_DELTA_CONTEXT_ENABLED
+    delta_context_enabled: true
     # 协议 feature 开关，v2 优先于 v1
     responses_websockets: false
     responses_websockets_v2: true
@@ -570,6 +612,10 @@ gateway:
   # Concurrency slot expiration time (minutes)
   # 并发槽位过期时间（分钟）
   concurrency_slot_ttl_minutes: 30
+  # API Key active-request telemetry TTL (seconds); 0 inherits the shared TTL.
+  # API Key 活跃请求统计独立 TTL；0 继承上项，显式值至少 30 秒。
+  # 共享 Redis 的所有实例须保持一致；变更前先排空在途请求，见合并说明。
+  api_key_slot_ttl_seconds: 0
   # Stream data interval timeout (seconds), 0=disable
   # 流数据间隔超时（秒），0=禁用
   stream_data_interval_timeout: 180
@@ -603,18 +649,16 @@ gateway:
     # Max image requests waiting in this process when overflow_mode=wait, 0=unlimited
     # wait 模式当前进程允许排队等待的图片请求数，0=不限制
     max_waiting_requests: 100
-  # API Key concurrency wait queue. Global policy; no per-key database field.
-  # API Key 并发等待队列（全局策略，无逐 Key 数据库字段；进程启动时读取）。
-  api_key_queue:
-    # Extra waiting requests per API key with concurrency_limit>0; 0 disables key queueing.
-    # 每个受限 Key 允许额外等待的请求数；0 关闭 Key 排队（仍保留并发上限）。
-    max_waiting: 5
-    # Max wait budget per request in seconds (positive integer; 0 is rejected).
-    # 单个请求等待 Key 容量的最长秒数（正整数，0 会被拒绝）。
-    timeout_seconds: 30
-  # SSE max line size in bytes (default: 40MB)
-  # SSE 单行最大字节数（默认 40MB）
-  max_line_size: 41943040
+  # SSE max line size in bytes (default: 500 MiB, including large inline 4K images)
+  # SSE 单行最大字节数（默认 500 MiB，兼容含大尺寸 4K 图片的响应）
+  max_line_size: 524288000
+  # Queue byte budget. One larger line may be transferred alone, bounded by max_line_size.
+  # 队列按字节限流；超过预算的单行只能独占传递，仍受 max_line_size 硬上限约束。
+  sse_queue_max_bytes: 8388608
+  # Accumulated event byte limit (0 inherits max_line_size) and nonempty line limit.
+  # 事件累计字节上限（0 继承单行上限）与行数上限；持续短行也不能无界积累。
+  sse_event_max_bytes: 0
+  sse_event_max_lines: 4096
   # Log upstream error response body summary (safe/truncated; does not log request content)
   # 记录上游错误响应体摘要（安全/截断；不记录请求内容）
   log_upstream_error_body: true
@@ -661,9 +705,6 @@ gateway:
     db_fallback_timeout_seconds: 0
     # 受控回源限流（实例级 QPS），0 表示不限制
     db_fallback_max_qps: 0
-    # OpenAI 发送前账户快照的进程内缓存 TTL（秒）；0 表示关闭。
-    # 启用后账户停用、换组或代理变更最坏可延迟该时长生效。
-    openai_turn_admission_cache_ttl_seconds: 0
     # outbox 轮询周期（秒）
     outbox_poll_interval_seconds: 1
     # outbox 滞后告警阈值（秒）
@@ -799,14 +840,14 @@ api_key_auth_cache:
   # Maximum concurrent database lookups for authentication cache misses
   # 认证缓存未命中时允许并发回源数据库的最大数量
   lookup_concurrency: 64
-  # Legacy process-local invalid-auth protection, applied only after credential
-  # failure classification so a valid key behind the same NAT is never denied.
-  # The admin IP risk anonymous_api setting (off by default) supersedes it when enabled.
-  # 本机旧防护仅在确认凭据失败后生效；后台匿名 API 防护启用时接管惩罚。
+  # Process-local invalid-auth abuse protection. Counts only missing, malformed,
+  # deprecated-query, and confirmed invalid credentials; valid requests and
+  # Redis/DB failures do not consume the budget.
+  # 本机无效鉴权防护：仅统计缺失、格式错误、废弃 query 及确认无效的凭据。
   invalid_abuse:
     enabled: true
-    # Invalid attempts per exact trusted public client IP per window.
-    # 每个可信公网客户端 IP（IPv6 精确地址）在窗口内允许的无效次数。
+    # Invalid attempts per trusted client IP (IPv6 grouped by /64) per window.
+    # 每个可信客户端 IP（IPv6 按 /64 聚合）在窗口内允许的无效次数。
     threshold: 120
     window_seconds: 60
     block_seconds: 60

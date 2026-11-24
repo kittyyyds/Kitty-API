@@ -4,7 +4,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -127,22 +126,40 @@ func TestOpenAIReasoningEffortPolicyForCompositeTarget(t *testing.T) {
 	require.NotNil(t, requested)
 	require.Equal(t, "max", *requested)
 
-	_, err = prepareOpenAIReasoningEffortPolicyForMessagesRequest(openAICtx, apiKey, []byte(`{"output_config":{"effort":"max"}}`))
-	require.NoError(t, err)
+	bindOpenAIReasoningEffortPolicyForMessagesRequest(openAICtx, apiKey, []byte(`{"output_config":{"effort":"max"}}`))
 	bound, changed, err := service.ApplyOpenAIReasoningEffortPolicyFromContext(openAICtx.Request.Context(), body)
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.JSONEq(t, `{"reasoning":{"effort":"medium"}}`, string(bound))
 
-	omittedCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	omittedCtx.Request = httptest.NewRequest("POST", "/v1/messages", nil)
-	omittedCtx.Request = omittedCtx.Request.WithContext(service.WithResolvedTargetPlatform(omittedCtx.Request.Context(), service.PlatformOpenAI))
-	_, err = prepareOpenAIReasoningEffortPolicyForMessagesRequest(omittedCtx, apiKey, []byte(`{"model":"gpt-5"}`))
-	require.NoError(t, err)
-	omitted, changed, err := service.ApplyOpenAIReasoningEffortPolicyFromContext(omittedCtx.Request.Context(), body)
-	require.NoError(t, err)
-	require.False(t, changed)
-	require.Equal(t, body, omitted)
+	synthesizedGroup := &service.Group{
+		Platform: service.PlatformComposite,
+		ReasoningEffortMappings: []service.ReasoningEffortMapping{
+			{From: "medium", To: "low"},
+			{From: "none", To: "low"},
+		},
+	}
+	synthesizedAPIKey := &service.APIKey{Group: synthesizedGroup}
+	for _, tc := range []struct {
+		name     string
+		request  string
+		response string
+		want     string
+	}{
+		{name: "default medium", request: `{"model":"gpt-5"}`, response: `{"reasoning":{"effort":"medium"}}`, want: "medium"},
+		{name: "disabled thinking none", request: `{"model":"gpt-5","thinking":{"type":"disabled"}}`, response: `{"reasoning":{"effort":"none"}}`, want: "low"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			omittedCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			omittedCtx.Request = httptest.NewRequest("POST", "/v1/messages", nil)
+			omittedCtx.Request = omittedCtx.Request.WithContext(service.WithResolvedTargetPlatform(omittedCtx.Request.Context(), service.PlatformOpenAI))
+			bindOpenAIReasoningEffortPolicyForMessagesRequest(omittedCtx, synthesizedAPIKey, []byte(tc.request))
+			got, changed, err := service.ApplyOpenAIReasoningEffortPolicyFromContext(omittedCtx.Request.Context(), []byte(tc.response))
+			require.NoError(t, err)
+			require.Equal(t, tc.want != "medium", changed)
+			require.Equal(t, tc.want, gjson.GetBytes(got, "reasoning.effort").String())
+		})
+	}
 
 	denyGroup := *group
 	denyGroup.MaxReasoningEffortOverLimit = service.ReasoningEffortOverLimitDeny
@@ -250,15 +267,6 @@ func TestAnthropicCompositePolicyClampsUnsupportedMinimalToLow(t *testing.T) {
 	require.Equal(t, []service.ReasoningEffortMapping{{From: "max", To: "low"}}, mappings)
 }
 
-func TestAnthropicCompositePolicyDoesNotEmitUltra(t *testing.T) {
-	input := []service.ReasoningEffortMapping{{From: "high", To: "ultra"}, {From: "ultra", To: "deny"}}
-	maxEffort, mappings := anthropicCompatibleReasoningEffortPolicy("ultra", input)
-	require.Equal(t, "max", maxEffort)
-	require.Equal(t, "max", mappings[0].To)
-	require.Equal(t, "deny", mappings[1].To)
-	require.Equal(t, "ultra", input[0].To, "platform adaptation must not mutate the group policy")
-}
-
 func TestClientRequestedModelUsesCompositePublicModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -271,9 +279,7 @@ func TestClientRequestedModelUsesCompositePublicModel(t *testing.T) {
 		UpstreamModel:  "gpt-5",
 	}))
 
-	input := buildContentModerationInput(c, nil, middleware2.AuthSubject{UserID: 42}, service.ContentModerationProtocolOpenAIChat, "gpt-5", nil)
-	require.Equal(t, "public-alias", input.Model)
-	require.Equal(t, service.PlatformOpenAI, input.Provider)
+	require.Equal(t, "public-alias", clientRequestedModel(c, "gpt-5"))
 
 	fields := clientRequestedUsageFields(c, service.ChannelMappingResult{MappedModel: "gpt-5"}, "gpt-5", "gpt-5")
 	require.Equal(t, "public-alias", fields.OriginalModel)

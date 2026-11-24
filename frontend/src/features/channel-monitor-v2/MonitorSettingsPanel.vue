@@ -81,32 +81,6 @@
             </button>
           </div>
         </div>
-        <div class="flex flex-wrap items-center justify-between gap-4 px-5 py-4">
-          <div>
-            <strong class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('channelMonitorV2.settings.cardTimelineTitle') }}</strong>
-            <p class="mt-0.5 text-xs text-gray-500 dark:text-dark-400">{{ t('channelMonitorV2.settings.cardTimelineHint') }}</p>
-          </div>
-          <div class="tabs inline-flex w-auto" role="group" :aria-label="t('channelMonitorV2.settings.cardTimelineAria')" data-testid="monitor-v2-card-timeline">
-            <button
-              type="button"
-              class="tab"
-              data-testid="monitor-v2-card-timeline-windows"
-              :class="draft.card_timeline_mode !== 'samples' ? 'tab-active' : ''"
-              @click="draft.card_timeline_mode = 'windows'"
-            >
-              {{ t('channelMonitorV2.cards.timelineMode.windows') }}
-            </button>
-            <button
-              type="button"
-              class="tab"
-              data-testid="monitor-v2-card-timeline-samples"
-              :class="draft.card_timeline_mode === 'samples' ? 'tab-active' : ''"
-              @click="draft.card_timeline_mode = 'samples'"
-            >
-              {{ t('channelMonitorV2.cards.timelineMode.samples') }}
-            </button>
-          </div>
-        </div>
       </div>
 
       <div class="card overflow-hidden !rounded-3xl !border-0 shadow-sm ring-1 ring-gray-900/5 dark:!bg-dark-800 dark:ring-dark-700">
@@ -612,7 +586,6 @@ function normalizeConfig(value: MonitorConfig): MonitorConfig {
     ...value,
     candy_probes: value.candy_probes || [],
     candy_history_limit: value.candy_history_limit && value.candy_history_limit > 0 ? value.candy_history_limit : CANDY_HISTORY_LIMIT,
-    card_timeline_mode: value.card_timeline_mode === 'samples' ? 'samples' : 'windows',
     group_order: uniqueIds(value.group_order),
     health_thresholds: { ...defaultThresholds, ...(value.health_thresholds || {}) },
     // Preserve explicit empty arrays from the server (operator cleared all).

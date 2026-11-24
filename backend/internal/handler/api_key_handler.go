@@ -3,6 +3,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"net/http"
@@ -33,15 +34,16 @@ func NewAPIKeyHandler(apiKeyService *service.APIKeyService) *APIKeyHandler {
 
 // CreateAPIKeyRequest represents the create API key request payload
 type CreateAPIKeyRequest struct {
+	Name            string   `json:"name" binding:"required"`
+	GroupID         *int64   `json:"group_id"` // nullable
+	FallbackGroupID *int64   `json:"fallback_group_id"`
+	CustomKey       *string  `json:"custom_key"`      // 可选的自定义key
+	IPWhitelist     []string `json:"ip_whitelist"`    // IP 白名单
+	IPBlacklist     []string `json:"ip_blacklist"`    // IP 黑名单
+	Quota           *float64 `json:"quota"`           // 配额限制 (USD)
+	ExpiresInDays   *int     `json:"expires_in_days"` // 过期天数
 	ConcurrencyLimit int      `json:"concurrency_limit" binding:"gte=0"`
-	Name             string   `json:"name" binding:"required"`
 	GroupIDs         []int64  `json:"group_ids"`
-	GroupID          *int64   `json:"group_id"`        // nullable
-	CustomKey        *string  `json:"custom_key"`      // 可选的自定义key
-	IPWhitelist      []string `json:"ip_whitelist"`    // IP 白名单
-	IPBlacklist      []string `json:"ip_blacklist"`    // IP 黑名单
-	Quota            *float64 `json:"quota"`           // 配额限制 (USD)
-	ExpiresInDays    *int     `json:"expires_in_days"` // 过期天数
 
 	// Rate limit fields (0 = unlimited)
 	RateLimit5h *float64 `json:"rate_limit_5h"`
@@ -49,18 +51,38 @@ type CreateAPIKeyRequest struct {
 	RateLimit7d *float64 `json:"rate_limit_7d"`
 }
 
+type optionalInt64 struct {
+	Set   bool
+	Value *int64
+}
+
+func (v *optionalInt64) UnmarshalJSON(data []byte) error {
+	v.Set = true
+	if string(data) == "null" {
+		v.Value = nil
+		return nil
+	}
+	var value int64
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	v.Value = &value
+	return nil
+}
+
 // UpdateAPIKeyRequest represents the update API key request payload
 type UpdateAPIKeyRequest struct {
+	Name            string        `json:"name"`
+	GroupID         *int64        `json:"group_id"`
+	FallbackGroupID optionalInt64 `json:"fallback_group_id"`
+	Status          string        `json:"status" binding:"omitempty,oneof=active inactive"`
+	IPWhitelist     *[]string     `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
+	IPBlacklist     *[]string     `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
+	Quota           *float64      `json:"quota"`        // 配额限制 (USD), 0=无限制
+	ExpiresAt       *string       `json:"expires_at"`   // 过期时间 (ISO 8601)
+	ResetQuota      *bool         `json:"reset_quota"`  // 重置已用配额
 	ConcurrencyLimit *int      `json:"concurrency_limit" binding:"omitempty,gte=0"`
-	Name             string    `json:"name"`
 	GroupIDs         *[]int64  `json:"group_ids"`
-	GroupID          *int64    `json:"group_id"`
-	Status           string    `json:"status" binding:"omitempty,oneof=active inactive"`
-	IPWhitelist      *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
-	IPBlacklist      *[]string `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
-	Quota            *float64  `json:"quota"`        // 配额限制 (USD), 0=无限制
-	ExpiresAt        *string   `json:"expires_at"`   // 过期时间 (ISO 8601)
-	ResetQuota       *bool     `json:"reset_quota"`  // 重置已用配额
 
 	// Rate limit fields (nil = no change, 0 = unlimited)
 	RateLimit5h         *float64 `json:"rate_limit_5h"`
@@ -185,6 +207,7 @@ func (h *APIKeyHandler) GetByID(c *gin.Context) {
 // Create handles creating a new API key
 // POST /api/v1/api-keys
 func (h *APIKeyHandler) Create(c *gin.Context) {
+	apiKeyNoStore(c)
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		response.Unauthorized(c, "User not authenticated")
@@ -202,14 +225,15 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 	}
 
 	svcReq := service.CreateAPIKeyRequest{
+		Name:            req.Name,
+		GroupID:         req.GroupID,
+		FallbackGroupID: req.FallbackGroupID,
+		CustomKey:       req.CustomKey,
+		IPWhitelist:     req.IPWhitelist,
+		IPBlacklist:     req.IPBlacklist,
+		ExpiresInDays:   req.ExpiresInDays,
 		ConcurrencyLimit: req.ConcurrencyLimit,
-		Name:             req.Name,
 		GroupIDs:         req.GroupIDs,
-		GroupID:          req.GroupID,
-		CustomKey:        req.CustomKey,
-		IPWhitelist:      req.IPWhitelist,
-		IPBlacklist:      req.IPBlacklist,
-		ExpiresInDays:    req.ExpiresInDays,
 	}
 	if req.Quota != nil {
 		svcReq.Quota = *req.Quota
@@ -229,7 +253,35 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 		if err != nil {
 			return nil, err
 		}
-		return dto.APIKeyFromService(key).Localized(c.GetHeader("Accept-Language")), nil
+		return &dto.APIKeySecret{APIKey: *dto.APIKeyFromService(key).Localized(c.GetHeader("Accept-Language")), Key: key.Key, SecretAvailable: true}, nil
+	})
+}
+
+func apiKeyNoStore(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	c.Header("Referrer-Policy", "no-referrer")
+}
+
+// Regenerate replaces only the credential, preserving configuration and usage.
+func (h *APIKeyHandler) Regenerate(c *gin.Context) {
+	apiKeyNoStore(c)
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "Invalid key ID")
+		return
+	}
+	executeUserIdempotentJSON(c, "user.api_keys.regenerate", gin.H{"id": id}, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+		key, err := h.apiKeyService.Regenerate(ctx, id, subject.UserID)
+		if err != nil {
+			return nil, err
+		}
+		return &dto.APIKeySecret{APIKey: *dto.APIKeyFromService(key).Localized(c.GetHeader("Accept-Language")), Key: key.Key, SecretAvailable: true}, nil
 	})
 }
 
@@ -259,6 +311,8 @@ func (h *APIKeyHandler) Update(c *gin.Context) {
 	}
 
 	svcReq := service.UpdateAPIKeyRequest{
+		FallbackGroupID:     req.FallbackGroupID.Value,
+		FallbackGroupIDSet:  req.FallbackGroupID.Set,
 		ConcurrencyLimit:    req.ConcurrencyLimit,
 		IPWhitelist:         req.IPWhitelist,
 		IPBlacklist:         req.IPBlacklist,

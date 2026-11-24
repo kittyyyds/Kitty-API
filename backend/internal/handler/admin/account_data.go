@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/Wei-Shaw/sub2api/internal/managedinstance"
 	"strconv"
 	"strings"
 	"time"
@@ -59,19 +58,18 @@ type DataProxy struct {
 // 影子的独立调度配置(priority/并发/分组/status 管理员可单独调)亦不在本备份范围,属已知局限
 // (外审第6轮裁决:保持排除 + 前端警告,而非升级格式做完整往返)。
 type DataAccount struct {
-	Name                string         `json:"name"`
-	Notes               *string        `json:"notes,omitempty"`
-	Platform            string         `json:"platform"`
-	Type                string         `json:"type"`
-	Credentials         map[string]any `json:"credentials"`
-	Extra               map[string]any `json:"extra,omitempty"`
-	ProxyKey            *string        `json:"proxy_key,omitempty"`
-	Concurrency         int            `json:"concurrency"`
-	Priority            int            `json:"priority"`
-	RateMultiplier      *float64       `json:"rate_multiplier,omitempty"`
-	GroupRateMultiplier *float64       `json:"group_rate_multiplier,omitempty"`
-	ExpiresAt           *int64         `json:"expires_at,omitempty"`
-	AutoPauseOnExpired  *bool          `json:"auto_pause_on_expired,omitempty"`
+	Name               string         `json:"name"`
+	Notes              *string        `json:"notes,omitempty"`
+	Platform           string         `json:"platform"`
+	Type               string         `json:"type"`
+	Credentials        map[string]any `json:"credentials"`
+	Extra              map[string]any `json:"extra,omitempty"`
+	ProxyKey           *string        `json:"proxy_key,omitempty"`
+	Concurrency        int            `json:"concurrency"`
+	Priority           int            `json:"priority"`
+	RateMultiplier     *float64       `json:"rate_multiplier,omitempty"`
+	ExpiresAt          *int64         `json:"expires_at,omitempty"`
+	AutoPauseOnExpired *bool          `json:"auto_pause_on_expired,omitempty"`
 }
 
 type DataImportRequest struct {
@@ -190,6 +188,7 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 	dataAccounts := make([]DataAccount, 0, len(accounts))
 	for i := range accounts {
 		acc := accounts[i]
+		extra := service.RedactServerManagedAccountExtra(service.StripRetiredAccountExtra(acc.Extra))
 		var proxyKey *string
 		if acc.ProxyID != nil {
 			if key, ok := proxyKeyByID[*acc.ProxyID]; ok {
@@ -202,19 +201,18 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 			expiresAt = &v
 		}
 		dataAccounts = append(dataAccounts, DataAccount{
-			Name:                acc.Name,
-			Notes:               acc.Notes,
-			Platform:            acc.Platform,
-			Type:                acc.Type,
-			Credentials:         acc.Credentials,
-			Extra:               service.RedactRetiredAccountSecrets(acc.Extra),
-			ProxyKey:            proxyKey,
-			Concurrency:         acc.Concurrency,
-			Priority:            acc.Priority,
-			RateMultiplier:      acc.RateMultiplier,
-			GroupRateMultiplier: acc.GroupRateMultiplier,
-			ExpiresAt:           expiresAt,
-			AutoPauseOnExpired:  &acc.AutoPauseOnExpired,
+			Name:               acc.Name,
+			Notes:              acc.Notes,
+			Platform:           acc.Platform,
+			Type:               acc.Type,
+			Credentials:        acc.Credentials,
+			Extra:              extra,
+			ProxyKey:           proxyKey,
+			Concurrency:        acc.Concurrency,
+			Priority:           acc.Priority,
+			RateMultiplier:     acc.RateMultiplier,
+			ExpiresAt:          expiresAt,
+			AutoPauseOnExpired: &acc.AutoPauseOnExpired,
 		})
 	}
 
@@ -434,6 +432,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			}
 		}
 
+		item.Extra = service.StripRetiredAccountExtra(item.Extra)
 		enrichCredentialsFromIDToken(&item)
 
 		accountInput := &service.CreateAccountInput{
@@ -447,7 +446,6 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			Concurrency:          item.Concurrency,
 			Priority:             item.Priority,
 			RateMultiplier:       item.RateMultiplier,
-			GroupRateMultiplier:  item.GroupRateMultiplier,
 			GroupIDs:             nil,
 			ExpiresAt:            item.ExpiresAt,
 			AutoPauseOnExpired:   item.AutoPauseOnExpired,
@@ -475,9 +473,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 	// 异步设置 Antigravity 隐私，避免大量导入时阻塞请求
 	if len(privacyAccounts) > 0 {
 		adminSvc := h.adminService
-		managedDone := managedinstance.Track()
 		go func() {
-			defer managedDone()
 			defer func() {
 				if r := recover(); r != nil {
 					slog.Error("import_antigravity_privacy_panic", "recover", r)
@@ -580,19 +576,20 @@ func (h *AccountHandler) resolveExportProxies(ctx context.Context, accounts []se
 
 	seen := make(map[int64]struct{})
 	ids := make([]int64, 0)
-	for i := range accounts {
-		if accounts[i].ProxyID == nil {
-			continue
-		}
-		id := *accounts[i].ProxyID
+	appendID := func(id int64) {
 		if id <= 0 {
-			continue
+			return
 		}
 		if _, ok := seen[id]; ok {
-			continue
+			return
 		}
 		seen[id] = struct{}{}
 		ids = append(ids, id)
+	}
+	for i := range accounts {
+		if accounts[i].ProxyID != nil {
+			appendID(*accounts[i].ProxyID)
+		}
 	}
 	if len(ids) == 0 {
 		return []service.Proxy{}, nil

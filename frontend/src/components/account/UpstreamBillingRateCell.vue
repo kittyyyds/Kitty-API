@@ -95,6 +95,14 @@
             </p>
           </template>
           <p v-else>{{ statusLabel || '-' }}</p>
+          <template v-if="!isVideoPricing && snapshot">
+            <p v-if="diagnosticProtocol" data-testid="upstream-billing-protocol">{{ t('admin.accounts.upstreamBilling.diagnosticProtocol', { value: diagnosticProtocol }) }}</p>
+            <p v-if="snapshot.upstream_version" data-testid="upstream-billing-version">{{ t('admin.accounts.upstreamBilling.diagnosticVersion', { value: snapshot.upstream_version }) }}</p>
+            <p v-if="diagnosticSource" data-testid="upstream-billing-source">{{ t('admin.accounts.upstreamBilling.diagnosticSource', { value: diagnosticSource }) }}</p>
+            <p v-if="diagnosticStage" data-testid="upstream-billing-stage">{{ t('admin.accounts.upstreamBilling.diagnosticStage', { value: diagnosticStage }) }}</p>
+            <p v-if="snapshot.http_status" data-testid="upstream-billing-http">{{ t('admin.accounts.upstreamBilling.diagnosticHTTP', { value: snapshot.http_status }) }}</p>
+            <p v-if="diagnosticError" class="max-w-sm whitespace-normal break-words text-amber-300" data-testid="upstream-billing-error">{{ t('admin.accounts.upstreamBilling.diagnosticError', { value: diagnosticError }) }}</p>
+          </template>
           <p
             v-if="probeEnabled && globalProbeEnabled !== false && nextProbeAt"
             data-testid="upstream-billing-next-probe"
@@ -274,6 +282,29 @@ const videoFailure = computed(() => snapshot.value?.last_error || videoCatalog.v
 const isMultiGroup = computed(() => data.value?.schema_version === 2 && data.value.billing_mode === 'multi_group' && Array.isArray(data.value.groups))
 const declaredGroups = computed(() => isMultiGroup.value ? data.value?.groups ?? [] : [])
 const isNewAPIGroup = computed(() => data.value?.provider === 'new_api' && data.value.object === 'new_api.group_billing' && data.value.billing_scope === 'group')
+const diagnosticProtocol = computed(() => snapshot.value?.protocol === 'newapi' || isNewAPIGroup.value ? 'NewAPI' : snapshot.value?.protocol === 'sub2api' ? 'Sub2API' : '')
+const diagnosticSource = computed(() => {
+  if (snapshot.value?.rate_source === 'bound_group_pricing' || isNewAPIGroup.value) return t('admin.accounts.upstreamBilling.sourceBoundNewAPI')
+  if (snapshot.value?.rate_source === 'sub2api_billing') return t('admin.accounts.upstreamBilling.sourceSub2API')
+  return ''
+})
+const diagnosticStage = computed(() => {
+  const labels: Record<string, string> = { billing: 'stageBilling', site_status: 'stageStatus', user_wallet: 'stageWallet', group_pricing: 'stagePricing', token_inventory: 'stageInventory', token_ownership: 'stageOwnership' }
+  const label = labels[snapshot.value?.probe_stage ?? '']
+  return label ? t(`admin.accounts.upstreamBilling.${label}`) : ''
+})
+const diagnosticError = computed(() => {
+  const reason = snapshot.value?.last_error
+  if (!reason) return ''
+  const labels: Record<string, string> = {
+    cloudflare_blocked: 'errorCloudflare', unauthorized: 'errorUnauthorized', forbidden: 'errorForbidden', rate_limited: 'errorRateLimited', upstream_unavailable: 'errorUnavailable',
+    request_failed: 'errorRequest', transport_unavailable: 'errorRequest', empty_response: 'errorRequest', response_read_failed: 'errorRequest', new_api_request_failed: 'errorRequest',
+    invalid_response: 'errorInvalid', invalid_body: 'errorInvalid', response_too_large: 'errorInvalid', invalid_quota_conversion: 'errorInvalid', invalid_user_wallet: 'errorInvalid', invalid_inventory: 'errorInvalid', invalid_inventory_pagination: 'errorInvalid', incomplete_inventory: 'errorInvalid', inventory_limit: 'errorInvalid',
+    proxy_unavailable: 'errorProxy', new_api_bound_key_not_owned: 'errorNotOwned', unsupported: 'errorUnsupported', unsupported_group: 'errorUnsupported'
+  }
+  const label = labels[reason]
+  return label ? t(`admin.accounts.upstreamBilling.${label}`) : t('admin.accounts.upstreamBilling.errorOther', { value: /^[a-z0-9_]{1,64}$/.test(reason) ? reason : 'unknown' })
+})
 const probeEnabled = computed(() => props.account.extra?.upstream_billing_probe_enabled === true)
 const nextProbeAt = computed(() => {
   const value = snapshot.value?.next_probe_at

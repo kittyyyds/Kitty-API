@@ -45,6 +45,18 @@ func (f AccountGroupFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.AccountGroupMutation", m)
 }
 
+// The AccountProxyFunc type is an adapter to allow the use of ordinary
+// function as AccountProxy mutator.
+type AccountProxyFunc func(context.Context, *ent.AccountProxyMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f AccountProxyFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.AccountProxyMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.AccountProxyMutation", m)
+}
+
 // The AnnouncementFunc type is an adapter to allow the use of ordinary
 // function as Announcement mutator.
 type AnnouncementFunc func(context.Context, *ent.AnnouncementMutation) (ent.Value, error)
@@ -237,6 +249,18 @@ func (f IdentityAdoptionDecisionFunc) Mutate(ctx context.Context, m ent.Mutation
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.IdentityAdoptionDecisionMutation", m)
 }
 
+// The InvoiceRequestFunc type is an adapter to allow the use of ordinary
+// function as InvoiceRequest mutator.
+type InvoiceRequestFunc func(context.Context, *ent.InvoiceRequestMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f InvoiceRequestFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.InvoiceRequestMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.InvoiceRequestMutation", m)
+}
+
 // The PaymentAuditLogFunc type is an adapter to allow the use of ordinary
 // function as PaymentAuditLog mutator.
 type PaymentAuditLogFunc func(context.Context, *ent.PaymentAuditLogMutation) (ent.Value, error)
@@ -331,18 +355,6 @@ func (f RedeemCodeFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, 
 		return f(ctx, mv)
 	}
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.RedeemCodeMutation", m)
-}
-
-// The SecurityPolicyKeywordFunc type is an adapter to allow the use of ordinary
-// function as SecurityPolicyKeyword mutator.
-type SecurityPolicyKeywordFunc func(context.Context, *ent.SecurityPolicyKeywordMutation) (ent.Value, error)
-
-// Mutate calls f(ctx, m).
-func (f SecurityPolicyKeywordFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
-	if mv, ok := m.(*ent.SecurityPolicyKeywordMutation); ok {
-		return f(ctx, mv)
-	}
-	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.SecurityPolicyKeywordMutation", m)
 }
 
 // The SecuritySecretFunc type is an adapter to allow the use of ordinary

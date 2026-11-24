@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
@@ -21,7 +22,7 @@ func nextWithAPIKeyAdmissionOwner(c *gin.Context, apiKeyService *service.APIKeyS
 		if isResponsesWebSocketRoute(c) {
 			lookup = apiKeyService.GetByKeyUncached
 		}
-		if resolvedCanvasKey(c.Request.Context()) != nil {
+		if resolvedCanvasKey(c.Request.Context()) != nil || strings.HasPrefix(c.FullPath(), "/api/v1/key-tests/") || strings.HasPrefix(c.FullPath(), "/api/v1/key-image-batches/") {
 			userID, keyID := key.UserID, key.ID
 			lookup = func(ctx context.Context, _ string) (*service.APIKey, error) {
 				return apiKeyService.GetOwnedForCanvas(ctx, userID, keyID)

@@ -102,7 +102,7 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 		SetSortOrder(groupIn.SortOrder).
 		SetIsExclusive(groupIn.IsExclusive).
 		SetSecurityPolicyEnabled(groupIn.SecurityPolicyEnabled).
-		SetSecurityPolicyMode(service.NormalizeSecurityPolicyMode(groupIn.SecurityPolicyMode)).
+		SetSecurityPolicyMode(groupIn.SecurityPolicyMode).
 		SetSecurityPolicyEmailEnabled(groupIn.SecurityPolicyEmailEnabled).
 		SetStatus(groupIn.Status).
 		SetSubscriptionType(groupIn.SubscriptionType).
@@ -140,11 +140,13 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 		SetBlockSubagents(groupIn.BlockSubagents).
 		SetNillableFallbackGroupID(groupIn.FallbackGroupID).
 		SetNillableFallbackGroupIDOnInvalidRequest(groupIn.FallbackGroupIDOnInvalidRequest).
+		SetNillableFallbackGroupIDOnUnavailable(groupIn.FallbackGroupIDOnUnavailable).
 		SetModelRoutingEnabled(groupIn.ModelRoutingEnabled).
 		SetMcpXMLInject(groupIn.MCPXMLInject).
 		SetAllowMessagesDispatch(groupIn.AllowMessagesDispatch).
 		SetAllowLive(groupIn.AllowLive).
 		SetForceOpenaiFast(groupIn.ForceOpenAIFast).
+		SetForceOpenaiServiceTier(groupIn.ForceOpenAIServiceTier).
 		SetFreeOpenaiFast(groupIn.FreeOpenAIFast).
 		SetRequireOauthOnly(groupIn.RequireOAuthOnly).
 		SetRequirePrivacySet(groupIn.RequirePrivacySet).
@@ -152,7 +154,9 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 		SetMessagesDispatchModelConfig(groupIn.MessagesDispatchModelConfig).
 		SetModelAllowlist(service.DomainGroupModelAllowlist(groupIn.ModelAllowlist)).
 		SetCodexModelsManifestConfig(groupIn.CodexModelsManifestConfig).
+		SetStrictFailover(groupIn.StrictFailover).
 		SetRpmLimit(groupIn.RPMLimit).
+		SetUserConcurrencyLimit(groupIn.UserConcurrencyLimit).
 		SetMaxReasoningEffort(groupIn.MaxReasoningEffort).
 		SetMaxReasoningEffortOverLimit(groupIn.MaxReasoningEffortOverLimit).
 		SetReasoningEffortMappings(groupIn.ReasoningEffortMappings).
@@ -302,7 +306,7 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		SetRateMultiplier(groupIn.RateMultiplier).
 		SetIsExclusive(groupIn.IsExclusive).
 		SetSecurityPolicyEnabled(groupIn.SecurityPolicyEnabled).
-		SetSecurityPolicyMode(service.NormalizeSecurityPolicyMode(groupIn.SecurityPolicyMode)).
+		SetSecurityPolicyMode(groupIn.SecurityPolicyMode).
 		SetSecurityPolicyEmailEnabled(groupIn.SecurityPolicyEmailEnabled).
 		SetStatus(groupIn.Status).
 		SetSubscriptionType(groupIn.SubscriptionType).
@@ -338,6 +342,7 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		SetAllowMessagesDispatch(groupIn.AllowMessagesDispatch).
 		SetAllowLive(groupIn.AllowLive).
 		SetForceOpenaiFast(groupIn.ForceOpenAIFast).
+		SetForceOpenaiServiceTier(groupIn.ForceOpenAIServiceTier).
 		SetFreeOpenaiFast(groupIn.FreeOpenAIFast).
 		SetRequireOauthOnly(groupIn.RequireOAuthOnly).
 		SetRequirePrivacySet(groupIn.RequirePrivacySet).
@@ -345,7 +350,9 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		SetMessagesDispatchModelConfig(groupIn.MessagesDispatchModelConfig).
 		SetModelAllowlist(service.DomainGroupModelAllowlist(groupIn.ModelAllowlist)).
 		SetCodexModelsManifestConfig(groupIn.CodexModelsManifestConfig).
+		SetStrictFailover(groupIn.StrictFailover).
 		SetRpmLimit(groupIn.RPMLimit).
+		SetUserConcurrencyLimit(groupIn.UserConcurrencyLimit).
 		SetMaxReasoningEffort(groupIn.MaxReasoningEffort).
 		SetMaxReasoningEffortOverLimit(groupIn.MaxReasoningEffortOverLimit).
 		SetReasoningEffortMappings(groupIn.ReasoningEffortMappings).
@@ -435,6 +442,11 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 	} else {
 		builder = builder.ClearFallbackGroupID()
 	}
+	if groupIn.FallbackGroupIDOnUnavailable != nil {
+		builder = builder.SetFallbackGroupIDOnUnavailable(*groupIn.FallbackGroupIDOnUnavailable)
+	} else {
+		builder = builder.ClearFallbackGroupIDOnUnavailable()
+	}
 	// 处理 FallbackGroupIDOnInvalidRequest：nil 时清除，否则设置
 	if groupIn.FallbackGroupIDOnInvalidRequest != nil {
 		builder = builder.SetFallbackGroupIDOnInvalidRequest(*groupIn.FallbackGroupIDOnInvalidRequest)
@@ -470,9 +482,30 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 }
 
 func (r *groupRepository) Delete(ctx context.Context, id int64) error {
-	_, err := r.client.Group.Delete().Where(group.IDEQ(id)).Exec(ctx)
+	tx, err := r.client.Tx(ctx)
+	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
+		return err
+	}
+	exec := r.client
+	if err == nil {
+		defer func() { _ = tx.Rollback() }()
+		exec = tx.Client()
+	}
+	plans, err := lockGroupPassRateProtection(ctx, exec, id)
+	if err != nil {
+		return err
+	}
+	_, err = exec.Group.Delete().Where(group.IDEQ(id)).Exec(ctx)
 	if err != nil {
 		return translatePersistenceError(err, service.ErrGroupNotFound, nil)
+	}
+	if err := releaseDetachedGroupPassRates(ctx, exec, plans); err != nil {
+		return err
+	}
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
 	}
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventGroupChanged, nil, &id, nil); err != nil {
 		logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue group delete failed: group=%d err=%v", id, err)
@@ -495,7 +528,6 @@ func (r *groupRepository) ListBindableWithFilters(ctx context.Context, params pa
 }
 
 func (r *groupRepository) listWithFiltersQuery(ctx context.Context, q *dbent.GroupQuery, params pagination.PaginationParams, platform, status, search string, isExclusive *bool) ([]service.Group, *pagination.PaginationResult, error) {
-
 	if platform != "" {
 		q = q.Where(group.PlatformEQ(platform))
 	}
@@ -864,9 +896,30 @@ func (r *groupRepository) GetAccountCount(ctx context.Context, groupID int64) (t
 }
 
 func (r *groupRepository) DeleteAccountGroupsByGroupID(ctx context.Context, groupID int64) (int64, error) {
-	res, err := r.sql.ExecContext(ctx, "DELETE FROM account_groups WHERE group_id = $1", groupID)
+	tx, err := r.client.Tx(ctx)
+	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
+		return 0, err
+	}
+	exec := r.client
+	if err == nil {
+		defer func() { _ = tx.Rollback() }()
+		exec = tx.Client()
+	}
+	plans, err := lockGroupPassRateProtection(ctx, exec, groupID)
 	if err != nil {
 		return 0, err
+	}
+	res, err := exec.ExecContext(ctx, "DELETE FROM account_groups WHERE group_id = $1", groupID)
+	if err != nil {
+		return 0, err
+	}
+	if err := releaseDetachedGroupPassRates(ctx, exec, plans); err != nil {
+		return 0, err
+	}
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return 0, err
+		}
 	}
 	affected, _ := res.RowsAffected()
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventGroupChanged, nil, &groupID, nil); err != nil {
@@ -898,6 +951,10 @@ func (r *groupRepository) deleteCascade(ctx context.Context, id int64, requireEm
 		txClient = exec
 	}
 	// err 为 dbent.ErrTxStarted 时，复用当前 client 参与同一事务。
+	plans, err := lockGroupPassRateProtection(ctx, exec, id)
+	if err != nil {
+		return nil, err
+	}
 
 	// Lock the group row to avoid concurrent writes while we cascade.
 	// 这里使用 exec.QueryContext 手动扫描，确保同一事务内加锁并能区分"未找到"与其他错误。
@@ -1006,6 +1063,10 @@ func (r *groupRepository) deleteCascade(ctx context.Context, id int64, requireEm
 			service.SettingKeyContentModerationConfig, id); err != nil {
 			return nil, err
 		}
+	}
+
+	if err := releaseDetachedGroupPassRates(ctx, exec, plans); err != nil {
+		return nil, err
 	}
 
 	if tx != nil {

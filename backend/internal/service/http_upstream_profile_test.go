@@ -20,13 +20,6 @@ func TestWithHTTPUpstreamProfile_OpenAI(t *testing.T) {
 	}
 }
 
-func TestWithHTTPUpstreamProfile_OpenAIFreshConnection(t *testing.T) {
-	ctx := WithHTTPUpstreamProfile(context.TODO(), HTTPUpstreamProfileOpenAIFreshConnection)
-	if profile := HTTPUpstreamProfileFromContext(ctx); profile != HTTPUpstreamProfileOpenAIFreshConnection {
-		t.Fatalf("expected profile %q, got %q", HTTPUpstreamProfileOpenAIFreshConnection, profile)
-	}
-}
-
 func TestWithHTTPUpstreamProfile_LongStream(t *testing.T) {
 	ctx := WithHTTPUpstreamProfile(context.TODO(), HTTPUpstreamProfileLongStream)
 	if profile := HTTPUpstreamProfileFromContext(ctx); profile != HTTPUpstreamProfileLongStream {

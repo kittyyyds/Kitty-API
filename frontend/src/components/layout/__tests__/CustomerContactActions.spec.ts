@@ -46,17 +46,17 @@ describe('CustomerContactActions', () => {
     expect(trigger.attributes('aria-expanded')).toBe('true')
     expect(trigger.find('[data-icon="userPlus"]').exists()).toBe(true)
     expect(supportImages.map((image) => image.attributes('src'))).toEqual([
-      '/images/heyroute/support/qq-qr.png',
-      '/images/heyroute/support/wechat-qr.png'
+      '/sites/kittyapi/images/heyroute/support/qq-qr.png',
+      '/sites/kittyapi/images/heyroute/support/wechat-qr.png'
     ])
     expect(supportImages.every((image) => image.attributes('loading') === 'eager')).toBe(true)
     expect(popover.text()).toContain('1722345668')
     expect(popover.text()).toContain('ALe990411')
 
-    const group = wrapper.get('a[href="https://qm.qq.com/q/Wr3pNr9zMe"]')
+    const group = wrapper.get('a[href="https://qm.qq.com/q/oRR8GUdEPK"]')
     expect(group.text()).toContain('售后交流群')
     expect(group.find('[data-icon="users"]').exists()).toBe(true)
-    expect(group.get('img').attributes('src')).toBe('/qq-group-qr.png')
+    expect(group.get('img').attributes('src')).toBe('/sites/kittyapi/qq-group-qr.png')
 
     await trigger.trigger('click')
     expect(popover.attributes('data-customer-support-pinned')).toBe('true')

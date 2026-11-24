@@ -22,6 +22,11 @@ const currentYear = new Date().getFullYear()
 function scrollToFaq(): void {
   document.querySelector('#hr-faq')?.scrollIntoView({ behavior: 'smooth' })
 }
+
+// The footer sits on the homepage itself, so "About" returns to the hero instead of linking to /home.
+function scrollToTop(): void {
+  document.querySelector('#hr-hero')?.scrollIntoView({ behavior: 'smooth' })
+}
 </script>
 
 <template>
@@ -52,8 +57,9 @@ function scrollToFaq(): void {
         </div>
         <div>
           <h3>{{ copy.legal }}</h3>
-          <router-link to="/home">{{ copy.about }}</router-link>
-          <router-link to="/legal/privacy">{{ copy.privacy }}</router-link>
+          <button type="button" @click="scrollToTop">{{ copy.about }}</button>
+          <!-- The site publishes no separate privacy document; usage-policy covers data handling. -->
+          <router-link to="/legal/usage-policy">{{ copy.privacy }}</router-link>
           <router-link to="/legal/terms">{{ copy.terms }}</router-link>
         </div>
         <div>

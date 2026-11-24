@@ -17,6 +17,9 @@ import (
 )
 
 type Service struct {
+	userConcurrency       UserConcurrencyReader
+	balanceAlertValidator BalanceAlertValidator
+	siteAI                SiteAIProvider
 	db                    *sql.DB
 	encryptor             Encryptor
 	encryptionReady       bool
@@ -64,6 +67,7 @@ func (s *Service) Start() {
 	s.startHealthMonitor(ctx)
 	s.startRankingMonitor(ctx)
 	s.startGrowthMonitor(ctx)
+	s.startBalanceAlerts(ctx)
 	for i := 0; i < 2; i++ {
 		s.wg.Add(1)
 		go func() {
@@ -105,6 +109,7 @@ func (s *Service) Stop() {
 	s.cancel = nil
 }
 func (s *Service) maintenance(ctx context.Context) {
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM qq_bot_balance_alerts WHERE finished_at<NOW()-INTERVAL '30 days' AND status IN ('sent','cancelled','expired')`)
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM qq_bot_pending_image_plans WHERE expires_at<NOW() OR EXISTS(SELECT 1 FROM qq_bot_jobs j WHERE j.id=job_id AND j.status NOT IN ('running','completed'))`)
 	s.maintainModeration(ctx)
 	s.maintainSpamReports(ctx)
@@ -147,7 +152,7 @@ func (s *Service) runOne(parent context.Context) {
 		s.finish(j, "failed", err.Error())
 		return
 	}
-	if !c.Enabled || c.AppID != j.AppID || !c.allows(j.GroupID) {
+	if !c.Enabled || c.AppID != j.AppID || (!isPrivateJob(j) && !c.allows(j.GroupID)) {
 		reason := "bot_disabled"
 		if c.AppID != j.AppID {
 			reason = "app_changed"
@@ -156,6 +161,14 @@ func (s *Service) runOne(parent context.Context) {
 		}
 		logMembershipEvent(ctx, j, nil, "process", "ignored", reason)
 		s.finish(j, "failed", ErrDisabled.Error())
+		return
+	}
+	if isPrivateJob(j) {
+		if err := s.privateAccountMessage(ctx, c, j); err != nil {
+			s.finish(j, "delivery_failed", "私聊回复失败")
+		} else {
+			s.finish(j, "completed", "")
+		}
 		return
 	}
 	if j.EventType == rankingNotificationEvent {
@@ -216,6 +229,9 @@ func (s *Service) runOne(parent context.Context) {
 		err = s.autonomousMessage(ctx, c, &j, e)
 	} else {
 		err = s.message(ctx, c, &j, e)
+	}
+	if err == nil && j.Status == "deferred" {
+		return
 	}
 	if err != nil {
 		status := "delivery_failed"
@@ -345,7 +361,7 @@ func (s *Service) SettleInvites(ctx context.Context, member string) error {
 }
 
 func (s *Service) settleInvites(ctx context.Context, c Config, member string) error {
-	if !c.Enabled || !c.InviteEnabled || c.InviteReward <= 0 || c.InviteDailyLimit <= 0 {
+	if !c.Enabled || !c.InviteEnabled || !c.inviteHasReward() || c.InviteDailyLimit <= 0 {
 		return nil
 	}
 	eligibleAsInviter := true
@@ -424,6 +440,9 @@ func command(content string, customCommands ...CustomCommand) (string, string) {
 		arg = strings.TrimSpace(fields[1])
 	}
 	name := fields[0]
+	if name == "余额" {
+		name = "我的余额"
+	}
 	if !slash && !isBuiltinCommand(name) {
 		known := false
 		for _, custom := range customCommands {
@@ -516,6 +535,36 @@ func (s *Service) message(ctx context.Context, c Config, j *Job, e Event) error 
 		return s.sendHelp(ctx, c, *j, arg)
 	case "价格":
 		return s.sendModelPrice(ctx, c, *j, arg)
+	case "我的优惠券":
+		{
+			var err error
+			text, err = s.myCoupons(ctx, c, *j, arg)
+			if err != nil {
+				text = "优惠券查询失败，请稍后重试。"
+			}
+			break
+		}
+	case "个人信息":
+		if arg != "" {
+			text = "用法：个人信息。"
+		} else {
+			text, err = s.personalInfo(ctx, c, *j, time.Now())
+		}
+		if err != nil {
+			text = "个人信息暂时不可用，请稍后重试。"
+		}
+	case "我的密钥":
+		text, err = s.myAPIKeys(ctx, c, *j, arg)
+		if err != nil {
+			text = "密钥列表暂时不可用，请稍后重试。"
+		}
+	case "密钥用量":
+		text, err = s.myAPIKeyUsage(ctx, c, *j, arg, time.Now())
+		if err != nil {
+			text = "密钥用量暂时不可用，请稍后重试。"
+		}
+	case "余额提醒":
+		text, err = s.balanceSubscription(ctx, c, *j, arg)
 	case "我的余额":
 		var balance float64
 		err := s.db.QueryRowContext(ctx, `SELECT u.balance FROM qq_bot_bindings b JOIN users u ON u.id=b.user_id WHERE b.app_id=$1 AND b.member_id=$2 AND u.deleted_at IS NULL AND u.status='active'`, c.AppID, j.MemberID).Scan(&balance)

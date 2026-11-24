@@ -828,7 +828,7 @@ func TestUpstreamBillingProbeFailurePreservesLastSuccessAndRetryAfter(t *testing
 	require.NotNil(t, snapshot.FreshUntil)
 	require.Equal(t, receivedAt.Add(time.Hour), *snapshot.FreshUntil)
 	require.Equal(t, 2, snapshot.FailureCount)
-	require.Equal(t, "http_error", snapshot.LastError)
+	require.Equal(t, "rate_limited", snapshot.LastError)
 	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(4*time.Hour)))
 	require.NotContains(t, snapshot.LastError, "do not persist")
 	require.NotNil(t, account.RateMultiplier)

@@ -21,10 +21,6 @@
               <Icon name="cog" size="sm" />
               {{ t('admin.riskControl.openSettings') }}
             </button>
-            <button type="button" class="btn btn-secondary inline-flex items-center gap-2" @click="openSecpol">
-              <Icon name="shield" size="sm" />
-              {{ t('admin.riskControl.secpol.open') }}
-            </button>
           </div>
         </div>
 
@@ -401,8 +397,8 @@
         </div>
       </template>
 
-      <BaseDialog :show="settingsOpen" :title="t('admin.riskControl.settingsTitle')" width="extra-wide" @close="settingsOpen = false">
-        <div class="space-y-6">
+      <BaseDialog :show="settingsOpen" :title="t('admin.riskControl.settingsTitle')" width="extra-wide" :show-close-button="!saving" :close-on-escape="!saving" @close="closeSettings">
+        <fieldset :disabled="saving" class="min-w-0 space-y-6">
           <div class="flex gap-2 overflow-x-auto border-b border-gray-100 pb-3 dark:border-dark-700">
             <button
               v-for="tab in settingsTabs"
@@ -414,6 +410,7 @@
             >
               {{ tab.label }}
             </button>
+            <NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.moderationUpstreamAccountScope" :user-id="auth.user?.id" />
           </div>
 
           <div v-if="activeSettingsTab === 'basic'" class="space-y-5">
@@ -757,6 +754,9 @@
           </div>
 
           <div v-else-if="activeSettingsTab === 'scope'" class="space-y-5">
+            <ModerationUpstreamAccountSelector v-model="configForm.upstream_account_ids" v-model:scope="configForm.upstream_account_scope" :groups="groups" :disabled="saving" @busy="upstreamSelecting = $event">
+              <template #badge><NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.moderationUpstreamAccountScope" :user-id="auth.user?.id" /></template>
+            </ModerationUpstreamAccountSelector>
             <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <h3 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.groupScope') }}</h3>
@@ -1111,101 +1111,16 @@
               </div>
             </div>
           </div>
-        </div>
+        </fieldset>
 
         <template #footer>
           <div class="flex justify-end gap-2">
-            <button type="button" class="btn btn-secondary" @click="settingsOpen = false">{{ t('common.cancel') }}</button>
-            <button type="button" class="btn btn-primary inline-flex items-center gap-2" :disabled="saving" @click="saveConfig">
+            <button type="button" class="btn btn-secondary" :disabled="saving" @click="closeSettings">{{ t('common.cancel') }}</button>
+            <button type="button" class="btn btn-primary inline-flex items-center gap-2" :disabled="saving || upstreamSelecting" @click="saveConfig">
               <Icon v-if="saving" name="refresh" size="sm" class="animate-spin" />
               <Icon v-else name="check" size="sm" />
               {{ saving ? t('common.saving') : t('admin.riskControl.saveConfig') }}
             </button>
-          </div>
-        </template>
-      </BaseDialog>
-
-      <BaseDialog
-        :show="secpolOpen"
-        :title="t('admin.riskControl.secpol.title')"
-        width="wide"
-        @close="secpolOpen = false"
-      >
-        <div class="space-y-4">
-          <p class="text-xs text-gray-500 dark:text-gray-400">
-            {{ t('admin.riskControl.secpol.description', { count: secpolBuiltinCount }) }}
-          </p>
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <div>
-              <label class="input-label">{{ t('admin.riskControl.secpol.scope') }}</label>
-              <Select v-model="secpolScope" :options="secpolScopeOptions" />
-            </div>
-            <div v-if="secpolScope === 'group'">
-              <label class="input-label">{{ t('admin.riskControl.secpol.group') }}</label>
-              <Select v-model="secpolGroupId" :options="secpolGroupOptions" />
-            </div>
-            <div>
-              <label class="input-label">{{ t('admin.riskControl.secpol.category') }}</label>
-              <Select v-model="secpolNewCategory" :options="secpolCategoryOptions" />
-            </div>
-          </div>
-          <div class="flex flex-col gap-2 sm:flex-row">
-            <input
-              v-model="secpolNewKeyword"
-              type="text"
-              class="input flex-1"
-              :placeholder="t('admin.riskControl.secpol.keywordPlaceholder')"
-              maxlength="200"
-              @keyup.enter="createSecpolKeyword"
-            />
-            <button
-              type="button"
-              class="btn btn-primary shrink-0"
-              :disabled="secpolSaving || !secpolNewKeyword.trim()"
-              @click="createSecpolKeyword"
-            >
-              {{ t('admin.riskControl.secpol.add') }}
-            </button>
-          </div>
-          <div v-if="secpolLoading" class="flex items-center justify-center py-8">
-            <div class="h-6 w-6 animate-spin rounded-full border-b-2 border-primary-600"></div>
-          </div>
-          <div v-else-if="secpolKeywords.length === 0" class="py-8 text-center text-sm text-gray-500 dark:text-gray-400">
-            {{ t('admin.riskControl.secpol.empty') }}
-          </div>
-          <div v-else class="overflow-x-auto rounded-lg border border-gray-100 dark:border-dark-700">
-            <table class="min-w-full divide-y divide-gray-100 text-sm dark:divide-dark-700">
-              <thead class="bg-gray-50 dark:bg-dark-800">
-                <tr>
-                  <th class="px-3 py-2 text-left font-medium text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.secpol.keyword') }}</th>
-                  <th class="px-3 py-2 text-left font-medium text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.secpol.category') }}</th>
-                  <th class="px-3 py-2 text-left font-medium text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.secpol.scope') }}</th>
-                  <th class="px-3 py-2 text-left font-medium text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.secpol.enabled') }}</th>
-                  <th class="px-3 py-2 text-right font-medium text-gray-500 dark:text-gray-400">{{ t('common.delete') }}</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
-                <tr v-for="word in secpolKeywords" :key="word.id">
-                  <td class="max-w-64 truncate px-3 py-2 font-mono text-gray-900 dark:text-white" :title="word.keyword">{{ word.keyword }}</td>
-                  <td class="px-3 py-2 text-gray-500 dark:text-gray-400">{{ secpolCategoryLabel(word.category) }}</td>
-                  <td class="px-3 py-2 text-gray-500 dark:text-gray-400">{{ secpolScopeLabel(word) }}</td>
-                  <td class="px-3 py-2">
-                    <Toggle :model-value="word.enabled" @update:model-value="(v: boolean) => toggleSecpolKeyword(word, v)" />
-                  </td>
-                  <td class="px-3 py-2 text-right">
-                    <button type="button" class="text-red-500 hover:text-red-700" @click="deleteSecpolKeyword(word)">
-                      <Icon name="trash" size="sm" />
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <template #footer>
-          <div class="flex justify-end gap-2">
-            <button type="button" class="btn btn-secondary" @click="secpolOpen = false">{{ t('common.close') }}</button>
           </div>
         </template>
       </BaseDialog>
@@ -1296,8 +1211,12 @@
 
 <script setup lang="ts">
 import { moderationThresholdDefaults, moderationCategorySettings, moderationScoreRows as buildModerationScoreRows, optionalModerationCategories } from '@/utils/contentModerationCategories'
-import { watch, computed, onMounted, onUnmounted, reactive, ref, toRaw } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, toRaw } from 'vue'
 import { useI18n } from 'vue-i18n'
+import ModerationUpstreamAccountSelector from '@/components/admin/moderation/ModerationUpstreamAccountSelector.vue'
+import NewFeatureBadge from '@/components/common/NewFeatureBadge.vue'
+import { NEW_FEATURE_NOTICES } from '@/constants/newFeatureNotices'
+import { useAuthStore } from '@/stores/auth'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import SecurityAuditNav from '@/components/admin/security/SecurityAuditNav.vue'
@@ -1328,7 +1247,7 @@ import type {
   UpdateModerationEngineConfig,
   UpdateContentModerationConfig,
 } from '@/api/admin/riskControl'
-import type { AdminGroup, Proxy, SecurityPolicyKeyword, SelectOption } from '@/types'
+import type { AdminGroup, Proxy, SelectOption } from '@/types'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { formatDateTime as formatDateTimeValue } from '@/utils/format'
@@ -1364,10 +1283,13 @@ const { t } = useI18n()
 const moderationUsersMounted = ref(false)
 const moderationUsersExpanded = ref(false)
 const appStore = useAppStore()
+const auth = useAuthStore()
 const defaultBlockMessage = () => t('admin.riskControl.defaultBlockMessage')
 
 const loading = ref(true)
 const saving = ref(false)
+const upstreamSelecting = ref(false)
+const savedUpstreamScope = ref<{ scope: 'all' | 'selected'; ids: number[] }>({ scope: 'all', ids: [] })
 const logsLoading = ref(false)
 const statusLoading = ref(false)
 const apiKeyTesting = ref(false)
@@ -1412,6 +1334,8 @@ const configForm = reactive({
   timeout_ms: 3000,
   retry_count: 2,
   sample_rate: 100,
+  upstream_account_scope: 'all' as 'all' | 'selected',
+  upstream_account_ids: [] as number[],
   all_groups: true,
   group_ids: [] as number[],
   record_non_hits: false,
@@ -1939,6 +1863,9 @@ function applyConfig(config: ContentModerationConfig) {
   configForm.timeout_ms = config.timeout_ms || 3000
   configForm.retry_count = config.retry_count ?? 2
   configForm.sample_rate = config.sample_rate ?? 100
+  configForm.upstream_account_scope = config.upstream_account_scope ?? 'all'
+  configForm.upstream_account_ids = [...(config.upstream_account_ids ?? [])]
+  savedUpstreamScope.value = { scope: configForm.upstream_account_scope, ids: [...configForm.upstream_account_ids] }
   configForm.all_groups = config.all_groups
   configForm.group_ids = Array.isArray(config.group_ids) ? [...config.group_ids] : []
   configForm.record_non_hits = config.record_non_hits
@@ -2030,6 +1957,7 @@ async function loadStatus(silent = true) {
 }
 
 async function saveConfig() {
+  if (saving.value || upstreamSelecting.value) return
   saving.value = true
   try {
     const modelFilterPayload = buildModelFilterPayload()
@@ -2048,6 +1976,8 @@ async function saveConfig() {
       timeout_ms: Number(configForm.timeout_ms) || 3000,
       retry_count: Number(configForm.retry_count) || 0,
       sample_rate: Number(configForm.sample_rate) || 0,
+      upstream_account_scope: configForm.upstream_account_scope,
+      upstream_account_ids: configForm.upstream_account_scope === 'all' ? [] : [...configForm.upstream_account_ids],
       all_groups: configForm.all_groups,
       group_ids: configForm.all_groups ? [] : [...configForm.group_ids],
       record_non_hits: configForm.record_non_hits,
@@ -2181,132 +2111,14 @@ async function clearFlaggedHashes() {
   }
 }
 
+function closeSettings() { if (!saving.value) settingsOpen.value = false }
+
 function openSettings() {
+  if (saving.value) return
+  configForm.upstream_account_scope = savedUpstreamScope.value.scope
+  configForm.upstream_account_ids = [...savedUpstreamScope.value.ids]
   activeSettingsTab.value = 'basic'
   settingsOpen.value = true
-}
-
-// ---- 安全策略词包管理 ----
-const secpolOpen = ref(false)
-const secpolLoading = ref(false)
-const secpolSaving = ref(false)
-const secpolKeywords = ref<SecurityPolicyKeyword[]>([])
-const secpolBuiltinCount = ref(0)
-const secpolScope = ref<'all' | 'global' | 'group'>('all')
-const secpolGroupId = ref<number | null>(null)
-const secpolNewKeyword = ref('')
-const secpolNewCategory = ref('custom')
-
-const secpolCategories = ['crack', 'reverse', 'pentest', 'privesc', 'evasion', 'custom'] as const
-
-const secpolScopeOptions = computed(() => [
-  { value: 'all', label: t('admin.riskControl.secpol.scopeAll') },
-  { value: 'global', label: t('admin.riskControl.secpol.scopeGlobal') },
-  { value: 'group', label: t('admin.riskControl.secpol.scopeGroup') },
-])
-
-const secpolGroupOptions = computed(() => [
-  { value: null, label: t('admin.riskControl.secpol.selectGroup') },
-  ...groups.value.map((group) => ({ value: group.id, label: group.name })),
-])
-
-const secpolCategoryOptions = computed(() =>
-  secpolCategories.map((category) => ({
-    value: category,
-    label: t(`admin.riskControl.secpol.cat_${category}`),
-  }))
-)
-
-function secpolCategoryLabel(category: string): string {
-  const key = `admin.riskControl.secpol.cat_${category}`
-  const label = t(key)
-  return label === key ? category : (label as string)
-}
-
-function secpolScopeLabel(word: SecurityPolicyKeyword): string {
-  if (word.group_id === null || word.group_id === undefined) {
-    return t('admin.riskControl.secpol.scopeGlobal') as string
-  }
-  const group = groups.value.find((g) => g.id === word.group_id)
-  return group ? group.name : `#${word.group_id}`
-}
-
-function openSecpol() {
-  secpolOpen.value = true
-  void loadSecpolKeywords()
-  void loadSecpolBuiltinCount()
-}
-
-watch([secpolScope, secpolGroupId], () => {
-  if (secpolOpen.value) void loadSecpolKeywords()
-})
-
-async function loadSecpolBuiltinCount() {
-  try {
-    const result = await adminAPI.securityPolicy.listBuiltin()
-    secpolBuiltinCount.value = result.count
-  } catch {
-    secpolBuiltinCount.value = 0
-  }
-}
-
-async function loadSecpolKeywords() {
-  secpolLoading.value = true
-  try {
-    const params: { group_id?: number; include_disabled?: boolean } = {
-      include_disabled: true,
-    }
-    if (secpolScope.value === 'global') {
-      params.group_id = 0
-    } else if (secpolScope.value === 'group' && secpolGroupId.value !== null) {
-      params.group_id = secpolGroupId.value
-    }
-    const result = await adminAPI.securityPolicy.listKeywords(params)
-    secpolKeywords.value = result.keywords
-  } catch (err: unknown) {
-    appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.secpol.loadFailed')))
-  } finally {
-    secpolLoading.value = false
-  }
-}
-
-async function createSecpolKeyword() {
-  const keyword = secpolNewKeyword.value.trim()
-  if (!keyword || secpolSaving.value) return
-  secpolSaving.value = true
-  try {
-    await adminAPI.securityPolicy.createKeyword({
-      group_id: secpolScope.value === 'group' ? secpolGroupId.value : null,
-      keyword,
-      category: secpolNewCategory.value,
-    })
-    secpolNewKeyword.value = ''
-    appStore.showSuccess(t('admin.riskControl.secpol.created'))
-    await loadSecpolKeywords()
-  } catch (err: unknown) {
-    appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.secpol.saveFailed')))
-  } finally {
-    secpolSaving.value = false
-  }
-}
-
-async function toggleSecpolKeyword(word: SecurityPolicyKeyword, enabled: boolean) {
-  try {
-    await adminAPI.securityPolicy.updateKeyword(word.id, { enabled })
-    word.enabled = enabled
-  } catch (err: unknown) {
-    appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.secpol.saveFailed')))
-  }
-}
-
-async function deleteSecpolKeyword(word: SecurityPolicyKeyword) {
-  try {
-    await adminAPI.securityPolicy.deleteKeyword(word.id)
-    secpolKeywords.value = secpolKeywords.value.filter((item) => item.id !== word.id)
-    appStore.showSuccess(t('admin.riskControl.secpol.deleted'))
-  } catch (err: unknown) {
-    appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.secpol.saveFailed')))
-  }
 }
 
 function reloadLogsFromFirstPage() {

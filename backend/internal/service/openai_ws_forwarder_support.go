@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -16,6 +17,47 @@ import (
 
 func (s *OpenAIGatewayService) isOpenAIWSGeneratePrewarmEnabled() bool {
 	return s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.PrewarmGenerateEnabled
+}
+
+// This is a gateway error-settlement budget, not an upstream protocol limit.
+// It never authorizes replay or promises all future metering has arrived.
+const openAIWSPrewarmErrorSettlementTimeout = 2 * time.Second
+
+// openAIWSPrewarmTerminalError retains the final evidence after a known
+// parameter error began settlement. It is never a transport retry signal.
+type openAIWSPrewarmTerminalError struct {
+	payload    []byte
+	usage      OpenAIUsage
+	responseID string
+	cause      error
+}
+
+func (*openAIWSPrewarmTerminalError) Error() string {
+	return "openai websocket prewarm terminal error"
+}
+
+func (e *openAIWSPrewarmTerminalError) Unwrap() error { return e.cause }
+
+func openAIWSKnownParameterError(payload []byte) bool {
+	err, ok := normalizeOpenAIUpstreamError(payload)
+	if !ok || openAIStreamFailureStatus(payload, err.Message) != http.StatusBadRequest {
+		return false
+	}
+	// Preserve the existing recovery/writer policy for these dedicated families.
+	if isOpenAIModelUnavailableTerminalEvent(payload) || openAIImageGenerationUserError(payload) != nil ||
+		isOpenAIContextWindowError(err.Message, payload) {
+		return false
+	}
+	if hit, _, _ := detectOpenAICyberPolicy(payload); hit {
+		return false
+	}
+	reason, _ := classifyOpenAIWSErrorEventFromRaw(err.Code, err.Type, err.Message)
+	if reason == "previous_response_not_found" || reason == openAIWSFallbackReasonInvalidEncryptedContent {
+		return false
+	}
+	code := strings.ToLower(strings.TrimSpace(err.Code))
+	typ := strings.ToLower(strings.TrimSpace(err.Type))
+	return openAIUpstreamParameterErrorCode(code) || strings.Contains(typ, "invalid_request") || typ == "invalid_json_schema"
 }
 
 // performOpenAIWSGeneratePrewarm 在 WSv2 下执行可选的 generate=false 预热。
@@ -30,7 +72,12 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 	account *Account,
 	stateStore OpenAIWSStateStore,
 	groupID int64,
+	contexts ...*gin.Context,
 ) error {
+	var c *gin.Context
+	if len(contexts) > 0 {
+		c = contexts[0]
+	}
 	if s == nil {
 		return nil
 	}
@@ -64,10 +111,9 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 		logOpenAIWSModeInfo("prewarm_skip account_id=%d conn_id=%s reason=already_prewarmed", account.ID, connID)
 		return nil
 	}
-	if NeedsToolContinuation(reqBody) {
-		logOpenAIWSModeInfo("prewarm_skip account_id=%d conn_id=%s reason=tool_continuation", account.ID, connID)
-		return nil
-	}
+	// generate=false validates the complete request, including tool declarations.
+	// Continuation anchors were excluded above; a tools field alone must not
+	// bypass prewarm validation or its bounded parameter-error settlement.
 	prewarmStart := time.Now()
 	logOpenAIWSModeInfo("prewarm_start account_id=%d conn_id=%s", account.ID, connID)
 
@@ -75,18 +121,29 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 	for k, v := range payload {
 		prewarmPayload[k] = v
 	}
+	// client_metadata 是嵌套 map：浅拷贝会在 applyCodexWireLaneMetadata("prewarm")
+	// 时把 prewarm 画像写回业务 payload 的同一 map。克隆后再改。
+	if cm, ok := prewarmPayload["client_metadata"].(map[string]any); ok {
+		cloned := make(map[string]any, len(cm)+1)
+		for k, v := range cm {
+			cloned[k] = v
+		}
+		prewarmPayload["client_metadata"] = cloned
+	}
 	prewarmPayload["generate"] = false
+	// 官方 prewarm 画像：request_kind=prewarm、turn_id 空串、无 turn 专属键。
+	if s.codexWSExactFidelityLane(account) {
+		applyCodexWireLaneMetadata(prewarmPayload, nil, account, "prewarm")
+	}
 	prewarmPayloadJSON := payloadAsJSONBytes(prewarmPayload)
-	// wsjson.Write adds a newline. The extra generate=false field may exceed
-	// the limit even when the validated main request fits exactly.
-	if decision.Reason == openAIOAuthWSSSEAccelerationReason && int64(len(prewarmPayloadJSON))+1 > s.openAIWSSSEMaxPayloadBytes() {
-		return errOpenAIWSSSEPayloadTooLarge
-	}
 
-	if err := s.acquireOpenAIRPMForSend(ctx, account); err != nil {
-		return err
+	var prewarmWriteErr error
+	if frame := s.marshalCodexWSFrameForAccount(account, prewarmPayload); len(frame) > 0 {
+		prewarmWriteErr = lease.WriteJSONWithContextTimeout(ctx, json.RawMessage(frame), s.openAIWSWriteTimeout())
+	} else {
+		prewarmWriteErr = lease.WriteJSONWithContextTimeout(ctx, prewarmPayload, s.openAIWSWriteTimeout())
 	}
-	if err := lease.WriteJSONWithContextTimeout(ctx, prewarmPayload, s.openAIWSWriteTimeout()); err != nil {
+	if err := prewarmWriteErr; err != nil {
 		lease.MarkBroken()
 		logOpenAIWSModeInfo(
 			"prewarm_write_fail account_id=%d conn_id=%s cause=%s",
@@ -99,10 +156,29 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 	logOpenAIWSModeInfo("prewarm_write_sent account_id=%d conn_id=%s payload_bytes=%d", account.ID, connID, len(prewarmPayloadJSON))
 
 	prewarmResponseID := ""
+	prewarmModel, _ := reqBody["model"].(string)
 	prewarmEventCount := 0
 	prewarmTerminalCount := 0
+	var pendingParameterError []byte
+	var observedUsage OpenAIUsage
+	var pendingCtx context.Context
+	var pendingCancel context.CancelFunc
+	defer func() {
+		if pendingCancel != nil {
+			pendingCancel()
+		}
+	}()
 	for {
-		message, readErr := lease.ReadMessageWithContextTimeout(ctx, s.openAIWSReadTimeout())
+		readCtx := ctx
+		if pendingCtx != nil {
+			readCtx = pendingCtx
+		}
+		message, readErr := lease.ReadMessageWithContextTimeout(readCtx, s.openAIWSReadTimeout())
+		if readErr != nil && len(pendingParameterError) > 0 {
+			lease.MarkBroken()
+			markOpenAICyberPolicyEvent(c, pendingParameterError, http.StatusSwitchingProtocols, &observedUsage)
+			return &openAIWSPrewarmTerminalError{payload: pendingParameterError, usage: observedUsage, responseID: prewarmResponseID, cause: ctx.Err()}
+		}
 		if readErr != nil {
 			lease.MarkBroken()
 			closeStatus, closeReason := summarizeOpenAIWSReadCloseError(readErr)
@@ -126,6 +202,35 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 		if prewarmResponseID == "" && eventResponseID != "" {
 			prewarmResponseID = eventResponseID
 		}
+
+		if openAIWSMessageShouldParseUsage(eventType, message) {
+			parseOpenAIWSResponseUsageFromCompletedEvent(message, &observedUsage)
+		}
+		knownParameter := (eventType == "error" || eventType == "response.failed") && openAIWSKnownParameterError(message)
+		if eventType == "error" && (knownParameter || len(pendingParameterError) > 0) {
+			// Once settlement starts, later bare errors are not an invitation to
+			// replay. Read their authoritative terminal and retain its actual usage.
+			if pendingCtx == nil {
+				pendingCtx, pendingCancel = context.WithTimeout(ctx, min(openAIWSPrewarmErrorSettlementTimeout, s.openAIWSReadTimeout()))
+			}
+			pendingParameterError = append(pendingParameterError[:0], message...)
+			// Only the selected terminal/EOF error owns settlement. A later
+			// failure can supersede an intermediate bare cyber-policy event.
+			continue
+		}
+		terminalStatus := gjson.GetBytes(message, "response.status").String()
+		successfulTerminal := (eventType == "response.completed" || eventType == "response.done") && prewarmResponseID != "" &&
+			(terminalStatus == "" || terminalStatus == "completed") &&
+			gjson.GetBytes(message, "response.error").Type != gjson.JSON && gjson.GetBytes(message, "error").Type != gjson.JSON
+		if knownParameter || (len(pendingParameterError) > 0 && isOpenAIWSTerminalEvent(eventType) && !successfulTerminal) {
+			lease.MarkBroken()
+			markOpenAICyberPolicyEvent(c, message, http.StatusSwitchingProtocols, &observedUsage)
+			return &openAIWSPrewarmTerminalError{payload: append([]byte(nil), message...), usage: observedUsage, responseID: prewarmResponseID}
+		}
+		if isOpenAIWSTerminalEvent(eventType) {
+			pendingParameterError = nil
+		}
+
 		if prewarmEventCount <= openAIWSPrewarmEventLogHead || eventType == "error" || isOpenAIWSTerminalEvent(eventType) {
 			logOpenAIWSModeInfo(
 				"prewarm_event account_id=%d conn_id=%s idx=%d type=%s bytes=%d",
@@ -139,7 +244,16 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 
 		if eventType == "error" {
 			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
-			prewarmModel, _ := reqBody["model"].(string)
+			if billingStatus := openAIWSBillingStatus(message, errMsgRaw); billingStatus != 0 {
+				s.handleOpenAIAccountUpstreamError(ctx, account, billingStatus, lease.HandshakeHeaders(), message, prewarmModel)
+				lease.MarkBroken()
+				return newUpstreamBillingFailoverError(
+					billingStatus,
+					lease.HandshakeHeaders(),
+					message,
+					false,
+				)
+			}
 			s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw, prewarmModel)
 			errMsg := strings.TrimSpace(errMsgRaw)
 			if errMsg == "" {
@@ -163,6 +277,19 @@ func (s *OpenAIGatewayService) performOpenAIWSGeneratePrewarm(
 				return wrapOpenAIWSFallback("prewarm_"+fallbackReason, errors.New(errMsg))
 			}
 			return wrapOpenAIWSFallback("prewarm_error_event", errors.New(errMsg))
+		}
+
+		if eventType == "response.failed" {
+			if billingStatus := openAIWSBillingStatus(message, extractOpenAISSEErrorMessage(message)); billingStatus != 0 {
+				s.handleOpenAIWSFailureAccountSideEffects(ctx, account, prewarmModel, lease.HandshakeHeaders(), message)
+				lease.MarkBroken()
+				return newUpstreamBillingFailoverError(
+					billingStatus,
+					lease.HandshakeHeaders(),
+					message,
+					false,
+				)
+			}
 		}
 
 		if isOpenAIWSTerminalEvent(eventType) {
@@ -238,31 +365,17 @@ func markOpenAIWSClientVisibleFailure(c *gin.Context, eventType string, payload 
 	if eventType != "error" && eventType != "response.failed" {
 		return
 	}
-	prefix := "error"
-	if eventType == "response.failed" {
-		prefix = "response.error"
+	code, errType, message := parseOpenAIWSErrorEventFields(payload)
+	status := openAIStreamFailureStatus(payload, message)
+	if isOpenAIModelUnavailableTerminalEvent(payload) {
+		code, errType, message, status = "model_not_found", "invalid_request_error", OpenAIModelUnavailableClientMessage, http.StatusBadRequest
 	}
-	code := strings.TrimSpace(gjson.GetBytes(payload, prefix+".code").String())
-	errType := strings.TrimSpace(gjson.GetBytes(payload, prefix+".type").String())
-	message := strings.TrimSpace(gjson.GetBytes(payload, prefix+".message").String())
-	if eventType == "response.failed" && code == "" && errType == "" && message == "" {
-		prefix = "error"
-		code = strings.TrimSpace(gjson.GetBytes(payload, prefix+".code").String())
-		errType = strings.TrimSpace(gjson.GetBytes(payload, prefix+".type").String())
-		message = strings.TrimSpace(gjson.GetBytes(payload, prefix+".message").String())
-	}
-	status := int(gjson.GetBytes(payload, prefix+".status_code").Int())
-	if status == 0 {
-		status = int(gjson.GetBytes(payload, prefix+".status").Int())
-	}
-	if status == 0 && eventType == "error" {
-		status = int(gjson.GetBytes(payload, "status").Int())
-	}
-	if status == 0 {
-		status = openAIWSErrorHTTPStatusFromRaw(code, errType)
-	}
+
 	if errType == "" {
 		errType = "upstream_error"
+		if status == http.StatusBadRequest {
+			errType = "invalid_request_error"
+		}
 	}
 	if code == "" {
 		code = strings.ReplaceAll(eventType, ".", "_")
@@ -316,6 +429,21 @@ func openAIWSPayloadTransientStatus(payload []byte) int {
 	}
 }
 
+// openAIWSBillingStatus returns an account-billing status for semantic WS
+// errors. WS events are carried inside an HTTP 200 response, so the event
+// itself has no transport status; use 402 to keep billing failures separate
+// from request validation and provider capacity errors.
+func openAIWSBillingStatus(payload []byte, message string) int {
+	if !IsUpstreamBillingError(http.StatusOK, payload) {
+		return 0
+	}
+	status := openAIStreamFailureStatus(payload, message)
+	if status < http.StatusBadRequest || status == http.StatusBadGateway {
+		return http.StatusPaymentRequired
+	}
+	return status
+}
+
 func (s *OpenAIGatewayService) handleOpenAIWSTerminalTransientFailure(ctx context.Context, account *Account, canonicalModel string, headers http.Header, payload []byte) string {
 	eventType, _, _ := parseOpenAIWSEventEnvelope(payload)
 	terminalEvent := normalizeOpenAIWSTerminalEvent(eventType)
@@ -331,7 +459,10 @@ func (s *OpenAIGatewayService) handleOpenAIWSErrorEventTransientFailure(ctx cont
 	if eventType != "error" {
 		return
 	}
-	s.rateLimitService.observeQualityStatus(ctx, account, openAIStreamFailureStatus(payload, extractOpenAISSEErrorMessage(payload)))
+	if status := openAIWSBillingStatus(payload, extractOpenAISSEErrorMessage(payload)); status != 0 {
+		s.handleOpenAIAccountUpstreamError(ctx, account, status, headers, payload, canonicalModel)
+		return
+	}
 	status := openAIWSPayloadTransientStatus(payload)
 	if status != 0 {
 		if status == http.StatusTooManyRequests {
@@ -346,8 +477,11 @@ func (s *OpenAIGatewayService) handleOpenAIWSErrorEventTransientFailure(ctx cont
 // applying the same transition twice for an error/response.failed pair.
 func (s *OpenAIGatewayService) handleOpenAIWSFailureAccountSideEffects(ctx context.Context, account *Account, canonicalModel string, headers http.Header, payload []byte) bool {
 	message := extractOpenAISSEErrorMessage(payload)
+	if status := openAIWSBillingStatus(payload, message); status != 0 {
+		s.handleOpenAIAccountUpstreamError(ctx, account, status, headers, payload, canonicalModel)
+		return true
+	}
 	status := openAIStreamFailureStatus(payload, message)
-	s.rateLimitService.observeQualityStatus(ctx, account, status)
 	switch status {
 	case http.StatusUnauthorized, http.StatusTooManyRequests, 529:
 		s.handleOpenAIStreamTerminalAccountSideEffects(nil, account, payload, message, headers, canonicalModel)
@@ -370,9 +504,6 @@ func (s *OpenAIGatewayService) handleOpenAIWSFailureAccountSideEffects(ctx conte
 
 func (s *OpenAIGatewayService) handleOpenAIWSDialTransientFailure(ctx context.Context, account *Account, canonicalModel string, err error) {
 	var dialErr *openAIWSDialError
-	if errors.As(err, &dialErr) && dialErr != nil {
-		s.rateLimitService.observeQualityStatus(ctx, account, dialErr.StatusCode)
-	}
 	if !errors.As(err, &dialErr) || dialErr == nil || !shouldCooldownOpenAITransientUpstreamError(dialErr.StatusCode, dialErr.ResponseBody) {
 		return
 	}
@@ -438,6 +569,7 @@ func populateOpenAIUsageFromResponseJSON(body []byte, usage *OpenAIUsage) {
 		return
 	}
 	if parsed, ok := extractOpenAIUsageFromJSONBytes(body); ok {
+		mergeOpenAICacheUsageEvidence(*usage, &parsed)
 		*usage = parsed
 	}
 }
@@ -469,8 +601,30 @@ func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 ) (*AccountSelectionResult, error) {
 	// 分组利润控制：公共入口装门，保证不经 selectAccountWithScheduler
 	// 的调用方也无法绕过利润准入（scheduler 内部路径已在唯一调度入口装门）。
+	var err error
+	ctx, err = s.prepareOpenAIStrictFailover(ctx, groupID, excludedIDs, requestedModel, PlatformOpenAI, "", "", requireCompact)
+	if err != nil {
+		if strings.TrimSpace(previousResponseID) != "" && errors.Is(err, errStrictFailoverAllUnavailable) {
+			return nil, ErrStrictFailoverOwnerBound
+		}
+		return nil, err
+	}
+	if strictFailoverStateFrom(ctx) != nil && strings.TrimSpace(previousResponseID) != "" {
+		owner, ownerErr := s.getOpenAIWSStateStore().GetResponseAccount(ctx, derefGroupID(groupID), strings.TrimSpace(previousResponseID))
+		if ownerErr != nil {
+			return nil, fmt.Errorf("%w: response owner lookup: %v", ErrStrictFailoverUnconfirmed, ownerErr)
+		}
+		ctx, err = pinStrictFailoverOwner(ctx, owner)
+		if err != nil {
+			return nil, err
+		}
+	}
 	ctx = s.withOpenAIProfitControlGate(ctx, groupID)
-	return s.selectAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, "", requireCompact)
+	selected, err := s.selectAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, "", requireCompact)
+	if err == nil && selected == nil && strictFailoverStateFrom(ctx) != nil && strings.TrimSpace(previousResponseID) != "" {
+		return nil, ErrStrictFailoverUnconfirmed
+	}
+	return selected, strictFailoverSelectionError(ctx, err)
 }
 
 func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
@@ -489,8 +643,18 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 	if accountID <= 0 || account == nil || store == nil {
 		return nil, nil
 	}
+	// Automatic protection is temporary. Preserve response ownership while active
+	// checks recover this credential; never send customer traffic to a held owner.
+	if activeIntelligenceHold(ctx, account, groupID, requestedModel) {
+		return nil, ErrAccountQualityHeld
+	}
 
-	result, acquireErr := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
+	result, acquireErr := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency, &account)
+	if acquireErr != nil {
+		// Incremental previous_response requests cannot be replayed on another
+		// account. A final admission rejection is not concurrency to wait for.
+		return nil, acquireErr
+	}
 	if acquireErr == nil && result.Acquired {
 		logOpenAIWSBindResponseAccountWarn(
 			derefGroupID(groupID),
@@ -576,7 +740,10 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 	if !account.IsOpenAIApiKey() && s.getOpenAIWSProtocolResolver().Resolve(account).Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
 		return 0, nil, "", nil
 	}
-	if shouldClearStickySession(account, requestedModel) || !account.IsOpenAI() || !account.IsSchedulable() {
+	if activeIntelligenceHold(ctx, account, groupID, requestedModel) {
+		return accountID, account, responseID, store
+	}
+	if shouldClearStickySessionWithContext(ctx, account, requestedModel) || !account.IsOpenAI() || !account.IsSchedulable() {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return 0, nil, "", nil
 	}
@@ -584,7 +751,7 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return 0, nil, "", nil
 	}
-	if requestedModel != "" && (!supportsOpenAIRequestModel(account, requestedModel, requireCompact) || !account.IsModelAllowedInGroup(groupID, requestedModel)) {
+	if requestedModel != "" && !supportsOpenAIRequestModel(account, requestedModel, requireCompact) {
 		return 0, nil, "", nil
 	}
 	if !account.SupportsOpenAIEndpointCapability(requiredCapability) {
@@ -609,7 +776,10 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 			return 0, nil, "", nil
 		}
-		if shouldClearStickySession(latest, requestedModel) || !latest.IsOpenAI() || !latest.IsSchedulable() {
+		if activeIntelligenceHold(ctx, latest, groupID, requestedModel) {
+			return accountID, latest, responseID, store
+		}
+		if shouldClearStickySessionWithContext(ctx, latest, requestedModel) || !latest.IsOpenAI() || !latest.IsSchedulable() {
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 			return 0, nil, "", nil
 		}
@@ -623,7 +793,7 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 			return 0, nil, "", nil
 		}
-		if requestedModel != "" && (!supportsOpenAIRequestModel(latest, requestedModel, requireCompact) || !latest.IsModelAllowedInGroup(groupID, requestedModel)) {
+		if requestedModel != "" && !supportsOpenAIRequestModel(latest, requestedModel, requireCompact) {
 			return 0, nil, "", nil
 		}
 		if !latest.SupportsOpenAIEndpointCapability(requiredCapability) {
@@ -636,14 +806,12 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 		if vetoed, _ := openAIProfitControlVetoReason(ctx, latest); vetoed {
 			return 0, nil, "", nil
 		}
-		if s.isOpenAIAccountRequestRuntimeBlocked(latest, requestedModel, requireCompact) {
+		if s.isOpenAIAccountRequestRuntimeBlocked(latest, requestedModel) {
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 			return 0, nil, "", nil
 		}
 		account = latest
 	}
-	useGroupPriority := s.settingService != nil && s.settingService.IsAccountGroupPriorityEnabled(ctx)
-	ApplyAccountGroupPriority(account, groupID, useGroupPriority)
 	if requireCompact && openAICompactSupportTier(account) == 0 {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 		return 0, nil, "", nil
@@ -652,6 +820,10 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 }
 
 func classifyOpenAIWSAcquireError(err error) string {
+	if errors.Is(err, errOpenAIWSEdgeBackoff) {
+		return openAIWSEdgeBackoffReason
+	}
+
 	if err == nil {
 		return "acquire_conn"
 	}
@@ -660,8 +832,16 @@ func classifyOpenAIWSAcquireError(err error) string {
 		switch dialErr.StatusCode {
 		case 426:
 			return "upgrade_required"
-		case 401, 403:
+		case 401:
 			return "auth_failed"
+		case 403:
+			if openAIWSEdgeBackoffEligibleFailure(err) {
+				return "edge_challenge_403"
+			}
+			if gjson.ValidBytes(dialErr.ResponseBody) && gjson.GetBytes(dialErr.ResponseBody, "error").Exists() {
+				return "permission_denied"
+			}
+			return "forbidden_unknown"
 		case 429:
 			return "upstream_rate_limited"
 		}
@@ -706,6 +886,13 @@ func (s *OpenAIGatewayService) persistOpenAIWSRateLimitSignal(ctx context.Contex
 	if s == nil || s.rateLimitService == nil || account == nil || account.Platform != PlatformOpenAI {
 		return
 	}
+	// `insufficient_quota` is a billing/account exhaustion signal in the
+	// shared classifier, not a transient 429 window. It is handled by the
+	// billing failover path with account-level state; do not also record it as
+	// a rate-limit event with a different status and cooldown policy.
+	if IsUpstreamBillingError(http.StatusOK, responseBody) {
+		return
+	}
 	if !isOpenAIWSRateLimitError(codeRaw, errTypeRaw, msgRaw) {
 		return
 	}
@@ -730,7 +917,7 @@ func openAIWSSemantic429Headers(account *Account, model string, headers http.Hea
 }
 
 func (s *OpenAIGatewayService) newOpenAIWSRateLimitFailoverError(account *Account, headers http.Header, responseBody []byte, message string) *UpstreamFailoverError {
-	return s.newOpenAIAccountFailoverError(
+	failure := s.newOpenAIAccountFailoverError(
 		account,
 		http.StatusTooManyRequests,
 		headers,
@@ -739,6 +926,13 @@ func (s *OpenAIGatewayService) newOpenAIWSRateLimitFailoverError(account *Accoun
 		false,
 		false,
 	)
+	if len(responseBody) == 0 {
+		failure.ObservedUpstreamStatus = http.StatusTooManyRequests // HTTP handshake rejection.
+	} else {
+		failure.strictFailoverReason = "upstream_rate_limit_event"
+	}
+	return failure
+
 }
 
 func classifyOpenAIWSErrorEventFromRaw(codeRaw, errTypeRaw, msgRaw string) (string, bool) {
@@ -799,6 +993,9 @@ func openAIWSErrorHTTPStatusFromRaw(codeRaw, errTypeRaw string) int {
 	errType := strings.ToLower(strings.TrimSpace(errTypeRaw))
 	switch {
 	case strings.Contains(errType, "invalid_request"),
+		errType == "invalid_json_schema",
+		openAIUpstreamParameterErrorCode(code),
+		isOpenAIImageGenerationUserErrorType(errType),
 		strings.Contains(code, "invalid_request"),
 		strings.Contains(code, "bad_request"),
 		code == "invalid_encrypted_content",
@@ -811,6 +1008,8 @@ func openAIWSErrorHTTPStatusFromRaw(codeRaw, errTypeRaw string) int {
 	case strings.Contains(errType, "permission"),
 		strings.Contains(code, "forbidden"):
 		return http.StatusForbidden
+	case isUpstreamBillingErrorCode(codeRaw):
+		return http.StatusPaymentRequired
 	case isOpenAIWSRateLimitError(codeRaw, errTypeRaw, ""):
 		return http.StatusTooManyRequests
 	default:
@@ -877,4 +1076,116 @@ func (s *OpenAIGatewayService) clearOpenAIWSFallbackCooling(accountID int64) {
 		return
 	}
 	s.openaiWSFallbackUntil.Delete(accountID)
+}
+
+// codexWSExactFidelityLane 是 WS 帧形态（turn metadata 投影、serde 序帧）的闸门：
+// Codex 身份通道账号且开启 gateway.openai_ws.exact_fidelity_enabled。
+func (s *OpenAIGatewayService) codexWSExactFidelityLane(account *Account) bool {
+	return codexIdentityLaneAccount(account) && s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.ExactFidelityEnabled
+}
+
+// marshalCodexWSFrameForAccount 返回官方 serde 序的 response.create 帧字节；
+// 非 Codex 身份通道或编码失败时返回 nil，调用方回退到通用 JSON 编码。
+func (s *OpenAIGatewayService) marshalCodexWSFrameForAccount(account *Account, payload map[string]any) []byte {
+	if !s.codexWSExactFidelityLane(account) || payload == nil {
+		return nil
+	}
+	frame, err := marshalCodexWSCreateFrame(nil, payload, s.codexMapOrderJitterEnabled())
+	if err != nil {
+		logOpenAIWSModeInfo("frame_marshal_fail account_id=%d cause=%s", account.ID, truncateOpenAIWSLogValue(err.Error(), openAIWSLogValueMaxLen))
+		return nil
+	}
+	return frame
+}
+
+// applyCodexWSV2TurnShape 在 WS 握手头构建之后补齐 Codex 身份通道的 turn 形态：
+// client_metadata 与握手 turn-metadata 同源归一，turn-state 挪进帧内，补官方
+// turn-metadata 行为字段，缺省 prompt_cache_key 按握手 session-id 派生，最后按
+// 官方 WS 线序收口（normalizeCodexRequestMetadataMap 会把旧习惯的 session_id /
+// x-codex-installation-id 写回头部，因此必须在归一化之后再收口一次）。
+func (s *OpenAIGatewayService) applyCodexWSV2TurnShape(
+	c *gin.Context,
+	account *Account,
+	decision OpenAIWSProtocolDecision,
+	payload map[string]any,
+	reqBody map[string]any,
+	wsHeaders http.Header,
+	previousResponseID string,
+) error {
+	if !codexIdentityLaneAccount(account) || payload == nil {
+		return nil
+	}
+	if err := normalizeCodexRequestMetadataMap(payload, wsHeaders, account); err != nil {
+		return fmt.Errorf("normalize websocket metadata: %w", err)
+	}
+	if s.codexWSExactFidelityLane(account) {
+		relocateCodexWSTurnState(wsHeaders, payload)
+		applyCodexWireLaneMetadata(payload, wsHeaders, account, "turn")
+		// 官方 WS 连接为 prewarm 而建：握手头的 turn-metadata 是 prewarm 画像。
+		// 仅当本连接接下来确实会发 prewarm 帧时才投影（同 performOpenAIWSGeneratePrewarm 门槛）。
+		if s.isOpenAIWSGeneratePrewarmEnabled() &&
+			decision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 &&
+			strings.TrimSpace(previousResponseID) == "" && !NeedsToolContinuation(reqBody) {
+			shadow := map[string]any{
+				"model":     payload["model"],
+				"reasoning": payload["reasoning"],
+				"client_metadata": map[string]any{
+					openAIWSTurnMetadataHeader: func() any {
+						if cm, ok := payload["client_metadata"].(map[string]any); ok {
+							return cm[openAIWSTurnMetadataHeader]
+						}
+						return nil
+					}(),
+				},
+			}
+			applyCodexWireLaneMetadata(shadow, wsHeaders, account, "prewarm")
+		}
+		// 官方 ResponseCreateWsRequest 恒发 prompt_cache_key（SessionDerived——
+		// root 会话即握手 session-id）。客户端没给时按握手 session-id 补齐。
+		if _, has := payload["prompt_cache_key"]; !has {
+			if sid := strings.TrimSpace(wsHeaders.Get("session-id")); sid != "" {
+				payload["prompt_cache_key"] = sid
+			}
+		}
+	}
+	projectCodexOutboundHeaders(wsHeaders, true)
+	return nil
+}
+
+func (s *OpenAIGatewayService) openAIWSV2PreOutputAccountFailover(
+	c *gin.Context,
+	account *Account,
+	headers http.Header,
+	payload []byte,
+	errCodeRaw, errTypeRaw, errMsgRaw string,
+	replayUnsafe bool,
+	clientDisconnected bool,
+) *UpstreamFailoverError {
+	if s == nil || account == nil || replayUnsafe || clientDisconnected {
+		return nil
+	}
+	if c != nil && c.Writer != nil && c.Writer.Written() {
+		return nil
+	}
+	if hit, _, _ := detectOpenAICyberPolicy(payload); hit {
+		return nil
+	}
+	statusCode := 0
+	switch {
+	case isOpenAIUpstreamCapacityShedEvent(payload):
+		statusCode = http.StatusServiceUnavailable
+	case isOpenAIWSRateLimitError(errCodeRaw, errTypeRaw, errMsgRaw):
+		statusCode = http.StatusTooManyRequests
+	default:
+		return nil
+	}
+	message := strings.TrimSpace(errMsgRaw)
+	if message == "" {
+		message = extractOpenAISSEErrorMessage(payload)
+	}
+	message = s.recordOpenAIStreamUpstreamError(c, account, false, "", "failover", payload, message)
+	if statusCode == http.StatusTooManyRequests {
+		return s.newOpenAIWSRateLimitFailoverError(account, headers, payload, message)
+	}
+	return s.newOpenAIAccountFailoverError(account, statusCode, headers, payload, message, false, false)
 }

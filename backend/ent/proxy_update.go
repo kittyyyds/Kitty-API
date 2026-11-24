@@ -118,26 +118,6 @@ func (_u *ProxyUpdate) AddPort(v int) *ProxyUpdate {
 	return _u
 }
 
-// SetMihomoNodeID sets the "mihomo_node_id" field.
-func (_u *ProxyUpdate) SetMihomoNodeID(v string) *ProxyUpdate {
-	_u.mutation.SetMihomoNodeID(v)
-	return _u
-}
-
-// SetNillableMihomoNodeID sets the "mihomo_node_id" field if the given value is not nil.
-func (_u *ProxyUpdate) SetNillableMihomoNodeID(v *string) *ProxyUpdate {
-	if v != nil {
-		_u.SetMihomoNodeID(*v)
-	}
-	return _u
-}
-
-// ClearMihomoNodeID clears the value of the "mihomo_node_id" field.
-func (_u *ProxyUpdate) ClearMihomoNodeID() *ProxyUpdate {
-	_u.mutation.ClearMihomoNodeID()
-	return _u
-}
-
 // SetUsername sets the "username" field.
 func (_u *ProxyUpdate) SetUsername(v string) *ProxyUpdate {
 	_u.mutation.SetUsername(v)
@@ -189,6 +169,26 @@ func (_u *ProxyUpdate) SetNillableStatus(v *string) *ProxyUpdate {
 	if v != nil {
 		_u.SetStatus(*v)
 	}
+	return _u
+}
+
+// SetMihomoNodeID sets the "mihomo_node_id" field.
+func (_u *ProxyUpdate) SetMihomoNodeID(v string) *ProxyUpdate {
+	_u.mutation.SetMihomoNodeID(v)
+	return _u
+}
+
+// SetNillableMihomoNodeID sets the "mihomo_node_id" field if the given value is not nil.
+func (_u *ProxyUpdate) SetNillableMihomoNodeID(v *string) *ProxyUpdate {
+	if v != nil {
+		_u.SetMihomoNodeID(*v)
+	}
+	return _u
+}
+
+// ClearMihomoNodeID clears the value of the "mihomo_node_id" field.
+func (_u *ProxyUpdate) ClearMihomoNodeID() *ProxyUpdate {
+	_u.mutation.ClearMihomoNodeID()
 	return _u
 }
 
@@ -267,6 +267,21 @@ func (_u *ProxyUpdate) AddExpiryWarnDays(v int) *ProxyUpdate {
 	return _u
 }
 
+// AddPoolAccountIDs adds the "pool_accounts" edge to the Account entity by IDs.
+func (_u *ProxyUpdate) AddPoolAccountIDs(ids ...int64) *ProxyUpdate {
+	_u.mutation.AddPoolAccountIDs(ids...)
+	return _u
+}
+
+// AddPoolAccounts adds the "pool_accounts" edges to the Account entity.
+func (_u *ProxyUpdate) AddPoolAccounts(v ...*Account) *ProxyUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddPoolAccountIDs(ids...)
+}
+
 // AddAccountIDs adds the "accounts" edge to the Account entity by IDs.
 func (_u *ProxyUpdate) AddAccountIDs(ids ...int64) *ProxyUpdate {
 	_u.mutation.AddAccountIDs(ids...)
@@ -305,6 +320,27 @@ func (_u *ProxyUpdate) SetBackupProxy(v *Proxy) *ProxyUpdate {
 // Mutation returns the ProxyMutation object of the builder.
 func (_u *ProxyUpdate) Mutation() *ProxyMutation {
 	return _u.mutation
+}
+
+// ClearPoolAccounts clears all "pool_accounts" edges to the Account entity.
+func (_u *ProxyUpdate) ClearPoolAccounts() *ProxyUpdate {
+	_u.mutation.ClearPoolAccounts()
+	return _u
+}
+
+// RemovePoolAccountIDs removes the "pool_accounts" edge to Account entities by IDs.
+func (_u *ProxyUpdate) RemovePoolAccountIDs(ids ...int64) *ProxyUpdate {
+	_u.mutation.RemovePoolAccountIDs(ids...)
+	return _u
+}
+
+// RemovePoolAccounts removes "pool_accounts" edges to Account entities.
+func (_u *ProxyUpdate) RemovePoolAccounts(v ...*Account) *ProxyUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemovePoolAccountIDs(ids...)
 }
 
 // ClearAccounts clears all "accounts" edges to the Account entity.
@@ -414,11 +450,6 @@ func (_u *ProxyUpdate) check() error {
 			return &ValidationError{Name: "host", err: fmt.Errorf(`ent: validator failed for field "Proxy.host": %w`, err)}
 		}
 	}
-	if v, ok := _u.mutation.MihomoNodeID(); ok {
-		if err := proxy.MihomoNodeIDValidator(v); err != nil {
-			return &ValidationError{Name: "mihomo_node_id", err: fmt.Errorf(`ent: validator failed for field "Proxy.mihomo_node_id": %w`, err)}
-		}
-	}
 	if v, ok := _u.mutation.Username(); ok {
 		if err := proxy.UsernameValidator(v); err != nil {
 			return &ValidationError{Name: "username", err: fmt.Errorf(`ent: validator failed for field "Proxy.username": %w`, err)}
@@ -432,6 +463,11 @@ func (_u *ProxyUpdate) check() error {
 	if v, ok := _u.mutation.Status(); ok {
 		if err := proxy.StatusValidator(v); err != nil {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "Proxy.status": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.MihomoNodeID(); ok {
+		if err := proxy.MihomoNodeIDValidator(v); err != nil {
+			return &ValidationError{Name: "mihomo_node_id", err: fmt.Errorf(`ent: validator failed for field "Proxy.mihomo_node_id": %w`, err)}
 		}
 	}
 	if v, ok := _u.mutation.FallbackMode(); ok {
@@ -478,12 +514,6 @@ func (_u *ProxyUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.AddedPort(); ok {
 		_spec.AddField(proxy.FieldPort, field.TypeInt, value)
 	}
-	if value, ok := _u.mutation.MihomoNodeID(); ok {
-		_spec.SetField(proxy.FieldMihomoNodeID, field.TypeString, value)
-	}
-	if _u.mutation.MihomoNodeIDCleared() {
-		_spec.ClearField(proxy.FieldMihomoNodeID, field.TypeString)
-	}
 	if value, ok := _u.mutation.Username(); ok {
 		_spec.SetField(proxy.FieldUsername, field.TypeString, value)
 	}
@@ -499,6 +529,12 @@ func (_u *ProxyUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(proxy.FieldStatus, field.TypeString, value)
 	}
+	if value, ok := _u.mutation.MihomoNodeID(); ok {
+		_spec.SetField(proxy.FieldMihomoNodeID, field.TypeString, value)
+	}
+	if _u.mutation.MihomoNodeIDCleared() {
+		_spec.ClearField(proxy.FieldMihomoNodeID, field.TypeString)
+	}
 	if value, ok := _u.mutation.ExpiresAt(); ok {
 		_spec.SetField(proxy.FieldExpiresAt, field.TypeTime, value)
 	}
@@ -513,6 +549,51 @@ func (_u *ProxyUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.AddedExpiryWarnDays(); ok {
 		_spec.AddField(proxy.FieldExpiryWarnDays, field.TypeInt, value)
+	}
+	if _u.mutation.PoolAccountsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.M2M,
+			Inverse: true,
+			Table:   proxy.PoolAccountsTable,
+			Columns: proxy.PoolAccountsPrimaryKey,
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(account.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedPoolAccountsIDs(); len(nodes) > 0 && !_u.mutation.PoolAccountsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.M2M,
+			Inverse: true,
+			Table:   proxy.PoolAccountsTable,
+			Columns: proxy.PoolAccountsPrimaryKey,
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(account.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.PoolAccountsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.M2M,
+			Inverse: true,
+			Table:   proxy.PoolAccountsTable,
+			Columns: proxy.PoolAccountsPrimaryKey,
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(account.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
 	}
 	if _u.mutation.AccountsCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -742,26 +823,6 @@ func (_u *ProxyUpdateOne) AddPort(v int) *ProxyUpdateOne {
 	return _u
 }
 
-// SetMihomoNodeID sets the "mihomo_node_id" field.
-func (_u *ProxyUpdateOne) SetMihomoNodeID(v string) *ProxyUpdateOne {
-	_u.mutation.SetMihomoNodeID(v)
-	return _u
-}
-
-// SetNillableMihomoNodeID sets the "mihomo_node_id" field if the given value is not nil.
-func (_u *ProxyUpdateOne) SetNillableMihomoNodeID(v *string) *ProxyUpdateOne {
-	if v != nil {
-		_u.SetMihomoNodeID(*v)
-	}
-	return _u
-}
-
-// ClearMihomoNodeID clears the value of the "mihomo_node_id" field.
-func (_u *ProxyUpdateOne) ClearMihomoNodeID() *ProxyUpdateOne {
-	_u.mutation.ClearMihomoNodeID()
-	return _u
-}
-
 // SetUsername sets the "username" field.
 func (_u *ProxyUpdateOne) SetUsername(v string) *ProxyUpdateOne {
 	_u.mutation.SetUsername(v)
@@ -813,6 +874,26 @@ func (_u *ProxyUpdateOne) SetNillableStatus(v *string) *ProxyUpdateOne {
 	if v != nil {
 		_u.SetStatus(*v)
 	}
+	return _u
+}
+
+// SetMihomoNodeID sets the "mihomo_node_id" field.
+func (_u *ProxyUpdateOne) SetMihomoNodeID(v string) *ProxyUpdateOne {
+	_u.mutation.SetMihomoNodeID(v)
+	return _u
+}
+
+// SetNillableMihomoNodeID sets the "mihomo_node_id" field if the given value is not nil.
+func (_u *ProxyUpdateOne) SetNillableMihomoNodeID(v *string) *ProxyUpdateOne {
+	if v != nil {
+		_u.SetMihomoNodeID(*v)
+	}
+	return _u
+}
+
+// ClearMihomoNodeID clears the value of the "mihomo_node_id" field.
+func (_u *ProxyUpdateOne) ClearMihomoNodeID() *ProxyUpdateOne {
+	_u.mutation.ClearMihomoNodeID()
 	return _u
 }
 
@@ -891,6 +972,21 @@ func (_u *ProxyUpdateOne) AddExpiryWarnDays(v int) *ProxyUpdateOne {
 	return _u
 }
 
+// AddPoolAccountIDs adds the "pool_accounts" edge to the Account entity by IDs.
+func (_u *ProxyUpdateOne) AddPoolAccountIDs(ids ...int64) *ProxyUpdateOne {
+	_u.mutation.AddPoolAccountIDs(ids...)
+	return _u
+}
+
+// AddPoolAccounts adds the "pool_accounts" edges to the Account entity.
+func (_u *ProxyUpdateOne) AddPoolAccounts(v ...*Account) *ProxyUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddPoolAccountIDs(ids...)
+}
+
 // AddAccountIDs adds the "accounts" edge to the Account entity by IDs.
 func (_u *ProxyUpdateOne) AddAccountIDs(ids ...int64) *ProxyUpdateOne {
 	_u.mutation.AddAccountIDs(ids...)
@@ -929,6 +1025,27 @@ func (_u *ProxyUpdateOne) SetBackupProxy(v *Proxy) *ProxyUpdateOne {
 // Mutation returns the ProxyMutation object of the builder.
 func (_u *ProxyUpdateOne) Mutation() *ProxyMutation {
 	return _u.mutation
+}
+
+// ClearPoolAccounts clears all "pool_accounts" edges to the Account entity.
+func (_u *ProxyUpdateOne) ClearPoolAccounts() *ProxyUpdateOne {
+	_u.mutation.ClearPoolAccounts()
+	return _u
+}
+
+// RemovePoolAccountIDs removes the "pool_accounts" edge to Account entities by IDs.
+func (_u *ProxyUpdateOne) RemovePoolAccountIDs(ids ...int64) *ProxyUpdateOne {
+	_u.mutation.RemovePoolAccountIDs(ids...)
+	return _u
+}
+
+// RemovePoolAccounts removes "pool_accounts" edges to Account entities.
+func (_u *ProxyUpdateOne) RemovePoolAccounts(v ...*Account) *ProxyUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemovePoolAccountIDs(ids...)
 }
 
 // ClearAccounts clears all "accounts" edges to the Account entity.
@@ -1051,11 +1168,6 @@ func (_u *ProxyUpdateOne) check() error {
 			return &ValidationError{Name: "host", err: fmt.Errorf(`ent: validator failed for field "Proxy.host": %w`, err)}
 		}
 	}
-	if v, ok := _u.mutation.MihomoNodeID(); ok {
-		if err := proxy.MihomoNodeIDValidator(v); err != nil {
-			return &ValidationError{Name: "mihomo_node_id", err: fmt.Errorf(`ent: validator failed for field "Proxy.mihomo_node_id": %w`, err)}
-		}
-	}
 	if v, ok := _u.mutation.Username(); ok {
 		if err := proxy.UsernameValidator(v); err != nil {
 			return &ValidationError{Name: "username", err: fmt.Errorf(`ent: validator failed for field "Proxy.username": %w`, err)}
@@ -1069,6 +1181,11 @@ func (_u *ProxyUpdateOne) check() error {
 	if v, ok := _u.mutation.Status(); ok {
 		if err := proxy.StatusValidator(v); err != nil {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "Proxy.status": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.MihomoNodeID(); ok {
+		if err := proxy.MihomoNodeIDValidator(v); err != nil {
+			return &ValidationError{Name: "mihomo_node_id", err: fmt.Errorf(`ent: validator failed for field "Proxy.mihomo_node_id": %w`, err)}
 		}
 	}
 	if v, ok := _u.mutation.FallbackMode(); ok {
@@ -1132,12 +1249,6 @@ func (_u *ProxyUpdateOne) sqlSave(ctx context.Context) (_node *Proxy, err error)
 	if value, ok := _u.mutation.AddedPort(); ok {
 		_spec.AddField(proxy.FieldPort, field.TypeInt, value)
 	}
-	if value, ok := _u.mutation.MihomoNodeID(); ok {
-		_spec.SetField(proxy.FieldMihomoNodeID, field.TypeString, value)
-	}
-	if _u.mutation.MihomoNodeIDCleared() {
-		_spec.ClearField(proxy.FieldMihomoNodeID, field.TypeString)
-	}
 	if value, ok := _u.mutation.Username(); ok {
 		_spec.SetField(proxy.FieldUsername, field.TypeString, value)
 	}
@@ -1153,6 +1264,12 @@ func (_u *ProxyUpdateOne) sqlSave(ctx context.Context) (_node *Proxy, err error)
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(proxy.FieldStatus, field.TypeString, value)
 	}
+	if value, ok := _u.mutation.MihomoNodeID(); ok {
+		_spec.SetField(proxy.FieldMihomoNodeID, field.TypeString, value)
+	}
+	if _u.mutation.MihomoNodeIDCleared() {
+		_spec.ClearField(proxy.FieldMihomoNodeID, field.TypeString)
+	}
 	if value, ok := _u.mutation.ExpiresAt(); ok {
 		_spec.SetField(proxy.FieldExpiresAt, field.TypeTime, value)
 	}
@@ -1167,6 +1284,51 @@ func (_u *ProxyUpdateOne) sqlSave(ctx context.Context) (_node *Proxy, err error)
 	}
 	if value, ok := _u.mutation.AddedExpiryWarnDays(); ok {
 		_spec.AddField(proxy.FieldExpiryWarnDays, field.TypeInt, value)
+	}
+	if _u.mutation.PoolAccountsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.M2M,
+			Inverse: true,
+			Table:   proxy.PoolAccountsTable,
+			Columns: proxy.PoolAccountsPrimaryKey,
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(account.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedPoolAccountsIDs(); len(nodes) > 0 && !_u.mutation.PoolAccountsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.M2M,
+			Inverse: true,
+			Table:   proxy.PoolAccountsTable,
+			Columns: proxy.PoolAccountsPrimaryKey,
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(account.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.PoolAccountsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.M2M,
+			Inverse: true,
+			Table:   proxy.PoolAccountsTable,
+			Columns: proxy.PoolAccountsPrimaryKey,
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(account.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
 	}
 	if _u.mutation.AccountsCleared() {
 		edge := &sqlgraph.EdgeSpec{

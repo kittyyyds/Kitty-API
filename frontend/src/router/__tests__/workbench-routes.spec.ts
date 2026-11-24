@@ -20,7 +20,7 @@ vi.mock('@/composables/useRoutePrefetch', () => ({
 }))
 
 describe('AI workbench routes', () => {
-  it('registers Kitty Studio and online chat as authenticated routes', async () => {
+  it('registers Kitty Studio but leaves online chat retired', async () => {
     const { default: router } = await import('@/router')
     const studio = router.getRoutes().find((route) => route.name === 'AppCenter')
     const chat = router.getRoutes().find((route) => route.name === 'KittyChat')
@@ -28,9 +28,7 @@ describe('AI workbench routes', () => {
     expect(studio?.path).toBe('/apps')
     expect(studio?.meta.requiresAuth).toBe(true)
     expect(studio?.meta.titleKey).toBe('nav.creativeCanvas')
-    expect(chat?.path).toBe('/chat')
-    expect(chat?.meta.requiresAuth).toBe(true)
-    expect(chat?.meta.titleKey).toBe('nav.onlineChat')
+    expect(chat).toBeUndefined()
   })
 
   it('keeps both legacy image-generator URLs as Studio redirects', async () => {
@@ -40,5 +38,15 @@ describe('AI workbench routes', () => {
 
     expect(legacy?.redirect).toBe('/apps')
     expect(customLegacy?.redirect).toBe('/apps')
+  })
+
+  it('sends retired operations URLs to NotFound while retaining supplier and operations pages', async () => {
+    const { default: router } = await import('@/router')
+    for (const path of ['/admin/channel-operations', '/admin/profit-operations', '/admin/finance-overview']) {
+      expect(router.resolve(path).matched.at(-1)?.name).toBe('NotFound')
+    }
+    expect(router.resolve('/admin/supplier-balances').name).toBe('NotFound')
+    expect(router.resolve('/admin/operations').name).toBe('AdminProviderOperations')
+    expect(router.resolve('/admin/accounts').name).toBe('AdminAccounts')
   })
 })

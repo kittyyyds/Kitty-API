@@ -3,6 +3,7 @@ package repository
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -257,6 +258,16 @@ func (s *GitHubReleaseServiceSuite) TestFetchChecksumFile_Non200() {
 	require.Error(s.T(), err, "expected error for non-200")
 }
 
+func TestGitHubReleaseMetadataSizeLimit(t *testing.T) {
+	client := newTestGitHubReleaseClient()
+	client.httpClient.Transport = githubReleaseRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Request: req,
+			Body: io.NopCloser(strings.NewReader(strings.Repeat("x", (1<<20)+1)))}, nil
+	})
+	_, err := client.FetchChecksumFile(context.Background(), "https://github.com/test/repo/releases/download/v1/update-manifest.json")
+	require.ErrorContains(t, err, "exceeds 1 MiB")
+}
+
 func (s *GitHubReleaseServiceSuite) TestDownloadFile_ContextCancel() {
 	s.srv = newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
@@ -391,6 +402,39 @@ func (s *GitHubReleaseServiceSuite) TestFetchRecentReleases_Success() {
 	require.Len(s.T(), releases[0].Assets, 1)
 	require.True(s.T(), releases[1].Prerelease)
 	require.Equal(s.T(), "v1.0.0", releases[2].TagName)
+}
+
+func (s *GitHubReleaseServiceSuite) TestFetchRepositoryFile_Success() {
+	encoded := base64.StdEncoding.EncodeToString([]byte("0.1.176-overdraft.1\n"))
+	s.srv = newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(s.T(), "/repos/DeanZFC/sub2api-custom/contents/FORK_VERSION", r.URL.Path)
+		require.Equal(s.T(), "codex/merge-official-0.2.2", r.URL.Query().Get("ref"))
+		require.Equal(s.T(), "application/vnd.github.v3+json", r.Header.Get("Accept"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"encoding":"base64","content":"` + encoded + `"}`))
+	}))
+	s.client = &githubReleaseClient{
+		httpClient:         &http.Client{Transport: &testTransport{testServerURL: s.srv.URL}},
+		downloadHTTPClient: &http.Client{},
+	}
+
+	content, err := s.client.FetchRepositoryFile(
+		context.Background(),
+		"DeanZFC/sub2api-custom",
+		"codex/merge-official-0.2.2",
+		"FORK_VERSION",
+	)
+
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), "0.1.176-overdraft.1\n", string(content))
+}
+
+func (s *GitHubReleaseServiceSuite) TestFetchRepositoryFile_RejectsTraversal() {
+	s.client = newTestGitHubReleaseClient()
+
+	_, err := s.client.FetchRepositoryFile(context.Background(), "test/repo", "main", "../secret")
+
+	require.Error(s.T(), err)
 }
 
 func (s *GitHubReleaseServiceSuite) TestFetchRecentReleases_Non200() {

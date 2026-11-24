@@ -13,15 +13,6 @@ import (
 
 const requestIDHeader = "X-Request-ID"
 
-func requestLogPath(path string) string {
-	// Old clients can still request retired capability URLs. Keep their tokens
-	// out of logs even though the corresponding feature is no longer served.
-	if strings.HasPrefix(path, "/api/bps-images/") {
-		return "/api/bps-images/[redacted]"
-	}
-	return path
-}
-
 // RequestLogger 在请求入口注入 request-scoped logger。
 func RequestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -44,7 +35,7 @@ func RequestLogger() gin.HandlerFunc {
 			zap.String("component", "http"),
 			zap.String("request_id", requestID),
 			zap.String("client_request_id", strings.TrimSpace(clientRequestID)),
-			zap.String("path", sanitizedLogPath(requestLogPath(c.Request.URL.Path))),
+			zap.String("path", c.Request.URL.Path),
 			zap.String("method", c.Request.Method),
 		)
 

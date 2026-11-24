@@ -82,7 +82,6 @@ it('adds supported and custom platforms, reorders them, and deletes only a disab
   expect(saved.slice(0, 6)).toEqual(factory)
   expect(saved.at(-1)).toBe('deepseek')
   expect(saved).not.toContain('custom_gw')
-  expect(mocks.update.mock.calls[0][0].card_timeline_mode).toBe('windows')
   wrapper.unmount()
 })
 
@@ -109,16 +108,12 @@ it('moves groups inside one platform and saves that display order', async () => 
   wrapper.unmount()
 })
 
-it('saves the admin card timeline mode and keeps an omitted value on time windows', async () => {
-  mocks.get.mockResolvedValue({ ...config(), card_timeline_mode: 'samples' })
+it('offers no card timeline mode now that cards always show recent samples', async () => {
+  mocks.get.mockResolvedValue(config())
   mocks.groups.mockResolvedValue([])
-  mocks.update.mockImplementation(async (payload) => ({ ...payload, version: 4 }))
   const wrapper = mount(MonitorSettingsPanel, { global: { stubs: { Toggle: true, Icon: true, RouterLink: true } } })
   await flushPromises()
-  expect(wrapper.get('[data-testid="monitor-v2-card-timeline-samples"]').classes()).toContain('tab-active')
-  await wrapper.get('[data-testid="monitor-v2-card-timeline-windows"]').trigger('click')
-  await wrapper.get('header button.btn-primary').trigger('click')
-  await flushPromises()
-  expect(mocks.update.mock.calls[0][0].card_timeline_mode).toBe('windows')
+  expect(wrapper.find('[data-testid="monitor-v2-card-timeline"]').exists()).toBe(false)
+  expect(wrapper.find('[data-testid="monitor-v2-card-timeline-windows"]').exists()).toBe(false)
   wrapper.unmount()
 })

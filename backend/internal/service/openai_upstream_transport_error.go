@@ -73,8 +73,7 @@ func classifyUpstreamTransportError(err error) upstreamTransportErrorClass {
 	// — Typed checks (preferred) ——————————————————————————————————————————————
 	if errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, syscall.EHOSTUNREACH) ||
-		errors.Is(err, syscall.ENETUNREACH) ||
-		isPlatformPersistentTransportError(err) {
+		errors.Is(err, syscall.ENETUNREACH) {
 		return upstreamTransportErrorClass{Persistent: true}
 	}
 	var dnsErr *net.DNSError
@@ -116,25 +115,14 @@ func isClientCanceledTransportError(ctx context.Context, err error) bool {
 //
 // passthrough tags the Ops error event for the OpenAI passthrough forward path.
 func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Context, c *gin.Context, account *Account, err error, passthrough bool) error {
-	var phaseTimeout *openAIHTTPPhaseTimeout
-	if errors.As(err, &phaseTimeout) {
-		return handleOpenAIHTTPPhaseError(c, account, err)
-	}
-	if routeErr, ok := s.astraRouteFailover(ctx, account, err).(*UpstreamFailoverError); ok {
-		return routeErr
-	}
-	if IsOpenAITurnAdmissionError(err) || IsOpenAIRPMError(err) {
-		return err
-	}
 	if isClientCanceledTransportError(ctx, err) {
 		return err
 	}
 	safeErr := sanitizeUpstreamErrorMessage(err.Error())
 	setOpsUpstreamError(c, 0, safeErr, "")
-	proxyID, proxyName := runtimeProxyErrorAttribution(account, err)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-		ProxyID:            proxyID,
-		ProxyName:          proxyName,
+		ProxyID:            opsUpstreamProxyID(account),
+		ProxyName:          opsUpstreamProxyName(account),
 		Platform:           account.Platform,
 		AccountID:          account.ID,
 		AccountName:        account.Name,
@@ -164,11 +152,17 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 
 	if classifyUpstreamTransportError(err).Persistent {
 		s.tempUnscheduleOpenAITransportError(ctx, account, safeErr)
+	} else if account.IsOpenAIVMManaged() && !errors.Is(err, errOpenAIVMManagedUnsupported) {
+		// The bridge or the slot did not answer. Nothing was sent upstream, so
+		// another account may take the request; a short pause keeps this one
+		// from being picked again before the state sync has looked at it.
+		s.pauseOpenAIVMManagedAccount(ctx, account, openAIVMManagedBridgePause, "bridge_unreachable")
 	}
 
 	return &UpstreamFailoverError{
-		StatusCode:   http.StatusBadGateway,
-		ResponseBody: openAITransportFailoverBody,
+		strictFailoverReason: "upstream_transport_failure",
+		StatusCode:           http.StatusBadGateway,
+		ResponseBody:         openAITransportFailoverBody,
 	}
 }
 
@@ -185,6 +179,9 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 //     but returned an error.
 func (s *OpenAIGatewayService) tempUnscheduleOpenAITransportError(ctx context.Context, account *Account, safeErr string) {
 	if s == nil || account == nil {
+		return
+	}
+	if s.cfg != nil && s.cfg.Gateway.DisableOpenAITransportErrorCooldown {
 		return
 	}
 	until := time.Now().Add(openAITransportErrorTempUnschedDuration)

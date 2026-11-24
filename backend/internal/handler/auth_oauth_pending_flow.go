@@ -1711,6 +1711,11 @@ func (h *AuthHandler) createPendingOAuthAccount(c *gin.Context, provider string)
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	// 密码超过 bcrypt 72 字节上限时，在消耗人机验证票据 / 邮箱验证码之前直接拒绝。
+	if err := service.ValidatePasswordMaxLength(req.Password); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 
 	_, session, clearCookies, err := readPendingOAuthBrowserSession(c, h)
 	if err != nil {

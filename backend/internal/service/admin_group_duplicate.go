@@ -143,6 +143,7 @@ func cloneGroupForDuplicate(source *Group, operationID string) *Group {
 		BlockSubagents:                  source.BlockSubagents,
 		FallbackGroupID:                 cloneGroupValuePointer(source.FallbackGroupID),
 		FallbackGroupIDOnInvalidRequest: cloneGroupValuePointer(source.FallbackGroupIDOnInvalidRequest),
+		FallbackGroupIDOnUnavailable:    cloneGroupValuePointer(source.FallbackGroupIDOnUnavailable),
 		ModelRouting:                    cloneGroupModelRouting(source.ModelRouting),
 		ModelRoutingEnabled:             source.ModelRoutingEnabled,
 		MCPXMLInject:                    source.MCPXMLInject,
@@ -151,6 +152,7 @@ func cloneGroupForDuplicate(source *Group, operationID string) *Group {
 		AllowMessagesDispatch:           source.AllowMessagesDispatch,
 		AllowLive:                       source.AllowLive,
 		ForceOpenAIFast:                 source.ForceOpenAIFast,
+		ForceOpenAIServiceTier:          source.ForceOpenAIServiceTier,
 		FreeOpenAIFast:                  source.FreeOpenAIFast,
 		RequireOAuthOnly:                source.RequireOAuthOnly,
 		RequirePrivacySet:               source.RequirePrivacySet,
@@ -161,8 +163,11 @@ func cloneGroupForDuplicate(source *Group, operationID string) *Group {
 			Models:  append([]string(nil), source.ModelAllowlist.Models...),
 		},
 		// 固定账号 manifest 配置指向源分组的账号 ID，复制后成员关系可能变化，重置为关闭且列表为空。
-		CodexModelsManifestConfig:   GroupCodexModelsManifestConfig{},
+		CodexModelsManifestConfig: GroupCodexModelsManifestConfig{},
+		// Strict tiers also reference source membership; configure the copy explicitly.
+		StrictFailover:              StrictFailoverConfig{},
 		RPMLimit:                    source.RPMLimit,
+		UserConcurrencyLimit:        source.UserConcurrencyLimit,
 		MaxReasoningEffort:          source.MaxReasoningEffort,
 		MaxReasoningEffortOverLimit: source.MaxReasoningEffortOverLimit,
 		ReasoningEffortMappings:     append([]ReasoningEffortMapping(nil), source.ReasoningEffortMappings...),

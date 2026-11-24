@@ -21,6 +21,9 @@ type scopedCodexSessionImportRequest struct {
 }
 
 func validateScopedCodexRequest(req scopedCodexSessionImportRequest) error {
+	if req.GroupRateMultiplier != nil {
+		return infraerrors.BadRequest("SCOPED_CODEX_FIELD", "group_rate_multiplier is not supported by scoped imports")
+	}
 	if _, err := service.NormalizeAccountProxyMode(req.ProxyMode, req.ProxyID, req.RandomProxy); err != nil {
 		return err
 	}

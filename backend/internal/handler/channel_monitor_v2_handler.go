@@ -151,6 +151,7 @@ func (h *ChannelMonitorV2Handler) matrix(c *gin.Context, admin bool) {
 	if !h.scopeFilter(c, &filter, admin) {
 		return
 	}
+	filter.IncludeRecentRequests = c.Query("include_recent_requests") == "true"
 	// Card view asks for the latest sampled buckets. Those ignore the range.
 	filter.IncludeRecentSamples = parseBoolQuery(c.Query("recent_samples"))
 	result, err := h.service.Matrix(c.Request.Context(), filter, groupBy, admin)

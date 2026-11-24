@@ -1,4 +1,4 @@
-import { mount, flushPromises } from '@vue/test-utils'
+import { mount, flushPromises, config } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createI18n } from 'vue-i18n'
 import zh from '@/i18n/locales/zh'
@@ -9,10 +9,13 @@ import QQBotGrowthSettings from '@/components/admin/qqbot/QQBotGrowthSettings.vu
 import QQBotLotterySettings from '@/components/admin/qqbot/QQBotLotterySettings.vue'
 import QQBotInviteSettings from '@/components/admin/qqbot/QQBotInviteSettings.vue'
 import QQBotTransferSettings from '@/components/admin/qqbot/QQBotTransferSettings.vue'
+import QQActivityPreview from '@/components/admin/qqbot/QQActivityPreview.vue'
 import QQBotActivitiesView from '../QQBotActivitiesView.vue'
 
-const api = vi.hoisted(() => ({ rankingConfig: vi.fn(), saveRankings: vi.fn(), rewardCodes: vi.fn(), checkinConfig: vi.fn(), saveCheckin: vi.fn(), inviteConfig: vi.fn(), saveInvite: vi.fn(), transferConfig: vi.fn(), saveTransfer: vi.fn(), lotteryConfig: vi.fn(), saveLottery: vi.fn(), lotteryDraws: vi.fn(), lotteryState: vi.fn() }))
+const api = vi.hoisted(() => ({ activityPreview: vi.fn(), rankingConfig: vi.fn(), saveRankings: vi.fn(), rewardCodes: vi.fn(), checkinConfig: vi.fn(), saveCheckin: vi.fn(), inviteConfig: vi.fn(), saveInvite: vi.fn(), transferConfig: vi.fn(), saveTransfer: vi.fn(), lotteryConfig: vi.fn(), saveLottery: vi.fn(), lotteryDraws: vi.fn(), lotteryState: vi.fn() }))
 vi.mock('@/api/qqbot', () => ({ qqbotAPI: api }))
+const couponApi = vi.hoisted(() => ({ templates: vi.fn() }))
+vi.mock('@/api/coupons', () => ({ adminCouponAPI: couponApi }))
 vi.mock('@/components/layout/AppLayout.vue', () => ({ default: { template: '<main><slot /></main>' } }))
 function i18n(locale: 'zh' | 'en') { return createI18n({ legacy: false, locale, messages: { zh, en } }) }
 function rewardConfig(quantity = 0) { return { type: 'chances', amount: 0, quantity, prize_name: '', claim_instructions: '' } }
@@ -20,18 +23,20 @@ function growthConfig(chances = [0, 0, 0]) {
   return { binding_chances: 0, first_usage_chances: 0, checkin_30_chances: 0, periodic_tasks: [], tasks: [
     { id: 'binding', name: '完成账号绑定', kind: 'binding', target: 1, chances: chances[0], enabled: chances[0]! > 0 },
     { id: 'first_usage', name: '首次成功 API 调用', kind: 'usage_count', target: 1, chances: chances[1], enabled: chances[1]! > 0 },
-    { id: 'checkin_30', name: '累计签到 30 天', kind: 'checkin_total', target: 30, chances: chances[2], enabled: chances[2]! > 0 }
-  ].map(task => ({ ...task, reward: rewardConfig(task.chances) })) }
+    { id: 'explorer', name: '模型探险家', kind: 'model_count', target: 3, chances: chances[2], enabled: chances[2]! > 0 }
+  ].map(task => ({ ...task, period: 'once', reward: rewardConfig(task.chances) })) }
 }
 
 describe('QQ activity pages with real translations', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+    couponApi.templates.mockResolvedValue({ data: [{ id: 12, name: '满100减10', currency: 'CNY', enabled: true }] })
+    config.global.stubs.RouterLink = { template: '<a><slot /></a>' }
     vi.spyOn(console, 'error').mockImplementation(() => {})
     api.rankingConfig.mockResolvedValue({ enabled: true, rewards_enabled: false, effective_day: '', token_rewards: [], amount_rewards: [] })
     api.saveRankings.mockImplementation(async c => c)
     api.rewardCodes.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
-    let checkin = { enabled: true, min_amount: 0.1, max_amount: 0.5, min_recharge_total: 0, min_recharge_30d: 0 }
+    let checkin = { enabled: true, min_amount: 0.1, max_amount: 0.5, min_recharge_total: 0, min_recharge_30d: 0, milestones: [], growth: growthConfig() }
     api.checkinConfig.mockImplementation(async () => structuredClone(checkin))
     api.saveCheckin.mockImplementation(async c => { checkin = structuredClone(c); return structuredClone(checkin) })
     api.inviteConfig.mockResolvedValue({ enabled: true, invite_reward: 1, invite_daily_limit: 10, min_recharge_total: 0, min_recharge_30d: 0 })
@@ -43,7 +48,7 @@ describe('QQ activity pages with real translations', () => {
     api.lotteryDraws.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
     api.lotteryState.mockResolvedValue({ user_id: 7, recharge_total: 35, earned: 3, used: 1, remaining: 2, next_recharge: 5 })
   })
-  afterEach(() => { try { expect(console.error).not.toHaveBeenCalled() } finally { vi.restoreAllMocks() } })
+  afterEach(() => { try { expect(console.error).not.toHaveBeenCalled() } finally { delete config.global.stubs.RouterLink; vi.restoreAllMocks() } })
   it.each(['zh', 'en'] as const)('%s saves check-in range independently and rejects reversed endpoints', async locale => {
     const translation = i18n(locale)
     const w = mount(QQBotCheckinSettings, { global: { plugins: [translation] } })
@@ -66,7 +71,7 @@ describe('QQ activity pages with real translations', () => {
     expect(w.text()).toContain(translation.global.t('qqbot.minimumRecentRecharge', { days: 7 }))
     await w.get('form').trigger('submit')
     await flushPromises()
-    expect(api.saveCheckin).toHaveBeenCalledWith({ enabled: true, min_amount: 0.7, max_amount: 0.9, min_recharge_total: 12, min_recharge_30d: 5.25, recharge_window_days: 7, streak_days: 7, streak_chances: 0, streak_reward: rewardConfig(), reward_distribution: { lower_half_bps: 7000, next_quarter_bps: 2000, upper_quarter_bps: 1000 }, growth: growthConfig() })
+    expect(api.saveCheckin).toHaveBeenCalledWith({ coupon_template_id: 0, coupon_quantity: 0, enabled: true, min_amount: 0.7, max_amount: 0.9, min_recharge_total: 12, min_recharge_30d: 5.25, recharge_window_days: 7, streak_days: 7, streak_chances: 0, streak_reward: rewardConfig(), reward_distribution: { lower_half_bps: 7000, next_quarter_bps: 2000, upper_quarter_bps: 1000 }, milestones: [], growth: growthConfig() })
     expect(w.get('[role="status"]').text()).toBe(translation.global.t('common.saved'))
     w.unmount()
   })
@@ -127,7 +132,7 @@ describe('QQ activity pages with real translations', () => {
     expect(w.get('[role="alert"]').text()).toBe('Save failed')
     expect(w.find('[data-testid="streak-chances"]').exists()).toBe(false)
     await w.get('form').trigger('submit'); await flushPromises()
-    expect(api.saveCheckin).toHaveBeenLastCalledWith({ enabled: true, min_amount: 0.1, max_amount: 0.5, min_recharge_total: 0, min_recharge_30d: 0, recharge_window_days: 30, streak_days: 7, streak_chances: 0, streak_reward: rewardConfig(), reward_distribution: { lower_half_bps: 7000, next_quarter_bps: 2000, upper_quarter_bps: 1000 }, growth: growthConfig([1, 0, 1000]) })
+    expect(api.saveCheckin).toHaveBeenLastCalledWith({ coupon_template_id: 0, coupon_quantity: 0, enabled: true, min_amount: 0.1, max_amount: 0.5, min_recharge_total: 0, min_recharge_30d: 0, recharge_window_days: 30, streak_days: 7, streak_chances: 0, streak_reward: rewardConfig(), reward_distribution: { lower_half_bps: 7000, next_quarter_bps: 2000, upper_quarter_bps: 1000 }, milestones: [], growth: growthConfig([1, 0, 1000]) })
     expect(w.find('[role="alert"]').exists()).toBe(false)
     expect(w.get('[role="status"]').text()).toBe(translation.global.t('common.saved'))
     w.unmount()
@@ -137,7 +142,7 @@ describe('QQ activity pages with real translations', () => {
     await flushPromises()
     expect(w.findAll('[data-testid="growth-task"]')).toHaveLength(3)
     expect(w.find('[data-testid="streak-days"]').exists()).toBe(false)
-    const kinds = ['binding', 'usage_count', 'checkin_total', 'checkin_streak', 'recharge_total']
+    const kinds = ['binding', 'usage_count', 'usage_days', 'model_count', 'recharge_total']
     for (const [index, kind] of kinds.entries()) {
       await w.get('[data-testid="task-preset"]').setValue(kind)
       await w.get('[data-testid="add-growth-task"]').trigger('click')
@@ -166,7 +171,7 @@ describe('QQ activity pages with real translations', () => {
     await flushPromises()
     for (const [kind, invalid, valid] of [
       ['usage_count', '1000001', '1000000'], ['usage_count', '1.5', '10'],
-      ['checkin_total', '3651', '30'], ['checkin_streak', '0', '7'],
+      ['usage_days', '3651', '30'], ['model_count', '0', '7'],
       ['recharge_total', '10.001', '10.01'], ['recharge_total', '1000000001', '1000000000'], ['usage_tokens', '1.5', '1000000'], ['usage_tokens', '1000000000000001', '1000000000000000'], ['usage_amount', '1.001', '1.01']
     ]) {
       await w.get('[data-testid="task-kind-1"]').setValue(kind)
@@ -197,13 +202,14 @@ describe('QQ activity pages with real translations', () => {
   })
   it('retains enabled legacy rewards when loading old configuration', async () => {
     const old = await api.checkinConfig()
-    api.checkinConfig.mockResolvedValueOnce({ ...old, growth: { binding_chances: 2, first_usage_chances: 0, checkin_30_chances: 4 } })
+    api.checkinConfig.mockResolvedValueOnce({ ...old, milestones: [{ id: 'checkin_30', name: '累计签到30天', kind: 'checkin_total', days: 30, enabled: true, reward: rewardConfig(4) }], growth: { ...growthConfig([2, 0, 0]), binding_chances: 2 } })
     const w = mount(QQBotGrowthSettings, { global: { plugins: [i18n('zh')] } })
     await flushPromises()
     expect((w.get('[data-testid="task-chances-0"]').element as HTMLInputElement).value).toBe('2')
     expect((w.get('[data-testid="task-enabled-0"]').element as HTMLInputElement).checked).toBe(true)
     expect((w.get('[data-testid="task-enabled-1"]').element as HTMLInputElement).checked).toBe(false)
-    expect((w.get('[data-testid="task-enabled-2"]').element as HTMLInputElement).checked).toBe(true)
+    expect((w.get('[data-testid="task-enabled-2"]').element as HTMLInputElement).checked).toBe(false)
+    expect(w.findAll('[data-testid="task-kind-0"] option').some(option => option.attributes('value') === 'checkin_total')).toBe(true)
     w.unmount()
   })
   it.each(['zh', 'en'] as const)('%s configures streak rewards in check-in and rejects invalid reward data', async locale => {
@@ -265,7 +271,7 @@ describe('QQ activity pages with real translations', () => {
     const w = mount(QQBotGrowthSettings, { global: { plugins: [translation] } })
     await flushPromises()
     expect(w.find('form form').exists()).toBe(false)
-    expect(w.get('[data-testid="periodic-preset"]').findAll('option').map(option => option.attributes('value'))).toEqual(['usage_amount', 'usage_tokens', 'usage_count', 'recharge_total', 'checkin_total'])
+    expect(w.get('[data-testid="periodic-preset"]').findAll('option').map(option => option.attributes('value'))).toEqual(['checkin_total', 'usage_amount', 'usage_tokens', 'usage_count', 'recharge_total'])
     await w.get('[data-testid="add-periodic-task"]').trigger('click')
     expect((w.get('[data-testid="periodic-enabled-0"]').element as HTMLInputElement).checked).toBe(false)
     await w.get('[data-testid="periodic-name-0"]').setValue('Every USD 10')
@@ -309,7 +315,7 @@ describe('QQ activity pages with real translations', () => {
     for (const [kind, invalid, valid] of [
       ['usage_amount', '0', '10'], ['usage_amount', '10.001', '10.01'],
       ['usage_tokens', '1.5', '1000000'], ['usage_count', '1000001', '100'],
-      ['recharge_total', '1000000001', '10'], ['checkin_total', '3651', '7']
+      ['recharge_total', '1000000001', '10']
     ]) {
       await w.get('[data-testid="periodic-kind-0"]').setValue(kind)
       await w.get('[data-testid="periodic-target-0"]').setValue(invalid)
@@ -377,6 +383,7 @@ describe('QQ activity pages with real translations', () => {
     await w.get('[data-testid="guarantee-amount-0"]').setValue('2.12345678')
     await w.get('[data-testid="add-guarantee-prize"]').trigger('click')
     await w.get('[data-testid="guarantee-name-1"]').setValue('Big guarantee')
+    await w.get('[data-testid="guarantee-1-add-reward"]').trigger('click')
     await w.get('[data-testid="guarantee-amount-1"]').setValue('10')
     await w.get('[data-testid="guarantee-probability-0"]').setValue('75.25')
     expect(form.get('button[type="submit"]').attributes('disabled')).toBeDefined()
@@ -423,7 +430,7 @@ describe('QQ activity pages with real translations', () => {
   })
   it.each(['zh', 'en'] as const)('%s keeps invitation rules and a disabled draft after a save failure', async locale => {
     const translation = i18n(locale)
-    const rules = { _version: 'invite-1', enabled: true, invite_reward: 2.5, invite_daily_limit: 8, min_recharge_total: 20, min_recharge_30d: 10, recharge_window_days: 60 }
+    const rules = { coupon_template_id: 0, coupon_quantity: 0, _version: 'invite-1', enabled: true, invite_reward: 2.5, invite_daily_limit: 8, min_recharge_total: 20, min_recharge_30d: 10, recharge_window_days: 60 }
     api.inviteConfig.mockResolvedValue(rules)
     const w = mount(QQBotInviteSettings, { global: { plugins: [translation] } })
     await flushPromises()
@@ -459,7 +466,7 @@ describe('QQ activity pages with real translations', () => {
     await router.push('/admin/qqbot/activities')
     const w = mount(QQBotActivitiesView, { global: { plugins: [i18n(locale), router], stubs: { RouterLink: true } } })
     await flushPromises()
-    expect(w.findAll('[role="tab"]')).toHaveLength(7)
+    expect(w.findAll('[role="tab"]')).toHaveLength(8)
     expect(api.checkinConfig).toHaveBeenCalledTimes(1)
     expect(api.lotteryConfig).not.toHaveBeenCalled()
     expect(api.inviteConfig).not.toHaveBeenCalled()
@@ -475,7 +482,7 @@ describe('QQ activity pages with real translations', () => {
     await w.get('[data-testid="invite-min-recharge-30d"]').setValue('10')
     await w.get('[data-testid="invite-recharge-window-days"]').setValue('60')
     await w.get('form').trigger('submit'); await flushPromises()
-    expect(api.saveInvite).toHaveBeenCalledWith({ enabled: true, invite_reward: 2.5, invite_daily_limit: 8, min_recharge_total: 20, min_recharge_30d: 10, recharge_window_days: 60 })
+    expect(api.saveInvite).toHaveBeenCalledWith({ coupon_template_id: 0, coupon_quantity: 0, enabled: true, invite_reward: 2.5, invite_daily_limit: 8, min_recharge_total: 20, min_recharge_30d: 10, recharge_window_days: 60 })
     expect(api.saveCheckin).not.toHaveBeenCalled()
     expect(api.saveLottery).not.toHaveBeenCalled()
     await w.get('#qqbot-tab-checkin').trigger('click'); await flushPromises()
@@ -637,7 +644,7 @@ describe('QQ activity pages with real translations', () => {
       min_amount: 0.3, streak_days: 5, streak_chances: 2,
       growth: expect.objectContaining({ tasks: expect.arrayContaining([
         expect.objectContaining({ id: 'binding', chances: 1, enabled: true }),
-        expect.objectContaining({ name: '90-day milestone', kind: 'checkin_total', target: 90, enabled: false })
+        expect.objectContaining({ name: '90-day milestone', kind: 'usage_count', target: 90, enabled: false })
       ]) })
     }))
     expect(api.saveCheckin.mock.lastCall![0].growth.tasks).toHaveLength(4)
@@ -700,4 +707,220 @@ describe('QQ activity pages with real translations', () => {
     expect(w.find('[role="alert"]').exists()).toBe(false)
     expect(w.get('[role="status"]').exists()).toBe(true)
   })
+  it.each(['zh', 'en'] as const)('%s configures multiple cumulative check-in milestones and preserves them after reopening', async locale => {
+    const w = mount(QQBotCheckinSettings, { global: { plugins: [i18n(locale)] } })
+    await flushPromises()
+    await w.get('[data-testid="milestone-preset-7"]').trigger('click')
+    await w.get('[data-testid="milestone-preset-30"]').trigger('click')
+    expect(w.findAll('[data-testid="checkin-milestone"]')).toHaveLength(2)
+    expect((w.get('[data-testid="milestone-enabled-0"]').element as HTMLInputElement).checked).toBe(false)
+    await w.get('[data-testid="milestone-reward-type-0"]').setValue('balance')
+    await w.get('[data-testid="milestone-reward-amount-0"]').setValue('0.7')
+    await w.get('[data-testid="milestone-enabled-0"]').setValue(true)
+    await w.get('[data-testid="milestone-chances-1"]').setValue('3')
+    await w.get('[data-testid="milestone-enabled-1"]').setValue(true)
+    await w.get('[data-testid="milestone-repeat-1"]').setValue(true)
+    await w.get('[data-testid="milestone-kind-1"]').setValue('checkin_streak')
+    await w.get('[data-testid="milestone-kind-1"]').setValue('checkin_total')
+    expect((w.get('[data-testid="milestone-repeat-1"]').element as HTMLInputElement).checked).toBe(false)
+    await w.get('[data-testid="milestone-repeat-1"]').setValue(true)
+    await w.get('form').trigger('submit'); await flushPromises()
+    const saved = api.saveCheckin.mock.lastCall![0]
+    expect(saved.milestones).toEqual([
+      expect.objectContaining({ kind: 'checkin_total', days: 7, enabled: true, reward: expect.objectContaining({ type: 'balance', amount: 0.7 }) }),
+      expect.objectContaining({ kind: 'checkin_total', days: 30, repeat: true, enabled: true, reward: expect.objectContaining({ type: 'chances', quantity: 3 }) })
+    ])
+    expect(new Set(saved.milestones.map((m: { id: string }) => m.id)).size).toBe(2)
+    w.unmount()
+    const reopened = mount(QQBotCheckinSettings, { global: { plugins: [i18n(locale)] } })
+    await flushPromises()
+    expect((reopened.get('[data-testid="milestone-days-1"]').element as HTMLInputElement).value).toBe('30')
+    expect(reopened.get('[data-testid="milestone-repeat-1"]').attributes('disabled')).toBeDefined()
+    expect(reopened.get('[data-testid="milestone-kind-1"]').attributes('disabled')).toBeDefined()
+    reopened.unmount()
+  })
+  it('rejects invalid check-in milestones without losing the draft', async () => {
+    const w = mount(QQBotCheckinSettings, { global: { plugins: [i18n('zh')] } })
+    await flushPromises()
+    await w.get('[data-testid="add-checkin-milestone"]').trigger('click')
+    for (const invalid of ['0', '1.5', '3651']) {
+      await w.get('[data-testid="milestone-days-0"]').setValue(invalid)
+      await w.get('form').trigger('submit'); await flushPromises()
+      expect(api.saveCheckin).not.toHaveBeenCalled()
+      expect(w.get('[role="alert"]').exists()).toBe(true)
+    }
+    await w.get('[data-testid="milestone-days-0"]').setValue('90')
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(api.saveCheckin.mock.lastCall![0].milestones[0].days).toBe(90)
+    w.unmount()
+  })
+  it.each(['zh', 'en'] as const)('%s adds daily and weekly playbooks once and validates their periods', async locale => {
+    const w = mount(QQBotGrowthSettings, { global: { plugins: [i18n(locale)] } })
+    await flushPromises()
+    expect(w.get('[data-testid="task-preset"]').findAll('option').map(option => option.attributes('value'))).toContain('checkin_total')
+    for (const preset of ['daily_sprint', 'weekly_regular', 'weekly_explorer', 'community_builder']) await w.get('[data-testid="challenge-preset-' + preset + '"]').trigger('click')
+    expect(w.findAll('[data-testid="growth-task"]')).toHaveLength(7)
+    expect(w.get('[data-testid="challenge-preset-daily_sprint"]').attributes('disabled')).toBeDefined()
+    expect((w.get('[data-testid="task-enabled-3"]').element as HTMLInputElement).checked).toBe(false)
+    expect(w.get('[data-testid="task-kind-3"]').findAll('option').map(option => option.attributes('value'))).not.toContain('binding')
+    await w.get('[data-testid="task-kind-3"]').setValue('usage_days')
+    expect((w.get('[data-testid="task-target-3"]').element as HTMLInputElement).value).toBe('1')
+    expect(w.get('[data-testid="task-target-3"]').attributes('max')).toBe('1')
+    await w.get('[data-testid="task-kind-3"]').setValue('usage_count')
+    await w.get('[data-testid="task-target-3"]').setValue('3')
+    expect(w.get('[data-testid="task-target-4"]').attributes('max')).toBe('7')
+    await w.get('[data-testid="task-target-4"]').setValue('8')
+    await w.get('[data-testid="one-time-growth-form"]').trigger('submit'); await flushPromises()
+    expect(api.saveCheckin).not.toHaveBeenCalled()
+    await w.get('[data-testid="task-target-4"]').setValue('3')
+    await w.get('[data-testid="task-enabled-3"]').setValue(true)
+    await w.get('[data-testid="one-time-growth-form"]').trigger('submit'); await flushPromises()
+    const tasks = api.saveCheckin.mock.lastCall![0].growth.tasks
+    expect(tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'challenge_daily_sprint', period: 'daily', kind: 'usage_count', target: 3, enabled: true }),
+      expect.objectContaining({ id: 'challenge_weekly_regular', period: 'weekly', kind: 'usage_days', target: 3 }),
+      expect.objectContaining({ id: 'challenge_weekly_explorer', period: 'weekly', kind: 'model_count', target: 3 }),
+      expect.objectContaining({ id: 'challenge_community_builder', period: 'once', kind: 'invite_count', target: 3 })
+    ]))
+    expect(new Set(tasks.map((task: { id: string }) => task.id)).size).toBe(tasks.length)
+    expect(w.get('[data-testid="task-period-3"]').attributes('disabled')).toBeDefined()
+    expect(w.text()).not.toMatch(/qqbot\./)
+    w.unmount()
+  })
+  it.each(['zh', 'en'] as const)('%s saves try-again prizes and pure chance guarantees', async locale => {
+    const w = mount(QQBotLotterySettings, { global: { plugins: [i18n(locale)] } })
+    await flushPromises()
+    await w.get('[data-testid="prize-0-add-reward"]').trigger('click')
+    for (const invalid of ['', '-1', '1.5', '1001']) {
+      await w.get('[data-testid="prize-chances-0"]').setValue(invalid)
+      await w.get('form').trigger('submit'); await flushPromises()
+      expect(api.saveLottery).not.toHaveBeenCalled()
+    }
+    await w.get('[data-testid="prize-chances-0"]').setValue('1')
+    await w.get('[data-testid="guarantee-enabled"]').setValue(true)
+    await w.get('[data-testid="guarantee-0-reward-type-0"]').setValue('chances')
+    await w.get('[data-testid="guarantee-chances-0"]').setValue('2')
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(api.saveLottery.mock.lastCall![0]).toEqual(expect.objectContaining({
+      prizes: expect.arrayContaining([expect.objectContaining({ chances: 1 })]),
+      guarantee_prizes: [expect.objectContaining({ amount: 0, chances: 2 })]
+    }))
+    expect(w.text()).not.toMatch(/qqbot\./)
+    w.unmount()
+  })
+
+  it.each(['zh', 'en'] as const)('%s preserves every prize in existing bundles on save and reload', async locale => {
+    const prizes = [
+      { name: 'Bundle', amount: 1.12345678, chances: 2, coupon_template_id: 12, coupon_quantity: 3, probability_bps: 1000 },
+      { name: 'Thanks', amount: 0, probability_bps: 9000 }
+    ]
+    api.lotteryConfig.mockResolvedValue({ enabled: true, title: 'Lottery', recharge_step: 10, chances_per_step: 1, prizes })
+    const w = mount(QQBotLotterySettings, { global: { plugins: [i18n(locale)] } })
+    await flushPromises()
+    const types = () => w.findAll('[data-testid^="prize-0-reward-type-"]').map(select => (select.element as HTMLSelectElement).value)
+    expect(types()).toEqual(['balance', 'chances', 'coupon'])
+    expect(w.findAll('[data-testid^="prize-1-reward-type-"]')).toHaveLength(0)
+    expect(w.get('[data-testid="prize-0-add-reward"]').attributes('disabled')).toBeDefined()
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(api.saveLottery.mock.lastCall![0].prizes).toEqual(prizes)
+    expect(types()).toEqual(['balance', 'chances', 'coupon'])
+    await w.get('[data-testid="prize-0-remove-reward-2"]').trigger('click')
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(api.saveLottery.mock.lastCall![0].prizes[0]).toEqual({ ...prizes[0], coupon_template_id: 0, coupon_quantity: 0 })
+    expect(types()).toEqual(['balance', 'chances'])
+    expect(w.text()).not.toMatch(/qqbot\./)
+    w.unmount()
+  })
+
+  it.each(['zh', 'en'] as const)('%s adds outcomes and clears removed or replaced prize types', async locale => {
+    const w = mount(QQBotLotterySettings, { global: { plugins: [i18n(locale)] } })
+    await flushPromises()
+    await w.get('[data-testid="add-lottery-prize"]').trigger('click')
+    expect(w.findAll('[data-testid^="prize-2-reward-type-"]')).toHaveLength(0)
+    await w.get('[data-testid="prize-name-2"]').setValue('Coupon')
+    await w.get('[data-testid="prize-2-add-reward"]').trigger('click')
+    await w.get('[data-testid="prize-2-reward-type-0"]').setValue('coupon')
+    await w.get('[data-testid="probability-1"]').setValue('89.99')
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(api.saveLottery).not.toHaveBeenCalled()
+    await w.get('[data-testid="prize-2-rewards"] select[required]').setValue('12')
+    await w.get('[data-testid="prize-2-coupon-quantity"]').setValue('2')
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(api.saveLottery.mock.lastCall![0].prizes[2]).toEqual({ name: 'Coupon', amount: 0, probability_bps: 1, coupon_template_id: 12, coupon_quantity: 2 })
+    await w.get('[data-testid="prize-2-reward-type-0"]').setValue('chances')
+    expect(w.find('[data-testid="prize-2-coupon-quantity"]').exists()).toBe(false)
+    await w.get('[data-testid="prize-chances-2"]').setValue('3')
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(api.saveLottery.mock.lastCall![0].prizes[2]).toEqual({ name: 'Coupon', amount: 0, probability_bps: 1, coupon_template_id: 0, coupon_quantity: 0, chances: 3 })
+    await w.get('[data-testid="prize-2-remove-reward-0"]').trigger('click')
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(api.saveLottery.mock.lastCall![0].prizes[2].chances).toBe(0)
+    w.unmount()
+  })
+
+  it.each(['zh', 'en'] as const)('%s saves coupon-only guarantees and rejects empty guarantees', async locale => {
+    const w = mount(QQBotLotterySettings, { global: { plugins: [i18n(locale)] } })
+    await flushPromises()
+    await w.get('[data-testid="guarantee-enabled"]').setValue(true)
+    await w.get('[data-testid="guarantee-0-reward-type-0"]').setValue('coupon')
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(api.saveLottery).not.toHaveBeenCalled()
+    await w.get('[data-testid="guarantee-0-rewards"] select[required]').setValue('12')
+    await w.get('[data-testid="guarantee-0-coupon-quantity"]').setValue('2')
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(api.saveLottery.mock.lastCall![0].guarantee_prizes).toEqual([
+      expect.objectContaining({ amount: 0, coupon_template_id: 12, coupon_quantity: 2, probability_bps: 10000 })
+    ])
+    api.saveLottery.mockClear()
+    await w.get('[data-testid="guarantee-0-remove-reward-0"]').trigger('click')
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(api.saveLottery).not.toHaveBeenCalled()
+    expect(w.get('[role="alert"]').text()).toBe(i18n(locale).global.t('qqbot.invalidGuaranteePrizes'))
+    w.unmount()
+  })
+
+  it.each(['zh', 'en'] as const)('%s rejects empty or over-precise lottery probabilities', async locale => {
+    const w = mount(QQBotLotterySettings, { global: { plugins: [i18n(locale)] } })
+    await flushPromises()
+    for (const invalid of ['', '10.001']) {
+      await w.get('[data-testid="probability-0"]').setValue(invalid)
+      await w.get('form').trigger('submit'); await flushPromises()
+      expect(api.saveLottery).not.toHaveBeenCalled()
+    }
+    await w.get('[data-testid="probability-0"]').setValue('10')
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(api.saveLottery).toHaveBeenCalledOnce()
+    w.unmount()
+  })
+
+  it.each(['checkin', 'invite'] as const)('%s adds coupon rewards and removes the old balance reward', async kind => {
+    const w = mount(kind === 'checkin' ? QQBotCheckinSettings : QQBotInviteSettings, { global: { plugins: [i18n('zh')] } })
+    await flushPromises()
+    const prefix = '[data-testid="' + kind
+    await w.get(prefix + '-reward-type-0"]').setValue('coupon')
+    expect(w.find(prefix + '-rewards"]').findAll('option').map(option => option.attributes('value'))).not.toContain('chances')
+    const saveAPI = kind === 'checkin' ? api.saveCheckin : api.saveInvite
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(saveAPI).not.toHaveBeenCalled()
+    await w.get(prefix + '-rewards"] select[required]').setValue('12')
+    await w.get(prefix + '-coupon-quantity"]').setValue('3')
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(saveAPI.mock.lastCall![0]).toEqual(expect.objectContaining({ coupon_template_id: 12, coupon_quantity: 3, ...(kind === 'checkin' ? { min_amount: 0, max_amount: 0 } : { invite_reward: 0 }) }))
+    expect(w.find(prefix + '-coupon-quantity"]').exists()).toBe(true)
+    w.unmount()
+  })
+
+  it('previews check-in milestones separately from API challenges', async () => {
+    api.activityPreview.mockResolvedValue({ bound: true, checkin_eligible: true, checkin_rule: '', checkin_done: false, checkin_total: 7, checkin_expected: 0.1, invite_eligible: true, invite_rule: '', lottery: { remaining: 2, draws_until_guarantee: 8 }, lottery_expected: 0, lottery_next_expected: 0,
+      checkin_milestones: [{ id: 'seven', name: 'Seven check-ins', progress: '7/7', eligible: true, status: 'awarded', reward: '2 chances' }], tasks: [{ id: 'daily', name: 'Daily sprint', progress: '2/3', status: 'in progress', reward: '1 chance', eligible: false }] })
+    const w = mount(QQActivityPreview, { global: { plugins: [i18n('zh')] } })
+    await w.get('input').setValue('7')
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(w.get('[data-testid="preview-checkin-milestones"]').text()).toContain('Seven check-ins')
+    expect(w.get('[data-testid="preview-checkin-milestones"]').text()).not.toContain('Daily sprint')
+    expect(w.text()).toContain('累计 7 天')
+    expect(w.text()).toContain('Daily sprint')
+    w.unmount()
+  })
+
 })

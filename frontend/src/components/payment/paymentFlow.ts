@@ -80,6 +80,7 @@ export interface PaymentLaunchDecision {
 }
 
 export interface BuildCreateOrderPayloadInput {
+  couponId?: number
   amount: number
   paymentType: string
   orderType: OrderType
@@ -140,6 +141,9 @@ export function buildCreateOrderPayload(input: BuildCreateOrderPayloadInput): Cr
       : 'hosted_redirect',
   }
 
+  if (input.orderType === 'balance' && input.couponId && Number.isSafeInteger(input.couponId) && input.couponId > 0) {
+    payload.coupon_id = input.couponId
+  }
   if (input.planId) {
     payload.plan_id = input.planId
   }

@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,48 +19,23 @@ import (
 )
 
 type openAIWSPassthroughHandlerHarness struct {
-	handler        *OpenAIGatewayHandler
-	clientConn     *coderws.Conn
-	handlerDone    <-chan struct{}
-	wsURL          string
-	moderationRepo *contentModerationHandlerTestRepo
-	gatewayCache   service.GatewayCache
-	apiKey         *service.APIKey
-	finalHeaders   <-chan http.Header
-	usageLogs      <-chan *service.UsageLog
+	handler      *OpenAIGatewayHandler
+	clientConn   *coderws.Conn
+	handlerDone  <-chan struct{}
+	gatewayCache service.GatewayCache
+	apiKey       *service.APIKey
 }
 
 func newOpenAIWSPassthroughHandlerHarness(t *testing.T, upstreamURL string, settings ...map[string]string) *openAIWSPassthroughHandlerHarness {
-	extraSettings := map[string]string{}
+	t.Helper()
+	gatewayCache := testutil.NewRedisGatewayCache(t)
+
+	settingRepo := &gatewayHandlerSettingRepo{values: map[string]string{}}
 	for _, overrides := range settings {
 		for key, value := range overrides {
-			extraSettings[key] = value
+			settingRepo.values[key] = value
 		}
 	}
-	return newOpenAIWSPassthroughHandlerHarnessWithOptions(t, upstreamURL, http.Header{"Session_id": []string{"ws-test-session"}}, extraSettings)
-}
-
-func newOpenAIWSPassthroughHandlerHarnessWithOptions(t *testing.T, upstreamURL string, clientHeaders http.Header, extraSettings map[string]string, configure ...func(*service.Account, *config.Config, *service.HTTPUpstream, *service.AccountRepository)) *openAIWSPassthroughHandlerHarness {
-	return newOpenAIWSPassthroughHandlerHarnessWithCache(t, upstreamURL, clientHeaders, extraSettings, nil, configure...)
-}
-
-func newOpenAIWSPassthroughHandlerHarnessWithCache(t *testing.T, upstreamURL string, clientHeaders http.Header, extraSettings map[string]string, gatewayCache service.GatewayCache, configure ...func(*service.Account, *config.Config, *service.HTTPUpstream, *service.AccountRepository)) *openAIWSPassthroughHandlerHarness {
-	t.Helper()
-	if gatewayCache == nil {
-		gatewayCache = testutil.NewRedisGatewayCache(t)
-	}
-
-	settings := map[string]string{
-		service.SettingKeyRiskControlEnabled:          "true",
-		service.SettingKeyCyberSessionBlockEnabled:    "true",
-		service.SettingKeyCyberSessionBlockTTLSeconds: "60",
-	}
-	for key, value := range extraSettings {
-		settings[key] = value
-	}
-	settingRepo := &contentModerationHandlerSettingRepo{values: settings}
-	moderationRepo := &contentModerationHandlerTestRepo{}
-	moderationSvc := service.NewContentModerationService(settingRepo, moderationRepo, nil, nil, nil, nil, nil, nil)
 	settingSvc := service.NewSettingService(settingRepo, nil)
 
 	groupID := int64(4301)
@@ -93,37 +67,24 @@ func newOpenAIWSPassthroughHandlerHarnessWithCache(t *testing.T, upstreamURL str
 	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
 	cfg.Gateway.OpenAIWS.IngressInterTurnIdleTimeoutSeconds = 3
 
-	account.GroupIDs = []int64{groupID}
-	var accountRepo service.AccountRepository
-	var httpUpstream service.HTTPUpstream
-	for _, apply := range configure {
-		apply(&account, cfg, &httpUpstream, &accountRepo)
-	}
-	if httpUpstream == nil {
-		httpUpstream = testutil.NewRealHTTPUpstream(cfg)
-	}
-	if accountRepo == nil {
-		accountRepo = &openAIWSUsageHandlerAccountRepoStub{account: account}
-	}
-	usageRepo := &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, 8)}
+	accountRepo := &openAIWSUsageHandlerAccountRepoStub{account: account}
+	usageRepo := &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, 2)}
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	gatewaySvc := service.NewOpenAIGatewayService(
-		accountRepo, nil, usageRepo, nil, nil, nil, nil, gatewayCache, cfg, nil, nil,
-		service.NewBillingService(cfg, nil), service.NewRateLimitService(accountRepo, nil, cfg, nil, nil), billingCacheSvc, httpUpstream, &service.DeferredService{},
+		accountRepo, usageRepo, nil, nil, nil, nil, gatewayCache, cfg, nil, nil,
+		service.NewBillingService(cfg, nil), nil, billingCacheSvc, nil, &service.DeferredService{},
 		nil, nil, nil, nil, nil, settingSvc, nil,
 	)
-	t.Cleanup(gatewaySvc.CloseOpenAIWSPool)
 	concurrencyCache := &concurrencyCacheMock{
 		acquireUserSlotFn:    func(context.Context, int64, int, string) (bool, error) { return true, nil },
 		acquireAccountSlotFn: func(context.Context, int64, int, string) (bool, error) { return true, nil },
 	}
 	h := &OpenAIGatewayHandler{
-		gatewayService:           gatewaySvc,
-		billingCacheService:      billingCacheSvc,
-		apiKeyService:            &service.APIKeyService{},
-		contentModerationService: moderationSvc,
-		maxAccountSwitches:       cfg.Gateway.MaxAccountSwitches,
-		concurrencyHelper:        NewConcurrencyHelper(service.NewConcurrencyService(concurrencyCache), SSEPingFormatNone, time.Second),
+		gatewayService:      gatewaySvc,
+		billingCacheService: billingCacheSvc,
+		apiKeyService:       &service.APIKeyService{},
+
+		concurrencyHelper: NewConcurrencyHelper(service.NewConcurrencyService(concurrencyCache), SSEPingFormatNone, time.Second),
 	}
 
 	apiKey := &service.APIKey{
@@ -134,8 +95,7 @@ func newOpenAIWSPassthroughHandlerHarnessWithCache(t *testing.T, upstreamURL str
 		GroupID: &groupID,
 		User:    &service.User{ID: 1751, Status: service.StatusActive},
 	}
-	finalHeaders := make(chan http.Header, 4)
-	handlerDone := make(chan struct{}, 4)
+	handlerDone := make(chan struct{})
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
 		c.Set(string(middleware.ContextKeyAPIKey), apiKey)
@@ -144,29 +104,23 @@ func newOpenAIWSPassthroughHandlerHarnessWithCache(t *testing.T, upstreamURL str
 	})
 	router.GET("/openai/v1/responses", func(c *gin.Context) {
 		h.ResponsesWebSocket(c)
-		finalHeaders <- c.Request.Header.Clone()
-		handlerDone <- struct{}{}
+		close(handlerDone)
 	})
 	handlerServer := httptest.NewServer(router)
 	t.Cleanup(handlerServer.Close)
 
-	wsURL := "ws" + strings.TrimPrefix(handlerServer.URL, "http") + "/openai/v1/responses"
 	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
-	clientConn, _, err := coderws.Dial(dialCtx, wsURL, &coderws.DialOptions{HTTPHeader: clientHeaders})
+	clientConn, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(handlerServer.URL, "http")+"/openai/v1/responses", nil)
 	cancelDial()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = clientConn.CloseNow() })
 
 	return &openAIWSPassthroughHandlerHarness{
-		handler:        h,
-		clientConn:     clientConn,
-		handlerDone:    handlerDone,
-		wsURL:          wsURL,
-		moderationRepo: moderationRepo,
-		gatewayCache:   gatewayCache,
-		apiKey:         apiKey,
-		finalHeaders:   finalHeaders,
-		usageLogs:      usageRepo.created,
+		handler:      h,
+		clientConn:   clientConn,
+		handlerDone:  handlerDone,
+		gatewayCache: gatewayCache,
+		apiKey:       apiKey,
 	}
 }
 
@@ -221,52 +175,32 @@ func TestOpenAIResponsesWebSocketV2PassthroughCyberMarkIsConsumedAfterTurn(t *te
 	require.NoError(t, err)
 	require.Equal(t, "response.failed", gjson.GetBytes(event, "type").String())
 
-	require.Eventually(t, func() bool {
-		logs := harness.moderationRepo.logSnapshot()
-		return len(logs) == 1 && logs[0].Action == service.ContentModerationActionCyberPolicy &&
-			strings.Contains(logs[0].Error, "upstream_usage=in:11,out:3")
-	}, 3*time.Second, 10*time.Millisecond, "handler AfterTurn must call recordCyberPolicyIfMarked and write the risk-control event")
-
-	keyCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	keyCtx.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(requestPayload))
-	keyCtx.Request.Header.Set("session_id", "ws-test-session")
-	blockKey := service.CyberSessionExplicitBlockKey(harness.apiKey.ID, keyCtx, []byte(requestPayload))
-	require.NotEmpty(t, blockKey)
-	store, ok := harness.gatewayCache.(service.CyberSessionBlockStore)
-	require.True(t, ok)
-	require.Eventually(t, func() bool {
-		matched, findErr := store.FindCyberSessionBlocked(context.Background(), []string{blockKey})
-		return findErr == nil && matched == blockKey
-	}, 3*time.Second, 10*time.Millisecond, "handler AfterTurn must write the cyber session block table")
-
 	writeCtx, cancelWrite = context.WithTimeout(context.Background(), 3*time.Second)
 	err = harness.clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","prompt_cache_key":"cyber-session-1","input":"follow-up"}`))
 	cancelWrite()
 	require.NoError(t, err)
 
 	readCtx, cancelRead = context.WithTimeout(context.Background(), 3*time.Second)
-	_, _, err = harness.clientConn.Read(readCtx)
+	_, event, err = harness.clientConn.Read(readCtx)
 	cancelRead()
-	var closeErr coderws.CloseError
-	require.ErrorAs(t, err, &closeErr)
-	require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
-	// closeOpenAIClientWS caps close reasons at 120 bytes; passthrough must expose
-	// the same client-visible prefix rather than dropping the close frame.
-	require.Equal(t, "该会话已被网络安全策略屏蔽，请开启新会话 / This session is blocked by cyber-security policy, please ", closeErr.Reason)
+	require.NoError(t, err)
+	require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
+	select {
+	case second := <-secondUpstreamFrame:
+		require.Contains(t, string(second), "follow-up")
+	case <-time.After(3 * time.Second):
+		t.Fatal("follow-up did not reach upstream")
+	}
+	_ = harness.clientConn.CloseNow()
 	select {
 	case <-harness.handlerDone:
 	case <-time.After(3 * time.Second):
-		t.Fatal("websocket handler did not exit")
+		t.Fatal("handler did not exit")
 	}
 	select {
 	case <-upstreamDone:
 	case <-time.After(3 * time.Second):
-		t.Fatal("upstream websocket did not exit")
-	}
-	select {
-	case second := <-secondUpstreamFrame:
-		t.Fatalf("blocked follow-up reached upstream: %s", second)
-	default:
+		t.Fatal("upstream did not exit")
 	}
 }
 
@@ -334,18 +268,6 @@ func TestOpenAIResponsesWebSocketV2PassthroughNonCyberTurnAllowsFollowup(t *test
 	cancelRead()
 	require.NoError(t, err)
 	require.Equal(t, "resp_non_cyber_handler_turn_2", gjson.GetBytes(secondEvent, "response.id").String())
-	require.Empty(t, harness.moderationRepo.logSnapshot())
-
-	keyCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	keyCtx.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(firstPayload))
-	keyCtx.Request.Header.Set("session_id", "ws-test-session")
-	blockKey := service.CyberSessionExplicitBlockKey(harness.apiKey.ID, keyCtx, []byte(firstPayload))
-	require.NotEmpty(t, blockKey)
-	store, ok := harness.gatewayCache.(service.CyberSessionBlockStore)
-	require.True(t, ok)
-	matched, findErr := store.FindCyberSessionBlocked(context.Background(), []string{blockKey})
-	require.NoError(t, findErr)
-	require.Empty(t, matched)
 
 	require.NoError(t, harness.clientConn.Close(coderws.StatusNormalClosure, "done"))
 	select {
@@ -364,124 +286,4 @@ func TestOpenAIResponsesWebSocketV2PassthroughNonCyberTurnAllowsFollowup(t *test
 	default:
 		t.Fatal("non-cyber follow-up did not reach upstream")
 	}
-}
-
-func TestOpenAIResponsesWebSocketV2InheritsFirstBodyIdentityForLaterCyberHit(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	var upstreamConnections atomic.Int32
-	upstreamDone := make(chan struct{})
-	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if upstreamConnections.Add(1) > 1 {
-			t.Errorf("blocked reconnect unexpectedly reached upstream")
-			http.Error(w, "unexpected reconnect", http.StatusBadGateway)
-			return
-		}
-		defer close(upstreamDone)
-		conn, err := coderws.Accept(w, r, &coderws.AcceptOptions{CompressionMode: coderws.CompressionContextTakeover})
-		require.NoError(t, err)
-		defer func() { _ = conn.CloseNow() }()
-
-		readCtx, cancelRead := context.WithTimeout(r.Context(), 3*time.Second)
-		_, first, err := conn.Read(readCtx)
-		cancelRead()
-		require.NoError(t, err)
-		require.Equal(t, "thread-body-bound", gjson.GetBytes(first, "response.client_metadata.thread_id").String())
-
-		completed := []byte(`{"type":"response.completed","response":{"id":"resp_bound_turn_1","model":"gpt-5.1","usage":{"input_tokens":2,"output_tokens":1}}}`)
-		writeCtx, cancelWrite := context.WithTimeout(r.Context(), 3*time.Second)
-		require.NoError(t, conn.Write(writeCtx, coderws.MessageText, completed))
-		cancelWrite()
-
-		readCtx, cancelRead = context.WithTimeout(r.Context(), 3*time.Second)
-		_, second, err := conn.Read(readCtx)
-		cancelRead()
-		require.NoError(t, err)
-		require.False(t, gjson.GetBytes(second, "response.client_metadata").Exists(), "follow-up intentionally omits identity")
-
-		failed := []byte(`{"type":"response.failed","response":{"id":"resp_bound_turn_2","model":"gpt-5.1","error":{"code":"cyber_policy","message":"blocked by upstream policy"},"usage":{"input_tokens":7,"output_tokens":1}}}`)
-		writeCtx, cancelWrite = context.WithTimeout(r.Context(), 3*time.Second)
-		require.NoError(t, conn.Write(writeCtx, coderws.MessageText, failed))
-		cancelWrite()
-	}))
-	defer upstreamServer.Close()
-
-	harness := newOpenAIWSPassthroughHandlerHarnessWithOptions(t, upstreamServer.URL, nil, map[string]string{
-		service.SettingKeyCyberSessionIdentityStrictEnabled: "true",
-	})
-
-	firstPayload := `{"type":"response.create","model":"gpt-5.1","response":{"client_metadata":{"thread_id":"thread-body-bound"},"input":"first"}}`
-	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
-	require.NoError(t, harness.clientConn.Write(writeCtx, coderws.MessageText, []byte(firstPayload)))
-	cancelWrite()
-
-	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
-	_, firstEvent, err := harness.clientConn.Read(readCtx)
-	cancelRead()
-	require.NoError(t, err)
-	require.Equal(t, "resp_bound_turn_1", gjson.GetBytes(firstEvent, "response.id").String())
-
-	secondPayload := `{"type":"response.create","model":"gpt-5.1","response":{"input":"follow-up without identity"}}`
-	writeCtx, cancelWrite = context.WithTimeout(context.Background(), 3*time.Second)
-	require.NoError(t, harness.clientConn.Write(writeCtx, coderws.MessageText, []byte(secondPayload)))
-	cancelWrite()
-
-	readCtx, cancelRead = context.WithTimeout(context.Background(), 3*time.Second)
-	_, secondEvent, err := harness.clientConn.Read(readCtx)
-	cancelRead()
-	require.NoError(t, err)
-	require.Equal(t, "response.failed", gjson.GetBytes(secondEvent, "type").String())
-
-	keyCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	keyCtx.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", strings.NewReader(firstPayload))
-	blockKey := service.CyberSessionExplicitBlockKey(harness.apiKey.ID, keyCtx, []byte(firstPayload))
-	require.NotEmpty(t, blockKey)
-	store, ok := harness.gatewayCache.(service.CyberSessionBlockStore)
-	require.True(t, ok)
-	require.Eventually(t, func() bool {
-		matched, findErr := store.FindCyberSessionBlocked(context.Background(), []string{blockKey})
-		return findErr == nil && matched == blockKey
-	}, 3*time.Second, 10*time.Millisecond, "a later identity-less turn must write the connection-bound block key")
-
-	require.NoError(t, harness.clientConn.Close(coderws.StatusNormalClosure, "done"))
-	select {
-	case <-harness.handlerDone:
-	case <-time.After(3 * time.Second):
-		t.Fatal("first websocket handler did not exit")
-	}
-	select {
-	case <-upstreamDone:
-	case <-time.After(3 * time.Second):
-		t.Fatal("upstream websocket did not exit")
-	}
-
-	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
-	reconnect, _, err := coderws.Dial(dialCtx, harness.wsURL, nil)
-	cancelDial()
-	require.NoError(t, err)
-	defer func() { _ = reconnect.CloseNow() }()
-
-	writeCtx, cancelWrite = context.WithTimeout(context.Background(), 3*time.Second)
-	require.NoError(t, reconnect.Write(writeCtx, coderws.MessageText, []byte(firstPayload)))
-	cancelWrite()
-
-	readCtx, cancelRead = context.WithTimeout(context.Background(), 3*time.Second)
-	_, blockedEvent, err := reconnect.Read(readCtx)
-	cancelRead()
-	require.NoError(t, err)
-	require.Equal(t, "session_blocked_by_cyber_policy", gjson.GetBytes(blockedEvent, "error.code").String())
-
-	readCtx, cancelRead = context.WithTimeout(context.Background(), 3*time.Second)
-	_, _, err = reconnect.Read(readCtx)
-	cancelRead()
-	var closeErr coderws.CloseError
-	require.ErrorAs(t, err, &closeErr)
-	require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
-
-	select {
-	case <-harness.handlerDone:
-	case <-time.After(3 * time.Second):
-		t.Fatal("blocked reconnect handler did not exit")
-	}
-	require.Equal(t, int32(1), upstreamConnections.Load())
 }

@@ -13,6 +13,7 @@
         <p class="page-description mt-1.5 text-xs text-gray-500 dark:text-gray-400">
           {{ t(`channelMonitorV3.admin.description.${siteMode}`) }}
         </p>
+        <RouterLink to="/admin/tests?tab=plans" class="mt-3 inline-block text-sm text-primary-600 hover:underline dark:text-primary-400">{{ t('admin.tests.experience.scheduled') }}</RouterLink>
         <div class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl bg-gray-50 px-4 py-3 dark:bg-dark-900/50" data-testid="monitor-mode-switch">
           <span class="text-sm font-medium text-gray-700 dark:text-gray-200">{{ t('channelMonitorV3.admin.siteMode') }}</span>
           <div class="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 dark:border-dark-600 dark:bg-dark-800" role="radiogroup" :aria-label="t('channelMonitorV3.admin.siteMode')">
@@ -210,6 +211,7 @@
 </template>
 
 <script setup lang="ts">
+import { RouterLink } from 'vue-router'
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'

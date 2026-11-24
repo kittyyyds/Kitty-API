@@ -40,9 +40,15 @@ export const useAppStore = defineStore('app', () => {
   // Version cache state
   const versionLoaded = ref<boolean>(false)
   const versionLoading = ref<boolean>(false)
+  const versionWarning = ref<string>('')
+  const versionCheckStatus = ref<'unknown' | 'verified' | 'stale' | 'failed'>('unknown')
+  let versionCheckedAt = 0
+  const versionCacheTTL = 60_000
   const currentVersion = ref<string>('')
   const latestVersion = ref<string>('')
   const hasUpdate = ref<boolean>(false)
+  const sourceUpdateEnabled = ref<boolean>(false)
+  const hostUpdateManaged = ref<boolean>(false)
   const buildType = ref<string>('source')
   const releaseInfo = ref<ReleaseInfo | null>(null)
 
@@ -249,14 +255,17 @@ export const useAppStore = defineStore('app', () => {
    */
   async function fetchVersion(force = false): Promise<VersionInfo | null> {
     // Return cached data if available and not forcing refresh
-    if (versionLoaded.value && !force) {
+    if (versionLoaded.value && !force && Date.now() - versionCheckedAt < versionCacheTTL) {
       return {
         current_version: currentVersion.value,
         latest_version: latestVersion.value,
         has_update: hasUpdate.value,
+        source_update_enabled: sourceUpdateEnabled.value,
+        host_update_managed: hostUpdateManaged.value,
         build_type: buildType.value,
         release_info: releaseInfo.value || undefined,
-        cached: true
+        cached: true,
+        warning: versionWarning.value || undefined
       }
     }
 
@@ -271,12 +280,22 @@ export const useAppStore = defineStore('app', () => {
       currentVersion.value = data.current_version
       latestVersion.value = data.latest_version
       hasUpdate.value = data.has_update
+      sourceUpdateEnabled.value = data.source_update_enabled === true
+      hostUpdateManaged.value = data.host_update_managed === true
       buildType.value = data.build_type || 'source'
       releaseInfo.value = data.release_info || null
+      versionWarning.value = data.warning || ''
+      versionCheckStatus.value = data.warning ? (data.release_info ? 'stale' : 'failed') : 'verified'
+      versionCheckedAt = Date.now()
       versionLoaded.value = true
       return data
     } catch (error) {
-      hasUpdate.value = false
+      // A network failure cannot establish that the installed version is latest.
+      // Keep the last known release but mark it as stale until a successful check.
+      versionCheckStatus.value = releaseInfo.value ? 'stale' : 'failed'
+      versionWarning.value = localizeClientErrorMessage(error instanceof Error ? error.message : '') || i18n.global.t('version.checkFailed')
+      versionCheckedAt = Date.now()
+      versionLoaded.value = true
       console.error('Failed to fetch version:', error)
       return null
     } finally {
@@ -289,7 +308,14 @@ export const useAppStore = defineStore('app', () => {
    */
   function clearVersionCache(): void {
     versionLoaded.value = false
+    versionWarning.value = ''
+    versionCheckedAt = 0
     hasUpdate.value = false
+    sourceUpdateEnabled.value = false
+    hostUpdateManaged.value = false
+    versionCheckStatus.value = 'unknown'
+    versionWarning.value = ''
+    versionCheckedAt = 0
   }
 
   // ==================== Public Settings Management ====================
@@ -376,6 +402,7 @@ export const useAppStore = defineStore('app', () => {
         balance_low_notify_enabled: false,
         account_quota_notify_enabled: false,
         balance_low_notify_threshold: 0,
+        channel_quality_public_enabled: true,
         channel_monitor_enabled: true,
         channel_monitor_default_interval_seconds: 60,
         available_channels_enabled: false,
@@ -385,7 +412,6 @@ export const useAppStore = defineStore('app', () => {
         model_plaza_require_auth: false,
         plugin_management_enabled: false,
         support_ticket_enabled: false,
-        risk_control_enabled: false,
         service_quota_enabled: false,
         affiliate_enabled: false,
         allow_user_view_error_requests: false,
@@ -471,9 +497,13 @@ export const useAppStore = defineStore('app', () => {
     // Version state
     versionLoaded,
     versionLoading,
+    versionWarning,
+    versionCheckStatus,
     currentVersion,
     latestVersion,
     hasUpdate,
+    sourceUpdateEnabled,
+    hostUpdateManaged,
     buildType,
     releaseInfo,
 

@@ -2,6 +2,7 @@
   <AppLayout>
     <TablePageLayout>
       <template #filters>
+        <UserKeyRiskNotices />
         <div class="flex w-full flex-col gap-3" data-test="keys-filter-layout">
           <div class="keys-toolbar flex flex-wrap items-center justify-between gap-3" data-test="keys-toolbar">
             <div class="flex min-w-0 flex-wrap items-center gap-3" data-test="keys-filter-row">
@@ -120,31 +121,8 @@
             <span class="font-mono text-xs text-gray-500 dark:text-gray-400">#{{ value }}</span>
           </template>
 
-          <template #cell-key="{ value, row }">
-            <div class="flex items-center gap-2">
-              <code class="code text-xs">
-                {{ maskApiKey(value) || row.key_display }}
-              </code>
-              <button
-                v-if="value"
-                @click="copyToClipboard(value, row.id)"
-                class="rounded-lg p-1 transition-colors hover:bg-gray-100 dark:hover:bg-dark-700"
-                :class="
-                  copiedKeyId === row.id
-                    ? 'text-green-500'
-                    : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
-                "
-                :title="copiedKeyId === row.id ? t('keys.copied') : t('keys.copyToClipboard')"
-              >
-                <Icon
-                  v-if="copiedKeyId === row.id"
-                  name="check"
-                  size="sm"
-                  :stroke-width="2"
-                />
-                <Icon v-else name="clipboard" size="sm" />
-              </button>
-            </div>
+          <template #cell-key="{ row }">
+            <code class="code text-xs">{{ row.key_display || maskApiKey(row.key) }}</code>
           </template>
 
           <template #cell-name="{ value, row }">
@@ -263,7 +241,8 @@
           </template>
 
           <template #cell-usage="{ row }">
-            <div class="text-sm">
+            <span v-if="usageLoading" data-test="usage-pending" class="text-sm text-gray-400">{{ t('common.loading') }}</span>
+            <div v-else class="text-sm">
               <div class="flex items-center gap-1.5">
                 <span class="text-gray-500 dark:text-gray-400">{{ t('keys.today') }}:</span>
                 <span class="font-medium text-gray-900 dark:text-white">
@@ -446,33 +425,23 @@
 
           <template #cell-actions="{ row }">
             <div class="flex items-center gap-1">
-              <button
-                v-if="isCodexQuickConfigPlatform(row.group?.platform)"
-                @click="openCodexQuickConfigModal(row)"
-                data-testid="quick-config-button"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-primary-50 hover:text-primary-600 dark:hover:bg-primary-900/20 dark:hover:text-primary-400"
-                :title="t('keys.quickConfigure')"
-              >
-                <Icon name="download" size="sm" />
-                <span class="text-xs">{{ t('keys.quickConfigure') }}</span>
+              
+              <button type="button" @click="keyForTest = row" data-testid="key-self-test"
+                :data-test="`test-key-${row.id}`" :disabled="!canTestKey(row)"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-primary-50 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-primary-900/20 dark:hover:text-primary-400">
+                <Icon name="play" size="sm" />
+                <span class="text-xs">{{ t('keys.test.action') }}</span>
               </button>
               <!-- Use Key Button -->
-              <button
-                @click="openUseKeyModal(row)"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-green-50 hover:text-green-600 dark:hover:bg-green-900/20 dark:hover:text-green-400"
-              >
-                <Icon name="terminal" size="sm" />
-                <span class="text-xs">{{ t('keys.useKey') }}</span>
+              <button type="button" @click="openUseKeyModal(row)" data-testid="key-guide"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 hover:text-primary-600">
+                <Icon name="book" size="sm" /><span class="text-xs">{{ t('keys.useKey') }}</span>
               </button>
+              <button type="button" @click="selectedKey = row; showRegenerateDialog = true"
+          class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 hover:text-primary-600" :title="t('keys.regenerate')">
+          <Icon name="refresh" size="sm" /><span class="text-xs">{{ t('keys.regenerate') }}</span></button>
               <!-- Import to CC Switch Button -->
-              <button
-                v-if="!publicSettings?.hide_ccs_import_button"
-                @click="importToCcswitch(row)"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20 dark:hover:text-blue-400"
-              >
-                <Icon name="upload" size="sm" />
-                <span class="text-xs">{{ t('keys.importToCcSwitch') }}</span>
-              </button>
+              
               <!-- Toggle Status Button -->
               <button
                 @click="toggleKeyStatus(row)"
@@ -633,6 +602,10 @@
         <details class="key-advanced-settings" :open="showEditModal">
           <summary class="key-advanced-summary">{{ t('keys.advancedOptions') }}</summary>
           <div class="space-y-5 pt-5">
+        <div>
+          <label class="input-label">{{ t('keys.fallbackGroupLabel') }}</label>
+          <Select v-model="formData.fallback_group_id" :options="[{ value: null, label: t('keys.noFallbackGroup') }, ...groups.filter(group => group.id !== formData.group_id).map(group => ({ value: group.id, label: group.name }))]" searchable />
+        </div>
         <!-- Custom Key Section (only for create) -->
         <div v-if="!showEditModal" class="space-y-3">
           <div class="flex items-center justify-between">
@@ -1150,9 +1123,34 @@
     />
 
     <!-- Use Key Modal -->
+    <TestKeyModal :show="keyForTest !== null" :api-key="keyForTest" @close="keyForTest = null" @tested="loadApiKeys" />
+    <ConfirmDialog
+      :show="showRegenerateDialog"
+      :title="t('keys.regenerate')"
+      :message="t('keys.regenerateConfirm', { name: selectedKey?.name })"
+      :confirm-text="t('keys.regenerate')"
+      :danger="true"
+      @confirm="regenerateKey"
+      @cancel="!regenerating && (showRegenerateDialog = false)"
+    />
+    <BaseDialog :show="!!oneTimeKey" :title="t('keys.secretTitle')" @close="closeOneTimeKey">
+      <div v-if="oneTimeKey" class="space-y-4">
+        <p class="text-sm text-amber-700 dark:text-amber-300">{{ t('keys.secretHint') }}</p>
+        <code class="block break-all rounded-lg bg-gray-100 p-3 dark:bg-dark-700" data-testid="one-time-key">{{ oneTimeKey.key }}</code>
+        <div class="flex flex-wrap gap-2">
+          <button class="btn btn-primary" @click="copyToClipboard(oneTimeKey.key, oneTimeKey.id)">{{ copiedKeyId === oneTimeKey.id ? t('keys.copied') : t('keys.copyToClipboard') }}</button>
+          <button class="btn btn-secondary" @click="openUseKeyModal(oneTimeKey)">{{ t('keys.useKey') }}</button>
+          <button v-if="!publicSettings?.hide_ccs_import_button" class="btn btn-secondary" @click="importToCcswitch(oneTimeKey)">{{ t('keys.importToCcSwitch') }}</button>
+          <button v-if="isCodexQuickConfigPlatform(oneTimeKey.group?.platform)" class="btn btn-secondary" @click="openCodexQuickConfigModal(oneTimeKey)">{{ t('keys.quickConfigure') }}</button>
+          <button class="btn btn-secondary" @click="closeOneTimeKey">{{ t('keys.secretSaved') }}</button>
+        </div>
+      </div>
+    </BaseDialog>
+
+    <TotpStepUpDialog :controller="stepUp" />
     <UseKeyModal
       :show="showUseKeyModal"
-      :api-key="selectedKey?.key || ''"
+      :api-key="selectedKey?.id === oneTimeKey?.id ? oneTimeKey?.key || '' : ''"
       :base-url="publicSettings?.api_base_url || ''"
       :platform="selectedKey?.group?.platform || null"
       :claude-code-only="selectedKey?.group?.claude_code_only || false"
@@ -1298,9 +1296,12 @@ const { t } = useI18n()
 const keyView = ref<'table' | 'cards'>('table')
 try { if (localStorage.getItem('kitty.keys.view') === 'cards') keyView.value = 'cards' } catch { /* private mode */ }
 watch(keyView, (value) => { try { localStorage.setItem('kitty.keys.view', value) } catch { /* preference only */ } })
+import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
+import { useStepUp, isStepUpCancelled } from '@/composables/useStepUp'
 import { keysAPI, authAPI, usageAPI, userGroupsAPI } from '@/api'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
+import UserKeyRiskNotices from '@/features/ip-audit/UserKeyRiskNotices.vue'
 import BulkEditKeysModal from '@/components/keys/BulkEditKeysModal.vue'
 	import DataTable from '@/components/common/DataTable.vue'
 	import Pagination from '@/components/common/Pagination.vue'
@@ -1311,6 +1312,7 @@ import BulkEditKeysModal from '@/components/keys/BulkEditKeysModal.vue'
 	import SearchInput from '@/components/common/SearchInput.vue'
 	import Icon from '@/components/icons/Icon.vue'
 	import UseKeyModal from '@/components/keys/UseKeyModal.vue'
+import TestKeyModal from '@/components/keys/TestKeyModal.vue'
 	import CodexQuickConfigModal from '@/components/keys/CodexQuickConfigModal.vue'
 	import EndpointPopover from '@/components/keys/EndpointPopover.vue'
 	import ApiKeyGroupPicker from '@/components/keys/ApiKeyGroupPicker.vue'
@@ -1458,6 +1460,7 @@ const submitting = ref(false)
 const now = ref(new Date())
 let resetTimer: ReturnType<typeof setInterval> | null = null
 const usageStats = ref<Record<string, BatchApiKeyUsageStats>>({})
+const usageLoading = ref(false)
 const userGroupRates = ref<Record<number, number>>({})
 
 // Policy and counts always belong to one completed refresh, never to editable key data.
@@ -1564,11 +1567,43 @@ const filterSearch = ref('')
 const filterStatus = ref('')
 const filterGroupId = ref<string | number>('')
 
+const stepUp = useStepUp();
+const oneTimeKey = ref<ApiKey | null>(null);
+const showRegenerateDialog = ref(false);
+const regenerating = ref(false);
+const closeOneTimeKey = () => {
+  oneTimeKey.value = null;
+  selectedKey.value = null;
+  pendingCcsRow.value = null;
+  showUseKeyModal.value = false;
+  showCodexQuickConfigModal.value = false;
+  showCcsClientSelect.value = false;
+  copiedKeyId.value = null;
+};
+const regenerateKey = async () => {
+  if (!selectedKey.value || regenerating.value) return;
+  regenerating.value = true;
+  try {
+    const keyID = selectedKey.value.id;
+    const key = await stepUp.run(() => keysAPI.regenerate(keyID));
+    showRegenerateDialog.value = false;
+    oneTimeKey.value = key?.secret_available ? key : null;
+    if (!oneTimeKey.value) appStore.showError(t('keys.secretUnavailable'));
+    await loadApiKeys();
+  } catch (error: any) {
+    if (!isStepUpCancelled(error)) appStore.showError(error?.message || t('keys.failedToSave'));
+  } finally { regenerating.value = false; }
+};
+
 const showCreateModal = ref(false)
 const showEditModal = ref(false)
 const showDeleteDialog = ref(false)
 const showResetQuotaDialog = ref(false)
 const showResetRateLimitDialog = ref(false)
+const keyForTest = ref<ApiKey | null>(null)
+const canTestKey = (key: ApiKey) => key.status === 'active'
+  && (key.group_id != null || (key.group_ids?.length ?? 0) > 0)
+  && (!key.expires_at || new Date(key.expires_at).getTime() > Date.now())
 const showUseKeyModal = ref(false)
 const showCodexQuickConfigModal = ref(false)
 const showCcsClientSelect = ref(false)
@@ -1607,6 +1642,7 @@ const formData = ref({
   concurrency_limit: 0 as number | string,
   group_id: null as number | null,
   group_ids: [] as number[],
+  fallback_group_id: null as number | null,
   status: 'active' as 'active' | 'inactive',
   use_custom_key: false,
   custom_key: '',
@@ -1783,6 +1819,7 @@ const loadApiKeys = async () => {
   abortController = controller
   const { signal } = controller
   loading.value = true
+  usageLoading.value = false
   try {
     // Build filters
     const filters: {
@@ -1807,18 +1844,15 @@ const loadApiKeys = async () => {
     pagination.value.total = response.total
     pagination.value.pages = response.pages
 
-    // Load usage stats for all API keys in the list
+    // The list is usable before slower aggregate usage becomes available.
+    usageStats.value = {}
     if (response.items.length > 0) {
       const keyIds = response.items.map((k) => k.id)
-      try {
-        const usageResponse = await usageAPI.getDashboardApiKeysUsage(keyIds, { signal })
-        if (signal.aborted) return
-        usageStats.value = usageResponse.stats
-      } catch (e) {
-        if (!isAbortError(e)) {
-          console.error('Failed to load usage stats:', e)
-        }
-      }
+      usageLoading.value = true
+      void usageAPI.getDashboardApiKeysUsage(keyIds, { signal })
+        .then(response => { if (!signal.aborted) usageStats.value = response.stats })
+        .catch(error => { if (!isAbortError(error)) console.error('Failed to load usage stats:', error) })
+        .finally(() => { if (abortController === controller) usageLoading.value = false })
     }
   } catch (error) {
     if (isAbortError(error)) {
@@ -1928,6 +1962,7 @@ const editKey = (key: ApiKey) => {
     name: key.name,
     concurrency_limit: key.concurrency_limit ?? 0,
     group_id: key.group_id,
+    fallback_group_id: key.fallback_group_id ?? null,
     group_ids: (key.group_ids ?? []).filter(id => id !== key.group_id),
     status: key.status === 'quota_exhausted' || key.status === 'expired' ? 'inactive' : key.status,
     use_custom_key: false,
@@ -2096,6 +2131,7 @@ const handleSubmit = async () => {
         concurrency_limit: concurrencyLimit,
         group_id: formData.value.group_id,
         group_ids: selectedFormGroupIDs(),
+        fallback_group_id: formData.value.fallback_group_id,
         ip_whitelist: ipWhitelist,
         ip_blacklist: ipBlacklist,
         quota: quota,
@@ -2111,9 +2147,10 @@ const handleSubmit = async () => {
       appStore.showSuccess(t('keys.keyUpdatedSuccess'))
     } else {
       const customKey = formData.value.use_custom_key ? formData.value.custom_key : undefined
-      await keysAPI.create(
+      const createdKey = await stepUp.run(() => keysAPI.create(
         formData.value.name,
         formData.value.group_id,
+        formData.value.fallback_group_id,
         customKey,
         ipWhitelist,
         ipBlacklist,
@@ -2122,7 +2159,9 @@ const handleSubmit = async () => {
         rateLimitData,
         concurrencyLimit,
         selectedFormGroupIDs()
-      )
+      ))
+      oneTimeKey.value = createdKey?.secret_available ? { ...createdKey, group: groups.value.find(group => group.id === createdKey.group_id) } : null
+      if (!oneTimeKey.value) appStore.showError(t('keys.secretUnavailable'))
       appStore.showSuccess(t('keys.keyCreatedSuccess'))
       // Only advance tour if active, on submit step, and creation succeeded
       if (onboardingStore.isCurrentStep('[data-tour="key-form-submit"]')) {
@@ -2133,7 +2172,7 @@ const handleSubmit = async () => {
     loadApiKeys()
   } catch (error: any) {
     const errorMsg = error.response?.data?.detail || t('keys.failedToSave')
-    appStore.showError(errorMsg)
+    if (!isStepUpCancelled(error)) appStore.showError(errorMsg)
     // Don't advance tour on error
   } finally {
     submitting.value = false
@@ -2169,6 +2208,7 @@ const closeModals = () => {
     concurrency_limit: 0,
     group_id: null,
     group_ids: [],
+    fallback_group_id: null,
     status: 'active',
     use_custom_key: false,
     custom_key: '',

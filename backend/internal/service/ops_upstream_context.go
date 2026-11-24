@@ -23,7 +23,6 @@ const (
 	OpsUpstreamModelKey        = "ops_upstream_model"
 
 	// Optional stage latencies (milliseconds) for troubleshooting and alerting.
-	OpsRequestDurationMsKey  = "ops_request_duration_ms"
 	OpsAuthLatencyMsKey      = "ops_auth_latency_ms"
 	OpsRoutingLatencyMsKey   = "ops_routing_latency_ms"
 	OpsUpstreamLatencyMsKey  = "ops_upstream_latency_ms"
@@ -210,30 +209,13 @@ type OpsStreamError struct {
 	UpstreamErrors  []*OpsUpstreamErrorEvent
 	// RequestScoped 表示该带内失败是请求级结果（如上游内容策略截停），与本请求此前的
 	// 上游尝试无关：分类不受上游错误上下文影响、不快照也不落库上游归因、不继承透传规则的
-	// skip_monitoring，按业务限制计（客户端取消除外），落库状态取 IntendedStatus 以便进入错误列表。
+	// skip_monitoring，按业务限制计，落库状态取 IntendedStatus 以便进入错误列表。
 	RequestScoped bool
 	// NonStream 表示带内信号来自非流式 2xx 响应体，落库 stream=false。
 	NonStream bool
 }
 
 const maxOpsStreamErrorsPerRequest = 64
-
-// OpsClientCanceledCode is a request outcome, not an upstream rejection.
-const OpsClientCanceledCode = "client_canceled"
-
-// MarkOpsClientCancellation records a logical 499 without writing to a closed
-// connection. Existing ignore-context-canceled settings still apply. Keeping it
-// request-scoped prevents earlier upstream attempts from changing its owner.
-func MarkOpsClientCancellation(c *gin.Context, stream bool) {
-	MarkOpsStreamErrorValue(c, OpsStreamError{
-		ErrType:        OpsClientCanceledCode,
-		Code:           OpsClientCanceledCode,
-		Message:        "Client disconnected: context canceled",
-		IntendedStatus: 499,
-		RequestScoped:  true,
-		NonStream:      !stream,
-	})
-}
 
 // BeginOpsStreamTurn scopes first-wins deduplication to one WebSocket turn.
 func BeginOpsStreamTurn(c *gin.Context, turn int) {
@@ -247,6 +229,16 @@ func BeginOpsStreamTurn(c *gin.Context, turn int) {
 	c.Set(OpsUpstreamStatusCodeKey, 0)
 	c.Set(OpsUpstreamErrorMessageKey, "")
 	c.Set(OpsUpstreamErrorDetailKey, "")
+}
+
+// ResumeOpsStreamTurn starts a new forwarding attempt for the current logical
+// turn. A restarted WS proxy numbers its first frame as turn 1 even when it is
+// replaying a later turn; retain the admission already acquired by the handler.
+func ResumeOpsStreamTurn(c *gin.Context, turn int) {
+	if c == nil || turn <= 0 {
+		return
+	}
+	BeginOpsStreamTurn(c, turn)
 }
 
 // MarkOpsStreamError 记录一次就地 SSE 错误，供 ops 日志采集。
@@ -294,6 +286,7 @@ func markOpsStreamError(c *gin.Context, streamErr OpsStreamError) {
 		streamErr.SkipMonitoring = currentOpsFailureSkipMonitoring(c)
 	}
 	snapshotOpsStreamErrorContext(c, &streamErr)
+
 	if GetOpenAIClientTransport(c) == OpenAIClientTransportWS {
 		if value, ok := c.Get(OpsStreamTurnKey); ok {
 			streamErr.Turn, _ = value.(int)
@@ -360,6 +353,7 @@ func snapshotOpsStreamErrorContext(c *gin.Context, streamErr *OpsStreamError) {
 					continue
 				}
 				copyOfEvent := *event
+				copyOfEvent.ReplayBoundary = cloneOpsReplayBoundary(event.ReplayBoundary)
 				streamErr.UpstreamErrors = append(streamErr.UpstreamErrors, &copyOfEvent)
 			}
 		}
@@ -429,22 +423,73 @@ func setOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage
 	if upstreamStatusCode > 0 {
 		c.Set(OpsUpstreamStatusCodeKey, upstreamStatusCode)
 	}
-	if redactOpenAIEncryptedDiagnostic(upstreamMessage) == openAIEncryptedErrorRedacted {
-		upstreamDetail = openAIEncryptedErrorRedacted
-	}
-	if msg := strings.TrimSpace(redactOpenAIEncryptedDiagnostic(upstreamMessage)); msg != "" {
+	if msg := strings.TrimSpace(upstreamMessage); msg != "" {
 		c.Set(OpsUpstreamErrorMessageKey, msg)
 	}
-	if detail := strings.TrimSpace(redactOpenAIEncryptedDiagnostic(upstreamDetail)); detail != "" {
+	if detail := strings.TrimSpace(upstreamDetail); detail != "" {
 		c.Set(OpsUpstreamErrorDetailKey, detail)
+	}
+}
+
+// OpsRecordedUpstreamMessageForClient returns the sanitized upstream error
+// message recorded during this request's upstream attempts, or "" when no real
+// upstream detail exists. Fallback writers use it to surface the true failure
+// reason instead of a generic "Upstream request failed".
+func OpsRecordedUpstreamMessageForClient(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	raw, ok := c.Get(OpsUpstreamErrorMessageKey)
+	if !ok {
+		return ""
+	}
+	msg, ok := raw.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(SanitizeUpstreamErrorMessage(msg))
+}
+
+// OpsReplayUsageSource identifies the source already used by the forwarding
+// attempt. It is diagnostic only; it never grants replay or changes billing.
+type OpsReplayUsageSource string
+
+const (
+	OpsReplayUsageAbsent    OpsReplayUsageSource = "absent"
+	OpsReplayUsageUpstream  OpsReplayUsageSource = "upstream"
+	OpsReplayUsageEstimated OpsReplayUsageSource = "estimated"
+)
+
+// OpsReplayBoundary is an observed snapshot of one reader's replay boundary.
+// A nil snapshot means unknown. Present booleans deliberately retain false in
+// JSON; RetryRequested records a candidate, not an executed retry.
+type OpsReplayBoundary struct {
+	UpstreamProgressObserved bool                 `json:"upstream_progress_observed"`
+	ClientOutputStarted      bool                 `json:"client_output_started"`
+	TerminalSeen             bool                 `json:"terminal_seen"`
+	UsageSource              OpsReplayUsageSource `json:"usage_source"`
+	RetryRequested           bool                 `json:"retry_requested"`
+}
+
+func cloneOpsReplayBoundary(boundary *OpsReplayBoundary) *OpsReplayBoundary {
+	if boundary == nil {
+		return nil
+	}
+	switch boundary.UsageSource {
+	case OpsReplayUsageAbsent, OpsReplayUsageUpstream, OpsReplayUsageEstimated:
+		out := *boundary
+		return &out
+	default:
+		// Do not persist arbitrary strings or turn an unobserved source into
+		// "absent". The entire untrusted snapshot remains unknown.
+		return nil
 	}
 }
 
 // OpsUpstreamErrorEvent describes one upstream error attempt during a single gateway request.
 // It is stored in ops_error_logs.upstream_errors as a JSON array.
 type OpsUpstreamErrorEvent struct {
-	AuthConnectionID string `json:"auth_connection_id,omitempty"`
-	AtUnixMs         int64  `json:"at_unix_ms,omitempty"`
+	AtUnixMs int64 `json:"at_unix_ms,omitempty"`
 
 	// Passthrough 表示本次请求是否命中“原样透传（仅替换认证）”分支。
 	// 该字段用于排障与灰度评估；存入 JSON，不涉及 DB schema 变更。
@@ -466,6 +511,10 @@ type OpsUpstreamErrorEvent struct {
 	// bounds forced earlier attempts of the same request to be discarded.
 	DroppedEarlierAttempts int `json:"dropped_earlier_attempts,omitempty"`
 
+	// ReplayBoundary belongs to this exact attempt, never the request's last
+	// context event. Existing/uninstrumented protocols leave it nil.
+	ReplayBoundary *OpsReplayBoundary `json:"replay_boundary,omitempty"`
+
 	// Outcome
 	UpstreamStatusCode int    `json:"upstream_status_code,omitempty"`
 	UpstreamRequestID  string `json:"upstream_request_id,omitempty"`
@@ -477,7 +526,7 @@ type OpsUpstreamErrorEvent struct {
 	// Best-effort upstream response capture (sanitized+trimmed).
 	UpstreamResponseBody string `json:"upstream_response_body,omitempty"`
 
-	// Kind: http_error | request_error | retry_exhausted | failover | bridge_error
+	// Kind: http_error | request_error | retry_exhausted | failover
 	Kind string `json:"kind,omitempty"`
 	// Stage/Scope/Reason distinguish credential acquisition from inference
 	// without overloading upstream_status_code with a synthetic HTTP status.
@@ -507,29 +556,22 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	if c == nil {
 		return
 	}
-	if ev.AuthConnectionID == "" {
-		ev.AuthConnectionID = c.GetString("openai_auth_connection_id")
-	}
 	if ev.AtUnixMs <= 0 {
 		ev.AtUnixMs = time.Now().UnixMilli()
 	}
 	ev.Platform = strings.TrimSpace(ev.Platform)
 	normalizeOpsUpstreamProxyAttribution(&ev)
 	ev.UpstreamRequestID = strings.TrimSpace(ev.UpstreamRequestID)
-	ev.UpstreamResponseBody = strings.TrimSpace(redactOpenAIEncryptedDiagnostic(ev.UpstreamResponseBody))
+	ev.UpstreamResponseBody = strings.TrimSpace(ev.UpstreamResponseBody)
 	ev.Kind = strings.TrimSpace(ev.Kind)
 	ev.Stage = strings.TrimSpace(ev.Stage)
 	ev.Scope = strings.TrimSpace(ev.Scope)
 	ev.Reason = strings.TrimSpace(ev.Reason)
 	ev.UpstreamURL = strings.TrimSpace(ev.UpstreamURL)
 	ev.Message = strings.TrimSpace(ev.Message)
-	ev.Detail = strings.TrimSpace(redactOpenAIEncryptedDiagnostic(ev.Detail))
+	ev.Detail = strings.TrimSpace(ev.Detail)
 	if ev.Message != "" {
 		ev.Message = sanitizeUpstreamErrorMessage(ev.Message)
-		if ev.Message == openAIEncryptedErrorRedacted {
-			ev.Detail = ev.Message
-			ev.UpstreamResponseBody = ev.Message
-		}
 	}
 
 	var existing []*OpsUpstreamErrorEvent
@@ -540,6 +582,7 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	}
 
 	evCopy := ev
+	evCopy.ReplayBoundary = cloneOpsReplayBoundary(ev.ReplayBoundary)
 	existing = append(existing, &evCopy)
 	c.Set(OpsUpstreamErrorsKey, existing)
 

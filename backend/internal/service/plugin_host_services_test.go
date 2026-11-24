@@ -306,58 +306,19 @@ func TestPluginHostServiceServer_DirectoryUnavailableWithoutDirectory(t *testing
 	require.NoError(t, kvErr)
 }
 
-func TestPluginAccountScopeFromManifest(t *testing.T) {
-	// A declared OpenAI OAuth capability grants exactly the (openai, oauth) scope.
-	match := PluginManifest{Capabilities: []PluginCapability{{ID: PluginCapabilityOpenAIOAuthOutbound, Platform: PlatformOpenAI, AccountType: AccountTypeOAuth}}}
-	scope := pluginAccountScopeFromManifest(match)
-	if scope.Empty() {
-		t.Fatal("declared OpenAI OAuth capability must grant a non-empty scope")
+// The account directory was only granted to the retired OpenAI OAuth outbound
+// capability, so buildHostServices never injects it any more.
+func TestBuildHostServicesNeverGrantsAccountDirectory(t *testing.T) {
+	m := &PluginManager{kvStore: newFakePluginKVStore()}
+	for _, capability := range []PluginCapability{
+		{ID: PluginCapabilityOpenAIOAuthOutbound, Platform: PlatformOpenAI, AccountType: AccountTypeOAuth},
+		{ID: PluginCapabilityGatewayTransform, Platform: "gateway", AccountType: "any"},
+	} {
+		installation := &PluginInstallation{PluginKey: "p." + capability.Platform, Manifest: PluginManifest{Capabilities: []PluginCapability{capability}}}
+		srv, ok := m.buildHostServices(installation).(*pluginHostServiceServer)
+		require.True(t, ok)
+		require.Nil(t, srv.directory)
+		require.True(t, srv.scope.Empty())
+		require.NotNil(t, srv.store, "KV remains available")
 	}
-	if !scope.Contains(PlatformOpenAI, AccountTypeOAuth) {
-		t.Fatal("scope must contain (openai, oauth)")
-	}
-	if scope.Contains("anthropic", "oauth") {
-		t.Fatal("scope must not leak to other platforms")
-	}
-
-	// The granted scope is pinned to the capability id, so a manifest cannot widen
-	// it by declaring a different platform/account_type on a known capability.
-	spoof := PluginManifest{Capabilities: []PluginCapability{{ID: PluginCapabilityOpenAIOAuthOutbound, Platform: "anthropic", AccountType: "apikey"}}}
-	spoofScope := pluginAccountScopeFromManifest(spoof)
-	if spoofScope.Contains("anthropic", "apikey") {
-		t.Fatal("granted scope must be pinned to the capability id, not the declared platform/type")
-	}
-	if !spoofScope.Contains(PlatformOpenAI, AccountTypeOAuth) {
-		t.Fatal("known capability must still grant its pinned (openai, oauth) scope")
-	}
-
-	// An unknown capability grants nothing.
-	unknown := PluginManifest{Capabilities: []PluginCapability{{ID: "some.other.capability", Platform: "x", AccountType: "y"}}}
-	if !pluginAccountScopeFromManifest(unknown).Empty() {
-		t.Fatal("unknown capability must grant an empty scope")
-	}
-	if !pluginAccountScopeFromManifest(PluginManifest{}).Empty() {
-		t.Fatal("no capability must grant an empty scope")
-	}
-}
-
-// buildHostServices 只对声明了 OpenAI OAuth 能力的插件注入账号目录。
-func TestBuildHostServicesGatesDirectoryByCapability(t *testing.T) {
-	dir := &fakeAccountDirectory{}
-	m := &PluginManager{kvStore: newFakePluginKVStore(), accountDirectory: dir}
-
-	authorized := &PluginInstallation{PluginKey: "p.authorized", Manifest: PluginManifest{
-		Capabilities: []PluginCapability{{ID: PluginCapabilityOpenAIOAuthOutbound, Platform: PlatformOpenAI, AccountType: AccountTypeOAuth}},
-	}}
-	srv, ok := m.buildHostServices(authorized).(*pluginHostServiceServer)
-	require.True(t, ok)
-	require.NotNil(t, srv.directory)
-
-	unauthorized := &PluginInstallation{PluginKey: "p.other", Manifest: PluginManifest{
-		Capabilities: []PluginCapability{{ID: "some.other.capability", Platform: "x", AccountType: "y"}},
-	}}
-	srv2, ok := m.buildHostServices(unauthorized).(*pluginHostServiceServer)
-	require.True(t, ok)
-	require.Nil(t, srv2.directory, "unauthorized plugin must not receive the account directory")
-	require.NotNil(t, srv2.store, "but KV remains available")
 }

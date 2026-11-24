@@ -78,7 +78,7 @@ func (r *cyberEvidenceCreateLogFailureRepo) snapshotCreateCalls() int {
 func TestRecordCyberPolicyEventEnqueuesEvidenceOnlyAfterLogPersist(t *testing.T) {
 	ctx := context.Background()
 	settings := func() *contentModerationTestSettingRepo {
-		return &contentModerationTestSettingRepo{values: map[string]string{SettingKeyRiskControlEnabled: "true"}}
+		return &contentModerationTestSettingRepo{values: map[string]string{SettingKeyRiskControlEnabled: "true", SettingKeyContentModerationConfig: `{"all_groups":true}`}}
 	}
 
 	store := &cyberEvidenceRecordStore{}

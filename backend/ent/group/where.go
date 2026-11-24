@@ -280,6 +280,11 @@ func FallbackGroupID(v int64) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldFallbackGroupID, v))
 }
 
+// FallbackGroupIDOnUnavailable applies equality check predicate on the "fallback_group_id_on_unavailable" field. It's identical to FallbackGroupIDOnUnavailableEQ.
+func FallbackGroupIDOnUnavailable(v int64) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldFallbackGroupIDOnUnavailable, v))
+}
+
 // FallbackGroupIDOnInvalidRequest applies equality check predicate on the "fallback_group_id_on_invalid_request" field. It's identical to FallbackGroupIDOnInvalidRequestEQ.
 func FallbackGroupIDOnInvalidRequest(v int64) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldFallbackGroupIDOnInvalidRequest, v))
@@ -330,6 +335,11 @@ func ForceOpenaiFast(v bool) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldForceOpenaiFast, v))
 }
 
+// ForceOpenaiServiceTier applies equality check predicate on the "force_openai_service_tier" field. It's identical to ForceOpenaiServiceTierEQ.
+func ForceOpenaiServiceTier(v string) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldForceOpenaiServiceTier, v))
+}
+
 // FreeOpenaiFast applies equality check predicate on the "free_openai_fast" field. It's identical to FreeOpenaiFastEQ.
 func FreeOpenaiFast(v bool) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldFreeOpenaiFast, v))
@@ -353,6 +363,11 @@ func DefaultMappedModel(v string) predicate.Group {
 // RpmLimit applies equality check predicate on the "rpm_limit" field. It's identical to RpmLimitEQ.
 func RpmLimit(v int) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldRpmLimit, v))
+}
+
+// UserConcurrencyLimit applies equality check predicate on the "user_concurrency_limit" field. It's identical to UserConcurrencyLimitEQ.
+func UserConcurrencyLimit(v int) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldUserConcurrencyLimit, v))
 }
 
 // MaxReasoningEffort applies equality check predicate on the "max_reasoning_effort" field. It's identical to MaxReasoningEffortEQ.
@@ -2300,6 +2315,56 @@ func FallbackGroupIDNotNil() predicate.Group {
 	return predicate.Group(sql.FieldNotNull(FieldFallbackGroupID))
 }
 
+// FallbackGroupIDOnUnavailableEQ applies the EQ predicate on the "fallback_group_id_on_unavailable" field.
+func FallbackGroupIDOnUnavailableEQ(v int64) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldFallbackGroupIDOnUnavailable, v))
+}
+
+// FallbackGroupIDOnUnavailableNEQ applies the NEQ predicate on the "fallback_group_id_on_unavailable" field.
+func FallbackGroupIDOnUnavailableNEQ(v int64) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldFallbackGroupIDOnUnavailable, v))
+}
+
+// FallbackGroupIDOnUnavailableIn applies the In predicate on the "fallback_group_id_on_unavailable" field.
+func FallbackGroupIDOnUnavailableIn(vs ...int64) predicate.Group {
+	return predicate.Group(sql.FieldIn(FieldFallbackGroupIDOnUnavailable, vs...))
+}
+
+// FallbackGroupIDOnUnavailableNotIn applies the NotIn predicate on the "fallback_group_id_on_unavailable" field.
+func FallbackGroupIDOnUnavailableNotIn(vs ...int64) predicate.Group {
+	return predicate.Group(sql.FieldNotIn(FieldFallbackGroupIDOnUnavailable, vs...))
+}
+
+// FallbackGroupIDOnUnavailableGT applies the GT predicate on the "fallback_group_id_on_unavailable" field.
+func FallbackGroupIDOnUnavailableGT(v int64) predicate.Group {
+	return predicate.Group(sql.FieldGT(FieldFallbackGroupIDOnUnavailable, v))
+}
+
+// FallbackGroupIDOnUnavailableGTE applies the GTE predicate on the "fallback_group_id_on_unavailable" field.
+func FallbackGroupIDOnUnavailableGTE(v int64) predicate.Group {
+	return predicate.Group(sql.FieldGTE(FieldFallbackGroupIDOnUnavailable, v))
+}
+
+// FallbackGroupIDOnUnavailableLT applies the LT predicate on the "fallback_group_id_on_unavailable" field.
+func FallbackGroupIDOnUnavailableLT(v int64) predicate.Group {
+	return predicate.Group(sql.FieldLT(FieldFallbackGroupIDOnUnavailable, v))
+}
+
+// FallbackGroupIDOnUnavailableLTE applies the LTE predicate on the "fallback_group_id_on_unavailable" field.
+func FallbackGroupIDOnUnavailableLTE(v int64) predicate.Group {
+	return predicate.Group(sql.FieldLTE(FieldFallbackGroupIDOnUnavailable, v))
+}
+
+// FallbackGroupIDOnUnavailableIsNil applies the IsNil predicate on the "fallback_group_id_on_unavailable" field.
+func FallbackGroupIDOnUnavailableIsNil() predicate.Group {
+	return predicate.Group(sql.FieldIsNull(FieldFallbackGroupIDOnUnavailable))
+}
+
+// FallbackGroupIDOnUnavailableNotNil applies the NotNil predicate on the "fallback_group_id_on_unavailable" field.
+func FallbackGroupIDOnUnavailableNotNil() predicate.Group {
+	return predicate.Group(sql.FieldNotNull(FieldFallbackGroupIDOnUnavailable))
+}
+
 // FallbackGroupIDOnInvalidRequestEQ applies the EQ predicate on the "fallback_group_id_on_invalid_request" field.
 func FallbackGroupIDOnInvalidRequestEQ(v int64) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldFallbackGroupIDOnInvalidRequest, v))
@@ -2480,6 +2545,71 @@ func ForceOpenaiFastNEQ(v bool) predicate.Group {
 	return predicate.Group(sql.FieldNEQ(FieldForceOpenaiFast, v))
 }
 
+// ForceOpenaiServiceTierEQ applies the EQ predicate on the "force_openai_service_tier" field.
+func ForceOpenaiServiceTierEQ(v string) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldForceOpenaiServiceTier, v))
+}
+
+// ForceOpenaiServiceTierNEQ applies the NEQ predicate on the "force_openai_service_tier" field.
+func ForceOpenaiServiceTierNEQ(v string) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldForceOpenaiServiceTier, v))
+}
+
+// ForceOpenaiServiceTierIn applies the In predicate on the "force_openai_service_tier" field.
+func ForceOpenaiServiceTierIn(vs ...string) predicate.Group {
+	return predicate.Group(sql.FieldIn(FieldForceOpenaiServiceTier, vs...))
+}
+
+// ForceOpenaiServiceTierNotIn applies the NotIn predicate on the "force_openai_service_tier" field.
+func ForceOpenaiServiceTierNotIn(vs ...string) predicate.Group {
+	return predicate.Group(sql.FieldNotIn(FieldForceOpenaiServiceTier, vs...))
+}
+
+// ForceOpenaiServiceTierGT applies the GT predicate on the "force_openai_service_tier" field.
+func ForceOpenaiServiceTierGT(v string) predicate.Group {
+	return predicate.Group(sql.FieldGT(FieldForceOpenaiServiceTier, v))
+}
+
+// ForceOpenaiServiceTierGTE applies the GTE predicate on the "force_openai_service_tier" field.
+func ForceOpenaiServiceTierGTE(v string) predicate.Group {
+	return predicate.Group(sql.FieldGTE(FieldForceOpenaiServiceTier, v))
+}
+
+// ForceOpenaiServiceTierLT applies the LT predicate on the "force_openai_service_tier" field.
+func ForceOpenaiServiceTierLT(v string) predicate.Group {
+	return predicate.Group(sql.FieldLT(FieldForceOpenaiServiceTier, v))
+}
+
+// ForceOpenaiServiceTierLTE applies the LTE predicate on the "force_openai_service_tier" field.
+func ForceOpenaiServiceTierLTE(v string) predicate.Group {
+	return predicate.Group(sql.FieldLTE(FieldForceOpenaiServiceTier, v))
+}
+
+// ForceOpenaiServiceTierContains applies the Contains predicate on the "force_openai_service_tier" field.
+func ForceOpenaiServiceTierContains(v string) predicate.Group {
+	return predicate.Group(sql.FieldContains(FieldForceOpenaiServiceTier, v))
+}
+
+// ForceOpenaiServiceTierHasPrefix applies the HasPrefix predicate on the "force_openai_service_tier" field.
+func ForceOpenaiServiceTierHasPrefix(v string) predicate.Group {
+	return predicate.Group(sql.FieldHasPrefix(FieldForceOpenaiServiceTier, v))
+}
+
+// ForceOpenaiServiceTierHasSuffix applies the HasSuffix predicate on the "force_openai_service_tier" field.
+func ForceOpenaiServiceTierHasSuffix(v string) predicate.Group {
+	return predicate.Group(sql.FieldHasSuffix(FieldForceOpenaiServiceTier, v))
+}
+
+// ForceOpenaiServiceTierEqualFold applies the EqualFold predicate on the "force_openai_service_tier" field.
+func ForceOpenaiServiceTierEqualFold(v string) predicate.Group {
+	return predicate.Group(sql.FieldEqualFold(FieldForceOpenaiServiceTier, v))
+}
+
+// ForceOpenaiServiceTierContainsFold applies the ContainsFold predicate on the "force_openai_service_tier" field.
+func ForceOpenaiServiceTierContainsFold(v string) predicate.Group {
+	return predicate.Group(sql.FieldContainsFold(FieldForceOpenaiServiceTier, v))
+}
+
 // FreeOpenaiFastEQ applies the EQ predicate on the "free_openai_fast" field.
 func FreeOpenaiFastEQ(v bool) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldFreeOpenaiFast, v))
@@ -2613,6 +2743,46 @@ func RpmLimitLT(v int) predicate.Group {
 // RpmLimitLTE applies the LTE predicate on the "rpm_limit" field.
 func RpmLimitLTE(v int) predicate.Group {
 	return predicate.Group(sql.FieldLTE(FieldRpmLimit, v))
+}
+
+// UserConcurrencyLimitEQ applies the EQ predicate on the "user_concurrency_limit" field.
+func UserConcurrencyLimitEQ(v int) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldUserConcurrencyLimit, v))
+}
+
+// UserConcurrencyLimitNEQ applies the NEQ predicate on the "user_concurrency_limit" field.
+func UserConcurrencyLimitNEQ(v int) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldUserConcurrencyLimit, v))
+}
+
+// UserConcurrencyLimitIn applies the In predicate on the "user_concurrency_limit" field.
+func UserConcurrencyLimitIn(vs ...int) predicate.Group {
+	return predicate.Group(sql.FieldIn(FieldUserConcurrencyLimit, vs...))
+}
+
+// UserConcurrencyLimitNotIn applies the NotIn predicate on the "user_concurrency_limit" field.
+func UserConcurrencyLimitNotIn(vs ...int) predicate.Group {
+	return predicate.Group(sql.FieldNotIn(FieldUserConcurrencyLimit, vs...))
+}
+
+// UserConcurrencyLimitGT applies the GT predicate on the "user_concurrency_limit" field.
+func UserConcurrencyLimitGT(v int) predicate.Group {
+	return predicate.Group(sql.FieldGT(FieldUserConcurrencyLimit, v))
+}
+
+// UserConcurrencyLimitGTE applies the GTE predicate on the "user_concurrency_limit" field.
+func UserConcurrencyLimitGTE(v int) predicate.Group {
+	return predicate.Group(sql.FieldGTE(FieldUserConcurrencyLimit, v))
+}
+
+// UserConcurrencyLimitLT applies the LT predicate on the "user_concurrency_limit" field.
+func UserConcurrencyLimitLT(v int) predicate.Group {
+	return predicate.Group(sql.FieldLT(FieldUserConcurrencyLimit, v))
+}
+
+// UserConcurrencyLimitLTE applies the LTE predicate on the "user_concurrency_limit" field.
+func UserConcurrencyLimitLTE(v int) predicate.Group {
+	return predicate.Group(sql.FieldLTE(FieldUserConcurrencyLimit, v))
 }
 
 // MaxReasoningEffortEQ applies the EQ predicate on the "max_reasoning_effort" field.
@@ -2990,6 +3160,29 @@ func HasAPIKeys() predicate.Group {
 func HasAPIKeysWith(preds ...predicate.APIKey) predicate.Group {
 	return predicate.Group(func(s *sql.Selector) {
 		step := newAPIKeysStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
+// HasFallbackAPIKeys applies the HasEdge predicate on the "fallback_api_keys" edge.
+func HasFallbackAPIKeys() predicate.Group {
+	return predicate.Group(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, FallbackAPIKeysTable, FallbackAPIKeysColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasFallbackAPIKeysWith applies the HasEdge predicate on the "fallback_api_keys" edge with a given conditions (other predicates).
+func HasFallbackAPIKeysWith(preds ...predicate.APIKey) predicate.Group {
+	return predicate.Group(func(s *sql.Selector) {
+		step := newFallbackAPIKeysStep()
 		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
 			for _, p := range preds {
 				p(s)

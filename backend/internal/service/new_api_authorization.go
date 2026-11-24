@@ -287,6 +287,7 @@ func fmtNewAPIKeyPath(id int64) string { return "/api/token/" + strconv.FormatIn
 func (s *UpstreamBillingProbeService) probeNewAPIAccount(ctx context.Context, a *Account, b *NewAPIAccountBinding, interval int) (*UpstreamBillingProbeSnapshot, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	ctx = context.WithValue(ctx, newAPIProbeDiagnosticsKey{}, &newAPIProbeDiagnostics{})
 	if !s.newAPIFixedKey || s.newAPIEncryptor == nil {
 		return nil, ErrNewAPIEncryptionKey
 	}
@@ -302,9 +303,10 @@ func (s *UpstreamBillingProbeService) probeNewAPIAccount(ctx context.Context, a 
 	data, e := s.fetchNewAPI(ctx, a, site, b.Profile.UserID, secret)
 	var snap *UpstreamBillingProbeSnapshot
 	if e != nil {
-		snap = upstreamBillingProbeFailureSnapshot(a, interval, now, 0, "new_api_request_failed", 0)
+		reason := newAPIProbeFailureReason(e)
+		snap = upstreamBillingProbeFailureSnapshot(a, interval, now, 0, reason, 0)
 		snap.Data = nil
-		snap.Balance = &UpstreamBalanceSnapshot{Status: UpstreamBillingProbeStatusFailed, LastAttemptAt: now, LastError: "new_api_request_failed"}
+		snap.Balance = &UpstreamBalanceSnapshot{Status: UpstreamBillingProbeStatusFailed, LastAttemptAt: now, LastError: reason}
 	} else {
 		matches := matchNewAPITokens(a, data.tokens)
 		var matched *NewAPIToken
@@ -323,11 +325,18 @@ func (s *UpstreamBillingProbeService) probeNewAPIAccount(ctx context.Context, a 
 					Key string `json:"key"`
 				} `json:"data"`
 			}
-			if e = s.newAPIRequest(ctx, a, site, b.Profile.UserID, secret, "POST", fmtNewAPIKeyPath(b.TokenID), &raw); e != nil || !raw.Success || newAPIKey(raw.Data.Key) != newAPIKey(a.GetCredential("api_key")) {
+			if e = s.newAPIRequest(ctx, a, site, b.Profile.UserID, secret, "POST", fmtNewAPIKeyPath(b.TokenID), &raw); e != nil {
+				return s.persistNewAPIFailure(ctx, a, b, interval, now, newAPIProbeFailureReason(e))
+			}
+			if !raw.Success || newAPIKey(raw.Data.Key) != newAPIKey(a.GetCredential("api_key")) {
 				return s.persistNewAPIFailure(ctx, a, b, interval, now, "new_api_bound_key_not_owned")
 			}
 		}
 		snap = newAPISnapshot(a, *matched, data, interval, now)
+	}
+	applyNewAPIProbeDiagnostics(ctx, snap)
+	if snap.Balance != nil && snap.Balance.Status == UpstreamBillingProbeStatusFailed {
+		snap.Balance.HTTPStatus = snap.HTTPStatus
 	}
 	if e = s.newAPIRepo.WriteSnapshot(ctx, a, b, snap); e != nil {
 		return nil, ErrUpstreamBillingProbeIdentityChanged
@@ -339,6 +348,8 @@ func (s *UpstreamBillingProbeService) persistNewAPIFailure(ctx context.Context, 
 	snap := upstreamBillingProbeFailureSnapshot(a, interval, now, 0, reason, 0)
 	snap.Data = nil
 	snap.Balance = &UpstreamBalanceSnapshot{Status: UpstreamBillingProbeStatusFailed, LastAttemptAt: now, LastError: reason}
+	applyNewAPIProbeDiagnostics(ctx, snap)
+	snap.Balance.HTTPStatus = snap.HTTPStatus
 	if err := s.newAPIRepo.WriteSnapshot(ctx, a, b, snap); err != nil {
 		return nil, ErrUpstreamBillingProbeIdentityChanged
 	}

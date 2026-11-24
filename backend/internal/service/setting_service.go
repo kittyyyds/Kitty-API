@@ -5,18 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Wei-Shaw/sub2api/internal/requestcapture"
-	"github.com/Wei-Shaw/sub2api/internal/serverless"
 	"strings"
 	"sync/atomic"
-	"time"
+
+	"sync"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/iprisk"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"golang.org/x/sync/singleflight"
-	"sync"
 )
 
 const (
@@ -133,47 +131,64 @@ type WebSearchManagerBuilder func(cfg *WebSearchEmulationConfig, proxyURLs map[i
 
 // SettingService 系统设置服务
 type SettingService struct {
-	scopedAdminKeyRepo                ScopedAdminKeyRepository
-	IPRisk                            *iprisk.Manager     // Initialized before requests start.
-	Serverless                        *serverless.Manager // Initialized before requests start.
-	modelBillingCache                 modelBillingConfigCache
-	prioritySchedulingConfig          priorityConfigCache
-	requestCapture                    *requestcapture.Manager
-	astraRoutingMu                    sync.Mutex
-	astraRoutingOnSaved               func(config.AstraRoutingSettings)
-	astraRoutingCache                 *config.AstraRoutingSettings
-	astraRoutingExpires               time.Time
-	settingRepo                       SettingRepository
-	defaultSubGroupReader             DefaultSubscriptionGroupReader
-	proxyRepo                         ProxyRepository // for resolving websearch provider proxy URLs
-	cfg                               *config.Config
-	onUpdate                          func() // Callback when settings are updated (for cache invalidation)
-	version                           string // Application version
-	webSearchManagerBuilder           WebSearchManagerBuilder
-	antigravityUAVersionCache         atomic.Value // *cachedAntigravityUserAgentVersion
-	antigravityUAVersionSF            singleflight.Group
-	openAICodexUACache                atomic.Value // *cachedOpenAICodexUserAgent
-	openAICodexUASF                   singleflight.Group
-	openAICodexVersionCache           atomic.Value // *cachedOpenAICodexClientVersion
-	openAICodexVersionSF              singleflight.Group
-	openAIRequestTimezoneEnabledCache atomic.Value // *cachedOpenAIRequestTimezoneEnabled
-	openAIRequestTimezoneAutoCache    atomic.Value // *cachedOpenAIRequestTimezoneAuto
-	openAIRequestTimezoneEnabledSF    singleflight.Group
-	openAIRequestTimezoneAutoSF       singleflight.Group
-	codexRestrictionPolicyCache       atomic.Value // *cachedCodexRestrictionPolicy
-	codexRestrictionPolicySF          singleflight.Group
-	claudeCodeVersionCache            atomic.Value // *cachedClaudeCodeClientVersion
-	claudeCodeVersionSF               singleflight.Group
+	groupSmartWSMu         sync.Mutex
+	groupSmartWSGeneration uint64
+	groupSmartWSCache      map[int64]groupSmartWSCacheEntry
+
+	scopedAdminKeyRepo        ScopedAdminKeyRepository
+	settingRepo               SettingRepository
+	defaultSubGroupReader     DefaultSubscriptionGroupReader
+	proxyRepo                 ProxyRepository // for resolving websearch provider proxy URLs
+	cfg                       *config.Config
+	onUpdate                  func() // Callback when settings are updated (for cache invalidation)
+	version                   string // Application version
+	webSearchManagerBuilder   WebSearchManagerBuilder
+	antigravityUAVersionCache atomic.Value // *cachedAntigravityUserAgentVersion
+	antigravityUAVersionSF    singleflight.Group
+	openAICodexUACache        atomic.Value // *cachedOpenAICodexUserAgent
+	openAICodexUASF           singleflight.Group
+	openAICodexVersionCache   atomic.Value // *cachedOpenAICodexClientVersion
+	openAICodexVersionSF      singleflight.Group
+	claudeCodeVersionCache    atomic.Value // *cachedClaudeCodeClientVersion
+	claudeCodeVersionSF       singleflight.Group
+	guideMu                   sync.Mutex
+	IPRisk                    *iprisk.Manager // Initialized before requests start.
+	// Initialized before requests start.
+	modelBillingCache modelBillingConfigCache
+
+	// *cachedOpenAIRequestTimezoneEnabled
+	// *cachedOpenAIRequestTimezoneAuto
+
+	codexRestrictionPolicyCache atomic.Value // *cachedCodexRestrictionPolicy
+	codexRestrictionPolicySF    singleflight.Group
+
+	safetyPromptRuntimeCache atomic.Value // *cachedSafetyPromptRuntime
 
 	cyberSessionBlockRuntimeMu    sync.Mutex
 	cyberSessionBlockRuntimeCache atomic.Value // *cachedCyberSessionBlockRuntime
 	cyberSessionBlockRuntimeSF    singleflight.Group
-	safetyPromptRuntimeCache      atomic.Value // *cachedSafetyPromptRuntime
+
+	upstreamErrorRetryCache atomic.Pointer[cachedUpstreamErrorRetry]
+	upstreamErrorRetryMu    sync.Mutex
+
+	upstreamErrorMessageCache atomic.Pointer[cachedUpstreamErrorMessage]
+	upstreamErrorMessageMu    sync.Mutex
+
+	mainlandWebBlockCache atomic.Pointer[cachedMainlandWebBlock]
+	mainlandWebBlockMu    sync.Mutex
 
 	// panelRateLimitCache 面板 API 限流配置进程内缓存（*cachedPanelRateLimitSettings）。
 	// 面板每个认证请求都会读取，禁止在热路径上直接访问 DB。
 	panelRateLimitCache atomic.Value
 	panelRateLimitSF    singleflight.Group
+
+	// registrationEmailBlacklistCache 精确邮箱黑名单进程内缓存（*registrationEmailBlacklistIndex，60s TTL）。
+	// 公开的注册与发码接口每次请求都会读取，禁止在热路径上直接访问 DB。
+	// registrationEmailBlacklistMu 串行化刷新时的「读 DB + 写缓存」与保存后的写缓存，
+	// 避免进行中的刷新用旧名单覆盖刚保存的名单。
+	registrationEmailBlacklistMu    sync.Mutex
+	registrationEmailBlacklistCache atomic.Value
+	registrationEmailBlacklistSF    singleflight.Group
 
 	// openAIQuotaAutoPauseSettingsCache holds the most recently observed quota auto-pause
 	// settings. GetOpenAIQuotaAutoPauseSettings reads this atomic.Value on the request hot
@@ -330,11 +345,7 @@ const (
 
 // NewSettingService 创建系统设置服务实例
 func NewSettingService(settingRepo SettingRepository, cfg *config.Config) *SettingService {
-	s := &SettingService{settingRepo: settingRepo, cfg: cfg}
-	if cfg != nil {
-		cfg.SetAstraRoutingLoader(s.astraRoutingRuntime)
-	}
-	return s
+	return &SettingService{settingRepo: settingRepo, cfg: cfg}
 }
 
 // SetDefaultSubscriptionGroupReader injects an optional group reader for default subscription validation.

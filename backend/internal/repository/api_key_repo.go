@@ -55,10 +55,11 @@ func (r *apiKeyRepository) create(ctx context.Context, key *service.APIKey) erro
 	builder := clientFromContext(ctx, r.client).APIKey.Create().
 		SetUserID(key.UserID).
 		SetConcurrencyLimit(key.ConcurrencyLimit).
-		SetKey(key.Key).
+		SetKey(service.APIKeyStoredValue(key.Key)).
 		SetName(key.Name).
 		SetStatus(key.Status).
 		SetNillableGroupID(key.GroupID).
+		SetNillableFallbackGroupID(key.FallbackGroupID).
 		SetNillableLastUsedAt(key.LastUsedAt).
 		SetQuota(key.Quota).
 		SetQuotaUsed(key.QuotaUsed).
@@ -89,6 +90,7 @@ func (r *apiKeyRepository) GetByID(ctx context.Context, id int64) (*service.APIK
 		Where(apikey.IDEQ(id)).
 		WithUser().
 		WithGroup().
+		WithFallbackGroup().
 		Only(ctx)
 	if err != nil {
 		if dbent.IsNotFound(err) {
@@ -119,14 +121,16 @@ func (r *apiKeyRepository) GetKeyAndOwnerID(ctx context.Context, id int64) (stri
 }
 
 func (r *apiKeyRepository) GetByKey(ctx context.Context, key string) (*service.APIKey, error) {
+ if strings.HasPrefix(key, "$sha256$") { return nil, service.ErrAPIKeyNotFound }
 	m, err := r.activeQuery().
-		Where(apikey.Or(apikey.KeyEQ(key), apikey.KeyHashEQ(legacyAPIKeyDigest(key)))).
+		Where(apikey.Or(apikey.KeyEQ(service.APIKeyStoredValue(key)), apikey.KeyEQ(key), apikey.KeyHashEQ(legacyAPIKeyDigest(key)))).
 		WithUser(func(q *dbent.UserQuery) {
 			q.WithAllowedGroups(func(gq *dbent.GroupQuery) {
 				gq.Select(group.FieldID)
 			})
 		}).
 		WithGroup().
+		WithFallbackGroup().
 		Only(ctx)
 	if err != nil {
 		if dbent.IsNotFound(err) {
@@ -138,26 +142,34 @@ func (r *apiKeyRepository) GetByKey(ctx context.Context, key string) (*service.A
 }
 
 func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*service.APIKey, error) {
-	m, err := r.activeQuery().
-		Where(apikey.Or(apikey.KeyEQ(key), apikey.KeyHashEQ(legacyAPIKeyDigest(key)))).
-		Select(
-			apikey.FieldID,
-			apikey.FieldKeyHash,
-			apikey.FieldKeyPrefix,
-			apikey.FieldUserID,
-			apikey.FieldGroupID,
-			apikey.FieldName,
-			apikey.FieldStatus,
-			apikey.FieldIPWhitelist,
-			apikey.FieldIPBlacklist,
-			apikey.FieldQuota,
-			apikey.FieldQuotaUsed,
-			apikey.FieldExpiresAt,
-			apikey.FieldRateLimit5h,
-			apikey.FieldConcurrencyLimit,
-			apikey.FieldRateLimit1d,
-			apikey.FieldRateLimit7d,
-		).
+ if strings.HasPrefix(key, "$sha256$") { return nil, service.ErrAPIKeyNotFound }
+	return r.getForAuth(ctx, r.activeQuery().Where(apikey.Or(apikey.KeyEQ(service.APIKeyStoredValue(key)), apikey.KeyEQ(key), apikey.KeyHashEQ(legacyAPIKeyDigest(key)))))
+}
+
+func (r *apiKeyRepository) GetByIDForAuth(ctx context.Context, id int64) (*service.APIKey, error) {
+	return r.getForAuth(ctx, r.activeQuery().Where(apikey.IDEQ(id)))
+}
+
+func (r *apiKeyRepository) getForAuth(ctx context.Context, query *dbent.APIKeyQuery) (*service.APIKey, error) {
+	m, err := query.Select(
+		apikey.FieldID,
+		apikey.FieldConcurrencyLimit,
+		apikey.FieldKeyHash,
+		apikey.FieldKeyPrefix,
+		apikey.FieldUserID,
+		apikey.FieldGroupID,
+		apikey.FieldFallbackGroupID,
+		apikey.FieldName,
+		apikey.FieldStatus,
+		apikey.FieldIPWhitelist,
+		apikey.FieldIPBlacklist,
+		apikey.FieldQuota,
+		apikey.FieldQuotaUsed,
+		apikey.FieldExpiresAt,
+		apikey.FieldRateLimit5h,
+		apikey.FieldRateLimit1d,
+		apikey.FieldRateLimit7d,
+	).
 		WithUser(func(q *dbent.UserQuery) {
 			q.Select(
 				user.FieldID,
@@ -222,6 +234,7 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				group.FieldClaudeCodeOnly,
 				group.FieldFallbackGroupID,
 				group.FieldFallbackGroupIDOnInvalidRequest,
+				group.FieldFallbackGroupIDOnUnavailable,
 				group.FieldStreamOnly,
 				group.FieldCodexCliOnly,
 				group.FieldBlockSubagents,
@@ -232,12 +245,15 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				group.FieldAllowMessagesDispatch,
 				group.FieldAllowLive,
 				group.FieldForceOpenaiFast,
+				group.FieldForceOpenaiServiceTier,
 				group.FieldFreeOpenaiFast,
 				group.FieldDefaultMappedModel,
 				group.FieldMessagesDispatchModelConfig,
 				group.FieldModelAllowlist,
 				group.FieldCodexModelsManifestConfig,
+				group.FieldStrictFailover,
 				group.FieldRpmLimit,
+				group.FieldUserConcurrencyLimit,
 				group.FieldMaxReasoningEffort,
 				group.FieldMaxReasoningEffortOverLimit,
 				group.FieldReasoningEffortMappings,
@@ -251,8 +267,14 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				group.FieldProfitControlEnabled,
 				group.FieldProfitMinMargin,
 				group.FieldProfitSafetyBuffer,
+				// OpenAI 选号从 ctx 分组读取隐私门，漏选会放行未设置隐私的账号。
+				group.FieldRequirePrivacySet,
 			)
 		}).
+		// The fallback group becomes the effective billing group when selected, so
+		// its complete pricing, subscription, RPM and concurrency configuration is
+		// required in the request-local auth snapshot.
+		WithFallbackGroup().
 		Only(ctx)
 	if err != nil {
 		if dbent.IsNotFound(err) {
@@ -338,6 +360,13 @@ func (r *apiKeyRepository) update(ctx context.Context, key *service.APIKey, fiel
 			builder.SetGroupID(*key.GroupID)
 		} else {
 			builder.ClearGroupID()
+		}
+	}
+	if fields.FallbackGroupID {
+		if key.FallbackGroupID != nil {
+			builder.SetFallbackGroupID(*key.FallbackGroupID)
+		} else {
+			builder.ClearFallbackGroupID()
 		}
 	}
 
@@ -472,7 +501,13 @@ func (r *apiKeyRepository) apiKeyListByUserIDQuery(userID int64, filters service
 	if filters.Search != "" {
 		q = q.Where(apikey.Or(
 			apikey.NameContainsFold(filters.Search),
-			apikey.KeyContainsFold(filters.Search),
+			func(s *entsql.Selector) {
+				// Only the public display mask is searchable, never the stored digest.
+				term := strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(strings.ToLower(filters.Search))
+				s.Where(entsql.P(func(b *entsql.Builder) {
+					b.WriteString("LOWER(SUBSTR(").Ident(s.C(apikey.FieldKey)).WriteString(", 74)) LIKE ").Arg("%" + term + "%").WriteString(" ESCAPE '!'")
+				}))
+			},
 		))
 	}
 	if filters.Status != "" {
@@ -499,6 +534,7 @@ func (r *apiKeyRepository) ListByUserID(ctx context.Context, userID int64, param
 
 	keysQuery := q.
 		WithGroup().
+		WithFallbackGroup().
 		Offset(params.Offset()).
 		Limit(params.Limit())
 	for _, order := range apiKeyListOrder(params) {
@@ -527,6 +563,7 @@ func (r *apiKeyRepository) ListByUserID(ctx context.Context, userID int64, param
 func (r *apiKeyRepository) ListAllByUserID(ctx context.Context, userID int64, filters service.APIKeyListFilters) ([]service.APIKey, error) {
 	keys, err := r.apiKeyListByUserIDQuery(userID, filters).
 		WithGroup().
+		WithFallbackGroup().
 		Order(dbent.Asc(apikey.FieldID)).
 		All(ctx)
 	if err != nil {
@@ -655,7 +692,7 @@ func (r *apiKeyRepository) CountByUserID(ctx context.Context, userID int64) (int
 }
 
 func (r *apiKeyRepository) ExistsByKey(ctx context.Context, key string) (bool, error) {
-	count, err := r.activeQuery().Where(apikey.Or(apikey.KeyEQ(key), apikey.KeyHashEQ(legacyAPIKeyDigest(key)))).Count(ctx)
+	count, err := r.activeQuery().Where(apikey.Or(apikey.KeyEQ(service.APIKeyStoredValue(key)), apikey.KeyEQ(key), apikey.KeyHashEQ(legacyAPIKeyDigest(key)))).Count(ctx)
 	return count > 0, err
 }
 
@@ -822,7 +859,7 @@ func (r *apiKeyRepository) ListKeysByUserID(ctx context.Context, userID int64) (
 }
 
 func (r *apiKeyRepository) ListKeysByGroupID(ctx context.Context, groupID int64) ([]string, error) {
-	rows, err := r.activeQuery().Where(apiKeyInGroup(groupID)).Select(apikey.FieldKey, apikey.FieldKeyHash).All(ctx)
+	rows, err := r.activeQuery().Where(apikey.Or(apiKeyInGroup(groupID), apikey.FallbackGroupIDEQ(groupID))).Select(apikey.FieldKey, apikey.FieldKeyHash).All(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -952,30 +989,31 @@ func apiKeyEntityToService(m *dbent.APIKey) *service.APIKey {
 		return nil
 	}
 	out := &service.APIKey{
-		ID:               m.ID,
-		UserID:           m.UserID,
-		Key:              m.Key,
-		Name:             m.Name,
-		Status:           m.Status,
-		IPWhitelist:      m.IPWhitelist,
-		IPBlacklist:      m.IPBlacklist,
-		LastUsedAt:       m.LastUsedAt,
-		CreatedAt:        m.CreatedAt,
-		UpdatedAt:        m.UpdatedAt,
-		GroupID:          m.GroupID,
-		Quota:            m.Quota,
-		QuotaUsed:        m.QuotaUsed,
-		ExpiresAt:        m.ExpiresAt,
-		RateLimit5h:      m.RateLimit5h,
+		ID:              m.ID,
+		UserID:          m.UserID,
+		Key:             m.Key,
+		Name:            m.Name,
+		Status:          m.Status,
+		IPWhitelist:     m.IPWhitelist,
+		IPBlacklist:     m.IPBlacklist,
+		LastUsedAt:      m.LastUsedAt,
+		CreatedAt:       m.CreatedAt,
+		UpdatedAt:       m.UpdatedAt,
+		GroupID:         m.GroupID,
+		FallbackGroupID: m.FallbackGroupID,
+		Quota:           m.Quota,
+		QuotaUsed:       m.QuotaUsed,
+		ExpiresAt:       m.ExpiresAt,
+		RateLimit5h:     m.RateLimit5h,
+		RateLimit1d:     m.RateLimit1d,
+		RateLimit7d:     m.RateLimit7d,
+		Usage5h:         m.Usage5h,
+		Usage1d:         m.Usage1d,
+		Usage7d:         m.Usage7d,
+		Window5hStart:   m.Window5hStart,
+		Window1dStart:   m.Window1dStart,
+		Window7dStart:   m.Window7dStart,
 		ConcurrencyLimit: m.ConcurrencyLimit,
-		RateLimit1d:      m.RateLimit1d,
-		RateLimit7d:      m.RateLimit7d,
-		Usage5h:          m.Usage5h,
-		Usage1d:          m.Usage1d,
-		Usage7d:          m.Usage7d,
-		Window5hStart:    m.Window5hStart,
-		Window1dStart:    m.Window1dStart,
-		Window7dStart:    m.Window7dStart,
 		KeyHash:          m.KeyHash,
 		KeyPrefix:        m.KeyPrefix,
 	}
@@ -992,6 +1030,9 @@ func apiKeyEntityToService(m *dbent.APIKey) *service.APIKey {
 	}
 	if m.Edges.Group != nil {
 		out.Group = groupEntityToService(m.Edges.Group)
+	}
+	if m.Edges.FallbackGroup != nil {
+		out.FallbackGroup = groupEntityToService(m.Edges.FallbackGroup)
 	}
 	return out
 }
@@ -1092,6 +1133,7 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		ClaudeCodeOnly:                  g.ClaudeCodeOnly,
 		FallbackGroupID:                 g.FallbackGroupID,
 		FallbackGroupIDOnInvalidRequest: g.FallbackGroupIDOnInvalidRequest,
+		FallbackGroupIDOnUnavailable:    g.FallbackGroupIDOnUnavailable,
 		StreamOnly:                      g.StreamOnly,
 		CodexCLIOnly:                    g.CodexCliOnly,
 		BlockSubagents:                  g.BlockSubagents,
@@ -1103,6 +1145,7 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		AllowMessagesDispatch:           g.AllowMessagesDispatch,
 		AllowLive:                       g.AllowLive,
 		ForceOpenAIFast:                 g.ForceOpenaiFast,
+		ForceOpenAIServiceTier:          g.ForceOpenaiServiceTier,
 		FreeOpenAIFast:                  g.FreeOpenaiFast,
 		RequireOAuthOnly:                g.RequireOauthOnly,
 		RequirePrivacySet:               g.RequirePrivacySet,
@@ -1110,7 +1153,9 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		MessagesDispatchModelConfig:     g.MessagesDispatchModelConfig,
 		ModelAllowlist:                  service.GroupModelAllowlistFromDomain(g.ModelAllowlist),
 		CodexModelsManifestConfig:       g.CodexModelsManifestConfig,
+		StrictFailover:                  g.StrictFailover,
 		RPMLimit:                        g.RpmLimit,
+		UserConcurrencyLimit:            g.UserConcurrencyLimit,
 		MaxReasoningEffort:              g.MaxReasoningEffort,
 		MaxReasoningEffortOverLimit:     g.MaxReasoningEffortOverLimit,
 		ReasoningEffortMappings:         g.ReasoningEffortMappings,

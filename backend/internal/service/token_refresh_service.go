@@ -2,18 +2,16 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Wei-Shaw/sub2api/internal/managedinstance"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 )
 
@@ -101,9 +99,6 @@ func NewTokenRefreshService(
 	tempUnschedCache TempUnschedCache,
 	grokOAuthServices ...*GrokOAuthService,
 ) *TokenRefreshService {
-	if source, ok := accountRepo.(LatestSchedulerAccountsRepository); ok && schedulerCache != nil {
-		schedulerCache = &codexOrderedSchedulerCache{SchedulerCache: schedulerCache, source: source}
-	}
 	refreshCfg := &config.TokenRefreshConfig{}
 	if cfg != nil {
 		refreshCfg = &cfg.TokenRefresh
@@ -491,12 +486,6 @@ func (s *TokenRefreshService) processRefresh() {
 
 // processRefreshContext executes one bounded, cursor-resumable refresh cycle.
 func (s *TokenRefreshService) processRefreshContext(parent context.Context) {
-	parent, managedDone, managedAllowed := managedinstance.Begin(parent)
-	if !managedAllowed {
-		return
-	}
-	defer managedDone()
-
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -542,6 +531,7 @@ func (s *TokenRefreshService) processRefreshContext(parent context.Context) {
 			AfterID:              afterID,
 			Limit:                pageSize,
 			ActiveOnly:           true,
+			IncludeQualityPaused: true,
 			IncludeSetupToken:    true,
 			RequireRefreshToken:  true,
 			ExcludeRetryCooldown: true,
@@ -848,6 +838,9 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 	refreshWindow time.Duration,
 	gate refreshAttemptGate,
 ) error {
+	if account != nil && account.IsOpenAIOAuth() && (s.refreshAPI == nil || executor == nil) {
+		return openAIRefreshCASNotConfigured()
+	}
 	var lastErr error
 	maxRetries := s.maxRetries()
 
@@ -996,9 +989,13 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 
 		// 不可重试错误（invalid_grant/invalid_client 等）直接标记 error 状态并返回
 		if isNonRetryableRefreshError(err) {
-			errorMsg := "Token refresh failed (non-retryable): " + logredact.RedactText(err.Error())
+			errorMsg := openAIRefreshErrorPrefix + logredact.RedactText(err.Error())
+			var openAIError *openai.RefreshTokenError
+			if s.refreshAPI != nil && canRecoverOpenAIOAuth(account) && errors.As(err, &openAIError) && openAIError.Permanent {
+				return s.handleRejectedOpenAIRefresh(ctx, account, openAIError, openAIRefreshErrorPrefix+logredact.RedactText(openAIError.Error()))
+			}
 			isGrokOAuth := account.IsGrokOAuth()
-			if !isGrokOAuth {
+			if !isGrokOAuth && !account.IsOpenAIOAuth() {
 				s.notifyAccountSchedulingBlocked(account, time.Time{}, "token_refresh_non_retryable")
 			}
 			s.clearAntigravityForceTokenRefresh(ctx, account, "non_retryable")
@@ -1022,6 +1019,18 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 						slog.Info("token_refresh.grok_error_status_skipped_stale_credentials", "account_id", account.ID)
 						return errRefreshSkipped
 					}
+				}
+			} else if account.IsOpenAIOAuth() {
+				mutation, ok := s.accountRepo.(OpenAIOAuthRefreshFailureRepository)
+				if !ok {
+					return openAIRefreshCASNotConfigured()
+				}
+				persistentlyBlocked, setErr = mutation.SetOpenAIOAuthRefreshErrorIfUnchanged(ctx, account.ID, account.Credentials, account.ProxyID, errorMsg)
+				if setErr == nil && !persistentlyBlocked {
+					return errRefreshSkipped
+				}
+				if setErr == nil {
+					s.notifyAccountSchedulingBlocked(account, time.Time{}, "token_refresh_non_retryable")
 				}
 			} else {
 				setErr = s.accountRepo.SetError(ctx, account.ID, errorMsg)
@@ -1186,9 +1195,8 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 			s.notifyAccountSchedulingBlockCleared(account.ID)
 		}
 	}
-	// 刷新成功后只清除凭据型 401 临时不可调度状态。Grok 推理 403 等非凭据
-	// 冷却不能被一次 token refresh 意外解除。
-	if s.grokRefreshClearsTempUnschedulable(ctx, account) {
+	// 刷新成功后清除临时不可调度状态（处理 OAuth 401 恢复场景）
+	if account.TempUnschedulableUntil != nil && time.Now().Before(*account.TempUnschedulableUntil) {
 		if clearErr := s.accountRepo.ClearTempUnschedulable(ctx, account.ID); clearErr != nil {
 			slog.Warn("token_refresh.clear_temp_unschedulable_failed",
 				"account_id", account.ID,
@@ -1197,15 +1205,14 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 		} else {
 			slog.Info("token_refresh.cleared_temp_unschedulable", "account_id", account.ID)
 			s.notifyAccountSchedulingBlockCleared(account.ID)
-			// 缓存清理发生在持久状态清理成功之后。现有仓库没有按原因比较的
-			// 条件清理接口，因此这里不能防止清理与并发新 403 写入之间的竞态。
-			if s.tempUnschedCache != nil {
-				if clearErr := s.tempUnschedCache.DeleteTempUnsched(ctx, account.ID); clearErr != nil {
-					slog.Warn("token_refresh.clear_temp_unsched_cache_failed",
-						"account_id", account.ID,
-						"error", clearErr,
-					)
-				}
+		}
+		// 同步清除 Redis 缓存，避免调度器读到过期的临时不可调度状态
+		if s.tempUnschedCache != nil {
+			if clearErr := s.tempUnschedCache.DeleteTempUnsched(ctx, account.ID); clearErr != nil {
+				slog.Warn("token_refresh.clear_temp_unsched_cache_failed",
+					"account_id", account.ID,
+					"error", clearErr,
+				)
 			}
 		}
 	}
@@ -1218,36 +1225,6 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 	if account != nil && account.Platform == PlatformGrok && accountGrokNeedsReauth(account) {
 		clearGrokNeedsReauthExtra(ctx, s.accountRepo, account.ID)
 	}
-}
-
-func (s *TokenRefreshService) grokRefreshClearsTempUnschedulable(ctx context.Context, account *Account) bool {
-	if account == nil || account.TempUnschedulableUntil == nil || !time.Now().Before(*account.TempUnschedulableUntil) {
-		return false
-	}
-	if account.Platform != PlatformGrok {
-		return true
-	}
-	current := account
-	if s != nil && s.accountRepo != nil {
-		latest, err := s.accountRepo.GetByID(ctx, account.ID)
-		if err != nil || latest == nil {
-			return false
-		}
-		current = latest
-	}
-	return isGrokCredentialUnauthorizedTempReason(current.TempUnschedulableReason)
-}
-
-func isGrokCredentialUnauthorizedTempReason(reason string) bool {
-	reason = strings.TrimSpace(reason)
-	if reason == "grok credentials unauthorized" || reason == "grok oauth token unauthorized" {
-		return true
-	}
-	var state TempUnschedState
-	if err := json.Unmarshal([]byte(reason), &state); err != nil {
-		return false
-	}
-	return state.StatusCode == http.StatusUnauthorized
 }
 
 func (s *TokenRefreshService) postRefreshStateSyncWithCleanup(parent context.Context, account *Account) {
@@ -1430,6 +1407,15 @@ func (e *providerConfigurationRefreshError) Unwrap() error {
 }
 
 func isSharedProviderRefreshError(err error) bool {
+	var tokenErr *openai.RefreshTokenError
+	if errors.As(err, &tokenErr) {
+		switch tokenErr.Code {
+		case "invalid_client", "unauthorized_client", "invalid_scope":
+			return true
+		}
+		return false
+	}
+
 	if err == nil {
 		return false
 	}
@@ -1451,6 +1437,11 @@ func isSharedProviderRefreshError(err error) bool {
 // 这些错误通常表示凭证已失效或配置确实缺失，需要用户重新授权
 // 注意：missing_project_id 错误只在真正缺失（从未获取过）时返回，临时获取失败不会返回此错误
 func isNonRetryableRefreshError(err error) bool {
+	var tokenErr *openai.RefreshTokenError
+	if errors.As(err, &tokenErr) {
+		return tokenErr.Permanent
+	}
+
 	if err == nil {
 		return false
 	}
@@ -1507,8 +1498,12 @@ func (s *TokenRefreshService) ensureOpenAIPrivacy(ctx context.Context, account *
 		}
 	}
 
-	if ValidateConfiguredAccountProxy(account, proxyURL) != nil {
-		return
+	if account.IsOpenAIVMBound() {
+		var err error
+		proxyURL, err = resolveOpenAIAccountProxyURL(ctx, s.proxyRepo, account)
+		if err != nil {
+			return
+		}
 	}
 	mode := disableOpenAITraining(ctx, s.privacyClientFactory, token, proxyURL)
 	if mode == "" {
@@ -1555,9 +1550,6 @@ func (s *TokenRefreshService) ensureAntigravityPrivacy(ctx context.Context, acco
 		}
 	}
 
-	if ValidateConfiguredAccountProxy(account, proxyURL) != nil {
-		return
-	}
 	mode := setAntigravityPrivacy(ctx, token, projectID, proxyURL)
 	if mode == "" {
 		return
@@ -1574,5 +1566,13 @@ func (s *TokenRefreshService) ensureAntigravityPrivacy(ctx context.Context, acco
 			"account_id", account.ID,
 			"privacy_mode", mode,
 		)
+	}
+}
+
+func (e *rateLimitedOAuthRefreshExecutor) AuthCredentialsPersisted(ctx context.Context, previous *Account) {
+	if publisher, ok := e.OAuthRefreshExecutor.(interface {
+		AuthCredentialsPersisted(context.Context, *Account)
+	}); ok {
+		publisher.AuthCredentialsPersisted(ctx, previous)
 	}
 }

@@ -101,8 +101,9 @@ type channelCache struct {
 	groupPlatform           map[int64]string                                    // groupID → platform
 
 	// 冷路径（CRUD 操作）
-	byID     map[int64]*Channel
-	loadedAt time.Time
+	byID       map[int64]*Channel
+	loadedAt   time.Time
+	loadFailed bool // Distinguish a short error cache from a genuinely unmapped group.
 }
 
 // ChannelMappingResult 渠道映射查找结果
@@ -282,6 +283,7 @@ func expandMappingToCache(cache *channelCache, ch *Channel, gid int64, platform 
 // 通过回退 loadedAt 使剩余 TTL = channelErrorTTL。
 func (s *ChannelService) storeErrorCache() {
 	errorCache := newEmptyChannelCache()
+	errorCache.loadFailed = true
 	errorCache.loadedAt = time.Now().Add(-(channelCacheTTL - channelErrorTTL))
 	s.cache.Store(errorCache)
 }
@@ -788,6 +790,7 @@ func checkPricesNotNegative(p ChannelModelPricing) error {
 		{"output_price", p.OutputPrice},
 		{"cache_write_price", p.CacheWritePrice},
 		{"cache_write_1h_price", p.CacheWrite1hPrice},
+		{"cache_write_12h_price", p.CacheWrite12hPrice},
 		{"cache_read_price", p.CacheReadPrice},
 		{"image_input_price", p.ImageInputPrice},
 		{"image_output_price", p.ImageOutputPrice},
@@ -802,10 +805,11 @@ func checkPricesNotNegative(p ChannelModelPricing) error {
 		field string
 		val   *float64
 	}{
+		{"ultrafast_multiplier", p.UltrafastMultiplier},
 		{"fast_multiplier", p.FastMultiplier},
 		{"flex_multiplier", p.FlexMultiplier},
 	} {
-		if c.val != nil && *c.val <= 0 {
+		if c.val != nil && (*c.val <= 0 || math.IsNaN(*c.val) || math.IsInf(*c.val, 0)) {
 			return infraerrors.BadRequest("INVALID_MULTIPLIER", fmt.Sprintf("%s must be > 0", c.field))
 		}
 	}
@@ -815,7 +819,7 @@ func checkPricesNotNegative(p ChannelModelPricing) error {
 func checkIntervalsHavePrices(p ChannelModelPricing) error {
 	for _, iv := range p.Intervals {
 		if iv.InputPrice == nil && iv.OutputPrice == nil &&
-			iv.CacheWritePrice == nil && iv.CacheWrite1hPrice == nil && iv.CacheReadPrice == nil &&
+			iv.CacheWritePrice == nil && iv.CacheWrite1hPrice == nil && iv.CacheWrite12hPrice == nil && iv.CacheReadPrice == nil &&
 			iv.PerRequestPrice == nil && iv.InputMultiplier == nil &&
 			iv.OutputMultiplier == nil && iv.CacheWriteMultiplier == nil &&
 			iv.CacheReadMultiplier == nil {

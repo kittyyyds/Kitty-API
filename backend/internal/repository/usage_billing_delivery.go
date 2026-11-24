@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"time"
@@ -104,6 +105,33 @@ func (r *usageBillingRepository) ApplyStagedUsageBilling(ctx context.Context, ke
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	recovered, err := r.applyStagedUsageBillingTx(ctx, tx, key, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err == nil {
+		return recovered, nil
+	}
+	// Inspect durable evidence before any replay. A later retry takes the row
+	// lock again, so even a transaction still resolving here cannot double debit.
+	check, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	var committedState string
+	var committedResult []byte
+	checkErr := r.db.QueryRowContext(check, `SELECT state,result FROM usage_billing_events
+		WHERE request_id=$1 AND api_key_id=$2`, key.RequestID, key.APIKeyID).Scan(&committedState, &committedResult)
+	if checkErr == nil && (committedState == "applied" || committedState == "complete") {
+		if checkErr = json.Unmarshal(committedResult, &recovered.Result); checkErr == nil {
+			recovered.NeedsCache = committedState == "applied"
+			return recovered, nil
+		}
+	}
+	return nil, errors.Join(service.ErrUsageBillingOutcomeUnknown, err, checkErr)
+}
+
+// applyStagedUsageBillingTx preserves the journal, owner, dedup, exact-money and canonical-log boundary.
+func (r *usageBillingRepository) applyStagedUsageBillingTx(ctx context.Context, tx *sql.Tx, key service.UsageBillingEventKey, userID int64) (*service.UsageBillingRecovery, error) {
+	var err error
 	var raw, resultRaw []byte
 	var state, fingerprint string
 	var version int
@@ -121,6 +149,9 @@ func (r *usageBillingRepository) ApplyStagedUsageBilling(ctx context.Context, ke
 	}
 	if err = validateUsageBillingEvent(&recovered.Event, key, fingerprint); err != nil {
 		return nil, err
+	}
+	if userID > 0 && recovered.Event.Command.UserID != userID {
+		return nil, service.ErrUsageBillingRequestConflict
 	}
 	if state == "applied" || state == "complete" || state == "legacy" {
 		if len(resultRaw) > 0 {
@@ -148,7 +179,7 @@ func (r *usageBillingRepository) ApplyStagedUsageBilling(ctx context.Context, ke
 		if err != nil {
 			return nil, err
 		}
-		return recovered, tx.Commit()
+		return recovered, nil
 	}
 	var existing bool
 	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM usage_logs WHERE request_id=$1 AND api_key_id=$2)`, key.RequestID, key.APIKeyID).Scan(&existing); err != nil {
@@ -179,25 +210,8 @@ func (r *usageBillingRepository) ApplyStagedUsageBilling(ctx context.Context, ke
 	if err != nil {
 		return nil, err
 	}
-	if err = tx.Commit(); err == nil {
-		recovered.NeedsCache = true
-		return recovered, nil
-	}
-	// Inspect durable evidence before any replay. A later retry takes the row
-	// lock again, so even a transaction still resolving here cannot double debit.
-	check, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	var committedState string
-	var committedResult []byte
-	checkErr := r.db.QueryRowContext(check, `SELECT state,result FROM usage_billing_events
-		WHERE request_id=$1 AND api_key_id=$2`, key.RequestID, key.APIKeyID).Scan(&committedState, &committedResult)
-	if checkErr == nil && (committedState == "applied" || committedState == "complete") {
-		if checkErr = json.Unmarshal(committedResult, &recovered.Result); checkErr == nil {
-			recovered.NeedsCache = committedState == "applied"
-			return recovered, nil
-		}
-	}
-	return nil, errors.Join(service.ErrUsageBillingOutcomeUnknown, err, checkErr)
+	recovered.NeedsCache = true
+	return recovered, nil
 }
 
 func (r *usageBillingRepository) PendingUsageBilling(ctx context.Context, limit int) ([]service.UsageBillingEventKey, error) {

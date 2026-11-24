@@ -373,6 +373,8 @@ func TestForwardAsChatCompletions_StructuredInputRejectionDoesNotRetryIneligible
 		mode          string
 		unknown       bool
 		platform      string
+		protocol      string
+		endpoint      string
 		accountType   string
 		responsesBody bool
 		nativeIngress bool
@@ -385,6 +387,10 @@ func TestForwardAsChatCompletions_StructuredInputRejectionDoesNotRetryIneligible
 		{name: "Responses shaped Chat ingress", responsesBody: true},
 		{name: "native Responses ingress", responsesBody: true, nativeIngress: true},
 		{name: "native CN Responses protocol", platform: PlatformDeepseek},
+		{name: "adaptive Chat ingress stays raw", platform: PlatformKimi, protocol: APIProtocolAdaptive, endpoint: "/chat/completions"},
+		{name: "adaptive Responses shaped ingress stays Responses", platform: PlatformKimi, protocol: APIProtocolAdaptive, responsesBody: true},
+		{name: "adaptive Responses shaped ingress converts to Chat", platform: PlatformZhipu, protocol: APIProtocolAdaptive, responsesBody: true, endpoint: "/chat/completions"},
+		{name: "model routed Responses is not OpenAI retry eligible", platform: PlatformCommandCode, protocol: APIProtocolResponses},
 		{name: "OAuth", accountType: AccountTypeOAuth},
 		{name: "authentication", status: http.StatusUnauthorized},
 		{name: "authorization", status: http.StatusForbidden},
@@ -410,6 +416,9 @@ func TestForwardAsChatCompletions_StructuredInputRejectionDoesNotRetryIneligible
 			if test.platform != "" {
 				account.Platform = test.platform
 				account.Credentials["api_protocol"] = APIProtocolResponses
+			}
+			if test.protocol != "" {
+				account.Credentials["api_protocol"] = test.protocol
 			}
 			if test.accountType != "" {
 				account.Type = test.accountType
@@ -440,7 +449,11 @@ func TestForwardAsChatCompletions_StructuredInputRejectionDoesNotRetryIneligible
 			require.Error(t, err)
 			require.Nil(t, result)
 			require.Len(t, upstream.requests, 1)
-			require.True(t, strings.HasSuffix(upstream.requests[0].URL.Path, "/responses"))
+			endpoint := test.endpoint
+			if endpoint == "" {
+				endpoint = "/responses"
+			}
+			require.True(t, strings.HasSuffix(upstream.requests[0].URL.Path, endpoint))
 			var failover *UpstreamFailoverError
 			if status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusTooManyRequests {
 				require.ErrorAs(t, err, &failover)
@@ -1062,7 +1075,7 @@ func TestForwardAsChatCompletions_BufferedContextWindowResponseFailedReturnsErro
 	var failoverErr *UpstreamFailoverError
 	require.False(t, errors.As(err, &failoverErr))
 	require.True(t, c.Writer.Written())
-	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 	require.Contains(t, rec.Body.String(), "input exceeds the context window")
 }
 
@@ -1107,7 +1120,7 @@ func TestForwardAsChatCompletions_StreamContextWindowResponseFailedReturnsErrorW
 	var failoverErr *UpstreamFailoverError
 	require.False(t, errors.As(err, &failoverErr))
 	require.True(t, c.Writer.Written())
-	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 	require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
 	require.Contains(t, rec.Body.String(), "input exceeds the context window")
 	require.NotContains(t, rec.Body.String(), "[DONE]")
@@ -1149,7 +1162,10 @@ func TestForwardAsChatCompletions_StreamBareErrorAfterOutputDoesNotFailOver(t *t
 	var failoverErr *UpstreamFailoverError
 	require.False(t, errors.As(err, &failoverErr))
 	require.Contains(t, rec.Body.String(), "partial")
-	require.Contains(t, rec.Body.String(), "temporary upstream failure")
+	require.Contains(t, rec.Body.String(), OpenAIUpstreamFailureClientMessage)
+	require.NotContains(t, rec.Body.String(), "temporary upstream failure")
+	require.ErrorContains(t, err, "temporary upstream failure")
+	require.Equal(t, "temporary upstream failure", c.GetString(OpsUpstreamErrorMessageKey))
 	require.NotContains(t, rec.Body.String(), "[DONE]")
 }
 
@@ -1607,10 +1623,12 @@ func TestForwardAsChatCompletions_DoneSentinelWithoutTerminalReturnsError(t *tes
 
 	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "gpt-5.1")
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "missing terminal event")
-	require.NotNil(t, result)
-	require.Zero(t, result.Usage.InputTokens)
-	require.Zero(t, result.Usage.OutputTokens)
+	var failover *UpstreamFailoverError
+	require.ErrorAs(t, err, &failover)
+	require.Equal(t, http.StatusBadGateway, failover.StatusCode)
+	require.Nil(t, result, "unstarted attempt must not expose estimated usage as actual work")
+	require.Empty(t, rec.Body.String(), "outer handler still owns the first response")
+	require.False(t, c.Writer.Written())
 }
 
 func TestForwardAsChatCompletions_UpstreamRequestIgnoresClientCancel(t *testing.T) {
@@ -1788,8 +1806,8 @@ func TestGPT61SolRejectsDisabledReasoningBeforeForwarding(t *testing.T) {
 		`{"model":"public","thinking":{"type":"disabled"}}`,
 		`{"model":"gpt-6.1-sol-minimal"}`,
 	} {
-		require.Error(t, validateGPT61SolCompatRequest([]byte(body), "gpt-6.1-sol"))
-		require.NoError(t, validateGPT61SolCompatRequest([]byte(body), "gpt-6-sol"))
+		require.Error(t, validateGPT61CompatRequest([]byte(body), "gpt-6.1-sol"))
+		require.NoError(t, validateGPT61CompatRequest([]byte(body), "gpt-6-sol"))
 	}
 	for _, field := range []string{`"reasoning_effort":"none"`, `"reasoning_effort":"minimal"`, `"tools":[{"type":"function","function":{"name":"lookup"}}]`} {
 		body := []byte(`{"model":"public",` + field + `,"messages":[{"role":"user","content":"hello"}]}`)

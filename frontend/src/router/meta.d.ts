@@ -56,6 +56,10 @@ declare module 'vue-router' {
      * @default false
      */
     requiresChannelMonitor?: boolean
+    /**
+     * 是否要求风控中心功能开关已启用
+     */
+    requiresRiskControl?: boolean
 
     /**
      * Whether the support ticket (网站工单) switch must be on

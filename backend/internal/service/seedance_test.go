@@ -4,10 +4,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -78,9 +80,9 @@ func TestSeedanceValidationAndCapability(t *testing.T) {
 	}
 	info, err := ParseSeedanceRequest([]byte(`{"model":"x","content":[{"type":"text","text":"first"},{"type":"text","text":"second"},{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}`))
 	require.NoError(t, err)
-	require.Contains(t, string(info.ModerationBody()), "first")
-	require.Contains(t, string(info.ModerationBody()), "second")
-	require.Contains(t, string(info.ModerationBody()), "https://example.com/a.png")
+	require.Contains(t, info.Prompt, "first")
+	require.Contains(t, info.Prompt, "second")
+	require.Contains(t, info.InputImageURLs, "https://example.com/a.png")
 	for _, id := range []string{"", "..", "a/b", "a?b", "a#b", "%2e%2e"} {
 		_, err := buildSeedanceURL("https://example.com", SeedanceEndpointStatus, id)
 		require.Error(t, err, id)
@@ -111,15 +113,52 @@ func TestSeedancePreservesUpstreamErrorsWithoutRetry(t *testing.T) {
 	require.Len(t, upstream.requests, 1)
 }
 
-func TestSeedanceCapabilityKeepsDedicatedVideoSeparate(t *testing.T) {
-	a := seedanceTestAccount()
-	a.Platform = PlatformVideo
-	require.False(t, a.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilitySeedance))
-	require.True(t, a.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityGrokMediaGeneration))
-	upstream := &grokMediaContentUpstreamStub{response: grokMediaContentStatusResponse(`{"id":"must-not-submit"}`)}
-	svc := &OpenAIGatewayService{httpUpstream: upstream}
-	c, _ := grokMediaContentTestContext(http.MethodPost, "/api/v3/contents/generations/tasks", nil)
-	_, err := svc.ForwardSeedance(context.Background(), c, a, SeedanceEndpointCreate, "", []byte(`{"model":"video","content":[{"type":"text","text":"waves"}]}`))
-	require.Error(t, err)
-	require.Empty(t, upstream.requests)
+func TestSeedanceBillingErrorsArePrivateWithoutRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   int
+		endpoint GrokMediaEndpoint
+		body     string
+	}{
+		{"payment_required", http.StatusPaymentRequired, SeedanceEndpointCreate, `{"error":{"code":"PaymentRequired","message":"operator balance exhausted"}}`},
+		{"forbidden_balance", http.StatusForbidden, SeedanceEndpointCreate, `{"error":{"code":"insufficient_balance","message":"余额不足"}}`},
+		{"quota", http.StatusTooManyRequests, SeedanceEndpointCreate, `{"error":{"code":"insufficient_quota","message":"check your plan and billing details"}}`},
+		{"semantic_error", http.StatusOK, SeedanceEndpointCreate, `{"error":{"code":"insufficient_balance","message":"余额不足"}}`},
+		{"failed_task", http.StatusOK, SeedanceEndpointStatus, `{"id":"task-1","status":"failed","error":{"code":"insufficient_balance","message":"余额不足","details":{"balance":0}}}`},
+		{"nested_error", http.StatusOK, SeedanceEndpointStatus, `{"id":"task-1","status":"failed","response":{"error":{"code":"insufficient_balance","message":"余额不足"}}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := &grokMediaContentUpstreamStub{response: grokMediaContentStatusResponse(tc.body)}
+			upstream.response.StatusCode = tc.status
+			upstream.response.Header.Set("X-Upstream-Error", "insufficient_balance")
+			repo := &rateLimitAccountRepoStub{}
+			svc := &OpenAIGatewayService{
+				httpUpstream:     upstream,
+				rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
+			}
+			c, w := grokMediaContentTestContext(http.MethodPost, "/api/v3/contents/generations/tasks", nil)
+			result, err := svc.ForwardSeedance(context.Background(), c, seedanceTestAccount(), tc.endpoint, "seedance:task-1", []byte(`{"model":"video","content":[{"type":"text","text":"waves"}]}`))
+			require.Error(t, err)
+			require.Nil(t, result)
+			var failover *UpstreamFailoverError
+			require.False(t, errors.As(err, &failover), "ambiguous asynchronous creates must never retry")
+			require.Len(t, upstream.requests, 1)
+			require.True(t, IsResponseCommitted(c))
+			require.Equal(t, UpstreamBillingExhaustedClientMessage, gjson.Get(w.Body.String(), "error.message").String())
+			require.NotContains(t, w.Body.String(), "insufficient_balance")
+			require.NotContains(t, w.Body.String(), "余额不足")
+			require.NotContains(t, w.Body.String(), "billing details")
+			require.Empty(t, w.Header().Get("X-Upstream-Error"))
+			require.NotEmpty(t, c.GetString(OpsUpstreamErrorMessageKey), "operator diagnostics should retain the failure")
+			require.Equal(t, 1, repo.setErrorCalls, "stop scheduling the depleted provider account")
+			if tc.endpoint == SeedanceEndpointStatus {
+				require.Equal(t, http.StatusOK, w.Code)
+				require.Equal(t, "task-1", gjson.Get(w.Body.String(), "id").String())
+				require.Equal(t, "failed", gjson.Get(w.Body.String(), "status").String())
+				require.False(t, gjson.Get(w.Body.String(), "error.details").Exists())
+			} else {
+				require.Equal(t, http.StatusBadGateway, w.Code)
+			}
+		})
+	}
 }

@@ -10,6 +10,8 @@ import type { VideoSupplierPrice } from '@/api/admin/videoUpstream'
 const mocks = vi.hoisted(() => ({
   list: vi.fn(), create: vi.fn(), update: vi.fn(), showError: vi.fn(), get: vi.fn(),
 }))
+vi.mock('@/api/admin/groups', () => ({ getSmartWS: vi.fn().mockResolvedValue({ enabled: false, revision: 0 }), setSmartWS: vi.fn() }))
+
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     groups: {

@@ -103,8 +103,11 @@ const (
 
 // UpstreamBillingProbeSettings controls the periodic probe runner.
 type UpstreamBillingProbeSettings struct {
-	Enabled         bool `json:"enabled"`
-	IntervalMinutes int  `json:"interval_minutes"`
+	Enabled                 bool   `json:"enabled"`
+	IntervalMinutes         int    `json:"interval_minutes"`
+	RateChangeNotifyEnabled bool   `json:"rate_change_notify_enabled"`
+	RateChangeNotifyEmail   string `json:"rate_change_notify_email"`
+	RateChangeNotifyEpoch   string `json:"rate_change_notify_epoch,omitempty"`
 }
 
 // UpstreamBillingProbeSnapshot is persisted in accounts.extra. Data is kept as
@@ -112,18 +115,23 @@ type UpstreamBillingProbeSettings struct {
 type UpstreamBillingProbeSnapshot struct {
 	// Kind is absent for the existing token billing contract. Video prices are
 	// observations only and never supply account multipliers or group prices.
-	Kind          string                `json:"kind,omitempty"`
-	VideoPricing  *VideoSupplierCatalog `json:"video_pricing,omitempty"`
-	ImagePricing  *ImageSupplierCatalog `json:"image_pricing,omitempty"`
-	Status        string                `json:"status"`
-	Data          map[string]any        `json:"data,omitempty"`
-	ReceivedAt    *time.Time            `json:"received_at,omitempty"`
-	FreshUntil    *time.Time            `json:"fresh_until,omitempty"`
-	LastAttemptAt time.Time             `json:"last_attempt_at"`
-	NextProbeAt   time.Time             `json:"next_probe_at"`
-	FailureCount  int                   `json:"failure_count,omitempty"`
-	HTTPStatus    int                   `json:"http_status,omitempty"`
-	LastError     string                `json:"last_error,omitempty"`
+	Protocol         string                    `json:"protocol,omitempty"`
+	UpstreamVersion  string                    `json:"upstream_version,omitempty"`
+	RateSource       string                    `json:"rate_source,omitempty"`
+	ProbeStage       string                    `json:"probe_stage,omitempty"`
+	RateNotification *UpstreamRateNotification `json:"rate_notification,omitempty"`
+	Kind             string                    `json:"kind,omitempty"`
+	VideoPricing     *VideoSupplierCatalog     `json:"video_pricing,omitempty"`
+	ImagePricing     *ImageSupplierCatalog     `json:"image_pricing,omitempty"`
+	Status           string                    `json:"status"`
+	Data             map[string]any            `json:"data,omitempty"`
+	ReceivedAt       *time.Time                `json:"received_at,omitempty"`
+	FreshUntil       *time.Time                `json:"fresh_until,omitempty"`
+	LastAttemptAt    time.Time                 `json:"last_attempt_at"`
+	NextProbeAt      time.Time                 `json:"next_probe_at"`
+	FailureCount     int                       `json:"failure_count,omitempty"`
+	HTTPStatus       int                       `json:"http_status,omitempty"`
+	LastError        string                    `json:"last_error,omitempty"`
 	// SyncedRateMultiplier records the value this probe wrote into
 	// accounts.rate_multiplier. It is only set when the account opted into rate
 	// sync and the declared value passed the write-back range check, so the
@@ -231,6 +239,21 @@ func (s *SettingService) SetUpstreamBillingProbeSettings(ctx context.Context, se
 			fmt.Sprintf("interval_minutes must be between %d and %d", upstreamBillingProbeMinIntervalMinutes, upstreamBillingProbeMaxIntervalMinutes),
 		)
 	}
+	settings.RateChangeNotifyEmail = strings.TrimSpace(settings.RateChangeNotifyEmail)
+	if settings.RateChangeNotifyEnabled {
+		if err := validateUpstreamRateNotifyEmail(settings.RateChangeNotifyEmail); err != nil {
+			return infraerrors.BadRequest("INVALID_UPSTREAM_RATE_NOTIFICATION_EMAIL", err.Error())
+		}
+	}
+	previous, err := s.GetUpstreamBillingProbeSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if previous.RateChangeNotifyEpoch == "" || previous.RateChangeNotifyEnabled != settings.RateChangeNotifyEnabled || previous.RateChangeNotifyEmail != settings.RateChangeNotifyEmail {
+		settings.RateChangeNotifyEpoch = uuid.NewString()
+	} else {
+		settings.RateChangeNotifyEpoch = previous.RateChangeNotifyEpoch
+	}
 	normalizeUpstreamBillingProbeSettings(settings)
 	data, err := json.Marshal(settings)
 	if err != nil {
@@ -323,10 +346,12 @@ func ProvideUpstreamBillingProbeService(
 	newAPIRepo NewAPIAuthorizationRepository,
 	encryptor SecretEncryptor,
 	channels *ChannelService,
+	emailService *EmailService,
 ) *UpstreamBillingProbeService {
 	svc := NewUpstreamBillingProbeService(accountRepo, accountTestService, settingService)
 	svc.SetLeaderLock(lockCache, db)
 	svc.SetNewAPIAuthorization(newAPIRepo, encryptor, cfg != nil && cfg.Totp.EncryptionKeyConfigured)
+	svc.SetRateNotificationSender(emailService)
 	channels.SetProviderHubProbe(svc)
 	svc.providerHub = channels
 	startBackgroundService(cfg, svc)
@@ -828,7 +853,7 @@ func upstreamBillingRateSnapshotFromResult(
 		case result.statusCode == http.StatusNotFound || result.statusCode == http.StatusMethodNotAllowed:
 			reason = "unsupported"
 		case result.statusCode < 200 || result.statusCode >= 300:
-			reason = "http_error"
+			reason = classifyUpstreamBillingHTTPFailure(result.statusCode, result.header, result.body)
 		}
 	}
 	var data map[string]any
@@ -839,7 +864,9 @@ func upstreamBillingRateSnapshotFromResult(
 		}
 	}
 	if reason != "" {
-		return upstreamBillingProbeFailureSnapshot(account, intervalMinutes, now, result.statusCode, reason, retryAfter(result.header, now)), nil
+		snapshot := upstreamBillingProbeFailureSnapshot(account, intervalMinutes, now, result.statusCode, reason, retryAfter(result.header, now))
+		applyUpstreamProbeDiagnostics(snapshot, result.header, "sub2api", "sub2api_billing", "billing")
+		return snapshot, nil
 	}
 	snapshot := &UpstreamBillingProbeSnapshot{
 		Status:        UpstreamBillingProbeStatusOK,
@@ -850,6 +877,7 @@ func upstreamBillingRateSnapshotFromResult(
 		NextProbeAt:   now.Add(nextProbeDelay(intervalMinutes, 0)),
 		HTTPStatus:    result.statusCode,
 	}
+	applyUpstreamProbeDiagnostics(snapshot, result.header, "sub2api", "sub2api_billing", "billing")
 	if previous := decodeUpstreamBillingProbeSnapshot(account.Extra); previous != nil {
 		snapshot.Balance = previous.Balance
 	}

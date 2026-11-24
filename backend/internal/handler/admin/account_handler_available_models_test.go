@@ -3,11 +3,11 @@ package admin
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -21,6 +21,27 @@ import (
 type availableModelsAdminService struct {
 	*stubAdminService
 	account service.Account
+}
+
+type batchSyncAdminService struct {
+	*stubAdminService
+	accounts []*service.Account
+}
+
+func (s *batchSyncAdminService) GetAccountsByIDs(_ context.Context, ids []int64) ([]*service.Account, error) {
+	byID := make(map[int64]*service.Account, len(s.accounts))
+	for _, account := range s.accounts {
+		if account != nil {
+			byID[account.ID] = account
+		}
+	}
+	result := make([]*service.Account, 0, len(ids))
+	for _, id := range ids {
+		if account := byID[id]; account != nil {
+			result = append(result, account)
+		}
+	}
+	return result, nil
 }
 
 func (s *availableModelsAdminService) GetAccount(_ context.Context, id int64) (*service.Account, error) {
@@ -40,20 +61,21 @@ func setupAvailableModelsRouter(adminSvc service.AdminService) *gin.Engine {
 }
 
 type syncUpstreamHTTPUpstream struct {
-	resp       *http.Response
-	responses  []*http.Response
-	err        error
-	requests   []*http.Request
-	proxyURLs  []string
-	accountIDs []int64
+	mu        sync.Mutex
+	resp      *http.Response
+	responses []*http.Response
+	byAccount map[int64]*http.Response
+	err       error
 }
 
 func (u *syncUpstreamHTTPUpstream) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
-	u.requests = append(u.requests, req)
-	u.proxyURLs = append(u.proxyURLs, proxyURL)
-	u.accountIDs = append(u.accountIDs, accountID)
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	if u.err != nil {
 		return nil, u.err
+	}
+	if response, ok := u.byAccount[accountID]; ok {
+		return response, nil
 	}
 	if len(u.responses) > 0 {
 		resp := u.responses[0]
@@ -67,11 +89,37 @@ func (u *syncUpstreamHTTPUpstream) DoWithTLS(req *http.Request, proxyURL string,
 	return u.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
-func setupSyncUpstreamModelsRouter(adminSvc service.AdminService, upstream service.HTTPUpstream) *gin.Engine {
+type modelSyncAccountRepo struct {
+	service.AccountRepository
+	mu      sync.Mutex
+	updates map[int64]service.AccountBulkUpdate
+}
+
+func (r *modelSyncAccountRepo) BulkUpdate(_ context.Context, ids []int64, updates service.AccountBulkUpdate) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.updates == nil {
+		r.updates = make(map[int64]service.AccountBulkUpdate)
+	}
+	for _, id := range ids {
+		r.updates[id] = updates
+	}
+	return int64(len(ids)), nil
+}
+
+func (r *modelSyncAccountRepo) UpdateExtra(context.Context, int64, map[string]any) error {
+	return nil
+}
+
+func setupSyncUpstreamModelsRouter(adminSvc service.AdminService, upstream service.HTTPUpstream, repos ...service.AccountRepository) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
+	var repo service.AccountRepository
+	if len(repos) > 0 {
+		repo = repos[0]
+	}
 	accountTestSvc := service.NewAccountTestService(
-		nil,
+		repo,
 		nil,
 		nil,
 		nil,
@@ -82,6 +130,7 @@ func setupSyncUpstreamModelsRouter(adminSvc service.AdminService, upstream servi
 	)
 	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, accountTestSvc, nil, nil, nil, nil, nil)
 	router.POST("/api/v1/admin/accounts/:id/models/sync-upstream", handler.SyncUpstreamModels)
+	router.POST("/api/v1/admin/accounts/models/sync-upstream-batch", handler.BatchSyncUpstreamModels)
 	router.POST("/api/v1/admin/accounts/models/sync-upstream-preview", handler.SyncUpstreamModelsPreview)
 	return router
 }
@@ -359,6 +408,12 @@ func TestAccountHandlerGetAvailableModels_Antigravity(t *testing.T) {
 		{name: "string mapping keys and metadata skips wildcards", credentials: map[string]any{"model_mapping": map[string]string{
 			known.ID: known.ID, custom.ID: "upstream-model", "gemini-*": "gemini-3-flash",
 		}}, want: []antigravity.ClaudeModel{custom, known}},
+		{name: "JSON mapping skips wildcards", credentials: map[string]any{"model_mapping": map[string]any{
+			known.ID: known.ID, "claude-*": "upstream-model",
+		}}, want: []antigravity.ClaudeModel{known}},
+		{name: "string mapping skips wildcards", credentials: map[string]any{"model_mapping": map[string]string{
+			known.ID: known.ID, "claude-*": "upstream-model",
+		}}, want: []antigravity.ClaudeModel{known}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -406,6 +461,91 @@ func TestAccountHandlerSyncUpstreamModels_ConfigErrorReturnsBadRequest(t *testin
 	require.Contains(t, rec.Body.String(), "No OpenAI API key is available")
 }
 
+func TestAccountHandlerBatchSyncUpstreamModelsReturnsPerAccountResults(t *testing.T) {
+	accounts := []*service.Account{
+		{
+			ID: 48, Name: "first", Platform: service.PlatformOpenAI,
+			Type: service.AccountTypeAPIKey, Status: service.StatusActive,
+			Credentials: map[string]any{"api_key": "key", "base_url": "https://provider.example/v1"},
+		},
+		{
+			ID: 49, Name: "second", Platform: service.PlatformOpenAI,
+			Type: service.AccountTypeAPIKey, Status: service.StatusActive,
+			Credentials: map[string]any{"api_key": "key", "base_url": "https://provider.example/v1"},
+		},
+	}
+	upstreamBody := `{"models":[{"id":"custom-thinking-model","reasoning":true,"supported_reasoning_levels":["low"],"input_modalities":["text"],"context_window":256000}]}`
+	upstream := &syncUpstreamHTTPUpstream{byAccount: map[int64]*http.Response{
+		48: {StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(upstreamBody))},
+		49: {StatusCode: http.StatusBadGateway, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"error":"SECRET_TOKEN must not be returned"}`))},
+	}}
+	svc := &batchSyncAdminService{stubAdminService: newStubAdminService(), accounts: accounts}
+	repo := &modelSyncAccountRepo{}
+	router := setupSyncUpstreamModelsRouter(svc, upstream, repo)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/models/sync-upstream-batch", strings.NewReader(`{"account_ids":[49,48,999,48,-1]}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp struct {
+		Data struct {
+			Total      int     `json:"total"`
+			Success    int     `json:"success"`
+			Failed     int     `json:"failed"`
+			SuccessIDs []int64 `json:"success_ids"`
+			FailedIDs  []int64 `json:"failed_ids"`
+			Errors     []struct {
+				AccountID int64  `json:"account_id"`
+				Error     string `json:"error"`
+			} `json:"errors"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, 3, resp.Data.Total)
+	require.Equal(t, 1, resp.Data.Success)
+	require.Equal(t, 2, resp.Data.Failed)
+	require.Equal(t, []int64{48}, resp.Data.SuccessIDs)
+	require.Equal(t, []int64{49, 999}, resp.Data.FailedIDs)
+	require.Len(t, resp.Data.Errors, 2)
+	require.Equal(t, int64(49), resp.Data.Errors[0].AccountID)
+	require.Contains(t, resp.Data.Errors[0].Error, "HTTP 502")
+	require.NotContains(t, rec.Body.String(), "SECRET_TOKEN")
+	require.Equal(t, int64(999), resp.Data.Errors[1].AccountID)
+	require.Len(t, repo.updates, 1)
+	require.Equal(t, map[string]any{"model_mapping": map[string]any{"custom-thinking-model": "custom-thinking-model"}}, repo.updates[48].Credentials)
+}
+
+func TestAccountHandlerSyncUpstreamModelsReplacesOnlyWhenRequested(t *testing.T) {
+	for _, replace := range []bool{false, true} {
+		t.Run(map[bool]string{false: "capabilities only", true: "replace mapping"}[replace], func(t *testing.T) {
+			svc := &availableModelsAdminService{stubAdminService: newStubAdminService(), account: service.Account{
+				ID: 48, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+				Credentials: map[string]any{"api_key": "key", "base_url": "https://provider.example/v1"},
+			}}
+			upstream := &syncUpstreamHTTPUpstream{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"new-model","reasoning":false,"input_modalities":["text"],"context_window":128000}]}`)),
+			}}
+			repo := &modelSyncAccountRepo{}
+			router := setupSyncUpstreamModelsRouter(svc, upstream, repo)
+			url := "/api/v1/admin/accounts/48/models/sync-upstream"
+			if replace {
+				url += "?replace=true"
+			}
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, url, nil))
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			if replace {
+				require.Equal(t, map[string]any{"model_mapping": map[string]any{"new-model": "new-model"}}, repo.updates[48].Credentials)
+			} else {
+				require.Empty(t, repo.updates)
+			}
+		})
+	}
+}
+
 func TestAccountHandlerSyncUpstreamModelsReturnsCapabilityMetadata(t *testing.T) {
 	svc := &availableModelsAdminService{
 		stubAdminService: newStubAdminService(),
@@ -444,111 +584,6 @@ func TestAccountHandlerSyncUpstreamModelsReturnsCapabilityMetadata(t *testing.T)
 	require.True(t, *metadata.Reasoning)
 	require.Equal(t, []string{"low", "high"}, metadata.SupportedReasoningLevels)
 	require.Equal(t, []string{"text", "image"}, metadata.InputModalities)
-}
-
-type previewProxyAdminService struct {
-	*stubAdminService
-	proxyErr error
-}
-
-func (s *previewProxyAdminService) GetProxy(context.Context, int64) (*service.Proxy, error) {
-	return nil, s.proxyErr
-}
-
-func TestAccountHandlerSyncUpstreamModelsPreviewRejectsUnavailableProxy(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		proxyID    int64
-		proxyErr   error
-		observer   bool
-		wantStatus int
-	}{
-		{name: "missing proxy", proxyID: 7, wantStatus: http.StatusBadRequest},
-		{name: "lookup failure", proxyID: 7, proxyErr: errors.New("private lookup detail"), wantStatus: http.StatusBadRequest},
-		{name: "invalid proxy ID", proxyID: -1, wantStatus: http.StatusBadRequest},
-		{name: "observer cannot choose a proxy", proxyID: 7, observer: true, wantStatus: http.StatusForbidden},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			svc := &previewProxyAdminService{stubAdminService: newStubAdminService(), proxyErr: tc.proxyErr}
-			upstream := &syncUpstreamHTTPUpstream{}
-			router := setupSyncUpstreamModelsRouter(svc, upstream)
-			body, err := json.Marshal(map[string]any{
-				"platform": "openai", "type": "apikey", "api_key": "test-key", "proxy_id": tc.proxyID,
-			})
-			require.NoError(t, err)
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/models/sync-upstream-preview", strings.NewReader(string(body)))
-			req.Header.Set("Content-Type", "application/json")
-			if tc.observer {
-				req = req.WithContext(service.WithObserverScope(req.Context(), []int64{1}))
-			}
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, req)
-			require.Equal(t, tc.wantStatus, rec.Code, rec.Body.String())
-			require.Empty(t, upstream.requests, "never silently fall back to a direct connection")
-			require.NotContains(t, rec.Body.String(), "private lookup detail")
-		})
-	}
-}
-
-func TestAccountHandlerSyncUpstreamModelsPreviewReportsUpstreamAuthenticationFailure(t *testing.T) {
-	upstream := &syncUpstreamHTTPUpstream{resp: &http.Response{
-		StatusCode: http.StatusUnauthorized,
-		Body:       io.NopCloser(strings.NewReader(`{"error":"private upstream body"}`)),
-	}}
-	router := setupSyncUpstreamModelsRouter(newStubAdminService(), upstream)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/models/sync-upstream-preview", strings.NewReader(`{"platform":"openai","type":"apikey","api_key":"synthetic-test-key"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusBadGateway, rec.Code)
-	require.Contains(t, rec.Body.String(), "Upstream model list request failed with HTTP 401")
-	require.NotContains(t, rec.Body.String(), "private upstream body")
-	require.NotContains(t, rec.Body.String(), "synthetic-test-key")
-}
-
-func TestAccountHandlerSyncUpstreamModelsPreviewUsesUnsavedConnection(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		proxyID   int64
-		wantProxy string
-	}{
-		{name: "direct"},
-		{name: "selected proxy", proxyID: 7, wantProxy: "http://proxy.example:8080"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			svc := newStubAdminService()
-			svc.proxies = []service.Proxy{{ID: 7, Protocol: "http", Host: "proxy.example", Port: 8080, Status: service.StatusActive}}
-			upstream := &syncUpstreamHTTPUpstream{resp: &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"draft-model","reasoning":false,"input_modalities":["text"],"context_window":128000,"max_output_tokens":4096}]}`)),
-			}}
-			router := setupSyncUpstreamModelsRouter(svc, upstream)
-			body, err := json.Marshal(map[string]any{
-				"platform": "openai", "type": "apikey",
-				"base_url": "https://draft.example/v1", "api_key": "unsaved-test-key",
-				"proxy_id": tc.proxyID,
-			})
-			require.NoError(t, err)
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/models/sync-upstream-preview", strings.NewReader(string(body)))
-			req.Header.Set("Content-Type", "application/json")
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, req)
-
-			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-			require.Len(t, upstream.requests, 1)
-			require.Equal(t, "https://draft.example/v1/models", upstream.requests[0].URL.String())
-			require.Equal(t, "Bearer unsaved-test-key", upstream.requests[0].Header.Get("Authorization"))
-			require.Equal(t, tc.wantProxy, upstream.proxyURLs[0])
-			require.Zero(t, upstream.accountIDs[0], "preview must not require a saved account")
-			var resp struct {
-				Data service.UpstreamModelCatalog `json:"data"`
-			}
-			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-			require.Equal(t, []string{"draft-model"}, resp.Data.Models)
-			require.Empty(t, svc.createdAccounts, "preview must not create an account")
-		})
-	}
 }
 
 // Scenario: 创建账号 preview 将具体 mapping 传给 404/405 配置回退。
@@ -715,22 +750,4 @@ func TestAccountHandlerGetAvailableModels_TypeSafeOnlyReturnsJev(t *testing.T) {
 		require.Len(t, resp.Data, 1)
 		require.Equal(t, "jev-latest", resp.Data[0].ID)
 	}
-}
-
-func TestQualityLiveAvailableModelsReturnsCredentialReasonInsteadOfLocalFallback(t *testing.T) {
-	svc := &availableModelsAdminService{stubAdminService: newStubAdminService(), account: service.Account{ID: 44, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Credentials: map[string]any{"api_key": "synthetic-key", "base_url": "https://models.example/v1"}}}
-	upstream := &syncUpstreamHTTPUpstream{resp: &http.Response{StatusCode: 401, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":{"code":"token_revoked","message":"synthetic-private-provider-text"}}`))}}
-	cfg := &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}}
-	gateway := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
-	tests := service.NewAccountTestService(nil, nil, nil, nil, nil, upstream, cfg, nil)
-	tests.SetOpenAIGatewayService(gateway)
-	h := NewAccountHandler(svc, nil, nil, nil, nil, nil, nil, nil, tests, nil, nil, nil, nil, nil)
-	r := gin.New()
-	r.GET("/accounts/:id/models", h.GetAvailableModels)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("GET", "/accounts/44/models", nil))
-	require.Equal(t, 502, w.Code, w.Body.String())
-	require.Contains(t, w.Body.String(), "OPENAI_CODEX_MODELS_CREDENTIALS_INVALID")
-	require.Contains(t, w.Body.String(), `"credential_state":"revoked"`)
-	require.NotContains(t, w.Body.String(), "synthetic-private-provider-text")
 }

@@ -111,6 +111,13 @@ const models = [
   white-space: nowrap;
 }
 
+/* ModelIcon hard-codes black / near-black brand fills; lift them on the dark theme only. */
+.heyroute-preview[data-theme='dark'] .hr-model-cell :deep(path[fill='#000000' i]),
+.heyroute-preview[data-theme='dark'] .hr-model-cell :deep(path[fill='#003425' i]),
+.heyroute-preview[data-theme='dark'] .hr-model-cell :deep(path[fill='#16191e' i]) {
+  fill: var(--hr-ink);
+}
+
 @media (max-width: 900px) {
   .hr-models-shell {
     gap: 36px;

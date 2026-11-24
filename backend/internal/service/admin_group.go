@@ -370,10 +370,28 @@ func groupSupportsOpenAIFast(platform string) bool {
 	return platform == PlatformOpenAI || platform == PlatformComposite
 }
 
+// normalizeGroupForcedOpenAIServiceTier keeps the legacy boolean request API
+// compatible while an explicitly supplied tier (including empty) takes precedence.
+func normalizeGroupForcedOpenAIServiceTier(tier *string, legacyFast bool) (string, error) {
+	if tier == nil {
+		if legacyFast {
+			return OpenAIFastTierPriority, nil
+		}
+		return "", nil
+	}
+	switch *tier {
+	case "", OpenAIFastTierPriority, OpenAIFastTierUltrafast:
+		return *tier, nil
+	default:
+		return "", infraerrors.BadRequest("INVALID_FORCE_OPENAI_SERVICE_TIER", "force_openai_service_tier must be empty, priority, or ultrafast")
+	}
+}
+
 func sanitizeGroupOpenAIFast(group *Group) {
 	if group == nil || !groupSupportsOpenAIFast(group.Platform) {
 		if group != nil {
 			group.ForceOpenAIFast = false
+			group.ForceOpenAIServiceTier = ""
 			group.FreeOpenAIFast = false
 		}
 	}
@@ -397,11 +415,17 @@ func normalizeUpdateGroupInputForSimpleMode(input *UpdateGroupInput) {
 }
 
 func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupInput) (*Group, error) {
+	if input != nil && input.UserConcurrencyLimit < 0 {
+		return nil, infraerrors.Newf(http.StatusBadRequest, "INVALID_USER_CONCURRENCY_LIMIT", "user_concurrency_limit must be non-negative")
+	}
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple && NormalizeGroupPlatform(input.Platform) == PlatformComposite {
 		return nil, infraerrors.BadRequest("SIMPLE_MODE_GROUP_NOT_BINDABLE", "composite groups are not supported in simple mode")
 	}
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		normalizeCreateGroupInputForSimpleMode(input)
+		if input != nil && input.UserConcurrencyLimit < 0 {
+			return nil, infraerrors.Newf(http.StatusBadRequest, "INVALID_USER_CONCURRENCY_LIMIT", "user_concurrency_limit must be non-negative")
+		}
 	}
 	if input.RateMultiplier <= 0 {
 		return nil, errors.New("rate_multiplier must be > 0")
@@ -412,6 +436,13 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	}
 
 	platform := NormalizeGroupPlatform(input.Platform)
+	forcedOpenAIServiceTier, err := normalizeGroupForcedOpenAIServiceTier(input.ForceOpenAIServiceTier, input.ForceOpenAIFast)
+	if err != nil {
+		return nil, err
+	}
+	if input.StrictFailover.Enabled || len(input.StrictFailover.Tiers) > 0 {
+		return nil, invalidStrictFailover("configure strict failover after creating and binding group accounts")
+	}
 	// 固定账号 manifest 配置：账号绑定发生在创建之后，创建时无法校验成员关系，
 	// 拒绝开启并在创建后的编辑里配置。
 	if normalizeCodexModelsManifestConfig(platform, input.CodexModelsManifestConfig).Enabled {
@@ -514,6 +545,13 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		return nil, err
 	}
 
+	fallbackOnUnavailable := input.FallbackGroupIDOnUnavailable
+	if fallbackOnUnavailable != nil && *fallbackOnUnavailable <= 0 {
+		fallbackOnUnavailable = nil
+	}
+	if err := s.validateUnavailableFallback(ctx, 0, platform, fallbackOnUnavailable); err != nil {
+		return nil, err
+	}
 	// 校验降级分组
 	if input.FallbackGroupID != nil {
 		if err := s.validateFallbackGroup(ctx, 0, *input.FallbackGroupID); err != nil {
@@ -644,12 +682,14 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		BlockSubagents:                  input.BlockSubagents,
 		FallbackGroupID:                 input.FallbackGroupID,
 		FallbackGroupIDOnInvalidRequest: fallbackOnInvalidRequest,
+		FallbackGroupIDOnUnavailable:    fallbackOnUnavailable,
 		ModelRouting:                    input.ModelRouting,
 		MCPXMLInject:                    mcpXMLInject,
 		SupportedModelScopes:            input.SupportedModelScopes,
 		AllowMessagesDispatch:           input.AllowMessagesDispatch,
 		AllowLive:                       input.AllowLive,
-		ForceOpenAIFast:                 input.ForceOpenAIFast,
+		ForceOpenAIFast:                 forcedOpenAIServiceTier == OpenAIFastTierPriority,
+		ForceOpenAIServiceTier:          forcedOpenAIServiceTier,
 		FreeOpenAIFast:                  input.FreeOpenAIFast,
 		RequireOAuthOnly:                input.RequireOAuthOnly,
 		RequirePrivacySet:               input.RequirePrivacySet,
@@ -660,6 +700,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		// 成员关系无从校验（前端创建对话框也不展示）。
 		CodexModelsManifestConfig:   normalizeCodexModelsManifestConfig(platform, input.CodexModelsManifestConfig),
 		RPMLimit:                    input.RPMLimit,
+		UserConcurrencyLimit:        input.UserConcurrencyLimit,
 		MaxReasoningEffort:          maxReasoningEffort,
 		MaxReasoningEffortOverLimit: maxReasoningEffortOverLimit,
 		ReasoningEffortMappings:     reasoningEffortMappings,
@@ -804,6 +845,18 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		normalizeUpdateGroupInputForSimpleMode(input)
+	}
+
+	forcedOpenAIServiceTier := group.ForceOpenAIServiceTier
+	if input.ForceOpenAIServiceTier != nil || input.ForceOpenAIFast != nil {
+		legacyFast := group.ForceOpenAIFast
+		if input.ForceOpenAIFast != nil {
+			legacyFast = *input.ForceOpenAIFast
+		}
+		forcedOpenAIServiceTier, err = normalizeGroupForcedOpenAIServiceTier(input.ForceOpenAIServiceTier, legacyFast)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 渠道缓存里存了 groupID → platform 的映射，改了平台要让它失效（见函数末尾）
@@ -1042,6 +1095,15 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 			group.FallbackGroupID = nil
 		}
 	}
+	if input.FallbackGroupIDOnUnavailable != nil {
+		group.FallbackGroupIDOnUnavailable = input.FallbackGroupIDOnUnavailable
+		if *input.FallbackGroupIDOnUnavailable <= 0 {
+			group.FallbackGroupIDOnUnavailable = nil
+		}
+	}
+	if err := s.validateUnavailableFallback(ctx, id, group.Platform, group.FallbackGroupIDOnUnavailable); err != nil {
+		return nil, err
+	}
 	fallbackOnInvalidRequest := group.FallbackGroupIDOnInvalidRequest
 	if input.FallbackGroupIDOnInvalidRequest != nil {
 		if *input.FallbackGroupIDOnInvalidRequest > 0 {
@@ -1080,8 +1142,9 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.AllowLive != nil {
 		group.AllowLive = *input.AllowLive
 	}
-	if input.ForceOpenAIFast != nil {
-		group.ForceOpenAIFast = *input.ForceOpenAIFast
+	if input.ForceOpenAIServiceTier != nil || input.ForceOpenAIFast != nil {
+		group.ForceOpenAIServiceTier = forcedOpenAIServiceTier
+		group.ForceOpenAIFast = forcedOpenAIServiceTier == OpenAIFastTierPriority
 	}
 	if input.FreeOpenAIFast != nil {
 		group.FreeOpenAIFast = *input.FreeOpenAIFast
@@ -1108,8 +1171,20 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.CodexModelsManifestConfig != nil {
 		group.CodexModelsManifestConfig = *input.CodexModelsManifestConfig
 	}
+	if input.StrictFailover != nil {
+		if err := s.validateStrictFailover(ctx, id, *input.StrictFailover); err != nil {
+			return nil, err
+		}
+		group.StrictFailover = CloneStrictFailoverConfig(*input.StrictFailover)
+	}
 	if input.RPMLimit != nil {
 		group.RPMLimit = *input.RPMLimit
+	}
+	if input.UserConcurrencyLimit != nil {
+		if *input.UserConcurrencyLimit < 0 {
+			return nil, infraerrors.Newf(http.StatusBadRequest, "INVALID_USER_CONCURRENCY_LIMIT", "user_concurrency_limit must be non-negative")
+		}
+		group.UserConcurrencyLimit = *input.UserConcurrencyLimit
 	}
 	if input.MaxReasoningEffort != nil {
 		maxReasoningEffort, err := normalizeMaxReasoningEffortForPlatform(group.Platform, *input.MaxReasoningEffort)
@@ -1682,9 +1757,9 @@ func (s *adminServiceImpl) ReplaceUserGroup(ctx context.Context, userID, oldGrou
 func validateSecurityPolicyModeForWrite(mode string) (string, error) {
 	trimmed := strings.TrimSpace(mode)
 	if trimmed == "" {
-		return SecurityPolicyModeBlockSession, nil
+		return "block_session", nil
 	}
-	if trimmed == SecurityPolicyModeBlockSession || trimmed == SecurityPolicyModeBlockRequest {
+	if trimmed == "block_session" || trimmed == "block_request" {
 		return trimmed, nil
 	}
 	return "", infraerrors.Newf(http.StatusBadRequest, "INVALID_SECURITY_POLICY_MODE", "security_policy_mode must be block_session or block_request, got %q", mode)

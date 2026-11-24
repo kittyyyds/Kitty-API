@@ -6,6 +6,10 @@
 import { apiClient } from './client'
 import type { ApiKey, ApiKeyConcurrencySnapshot, CreateApiKeyRequest, UpdateApiKeyRequest, PaginatedResponse } from '@/types'
 
+export interface APIKeySecret extends ApiKey {
+  secret_available?: boolean
+}
+
 /**
  * List all API keys for current user
  * @param page - Page number (default: 1)
@@ -49,6 +53,7 @@ export async function getById(id: number, options?: { signal?: AbortSignal }): P
  * Create new API key
  * @param name - Key name
  * @param groupId - Optional group ID
+ * @param fallbackGroupId - Optional fallback group ID
  * @param customKey - Optional custom key value
  * @param ipWhitelist - Optional IP whitelist
  * @param ipBlacklist - Optional IP blacklist
@@ -61,6 +66,7 @@ export async function getById(id: number, options?: { signal?: AbortSignal }): P
 export async function create(
   name: string,
   groupId?: number | null,
+  fallbackGroupId?: number | null,
   customKey?: string,
   ipWhitelist?: string[],
   ipBlacklist?: string[],
@@ -69,11 +75,14 @@ export async function create(
   rateLimitData?: { rate_limit_5h?: number; rate_limit_1d?: number; rate_limit_7d?: number },
   concurrencyLimit: number = 0,
   groupIds?: number[]
-): Promise<ApiKey> {
+): Promise<APIKeySecret> {
   const payload: CreateApiKeyRequest = { name, concurrency_limit: concurrencyLimit }
   if (groupIds !== undefined) payload.group_ids = groupIds
   if (groupId !== undefined) {
     payload.group_id = groupId
+  }
+  if (fallbackGroupId !== undefined) {
+    payload.fallback_group_id = fallbackGroupId
   }
   if (customKey) {
     payload.custom_key = customKey
@@ -100,16 +109,17 @@ export async function create(
     payload.rate_limit_7d = rateLimitData.rate_limit_7d
   }
 
-  const { data } = await apiClient.post<ApiKey>('/keys', payload)
+  const { data } = await apiClient.post<APIKeySecret>('/keys', payload, { headers: { 'Idempotency-Key': crypto.randomUUID() } })
   return data
 }
 
-/**
- * Update API key
- * @param id - API key ID
- * @param updates - Fields to update
- * @returns Updated API key
- */
+/** Generate a replacement secret; the old credential stops authenticating. */
+export async function regenerate(id: number): Promise<APIKeySecret> {
+  const { data } = await apiClient.post<APIKeySecret>(`/keys/${id}/regenerate`, {}, { headers: { 'Idempotency-Key': crypto.randomUUID() } })
+  return data
+}
+
+/** Update configuration without changing the credential. */
 export async function update(id: number, updates: UpdateApiKeyRequest): Promise<ApiKey> {
   const { data } = await apiClient.put<ApiKey>(`/keys/${id}`, updates)
   return data
@@ -175,6 +185,7 @@ export const keysAPI = {
   list,
   getById,
   create,
+  regenerate,
   update,
   bulkUpdate,
   delete: deleteKey,

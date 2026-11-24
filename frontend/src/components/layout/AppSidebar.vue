@@ -99,7 +99,7 @@
             >
               <span v-if="item.iconSvg" class="h-5 w-5 flex-shrink-0 sidebar-svg-icon" v-html="sanitizeSvg(item.iconSvg)"></span>
               <component v-else :is="item.icon" class="h-5 w-5 flex-shrink-0" />
-              <span class="sidebar-label sidebar-label-with-badge" :class="{ 'sidebar-label-collapsed': sidebarCollapsed }" :aria-hidden="sidebarCollapsed ? 'true' : 'false'"><span class="sidebar-label-text">{{ item.label }}</span><span v-if="item.badge && !sidebarCollapsed" class="sidebar-promo-badge" :class="'sidebar-promo-badge-' + item.badge.tone" :data-sidebar-promo="item.badge.tone"><span aria-hidden="true">{{ item.badge.emoji }}</span>{{ item.badge.label }}</span></span>
+              <span class="sidebar-label sidebar-label-with-badge" :class="{ 'sidebar-label-collapsed': sidebarCollapsed }" :aria-hidden="sidebarCollapsed ? 'true' : 'false'"><span class="sidebar-label-text">{{ item.label }}</span><span v-if="item.badge && !sidebarCollapsed" class="sidebar-promo-badge" :class="'sidebar-promo-badge-' + item.badge.tone" :data-sidebar-promo="item.badge.tone">{{ item.badge.label }}</span></span>
               <span v-if="navBadge(item)" class="sidebar-nav-badge" :class="{ 'sidebar-nav-badge-collapsed': sidebarCollapsed }" data-testid="sidebar-nav-badge">{{ sidebarCollapsed ? '' : navBadgeText(item) }}</span>
             </router-link>
           </template>
@@ -127,7 +127,7 @@
           >
             <span v-if="item.iconSvg" class="h-5 w-5 flex-shrink-0 sidebar-svg-icon" v-html="sanitizeSvg(item.iconSvg)"></span>
             <component v-else :is="item.icon" class="h-5 w-5 flex-shrink-0" />
-            <span class="sidebar-label sidebar-label-with-badge" :class="{ 'sidebar-label-collapsed': sidebarCollapsed }" :aria-hidden="sidebarCollapsed ? 'true' : 'false'"><span class="sidebar-label-text">{{ item.label }}</span><span v-if="item.badge && !sidebarCollapsed" class="sidebar-promo-badge" :class="'sidebar-promo-badge-' + item.badge.tone" :data-sidebar-promo="item.badge.tone"><span aria-hidden="true">{{ item.badge.emoji }}</span>{{ item.badge.label }}</span></span>
+            <span class="sidebar-label sidebar-label-with-badge" :class="{ 'sidebar-label-collapsed': sidebarCollapsed }" :aria-hidden="sidebarCollapsed ? 'true' : 'false'"><span class="sidebar-label-text">{{ item.label }}</span><span v-if="item.badge && !sidebarCollapsed" class="sidebar-promo-badge" :class="'sidebar-promo-badge-' + item.badge.tone" :data-sidebar-promo="item.badge.tone">{{ item.badge.label }}</span></span>
             <span v-if="navBadge(item)" class="sidebar-nav-badge" :class="{ 'sidebar-nav-badge-collapsed': sidebarCollapsed }" data-testid="sidebar-nav-badge">{{ sidebarCollapsed ? '' : navBadgeText(item) }}</span>
           </router-link>
         </div>
@@ -146,12 +146,12 @@
             :target="item.path === '/creative-canvas' ? '_blank' : undefined"
             :rel="item.path === '/creative-canvas' ? 'noopener noreferrer' : undefined"
             class="sidebar-link mb-1"
-            :class="{ 'sidebar-link-active': isActive(item.path), 'sidebar-link-collapsed': sidebarCollapsed }"
+            :class="{ 'sidebar-link-active': (item.activePaths ?? [item.path]).some(isActive), 'sidebar-link-collapsed': sidebarCollapsed }"
             :title="sidebarCollapsed ? item.label : undefined" :aria-label="item.label"
             :data-tour="item.path === '/keys' ? 'sidebar-my-keys' : undefined" @click="handleMenuItemClick(item.path)">
             <span v-if="item.iconSvg" class="h-5 w-5 flex-shrink-0 sidebar-svg-icon" v-html="sanitizeSvg(item.iconSvg)"></span>
             <component v-else :is="item.icon" class="h-5 w-5 flex-shrink-0" />
-            <span class="sidebar-label sidebar-label-with-badge" :class="{ 'sidebar-label-collapsed': sidebarCollapsed }" :aria-hidden="sidebarCollapsed ? 'true' : 'false'"><span class="sidebar-label-text">{{ item.label }}</span><span v-if="item.badge && !sidebarCollapsed" class="sidebar-promo-badge" :class="'sidebar-promo-badge-' + item.badge.tone" :data-sidebar-promo="item.badge.tone"><span aria-hidden="true">{{ item.badge.emoji }}</span>{{ item.badge.label }}</span></span>
+            <span class="sidebar-label sidebar-label-with-badge" :class="{ 'sidebar-label-collapsed': sidebarCollapsed }" :aria-hidden="sidebarCollapsed ? 'true' : 'false'"><span class="sidebar-label-text">{{ item.label }}</span><span v-if="item.badge && !sidebarCollapsed" class="sidebar-promo-badge" :class="'sidebar-promo-badge-' + item.badge.tone" :data-sidebar-promo="item.badge.tone">{{ item.badge.label }}</span></span>
             <span v-if="navBadge(item)" class="sidebar-nav-badge" :class="{ 'sidebar-nav-badge-collapsed': sidebarCollapsed }" data-testid="sidebar-nav-badge">{{ sidebarCollapsed ? '' : navBadgeText(item) }}</span>
           </router-link>
           <template v-if="section.id === 'other'">
@@ -229,8 +229,9 @@ import {
   isReservedCustomerFeatureId,
   type NativeCustomFeatureId
 } from '@/features/customer-console/nativeFeatureRegistry'
+import { mergeCustomerNavGroups } from '@/features/customer-console/navGroups'
 
-type SidebarPromoTone = 'hot' | 'deal' | 'rebate'
+type SidebarPromoTone = 'hot' | 'deal'
 import { getCustomMenuLabel } from '@/utils/customMenu'
 
 interface NavItem {
@@ -254,7 +255,6 @@ interface NavItem {
   featureFlag?: () => boolean | undefined
   badge?: {
     label: string
-    emoji: string
     tone: SidebarPromoTone
   }
   /** Optional count shown as a red badge (a dot while the sidebar is collapsed). */
@@ -320,16 +320,8 @@ const siteName = computed(() => appStore.siteName)
 const siteLogo = computed(() => appStore.brandLogoUrl)
 const siteVersion = computed(() => appStore.siteVersion)
 const settingsLoaded = computed(() => appStore.publicSettingsLoaded)
-
-// SVG Icon Components
-const RequestCaptureIcon = { render: () => h(Icon, { name: 'requestCapture', size: 'sm' }) }
 const OpsMonitoringIcon = { render: () => h(Icon, { name: 'monitorPulse' }) }
-const SmartOpsIcon = { render: () => h(Icon, { name: 'cpu' }) }
-const QualityOpsIcon = { render: () => h(Icon, { name: 'badge', size: 'sm' }) }
-const AccountOpsIcon = { render: () => h(Icon, { name: 'userCog', size: 'sm' }) }
-const TokenGuardIcon = { render: () => h(Icon, { name: 'shieldKey', size: 'sm' }) }
-const CredentialOpsIcon = { render: () => h(Icon, { name: 'credentialOps', size: 'sm' }) }
-const PelicanTestsIcon = { render: () => h(Icon, { name: 'beaker', size: 'sm' }) }
+const BookOpenIcon = { render: () => h(Icon, { name: 'book' }) }
 const SupportTicketIcon = { render: () => h(Icon, { name: 'chat' }) }
 const SupportTicketInboxIcon = { render: () => h(Icon, { name: 'inbox' }) }
 
@@ -408,6 +400,21 @@ const ChartIcon = {
           'stroke-linecap': 'round',
           'stroke-linejoin': 'round',
           d: 'M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z'
+        })
+      ]
+    )
+}
+
+const TestIcon = {
+  render: () =>
+    h(
+      'svg',
+      { fill: 'none', viewBox: '0 0 24 24', stroke: 'currentColor', 'stroke-width': '1.5' },
+      [
+        h('path', {
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+          d: 'M9.75 3.75h4.5M9 3.75v2.1a2.25 2.25 0 01-.659 1.591L6.75 9.032A6.75 6.75 0 0012 20.25a6.75 6.75 0 005.25-11.218l-1.591-1.591A2.25 2.25 0 0115 5.85v-2.1M8.25 13.5h7.5M9.75 16.5h4.5'
         })
       ]
     )
@@ -560,6 +567,10 @@ const ServerIcon = {
 
 const PluginIcon = {
   render: () => h(Icon, { name: 'cube' })
+}
+
+const MCPIcon = {
+  render: () => h(Icon, { name: 'mcp' })
 }
 
 const BellIcon = {
@@ -717,22 +728,6 @@ const SignalIcon = {
     )
 }
 
-// 鹈鹕测智展示：画廊（heroicons photo）
-const GalleryIcon = {
-  render: () =>
-    h(
-      'svg',
-      { fill: 'none', viewBox: '0 0 24 24', stroke: 'currentColor', 'stroke-width': '1.5' },
-      [
-        h('path', {
-          'stroke-linecap': 'round',
-          'stroke-linejoin': 'round',
-          d: 'm2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Zm10.5-11.25h.008v.008h-.008V8.25Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z'
-        })
-      ]
-    )
-}
-
 const ShieldIcon = {
   render: () =>
     h(
@@ -795,10 +790,12 @@ const ChevronDownIcon = {
 // Public-settings flags go through the registry in utils/featureFlags.ts,
 // which handles the opt-in vs opt-out fallback when settings haven't loaded
 // yet. Admin-only flags (not in public settings) stay inline below.
+const flagMCP = makeSidebarFlag(FeatureFlags.mcp)
+const flagChannelQualityPublic = makeSidebarFlag(FeatureFlags.channelQualityPublic)
 const flagChannelMonitor = makeSidebarFlag(FeatureFlags.channelMonitor)
+const flagRiskControl = makeSidebarFlag(FeatureFlags.riskControl)
 const flagPayment = makeSidebarFlag(FeatureFlags.payment)
 const flagAvailableChannels = makeSidebarFlag(FeatureFlags.availableChannels)
-const flagPelicanShowcase = makeSidebarFlag(FeatureFlags.pelicanShowcase)
 const flagSubscription = makeSidebarFlag(FeatureFlags.subscription)
 
 // 购买入口文案随站点计费模式切换：仅充值 → 「充值」，仅订阅 → 「订阅」，否则「充值/订阅」。
@@ -819,7 +816,6 @@ const flagSupportTickets = makeSidebarFlag(FeatureFlags.supportTickets)
 const flagUserSupportTickets = () => flagSupportTickets() && !authStore.isAdmin
 const supportTicketStore = useSupportTicketStore()
 const flagOpsMonitoring = () => adminSettingsStore.opsMonitoringEnabled
-const flagAdminPayment = () => adminSettingsStore.paymentEnabled
 const flagBatchImageAccess = () => canUseBatchImage.value
 
 const nativeFeatureIcons: Record<NativeCustomFeatureId, unknown> = {
@@ -849,16 +845,15 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
   }
   items.push(
     { path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon },
-    { path: '/chat', label: t('nav.onlineChat'), icon: ChatIcon },
     { path: '/batch-image', label: t('nav.batchImage'), icon: BatchImageIcon, hideInSimpleMode: true, featureFlag: flagBatchImageAccess },
     { path: '/usage', label: t('nav.usage'), icon: ChartIcon, hideInSimpleMode: true },
-    { path: '/creative-canvas', label: t('nav.creativeCanvas'), icon: FolderIcon, badge: { label: t('nav.canvasMediaBadge'), emoji: '🎨', tone: 'hot' } },
+    { path: '/creative-canvas', label: t('nav.creativeCanvas'), icon: FolderIcon, badge: { label: t('nav.canvasMediaBadge'), tone: 'hot' } },
     { path: '/video-tasks', label: '视频任务', icon: OrderIcon, hideInSimpleMode: true },
     { path: '/available-channels', label: t('nav.availableChannels'), icon: ChannelIcon, hideInSimpleMode: true, featureFlag: flagAvailableChannels },
     { path: '/monitor', label: t('nav.channelStatus'), icon: SignalIcon, featureFlag: flagChannelMonitor },
+    { path: '/test-results', label: t('nav.testResults'), icon: TestIcon, hideInSimpleMode: true, featureFlag: flagChannelQualityPublic },
     { path: '/billing', label: t('nav.billing'), icon: CreditCardIcon, hideInSimpleMode: true },
     buildNativeFeatureNavItem('billing-rules'),
-    { path: '/pelican-showcase', label: t('nav.pelicanShowcase'), icon: GalleryIcon, featureFlag: flagPelicanShowcase },
     { path: '/subscriptions', label: t('nav.mySubscriptions'), icon: CreditCardIcon, hideInSimpleMode: true, featureFlag: flagSubscription },
     {
       path: '/purchase',
@@ -868,28 +863,26 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
       featureFlag: flagPayment,
       badge: {
         label: t('nav.limitedOffer'),
-        emoji: '🎁',
         tone: 'deal'
       }
     },
     { path: '/orders', label: t('nav.myOrders'), icon: OrderListIcon, hideInSimpleMode: true, featureFlag: flagPayment },
+    { path: '/coupons', label: t('coupon.title'), icon: GiftIcon, hideInSimpleMode: true },
+    { path: '/invoices', label: t('invoice.title'), icon: OrderListIcon, hideInSimpleMode: true, featureFlag: flagPayment },
+    { path: '/gpt-direct', label: t('gptDirect.title'), icon: GiftIcon, featureFlag: makeSidebarFlag(FeatureFlags.gptDirect) },
     { path: '/redeem', label: t('nav.redeem'), icon: GiftIcon, hideInSimpleMode: true },
+    { path: '/guide', label: t('admin.settings.tabs.guide'), icon: BookOpenIcon },
     { path: '/community', label: t('qqbot.communityTitle'), icon: UsersIcon },
     {
       path: '/affiliate',
       label: t('nav.affiliate'),
       icon: UsersIcon,
       hideInSimpleMode: true,
-      featureFlag: flagAffiliate,
-      badge: {
-        label: t('nav.affiliateBadge'),
-        emoji: '💸',
-        tone: 'rebate'
-      }
+      featureFlag: flagAffiliate
     },
     { path: '/support-tickets', label: t('nav.supportTickets'), icon: SupportTicketIcon, featureFlag: flagUserSupportTickets, countBadge: () => supportTicketStore.userUnread },
-    { path: '/security-records', label: t('securityRecords.title'), icon: ShieldIcon },
     { path: '/profile', label: t('nav.profile'), icon: UserIcon },
+    { path: '/settings/mcp', label: t('mcp.title'), icon: MCPIcon, featureFlag: flagMCP },
     ...customMenuItemsForUser.value.map((item): NavItem => ({
       path: `/custom/${item.id}`,
       label: getCustomMenuLabel(item, locale.value),
@@ -915,16 +908,20 @@ const customerNavSections = computed(() => {
     { path: '/model-plaza?embedded=1', label: t('nav.modelPricing'), icon: CurrencyDollarIcon, featureFlag: makeSidebarFlag(FeatureFlags.modelPlaza) },
     { ...buildNativeFeatureNavItem('docs'), label: t('nav.usageDocs') },
   ].filter(item => !item.featureFlag || item.featureFlag() !== false)
+    .map(item => ({ ...item, label: item.path === '/purchase' ? t('nav.recharge') : item.label }))
+  // Related pages share one entry; the page itself offers the tabs (see navGroups).
+  const entries = mergeCustomerNavGroups(items, group => t(group.labelKey))
   const definitions = [
     { id: 'overview', label: '', icon: DashboardIcon, paths: ['/dashboard'] },
-    { id: 'api', label: 'API', icon: KeyIcon, paths: ['/keys','/usage','/model-plaza?embedded=1','/monitor','/custom/docs'] },
+    { id: 'api', label: 'API', icon: KeyIcon, paths: ['/keys','/test-results','/gpt-direct','/monitor','/available-channels','/usage','/model-plaza?embedded=1','/custom/docs'] },
     { id: 'media', label: t('nav.mediaSection'), icon: FolderIcon, paths: ['/creative-canvas','/video-tasks'] },
-    { id: 'billing', label: t('nav.billing'), icon: CreditCardIcon, paths: ['/purchase','/orders','/redeem','/affiliate'] },
-    { id: 'other', label: t('nav.otherSection'), icon: UserIcon, paths: ['/profile','/support-tickets','/pelican-showcase', ...customMenuItemsForUser.value.map(item => `/custom/${item.id}`)] },
+    { id: 'billing', label: t('nav.billing'), icon: CreditCardIcon, paths: ['/billing','/subscriptions','/purchase','/orders','/coupons','/invoices','/redeem','/affiliate'] },
+    // The header already carries the community entry on every screen size.
+    { id: 'other', label: t('nav.otherSection'), icon: UserIcon, paths: ['/guide','/settings/mcp','/profile','/support-tickets', ...customMenuItemsForUser.value.map(item => `/custom/${item.id}`)] },
   ]
   return definitions.map(section => ({
     id: section.id, label: section.label, icon: section.icon,
-    items: section.paths.flatMap(path => items.filter(item => item.path === path).map(item => ({...item, label: path === '/purchase' ? t('nav.recharge') : item.label}))),
+    items: section.paths.flatMap(path => entries.filter(item => item.path === path)),
   }))
 })
 
@@ -966,27 +963,13 @@ const adminNavItems = computed((): NavItem[] => {
       children: [
         { path: '/admin/channels/pricing', label: t('nav.channelPricing'), icon: PriceTagIcon },
         { path: '/admin/channels/monitor', label: t('nav.channelMonitor'), icon: SignalIcon, featureFlag: flagChannelMonitor },
+        { path: '/admin/tests', label: t('nav.tests'), icon: TestIcon },
       ],
     },
     // 「仅充值」站点连管理端的「订阅管理」入口也一并收起（路由本身不拦截）。
     { path: '/admin/subscriptions', label: t('nav.subscriptions'), icon: CreditCardIcon, hideInSimpleMode: true, featureFlag: flagSubscription },
     { path: '/admin/accounts', label: t('nav.accounts'), icon: GlobeIcon },
     { path: '/admin/providers', label: t('providerHub.title'), icon: GlobeIcon },
-    { path: '/admin/smart-ops', label: t('accountOps.smartTitle'), icon: SmartOpsIcon, expandOnly: true, children: [
-      { path: '/admin/auto-config', label: t('autoConfig.title'), icon: AccountOpsIcon },
-      { path: '/admin/priority-scheduling', label: t('priorityScheduling.title'), icon: AccountOpsIcon },
-      { path: '/admin/channel-operations', label: t('channelOps.title'), icon: ChannelIcon },
-      { path: '/admin/profit-operations', label: t('profitOps.title'), icon: PriceTagIcon },
-      { path: '/admin/supplier-balances', label: t('financeHub.supplierTitle'), icon: PriceTagIcon },
-      { path: '/admin/finance-overview', label: t('financeHub.businessTitle'), icon: PriceTagIcon },
-      { path: '/admin/account-quality', label: t('qualityOps.title'), icon: QualityOpsIcon },
-      { path: '/admin/account-ops', label: t('accountOps.title'), icon: AccountOpsIcon },
-      { path: '/admin/token-guard', label: t('tokenGuard.title'), icon: TokenGuardIcon },
-      { path: '/admin/token-guard-v2', label: t('tokenGuardV2.title'), icon: CredentialOpsIcon },
-      { path: '/admin/pelican-tests', label: t('pelicanTests.title'), icon: PelicanTestsIcon },
-      { path: '/admin/group-cache-tests', label: t('admin.groupCacheTest.title'), icon: QualityOpsIcon },
-      { path: '/admin/request-captures', label: t('admin.requestCapture.title'), icon: RequestCaptureIcon, featureFlag: () => adminSettingsStore.requestCaptureEnabled },
-    ] },
     { path: '/admin/plugins', label: t('nav.plugins'), icon: PluginIcon, featureFlag: flagPluginManagement },
     {
       path: '/admin/qqbot', label: t('qqbot.title'), icon: BellIcon, expandOnly: true,
@@ -1008,11 +991,10 @@ const adminNavItems = computed((): NavItem[] => {
       icon: ShieldIcon,
       expandOnly: true,
       children: [
-        { path: '/admin/risk-control', label: t('nav.contentModeration'), icon: ShieldIcon },
-        { path: '/admin/prompt-audit', label: t('nav.promptAudit'), icon: ShieldIcon },
-        { path: '/admin/safety-prompt-audit', label: t('admin.safetyPromptAudit.nav'), icon: ShieldIcon },
+        { path: '/admin/risk-control', label: t('nav.contentModeration'), icon: ShieldIcon, featureFlag: flagRiskControl },
+        { path: '/admin/prompt-audit', label: t('nav.promptAudit'), icon: ShieldIcon, featureFlag: flagRiskControl },
+        { path: '/admin/safety-prompt-audit', label: t('admin.safetyPromptAudit.nav'), icon: ShieldIcon, featureFlag: flagRiskControl },
         { path: '/admin/ip-audit', label: t('ipAudit.title'), icon: ShieldIcon },
-        { path: '/admin/security-policy', label: t('nav.securityPolicy'), icon: ShieldIcon },
       ],
     },
     { path: '/admin/redeem', label: t('nav.redeemCodes'), icon: TicketIcon, hideInSimpleMode: true },
@@ -1036,14 +1018,16 @@ const adminNavItems = computed((): NavItem[] => {
       icon: OrderIcon,
       hideInSimpleMode: true,
       expandOnly: true,
-      featureFlag: flagAdminPayment,
       children: [
         { path: '/admin/orders/dashboard', label: t('nav.paymentDashboard'), icon: ChartIcon },
         { path: '/admin/orders', label: t('nav.orderManagement'), icon: OrderIcon },
+        { path: '/admin/orders/coupons', label: t('coupon.adminTitle'), icon: GiftIcon },
+        { path: '/admin/orders/invoices', label: t('invoice.adminTitle'), icon: OrderListIcon },
         { path: '/admin/orders/plans', label: t('nav.paymentPlans'), icon: CreditCardIcon },
       ],
     },
     { path: '/admin/usage', label: t('nav.usage'), icon: ChartIcon },
+    { path: '/admin/call-errors', label: t('nav.callErrors'), icon: TestIcon },
     { path: '/admin/video-tasks', label: '视频任务', icon: OrderIcon },
     { path: '/admin/video-upstream', label: '上游与自动跟价', icon: PriceTagIcon },
     { path: '/admin/audit-logs', label: t('nav.auditLogs'), icon: ShieldIcon, hideInSimpleMode: true }

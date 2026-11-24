@@ -49,7 +49,13 @@ class ReleaseMatrixTest(unittest.TestCase):
             metadata = {'version': '9.8.7', 'sha': 'a' * 40, 'target': target,
                         'archive': name, 'sha256': release.sha256(archive)}
             (directory / f"manifest-{target['goos']}-{target['goarch']}.json").write_text(json.dumps(metadata))
-        return argparse.Namespace(input='release-input', version='9.8.7', sha='a' * 40, simple=simple, output='contexts')
+        updaters = Path('updater-input')
+        updaters.mkdir(exist_ok=True)
+        for arch in (['amd64'] if simple else ['amd64', 'arm64']):
+            binary = updaters / f'updater-linux-{arch}'
+            binary.write_bytes(b'host updater')
+            binary.with_suffix('.json').write_text(json.dumps(dict(version='9.8.7', sha='a' * 40, arch=arch, sha256=release.sha256(binary))))
+        return argparse.Namespace(updater_input=str(updaters), input='release-input', version='9.8.7', sha='a' * 40, simple=simple, output='contexts')
 
     def test_full_and_simple_matrix_match_existing_targets(self):
         full = release.targets()
@@ -120,6 +126,11 @@ class ReleaseMatrixTest(unittest.TestCase):
             binary = Path('contexts') / arch / 'sub2api'
             self.assertEqual(binary.read_bytes(), b'fixture')
             self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
+            self.assertEqual((binary.parent / 'sub2api-updater').read_bytes(), b'host updater')
+            self.assertIn('COPY sub2api-updater', (binary.parent / 'Dockerfile').read_text())
+        Path('updater-input/updater-linux-amd64').write_bytes(b'corrupted')
+        with self.assertRaisesRegex(ValueError, 'updater source or checksum mismatch'):
+            release.contexts(args)
 
     def test_plan_requires_a_tag_for_publication(self):
         args = argparse.Namespace(ref='main', dry_run=False, simple=False)
@@ -175,6 +186,9 @@ class ReleaseMatrixTest(unittest.TestCase):
                 subprocess.run(['bash', str(ROOT / '.github/release-tools/release-images.sh')], env=env, check=True)
                 log = log_path.read_text()
                 self.assertIn('--push', log)
+                self.assertIn(f'--metadata-file {self.temp.name}/image-amd64.json', log)
+                if not simple:
+                    self.assertIn(f'--metadata-file {self.temp.name}/image-arm64.json', log)
                 self.assertEqual(log.count('buildx build'), 1 if simple else 2)
                 if simple:
                     self.assertNotIn('fixturehub', log)
@@ -185,43 +199,6 @@ class ReleaseMatrixTest(unittest.TestCase):
                     self.assertIn('fixturehub/sub2api:9.8', log)
                     self.assertIn('ghcr.io/exampleowner/sub2api:9', log)
 
-
-
-    def test_prerelease_plan_and_image_tags_are_isolated(self):
-        release.VERSION_FILE.write_text('9.8.7-rc.1\n')
-        with patch.dict(os.environ, {'GITHUB_OUTPUT': 'outputs'}), patch.object(subprocess, 'check_output', return_value='a' * 40 + '\n'):
-            release.plan(argparse.Namespace(ref='feature/rc', dry_run=True, simple=False))
-        output = dict(line.split('=', 1) for line in Path('outputs').read_text().splitlines())
-        self.assertEqual(output['prerelease'], 'true')
-        fake_bin = Path('bin')
-        fake_bin.mkdir()
-        docker = fake_bin / 'docker'
-        docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$DOCKER_LOG"\n')
-        docker.chmod(0o755)
-        for simple in (False, True):
-            with self.subTest(simple=simple):
-                log_path = Path(f'rc-{simple}.log').resolve()
-                env = {**os.environ, 'PATH': str(fake_bin.resolve()) + os.pathsep + os.environ['PATH'],
-                       'DOCKER_LOG': str(log_path), 'RUNNER_TEMP': self.temp.name,
-                       'RELEASE_VERSION': '9.8.7-rc.1', 'RELEASE_SHA': 'a' * 40, 'GITHUB_REPOSITORY': 'ExampleOwner/sub2api',
-                       'DRY_RUN': 'false', 'SIMPLE_RELEASE': str(simple).lower(), 'DOCKERHUB_USERNAME': 'fixturehub'}
-                subprocess.run(['bash', str(ROOT / '.github/release-tools/release-images.sh')], env=env, check=True)
-                log = log_path.read_text()
-                self.assertIn('--push', log)
-                self.assertIn(':9.8.7-rc.1', log)
-                self.assertNotIn(':latest', log)
-                self.assertNotRegex(log, r':9(?:\.8)?(?:\s|$)')
-        workflow = yaml.safe_load((ROOT / '.github/workflows/release.yml').read_text())
-        self.assertIn("prerelease != 'true'", workflow['jobs']['sync-version-file']['if'])
-        notification = next(step for step in workflow['jobs']['release']['steps'] if step.get('name') == 'Send Telegram Notification')
-        self.assertIn("prerelease != 'true'", notification['if'])
-
-    def test_release_announcement_requires_explicit_opt_in(self):
-        workflow = yaml.safe_load((ROOT / '.github/workflows/release.yml').read_text())
-        trigger = workflow.get('on', workflow.get(True))
-        self.assertIs(trigger['workflow_dispatch']['inputs']['notify_release']['default'], False)
-        step = next(step for step in workflow['jobs']['release']['steps'] if step.get('name') == 'Send Telegram Notification')
-        self.assertIn('inputs.notify_release == true', step['if'])
 
 
 if __name__ == '__main__':

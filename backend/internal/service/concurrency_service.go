@@ -56,6 +56,25 @@ type ConcurrencyCache interface {
 	CleanupStaleProcessSlots(ctx context.Context, activeRequestPrefix string) error
 }
 
+type accountProxyConcurrencyCache interface {
+	AcquireAccountProxyPoolSlot(context.Context, int64, []int64, int, string, ...int64) (int64, error)
+	ReleaseAccountProxyPoolSlot(context.Context, int64, int64, string) error
+}
+
+// AccountAdmissionGate checks live account status and active intelligence
+// protection after a slot reservation, independently of scheduler snapshots.
+type AccountAdmissionGate interface {
+	CheckAccountAdmission(ctx context.Context, accountID int64) (bool, error)
+}
+
+// UserGroupConcurrencyCache is an optional cache extension that atomically
+// reserves both the user's global slot and the user's slot in one group.
+// Keeping this separate preserves compatibility with lightweight test doubles.
+type UserGroupConcurrencyCache interface {
+	AcquireUserGroupSlot(ctx context.Context, userID, groupID int64, userMax, groupMax int, requestID string) (bool, error)
+	ReleaseUserGroupSlot(ctx context.Context, userID, groupID int64, requestID string) error
+}
+
 type APIKeyConcurrencyCache interface {
 	TrackAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error
 	ReleaseAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error
@@ -230,7 +249,9 @@ const (
 
 // ConcurrencyService 管理账号和用户的并发限制。
 type ConcurrencyService struct {
-	cache ConcurrencyCache
+	cache                ConcurrencyCache
+	accountAdmissionGate AccountAdmissionGate
+	performancePauses    PerformancePauseReader
 
 	accountLoadCacheTTL atomic.Int64
 	accountLoadCacheMu  sync.RWMutex
@@ -258,8 +279,35 @@ func NewConcurrencyService(cache ConcurrencyCache) *ConcurrencyService {
 	return svc
 }
 
-// AcquireOpenAIWSIngressLease atomically reserves one live ingress connection
-// for an API key. A non-positive limit explicitly disables this protection.
+// SetAccountAdmissionGate installs the shared admission check before traffic starts.
+func (s *ConcurrencyService) SetAccountAdmissionGate(gate AccountAdmissionGate) {
+	s.accountAdmissionGate = gate
+}
+
+// ErrAccountAdmissionDenied means the live account state rejected a reserved
+// slot. Retrying the concurrency queue cannot resolve a quality/manual hold.
+var ErrAccountAdmissionDenied = errors.New("account admission denied by live scheduling or quality protection state")
+
+// Reserve ordinary concurrency before checking live account protection. A denied
+// quality check must never become a customer-traffic recovery probe.
+func (s *ConcurrencyService) admitAccountRequest(ctx context.Context, accountID int64, result *AcquireResult) (*AcquireResult, error) {
+	if result == nil || !result.Acquired || s.accountAdmissionGate == nil {
+		return result, nil
+	}
+	allowed, err := s.accountAdmissionGate.CheckAccountAdmission(ctx, accountID)
+	if err != nil || !allowed {
+		if result.ReleaseFunc != nil {
+			result.ReleaseFunc()
+		}
+		if err == nil {
+			err = ErrAccountAdmissionDenied
+		}
+		return &AcquireResult{}, err
+	}
+	return result, nil
+}
+
+// AcquireOpenAIWSIngressLease atomically reserves one live ingress connection.
 func (s *ConcurrencyService) AcquireOpenAIWSIngressLease(ctx context.Context, apiKeyID int64, maxConnections int) (*OpenAIWSIngressLease, bool, error) {
 	if maxConnections <= 0 {
 		return nil, true, nil
@@ -314,6 +362,7 @@ func (s *ConcurrencyService) SetAccountLoadBatchCacheTTL(ttl time.Duration) {
 
 // AcquireResult represents the result of acquiring a concurrency slot
 type AcquireResult struct {
+	ProxyID     int64 // Set only for a multi-proxy request; chosen atomically with its slot.
 	Acquired    bool
 	ReleaseFunc func() // Must be called when done (typically via defer)
 	// RequestID is the exact Redis member owned by this result. Live transfer
@@ -348,13 +397,39 @@ type UserLoadInfo struct {
 // AcquireAccountSlot attempts to acquire a concurrency slot for an account.
 // If the account is at max concurrency, it waits until a slot is available or timeout.
 // Returns a release function that MUST be called when the request completes.
-func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (*AcquireResult, error) {
+func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, proxyIDs ...int64) (result *AcquireResult, resultErr error) {
+	// Recheck the independent live authority even for stale/sticky candidates.
+	if admission, ok := s.performancePauses.(PerformanceAdmission); ok {
+		allowed, cancel, err := admission.AcquirePerformanceTrial(ctx, accountID)
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
+			return &AcquireResult{Acquired: false}, nil
+		}
+		defer func() {
+			if cancel != nil && (resultErr != nil || result == nil || !result.Acquired) {
+				cancel()
+			}
+		}()
+	} else if s.performancePauses != nil {
+		paused, err := s.performancePauses.PerformancePaused(ctx, []int64{accountID})
+		if err != nil {
+			return nil, err
+		}
+		if paused[accountID] {
+			return &AcquireResult{Acquired: false}, nil
+		}
+	}
+	if len(proxyIDs) > 1 {
+		return s.acquireAccountProxyPoolSlot(ctx, accountID, maxConcurrency, proxyIDs)
+	}
 	// If maxConcurrency is 0 or negative, no limit
 	if maxConcurrency <= 0 {
-		return &AcquireResult{
+		return s.admitAccountRequest(ctx, accountID, &AcquireResult{
 			Acquired:    true,
 			ReleaseFunc: func() {}, // no-op
-		}, nil
+		})
 	}
 
 	// Generate unique request ID for this slot
@@ -366,17 +441,21 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 	}
 
 	if acquired {
-		return &AcquireResult{
-			Acquired:  true,
+		var once sync.Once
+		return s.admitAccountRequest(ctx, accountID, &AcquireResult{
+			Acquired: true,
 			RequestID: requestID,
 			ReleaseFunc: func() {
-				bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if err := s.cache.ReleaseAccountSlot(bgCtx, accountID, requestID); err != nil {
-					logger.LegacyPrintf("service.concurrency", "Warning: failed to release account slot for %d (req=%s): %v", accountID, requestID, err)
-				}
+				once.Do(func() {
+					bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					err := s.cache.ReleaseAccountSlot(bgCtx, accountID, requestID)
+					if err != nil {
+						logger.LegacyPrintf("service.concurrency", "Warning: failed to release account slot for %d (req=%s): %v", accountID, requestID, err)
+					}
+				})
 			},
-		}, nil
+		})
 	}
 
 	return &AcquireResult{
@@ -389,25 +468,24 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 // If the user is at max concurrency, it waits until a slot is available or timeout.
 // Returns a release function that MUST be called when the request completes.
 func (s *ConcurrencyService) AcquireUserSlot(ctx context.Context, userID int64, maxConcurrency int) (*AcquireResult, error) {
+	requestID := generateRequestID()
 	// If maxConcurrency is 0 or negative, no limit
 	if maxConcurrency <= 0 {
-		return &AcquireResult{
+		return s.bindFallbackConcurrency(ctx, &AcquireResult{
 			Acquired:    true,
 			ReleaseFunc: func() {}, // no-op
-		}, nil
+		}, userID, 0, maxConcurrency, requestID), nil
 	}
 
 	// Generate unique request ID for this slot
-	requestID := generateRequestID()
-
 	acquired, err := s.cache.AcquireUserSlot(ctx, userID, maxConcurrency, requestID)
 	if err != nil {
 		return nil, err
 	}
 
 	if acquired {
-		return &AcquireResult{
-			Acquired:  true,
+		return s.bindFallbackConcurrency(ctx, &AcquireResult{
+			Acquired: true,
 			RequestID: requestID,
 			ReleaseFunc: func() {
 				bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -416,13 +494,47 @@ func (s *ConcurrencyService) AcquireUserSlot(ctx context.Context, userID int64, 
 					logger.LegacyPrintf("service.concurrency", "Warning: failed to release user slot for %d (req=%s): %v", userID, requestID, err)
 				}
 			},
-		}, nil
+		}, userID, 0, maxConcurrency, requestID), nil
 	}
 
 	return &AcquireResult{
 		Acquired:    false,
 		ReleaseFunc: nil,
 	}, nil
+}
+
+// AcquireUserGroupSlot atomically enforces the user's global limit and the
+// per-user limit for one group. A non-positive group ID or limit disables only
+// the group dimension and retains the existing user limit behavior.
+func (s *ConcurrencyService) AcquireUserGroupSlot(ctx context.Context, userID, groupID int64, userMax, groupMax int) (*AcquireResult, error) {
+	if groupID <= 0 || groupMax <= 0 {
+		return s.AcquireUserSlot(ctx, userID, userMax)
+	}
+	if s == nil || s.cache == nil {
+		return nil, errors.New("concurrency cache is unavailable")
+	}
+	cache, ok := s.cache.(UserGroupConcurrencyCache)
+	if !ok {
+		return s.AcquireUserSlot(ctx, userID, userMax)
+	}
+	requestID := generateRequestID()
+	acquired, err := cache.AcquireUserGroupSlot(ctx, userID, groupID, userMax, groupMax, requestID)
+	if err != nil {
+		return nil, err
+	}
+	if !acquired {
+		return &AcquireResult{Acquired: false}, nil
+	}
+	return s.bindFallbackConcurrency(ctx, &AcquireResult{
+		Acquired: true,
+		ReleaseFunc: func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := cache.ReleaseUserGroupSlot(bgCtx, userID, groupID, requestID); err != nil {
+				logger.LegacyPrintf("service.concurrency", "Warning: failed to release user group slot for user=%d group=%d (req=%s): %v", userID, groupID, requestID, err)
+			}
+		},
+	}, userID, groupID, userMax, requestID), nil
 }
 
 // APIKeySlotAdmissionCache adds atomic admission to the shared statistics set.
@@ -499,7 +611,7 @@ func (s *ConcurrencyService) TrackAPIKeySlotOwned(ctx context.Context, apiKeyID 
 		logger.LegacyPrintf("service.concurrency", "Warning: failed to track api key slot for %d (req=%s): %v", apiKeyID, requestID, err)
 	}
 
-	release, pause := keepAPIKeySlotState(ctx, cache, apiKeyID, requestID)
+	release, pause := keepAPIKeySlotState(baseCtx, cache, apiKeyID, requestID)
 	return requestID, release, pause
 }
 

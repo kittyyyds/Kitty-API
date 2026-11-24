@@ -2,8 +2,6 @@
 
 This directory contains files for deploying Sub2API on Linux servers and Apple-silicon Macs.
 
-网页注册额度、登录失败封禁及可信代理升级要求见 [网页认证 IP 防护](AUTH_IP_GUARD.md)。
-
 ## Deployment Methods
 
 | Method | Best For | Setup Wizard |
@@ -11,7 +9,6 @@ This directory contains files for deploying Sub2API on Linux servers and Apple-s
 | **Docker Compose** | Quick setup, all-in-one | Not needed (auto-setup) |
 | **Apple container** | Native local stack on macOS 26 | Not needed (auto-setup) |
 | **Binary Install** | Production servers, systemd | Web-based wizard |
-| **[Kubernetes / K3s](kubernetes/README.md)** | Request replicas with a shared primary | Pre-provisioned config / Secrets |
 
 ## Files
 
@@ -19,21 +16,21 @@ This directory contains files for deploying Sub2API on Linux servers and Apple-s
 |------|-------------|
 | `docker-compose.yml` | Docker Compose configuration (named volumes) |
 | `docker-compose.local.yml` | Docker Compose configuration (local directories, easy migration) |
-| `docker-deploy.sh` | **One-click Docker deployment script (recommended)** |
+| `docker-compose.custom.yml` | Generic source-build overlay with the `sub2api-custom` image |
+| `install-custom-docker.sh` | One-command custom Docker deployment plus host updater installation |
+| `install-source-updater.sh` | Installs the restricted host image updater for an existing Compose instance |
+| `Dockerfile.updater` | Reproducible builder image for the host updater binary |
+| `docker-deploy.sh` | Legacy upstream preparation script |
 | `apple-container.sh` | Native Apple `container` lifecycle script |
 | `APPLE_CONTAINER.md` | Apple `container` deployment and operations guide |
 | `.env.example` | Container environment variables template |
 | `DOCKER.md` | Docker Hub documentation |
 | `install.sh` | One-click binary installation script |
-| `migrate-reauth-managed.py` | 将旧登录 Worker 迁入随主程序版本自动升级的内置管理器，见 [迁移说明](MANAGED_WORKER.md) |
 | `install-datamanagementd.sh` | datamanagementd 一键安装脚本 |
 | `sub2api.service` | Systemd service unit file |
 | `sub2api-datamanagementd.service` | datamanagementd systemd service unit file |
 | `DATAMANAGEMENTD_CN.md` | datamanagementd 部署与联动说明（中文） |
 | `config.example.yaml` | Example configuration file |
-| `install-mihomo-codex.sh` | Optional Mihomo sidecar for account proxy exits |
-| `mihomo-codex.service` | Systemd unit for the Mihomo account proxy |
-| `mihomo-codex.config.example.yaml` | Sanitized Mihomo subscription configuration example |
 | `EDGE_SECURITY.md` | Reverse proxy, CDN/WAF, trusted proxy, and ingress hardening guide |
 
 ---
@@ -57,16 +54,115 @@ See [APPLE_CONTAINER.md](./APPLE_CONTAINER.md) for configuration, upgrades, pers
 
 ## Docker Deployment (Recommended)
 
+### 后台一键更新（源码 Docker 部署）
+
+源码构建使用宿主机更新器，避免把 `/var/run/docker.sock` 暴露给主应用容器。全新 Linux
+部署直接执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DeanZFC/sub2api-custom/sub2api-custom/deploy/install-custom-docker.sh \
+  -o /tmp/install-custom-docker.sh
+sudo bash /tmp/install-custom-docker.sh
+```
+
+已有部署在仓库根目录执行：
+
+```bash
+sudo ./deploy/install-source-updater.sh \
+  --repo-dir /opt/sub2api-custom \
+  --container "$(docker compose -f deploy/docker-compose.local.yml -f deploy/docker-compose.custom.yml ps -q sub2api)"
+```
+
+安装器从当前发布镜像提取宿主机更新器；旧源码实例首次安装可加 `--build-from-source`，
+也可用 `--updater-image ghcr.io/deanzfc/sub2api@sha256:...` 从已发布镜像引导安装。
+已配置 Socket 和令牌的实例升级更新器可加 `--no-recreate`，不重建应用。
+
+管理员在页面版本菜单点击“立即更新”后，宿主机更新器将：
+
+1. 获取所选版本的 `update-manifest.json`，校验版本、源码提交和可信镜像仓库。
+2. 拉取该架构的固定摘要镜像，从同一个镜像提取下次使用的更新器，无需服务器编译。
+3. 在 `deploy/docker-compose.updater.json` 写入应用镜像覆盖，保留实例原有 Compose 配置，
+   仅以 `--no-deps --no-build --pull never` 重建应用服务。
+4. 检查新容器的镜像身份和 Docker 健康状态。失败自动恢复旧镜像，并验证恢复后的健康状态；
+   恢复不成功会明确报告，任务记录保留在宿主机状态目录中。
+
+发布工作流只有在镜像和归档全部就绪后才上传更新清单。没有清单的旧版本、分支提交、
+尚未完成的发布不会出现在新页面的更新提示中。Release 构建的容器同样走宿主机镜像更新，
+更新器暂时不可用时不执行容器内二进制替换。任务在应用重建时继续运行，刷新网页可恢复进度。
+
+更新不执行数据库备份或数据库回退。数据库迁移属于前向变更，**镜像回退不等于数据库回退**，
+更新前需保留数据库备份/快照，并确认新旧版本的数据库兼容性。应用切换会短暂中断服务，
+不保证进行中的请求不中断。PostgreSQL、Redis、端口、卷和密钥沿用现有配置。
+
+后续手动执行 Compose 时也要把 `-f deploy/docker-compose.updater.json` 放在配置文件列表最后，
+避免重新选择基础配置中的旧镜像；不要删除更新器保留的旧镜像，直到更新完成并确认稳定。
+迁移实例若 Compose labels 指向仓库外路径，应沿用其已有更新器 unit 的文件参数升级宿主机二进制，
+不要用通用安装器覆盖迁移配置。
+同一台服务器上的多实例需要为每个实例单独安装更新器，并分别传入各自的仓库目录和应用容器 ID。Compose 会按项目名自动隔离应用、PostgreSQL 和 Redis 容器；已有固定容器名的部署也可以直接安装，更新时会自动重新解析新容器。
+
+如果更新器服务正常，但页面仍显示“源码构建请使用 git pull 更新”，还需检查应用容器内的
+`SUB2API_UPDATER_SOCKET`、令牌及目录挂载。Socket 父目录（默认 `/run/sub2api-updater`）必须为
+`0755`，Socket 为 `0666`，应用的 UID 1000 才能访问；令牌文件仍保留在 `/etc/sub2api-updater`
+下，权限为 `0600`。安装器和更新器启动时会修正 Socket 父目录权限，兼容 `UMask=0077`。
+
+### 与现有脚本版共存（Fork）
+
+如果服务器已经通过脚本安装了 Sub2API，请使用独立目录、Compose 项目名和数据目录，
+不要复用原脚本版的 PostgreSQL/Redis 数据目录。下面的命令默认将 Docker 版发布到 `8081`，
+原脚本版可以继续占用 `8080`：
+
+```bash
+# Docker 未安装时执行；已安装并能运行 docker 的服务器跳过这一步
+command -v docker >/dev/null 2>&1 || curl -fsSL https://get.docker.com | sh
+sudo systemctl enable --now docker
+
+git clone -b sub2api-custom https://github.com/DeanZFC/sub2api-custom.git /opt/sub2api-custom
+cd /opt/sub2api-custom/deploy
+cp .env.example .env
+chmod 600 .env
+mkdir -p data postgres_data redis_data
+
+# 必须使用独立密码和固定密钥，不要复制原实例的 .env
+sed -i 's/^SERVER_PORT=.*/SERVER_PORT=8081/' .env
+sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 32)/" .env
+sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$(openssl rand -hex 32)/" .env
+sed -i "s/^TOTP_ENCRYPTION_KEY=.*/TOTP_ENCRYPTION_KEY=$(openssl rand -hex 32)/" .env
+
+docker compose \
+  -p sub2api-custom \
+  -f docker-compose.local.yml \
+  -f docker-compose.custom.yml \
+  up -d --build
+```
+
+此模式使用容器名 `sub2api-custom`、`sub2api-custom-postgres`、
+`sub2api-custom-redis`，不会停止或删除脚本版服务。查看状态和日志：
+
+```bash
+docker compose -p sub2api-custom \
+  -f docker-compose.local.yml -f docker-compose.custom.yml \
+  ps
+docker logs -f sub2api-custom
+```
+
+停止或更新 Docker 版时，只操作这个 Compose 项目；不要使用 `docker compose down -v`：
+
+```bash
+docker compose -p sub2api-custom \
+  -f docker-compose.local.yml -f docker-compose.custom.yml \
+  stop
+```
+
 ### Method 1: One-Click Deployment (Recommended)
 
 Use the automated preparation script for the easiest setup:
 
 ```bash
 # Download and run the preparation script
-curl -sSL https://raw.githubusercontent.com/ranxi2001/sub2api/production/deploy/docker-deploy.sh | bash
+curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh | bash
 
 # Or download first, then run
-curl -sSL https://raw.githubusercontent.com/ranxi2001/sub2api/production/deploy/docker-deploy.sh -o docker-deploy.sh
+curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh -o docker-deploy.sh
 chmod +x docker-deploy.sh
 ./docker-deploy.sh
 ```
@@ -99,7 +195,7 @@ If you prefer manual control:
 
 ```bash
 # Clone repository
-git clone --branch production https://github.com/ranxi2001/sub2api.git
+git clone https://github.com/Wei-Shaw/sub2api.git
 cd sub2api/deploy
 
 # Configure environment
@@ -134,20 +230,6 @@ docker compose -f docker-compose.local.yml logs -f sub2api
 | **docker-compose.yml** | Named volumes (/var/lib/docker/volumes/) | ⚠️ Requires docker commands | Simple setup, don't need migration |
 
 **Recommendation:** Use `docker-compose.local.yml` (deployed by `docker-deploy.sh`) for easier data management and migration.
-
-### Docker behind host Nginx: trusted client IPs
-
-Registration quotas and authentication abuse protection always use the trusted
-proxy chain. With host Nginx and a Docker published port, the application's TCP
-peer may be a bridge gateway, which is not trusted by default. Configure only
-the actual proxy IPs through `SERVER_TRUSTED_PROXIES` in `.env` or the persistent
-`/app/data/config.yaml`. Leave the environment variable **unset**, not empty, to
-keep YAML configuration. Updating `.env` alone has no effect with an older
-Compose template that does not pass this variable through.
-
-See [Docker + host Nginx trusted proxy configuration](../docs/docker-trusted-proxies.md)
-for peer inspection, exact proxy configuration, application-only recreation,
-registration IP diagnostics and preserving site settings across template updates.
 
 ### How Auto-Setup Works
 
@@ -286,8 +368,6 @@ docker compose down -v
 | `GEMINI_OAUTH_CLIENT_SECRET` | No | *(builtin)* | Google OAuth client secret (Gemini OAuth). Leave empty to use the built-in Gemini CLI client. |
 | `GEMINI_OAUTH_SCOPES` | No | *(default)* | OAuth scopes (Gemini OAuth) |
 | `GEMINI_QUOTA_POLICY` | No | *(empty)* | JSON overrides for Gemini local quota simulation (Code Assist only). |
-| `GATEWAY_API_KEY_QUEUE_MAX_WAITING` | No | `5` | Extra waiting requests per API key with `concurrency_limit>0`; `0` disables key queueing and restores immediate `429`. Read at process start; recreate the container after changing. |
-| `GATEWAY_API_KEY_QUEUE_TIMEOUT_SECONDS` | No | `30` | Per-request wait budget in seconds for key capacity; must be a positive integer. Read at process start; recreate the container after changing. |
 
 See `.env.example` for all available options.
 
@@ -421,12 +501,12 @@ For production servers using systemd.
 ### One-Line Installation
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/ranxi2001/sub2api/production/deploy/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash
 ```
 
 ### Manual Installation
 
-1. Download the latest release from [GitHub Releases](https://github.com/ranxi2001/sub2api/releases)
+1. Download the latest release from [GitHub Releases](https://github.com/Wei-Shaw/sub2api/releases)
 2. Extract and copy the binary to `/opt/sub2api/`
 3. Copy `sub2api.service` to `/etc/systemd/system/`
 4. Run:
@@ -471,39 +551,6 @@ sudo journalctl -u sub2api -f
 # Enable auto-start on boot
 sudo systemctl enable sub2api
 ```
-
-### Mihomo account proxy
-
-Accounts can use a local Mihomo sidecar backed by an airport
-subscription. This keeps subscription credentials outside the application
-database and limits the proxy listener to localhost. Run the optional installer
-as root on the same server as Sub2API:
-
-```bash
-sudo MIHOMO_CODEX_SUBSCRIPTION_URL='https://provider.example/subscription' \
-  bash deploy/install-mihomo-codex.sh
-```
-
-For a fresh or versioned binary install, the same environment variable makes
-`install.sh` configure the sidecar automatically after downloading the
-release:
-
-```bash
-sudo MIHOMO_CODEX_SUBSCRIPTION_URL='https://provider.example/subscription' \
-  bash deploy/install.sh install -v v2.7.2
-```
-
-Without the variable, the installer detects an already active sidecar and
-leaves it untouched. It cannot provision an airport subscription on your
-behalf; the subscription URL remains the only required provider input.
-
-The installer downloads the pinned compatible Mihomo release, configures the
-`airport` provider with health checks and a `CODEX-ROTATE` round-robin group,
-and listens on `http://127.0.0.1:3101`. Add that endpoint as an account proxy when needed. Existing accounts keep
-their assigned proxy. Ticket harvesting is not available in this local edition.
-
-The subscription URL is written only to `/etc/mihomo-codex/config.yaml`
-(`0640`, `root:mihomo-codex`) and must not be committed or printed in logs.
 
 ### Configuration
 
@@ -564,15 +611,11 @@ If you need to use AI Studio OAuth for Gemini accounts, add the OAuth client cre
 
 The main config file is at `/etc/sub2api/config.yaml` (created by Setup Wizard).
 
-Login rate limiting can be toggled in **System Settings → Security → Login rate limiting** (enabled by default). Saving applies immediately to admins and users, including password, two-factor, Passkey, and OAuth account-binding sign-ins. Disabling skips both the request counter and the IP failure guard, including existing bans and Redis/Lua failures on these login paths. Other authentication endpoints retain their protection. Existing counters and bans keep their original expiry and apply again if re-enabled before expiry. The setting is stored as `login_rate_limit_enabled` in the database; no `.env` change or restart is required. An older settings client that omits this field preserves the current value.
-
-The independent **System Settings → Security → Registration account limit per IP** switch defaults to enabled (at most two registered accounts per IP, including email and OAuth signups). Administrators can disable it for shared/NAT networks without disabling CAPTCHA, email verification, request throttling or login abuse protection. Saving `registration_ip_limit_enabled` takes effect on the next auth request without a restart. Missing/invalid values and lookup failures retain the quota; older settings clients that omit the field preserve its current value. This uses the existing settings store and requires no schema migration. Existing IP quota rows are never deleted or reset. Signups while disabled do not increment the quota, and re-enabling resumes the previously retained counts rather than backfilling those signups. Disabling the quota can increase signup abuse, so retain other verification controls. Reverting to a binary without this switch restores the original always-on quota.
-
 ### Prerequisites
 
 - Linux server (Ubuntu 20.04+, Debian 11+, CentOS 8+, etc.)
 - PostgreSQL 14+
-- Redis 6.0+
+- Redis 6+
 - systemd
 
 ### Directory Structure

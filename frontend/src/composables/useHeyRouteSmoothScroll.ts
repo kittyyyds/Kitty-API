@@ -47,13 +47,12 @@ export function useHeyRouteSmoothScroll(rootRef: ShallowRef<HTMLElement | null>)
     else wake()
   }
 
-  onMounted(() => {
-    const root = rootRef.value
-    if (!root) return
+  let desktopQuery: MediaQueryList | null = null
+  let motionQuery: MediaQueryList | null = null
 
-    const desktop = window.matchMedia('(min-width: 901px)').matches
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    if (!desktop || reduceMotion) return
+  function start(): void {
+    const root = rootRef.value
+    if (!root || lenis) return
 
     lenis = new Lenis({
       wrapper: root,
@@ -67,16 +66,38 @@ export function useHeyRouteSmoothScroll(rootRef: ShallowRef<HTMLElement | null>)
     removeScrollListener = lenis.on('scroll', (current) => {
       if (current.isScrolling) wake()
     })
-    document.addEventListener('visibilitychange', handleVisibilityChange)
     wake()
+  }
+
+  function stop(): void {
+    stopFrame()
+    removeVirtualScrollListener()
+    removeScrollListener()
+    removeVirtualScrollListener = () => {}
+    removeScrollListener = () => {}
+    lenis?.destroy()
+    lenis = null
+  }
+
+  // Below 901px the window scrolls, not the root; a Lenis left running there swallows wheel events.
+  function sync(): void {
+    if (desktopQuery?.matches && !motionQuery?.matches) start()
+    else stop()
+  }
+
+  onMounted(() => {
+    desktopQuery = window.matchMedia('(min-width: 901px)')
+    motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+    desktopQuery.addEventListener('change', sync)
+    motionQuery.addEventListener('change', sync)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    sync()
   })
 
   onBeforeUnmount(() => {
-    stopFrame()
+    desktopQuery?.removeEventListener('change', sync)
+    motionQuery?.removeEventListener('change', sync)
     document.removeEventListener('visibilitychange', handleVisibilityChange)
-    removeVirtualScrollListener()
-    removeScrollListener()
-    lenis?.destroy()
-    lenis = null
+    stop()
   })
 }

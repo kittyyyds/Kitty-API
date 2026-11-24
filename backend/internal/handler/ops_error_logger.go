@@ -42,7 +42,6 @@ const (
 	opsErrAPIKeyRequired             = "api_key_required"
 	opsErrInsufficientBalance        = "insufficient balance"
 	opsErrInsufficientAccountBalance = "insufficient account balance"
-	opsErrInsufficientUserBalance    = "insufficient user balance"
 	opsErrInsufficientQuota          = "insufficient_quota"
 
 	// 上游错误码常量 — 错误分类 (normalizeOpsErrorType / classifyOpsPhase / classifyOpsIsBusinessLimited)
@@ -528,23 +527,22 @@ type opsCaptureWriter struct {
 }
 
 type opsCaptureWriterState struct {
-	mu              sync.RWMutex
-	inFlight        sync.WaitGroup
-	generation      uint64
-	responseWriter  gin.ResponseWriter
-	limit           int
-	buf             bytes.Buffer
-	probe           []byte
-	lineProbe       []byte
-	frameLineLen    int
-	frameTruncated  bool
-	lineTruncated   bool
-	skipLF          bool
-	sseCapturing    bool
-	terminalError   parsedOpsError
-	terminalFound   bool
-	terminalSuccess bool
-	ctx             *gin.Context
+	mu             sync.RWMutex
+	inFlight       sync.WaitGroup
+	generation     uint64
+	responseWriter gin.ResponseWriter
+	limit          int
+	buf            bytes.Buffer
+	probe          []byte
+	lineProbe      []byte
+	frameLineLen   int
+	frameTruncated bool
+	lineTruncated  bool
+	skipLF         bool
+	sseCapturing   bool
+	terminalError  parsedOpsError
+	terminalFound  bool
+	ctx            *gin.Context
 }
 
 const (
@@ -592,7 +590,6 @@ func acquireOpsCaptureWriterFromPool(pool opsCaptureWriterStatePool, rw gin.Resp
 	state.sseCapturing = false
 	state.terminalError = parsedOpsError{}
 	state.terminalFound = false
-	state.terminalSuccess = false
 	state.ctx = nil
 	generation := state.generation
 	state.mu.Unlock()
@@ -628,7 +625,6 @@ func releaseOpsCaptureWriter(w *opsCaptureWriter) {
 	state.sseCapturing = false
 	state.terminalError = parsedOpsError{}
 	state.terminalFound = false
-	state.terminalSuccess = false
 	poolable := shouldPoolOpsCaptureWriterState(state)
 	state.buf.Reset()
 	state.mu.Unlock()
@@ -784,19 +780,6 @@ func (w *opsCaptureWriter) Flush() {
 	defer finishDelegatedCall(state)
 	rw.Flush()
 }
-
-// FlushError keeps the writer lease alive while exposing transport flush failures.
-// Do not expose Unwrap: it would let callers bypass the generation/in-flight guard.
-func (w *opsCaptureWriter) FlushError() error {
-	state, rw := w.beginDelegatedCall()
-	if state == nil {
-		return errors.New("response writer released")
-	}
-	state.mu.Unlock()
-	defer finishDelegatedCall(state)
-	return service.FlushGatewayResponse(rw)
-}
-
 func (w *opsCaptureWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	state, rw := w.beginDelegatedCall()
 	if state == nil {
@@ -866,11 +849,7 @@ func isOpsTerminalSSEFrame(frame []byte) bool {
 	if !bytes.Contains(payload, []byte("response.failed")) && !bytes.Contains(payload, []byte(`"error"`)) {
 		return false
 	}
-	var event struct {
-		Type string `json:"type"`
-	}
-	return json.Unmarshal(payload, &event) == nil &&
-		(event.Type == "response.failed" || event.Type == "error")
+	return service.IsUpstreamErrorPayload(payload, string(eventType))
 }
 
 func parseOpsSSEFrameEnvelope(frame []byte) ([]byte, []byte) {
@@ -995,9 +974,6 @@ func (state *opsCaptureWriterState) captureResponseChunk(chunk []byte, status in
 			state.lineTruncated = false
 			continue
 		}
-		if !state.frameTruncated && autoConfigSuccessfulFrame(state.probe) {
-			state.terminalSuccess = true
-		}
 		if !state.frameTruncated && isOpsTerminalSSEFrame(state.probe) {
 			state.sseCapturing = true
 			state.terminalError, state.terminalFound = parseOpsSSEFailure(state.probe)
@@ -1020,14 +996,10 @@ func endsAtOpsSSEFrameBoundary(chunk []byte) bool {
 }
 
 func mayContainOpsTerminalSSE(chunk []byte) bool {
-	if bytes.Contains(chunk, []byte("[DONE]")) || bytes.Contains(chunk, []byte("response.completed")) || bytes.Contains(chunk, []byte("message_stop")) || bytes.Contains(chunk, []byte("finishReason")) {
-		return true
-	}
 	if bytes.Contains(chunk, []byte("response.failed")) {
 		return true
 	}
-	return bytes.Contains(chunk, []byte("error")) &&
-		(bytes.Contains(chunk, []byte("event")) || bytes.Contains(chunk, []byte(`"type"`)))
+	return bytes.Contains(chunk, []byte("error"))
 }
 
 func isOpsTerminalSSEEventLine(line []byte) bool {
@@ -1052,9 +1024,6 @@ func (state *opsCaptureWriterState) appendTerminalProbe(chunk []byte) {
 }
 
 func (state *opsCaptureWriterState) finalizeResponseCapture() {
-	if state != nil && !state.frameTruncated && autoConfigSuccessfulFrame(state.probe) {
-		state.terminalSuccess = true
-	}
 	if state == nil {
 		return
 	}
@@ -1100,13 +1069,9 @@ func (state *opsCaptureWriterState) shouldCapture() bool {
 // Notes:
 // - It buffers response bodies only for status >= 400 or terminal SSE frames.
 // - Streaming errors after the response has started (SSE) may still need explicit logging.
-func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
+// - Detached tasks can supply execution instead of advancing a Gin route chain.
+func OpsErrorLoggerMiddleware(ops *service.OpsService, execution ...gin.HandlerFunc) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		requestStart, ok := c.Request.Context().Value(ctxkey.RequestStartTime).(time.Time)
-		if !ok || requestStart.IsZero() {
-			requestStart = time.Now()
-			c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.RequestStartTime, requestStart))
-		}
 		originalWriter := c.Writer
 		w := acquireOpsCaptureWriter(originalWriter)
 		w.setContext(c)
@@ -1119,15 +1084,15 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			releaseOpsCaptureWriter(w)
 		}()
 		c.Writer = w
-		c.Next()
-		service.SetOpsLatencyMs(c, service.OpsRequestDurationMsKey, time.Since(requestStart).Milliseconds())
+		if len(execution) > 0 && execution[0] != nil {
+			execution[0](c)
+		} else {
+			c.Next()
+		}
 		w.finalizeCapture()
-		observeAutoConfigRequest(c, ops, w, requestStart)
 
-		if reason, rejected := middleware2.GetIngressRejectReason(c); rejected {
-			if reason == middleware2.IngressRejectSubagentsBlocked {
-				logOpsSubagentRejection(c, ops)
-			}
+		if _, rejected := middleware2.GetIngressRejectReason(c); rejected {
+			logOpsSubagentRejection(c, ops)
 			return
 		}
 
@@ -1152,6 +1117,21 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			if terminal, ok := w.capturedTerminalError(); ok {
 				parsed = terminal
 			}
+		}
+		// Native data-only error envelopes may contain only a numeric status.
+		// Keep the richer original classification already recorded by the
+		// provider adapter instead of replacing it with parser fallbacks.
+		if status < 400 && parsed.StreamFailure && parsed.Message == "upstream stream failed" {
+			if marked, ok := service.GetOpsStreamError(c); ok {
+				parsed.ErrorType, parsed.Code, parsed.Message = marked.ErrType, marked.Code, marked.Message
+				parsed.StatusCode = marked.IntendedStatus
+			}
+		}
+		localAdmission := isOpsLocalAdmissionError(c, parsed.Code)
+		if localAdmission {
+			// Responses terminal frames can omit both type and HTTP status.
+			parsed.ErrorType = "rate_limit_error"
+			parsed.StatusCode = http.StatusTooManyRequests
 		}
 		if status < 400 {
 			if parsed.StreamFailure {
@@ -1230,7 +1210,6 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		normalizedType := normalizeOpsErrorType(parsed.ErrorType, parsed.Code)
 
 		phase, isBusinessLimited, errorOwner, errorSource := classifyOpsErrorLog(c, normalizedType, parsed.Message, parsed.Code, status)
-		normalizedType = normalizeOpsLocalBalanceType(normalizedType, parsed.Message, phase, errorOwner)
 
 		entry := &service.OpsInsertErrorLogInput{
 			RequestID:       requestID,
@@ -1288,16 +1267,24 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		}
 		applyOpsLatencyFieldsFromContext(c, entry)
 		applyOpsUpstreamFieldsFromContext(c, entry)
-		if parsed.StreamFailure {
+		if parsed.StreamFailure && !localAdmission {
+			admissionCode := isOpsGatewayAdmissionCode(parsed.Code)
 			if message := strings.TrimSpace(parsed.Message); message != "" {
-				entry.UpstreamErrorMessage = &message
+				if !admissionCode || entry.UpstreamErrorMessage == nil {
+					entry.UpstreamErrorMessage = &message
+				}
 			}
-			if status >= 400 {
-				finalStatus := status
-				entry.UpstreamStatusCode = &finalStatus
+			if admissionCode {
+				// A provider lookalike is still upstream, but a status inferred
+				// from the payload is not evidence of an upstream status.
+				if entry.UpstreamStatusCode == nil && parsed.StatusCode >= 400 && parsed.StatusCode <= 599 {
+					entry.UpstreamStatusCode = &parsed.StatusCode
+				}
+			} else if status >= 400 {
+				entry.UpstreamStatusCode = &status
 			}
 		}
-		suppressOpsUpstreamAttributionForClientRejection(entry)
+		suppressOpsUpstreamAttributionForLocalModelConfiguration(c, entry)
 
 		if apiKey != nil {
 			entry.APIKeyID = &apiKey.ID
@@ -1321,6 +1308,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			entry.ClientIP = &clientIP
 		}
 
+		service.AttachOpenAIWSReadDiagnostic(c, entry)
 		enqueueOpsErrorLog(ops, entry)
 	}
 }
@@ -1437,6 +1425,7 @@ func logOpsRecoveredUpstream(c *gin.Context, ops *service.OpsService, finalStatu
 		entry.ClientIP = &clientIP
 	}
 	applyOpsLatencyFieldsFromContext(c, entry)
+	service.AttachOpenAIWSReadDiagnostic(c, entry)
 	enqueueOpsErrorLog(ops, entry)
 }
 
@@ -1496,26 +1485,21 @@ func logOpsStreamErrorValue(c *gin.Context, ops *service.OpsService, wireStatus 
 		classifyStatus = wireStatus
 	}
 	normalizedType := normalizeOpsErrorType(streamErr.ErrType, streamErr.Code)
-	// Only an internal request-scoped marker can create a cancellation row.
-	// An upstream error.type/code must not be able to opt out of SLA metrics.
-	if streamErr.RequestScoped && streamErr.Code == service.OpsClientCanceledCode {
-		normalizedType = service.OpsClientCanceledCode
-	}
 	var phase, errorOwner, errorSource string
 	var isBusinessLimited bool
 	if streamErr.RequestScoped {
 		// 请求级带内结果只按错误类型分类，此前尝试残留的上游错误上下文不参与判定。
 		phase = classifyOpsPhase(normalizedType, streamErr.Message, streamErr.Code)
-		// Cancellation is visible when enabled, but is not a business limit.
-		isBusinessLimited = streamErr.Code != service.OpsClientCanceledCode
+		isBusinessLimited = true
 		errorOwner = classifyOpsErrorOwner(phase, streamErr.Message)
 		errorSource = classifyOpsErrorSource(phase, streamErr.Message)
 	} else {
 		phase, isBusinessLimited, errorOwner, errorSource = classifyOpsErrorLog(c, normalizedType, streamErr.Message, streamErr.Code, classifyStatus)
 	}
-	normalizedType = normalizeOpsLocalBalanceType(normalizedType, streamErr.Message, phase, errorOwner)
 	recordedStatus := wireStatus
-	if streamErr.IntendedStatus >= 400 && (streamErr.CountTowardsSLA || streamErr.RequestScoped) {
+	if isOpsLocalAdmissionError(c, streamErr.Code) {
+		recordedStatus = http.StatusTooManyRequests
+	} else if streamErr.IntendedStatus >= 400 && (streamErr.CountTowardsSLA || streamErr.RequestScoped) {
 		recordedStatus = streamErr.IntendedStatus
 	}
 	errorBody := ""
@@ -1614,7 +1598,6 @@ func logOpsStreamErrorValue(c *gin.Context, ops *service.OpsService, wireStatus 
 	if streamErr.Turn > 0 && !streamErr.RequestScoped {
 		applyOpsStreamErrorSnapshot(entry, streamErr)
 	}
-	suppressOpsUpstreamAttributionForClientRejection(entry)
 
 	if apiKey != nil {
 		entry.APIKeyID = &apiKey.ID
@@ -1634,6 +1617,9 @@ func logOpsStreamErrorValue(c *gin.Context, ops *service.OpsService, wireStatus 
 		entry.ClientIP = &clientIP
 	}
 
+	if !streamErr.RequestScoped && streamErr.Turn == 0 {
+		service.AttachOpenAIWSReadDiagnostic(c, entry)
+	}
 	enqueueOpsErrorLog(ops, entry)
 }
 
@@ -1717,15 +1703,6 @@ func applyOpsLatencyFieldsFromContext(c *gin.Context, entry *service.OpsInsertEr
 	if c == nil || entry == nil {
 		return
 	}
-	entry.DurationMs = getContextLatencyMs(c, service.OpsRequestDurationMsKey)
-	// Dedicated error paths can enqueue before the middleware unwinds.
-	if entry.DurationMs == nil && c.Request != nil {
-		if start, ok := c.Request.Context().Value(ctxkey.RequestStartTime).(time.Time); ok && !start.IsZero() {
-			if elapsed := time.Since(start).Milliseconds(); elapsed >= 0 {
-				entry.DurationMs = &elapsed
-			}
-		}
-	}
 	entry.AuthLatencyMs = getContextLatencyMs(c, service.OpsAuthLatencyMsKey)
 	entry.RoutingLatencyMs = getContextLatencyMs(c, service.OpsRoutingLatencyMsKey)
 	entry.UpstreamLatencyMs = getContextLatencyMs(c, service.OpsUpstreamLatencyMsKey)
@@ -1806,8 +1783,8 @@ func applyOpsUpstreamErrorEvents(entry *service.OpsInsertErrorLogInput, events [
 	}
 }
 
-func suppressOpsUpstreamAttributionForClientRejection(entry *service.OpsInsertErrorLogInput) {
-	if entry == nil || entry.ErrorOwner != "client" || !entry.IsBusinessLimited {
+func suppressOpsUpstreamAttributionForLocalModelConfiguration(c *gin.Context, entry *service.OpsInsertErrorLogInput) {
+	if entry == nil || !service.HasOpsClientBusinessLimited(c) || service.OpsClientBusinessLimitedReason(c) != service.OpsClientBusinessLimitedReasonLocalModelConfiguration {
 		return
 	}
 	entry.AccountID = nil
@@ -1956,6 +1933,9 @@ func parseOpsSSEFailure(body []byte) (parsedOpsError, bool) {
 		if err := json.Unmarshal(payloadBytes, &event); err == nil {
 			if eventType == "" {
 				eventType, _ = event["type"].(string)
+				if eventType == "" && event["error"] != nil {
+					eventType = "error"
+				}
 			}
 		}
 		if eventType != "response.failed" && eventType != "error" {
@@ -1984,6 +1964,12 @@ func parseOpsSSEFailure(body []byte) (parsedOpsError, bool) {
 			}
 			parsed.StatusCode = opsJSONInt(errObj["status_code"])
 			if parsed.StatusCode == 0 {
+				// Native Google errors put their HTTP status in error.code.
+				if code, ok := errObj["code"].(float64); ok && code >= 400 && code <= 599 {
+					parsed.StatusCode = int(code)
+				}
+			}
+			if parsed.StatusCode == 0 {
 				parsed.StatusCode = opsJSONInt(errObj["status"])
 			}
 			if parsed.StatusCode == 0 {
@@ -1991,6 +1977,16 @@ func parseOpsSSEFailure(body []byte) (parsedOpsError, bool) {
 			}
 			if parsed.StatusCode == 0 {
 				parsed.StatusCode = opsJSONInt(event["status"])
+			}
+			// Only the exact schema marker gains this new classification. Validate
+			// the original frame with the service's bounded, duplicate-aware parser;
+			// the generic map above must not turn an ambiguous error into a 400.
+			if (strings.EqualFold(strings.TrimSpace(parsed.Code), "invalid_json_schema") || strings.EqualFold(strings.TrimSpace(parsed.ErrorType), "invalid_json_schema")) &&
+				service.IsOpenAIInvalidJSONSchemaError(payloadBytes) {
+				parsed.ErrorType = "invalid_request_error"
+				if parsed.StatusCode == 0 {
+					parsed.StatusCode = http.StatusBadRequest
+				}
 			}
 			if parsed.ErrorType == "" {
 				parsed.ErrorType = inferResponsesFailedOpsErrorType(parsed.Code)
@@ -2222,15 +2218,6 @@ func normalizeOpsErrorType(errType string, code string) string {
 	}
 }
 
-// Normalize only an explicitly local user-balance rejection. Upstream errors
-// retain their provider attribution even if they use the same message.
-func normalizeOpsLocalBalanceType(errType, message, phase, owner string) string {
-	if owner == "client" && phase == "request" && strings.EqualFold(strings.TrimSpace(message), service.InsufficientUserBalanceMessage) {
-		return "billing_error"
-	}
-	return errType
-}
-
 func classifyOpsPhase(errType, message, code string) string {
 	msg := strings.ToLower(message)
 	// Standardized phases: request|auth|account_auth|routing|upstream|network|internal
@@ -2252,7 +2239,7 @@ func classifyOpsPhase(errType, message, code string) string {
 			return "request"
 		}
 		return "upstream"
-	case service.OpsClientCanceledCode, "invalid_request_error", "permission_error", "forbidden_error", "not_found_error", "model_not_found":
+	case "invalid_request_error", "permission_error", "forbidden_error", "not_found_error", "model_not_found":
 		return "request"
 	case "upstream_error", "overloaded_error":
 		return "upstream"
@@ -2268,7 +2255,7 @@ func classifyOpsPhase(errType, message, code string) string {
 
 func classifyOpsSeverity(errType string, status int) string {
 	switch errType {
-	case service.OpsClientCanceledCode, "invalid_request_error", "authentication_error", "permission_error", "forbidden_error", "not_found_error", "model_not_found", "billing_error", "subscription_error":
+	case "invalid_request_error", "authentication_error", "permission_error", "forbidden_error", "not_found_error", "model_not_found", "billing_error", "subscription_error":
 		return "P3"
 	}
 	if status >= 500 {
@@ -2284,6 +2271,12 @@ func classifyOpsSeverity(errType string, status int) string {
 }
 
 func classifyOpsErrorLog(c *gin.Context, errType, message, code string, status int) (phase string, isBusinessLimited bool, errorOwner string, errorSource string) {
+	if isOpsGatewayAdmissionCode(code) {
+		if isOpsLocalAdmissionError(c, code) {
+			return "request", true, "client", "client_request"
+		}
+		return "upstream", false, "provider", "upstream_http"
+	}
 	phase = classifyOpsPhase(errType, message, code)
 	if service.IsOpsRequestScopedError(c) {
 		// 失败由请求内容决定：只按错误类型分类，上游错误上下文不参与归因。
@@ -2293,12 +2286,18 @@ func classifyOpsErrorLog(c *gin.Context, errType, message, code string, status i
 	routingCapacityLimited := isOpsRoutingCapacityLimited(c)
 	clientBusinessLimited := service.HasOpsClientBusinessLimited(c)
 	localModelConfiguration := clientBusinessLimited && service.OpsClientBusinessLimitedReason(c) == service.OpsClientBusinessLimitedReasonLocalModelConfiguration
+	// 分组模型白名单的入口拒绝发生在调度之前（本地面请求策略，业务限流原因与
+	// 账号模型映射复用 local_model_configuration）：保持 classifyOpsPhase 的
+	// 自然分类（not_found/invalid_request → request，owner=client），不落到
+	// routing；上游归因仍由 suppressOpsUpstreamAttributionForLocalModelConfiguration 清空。
+	ingressModelNotAllowed := false
+	if reason, rejected := middleware2.GetIngressRejectReason(c); rejected && reason == middleware2.IngressRejectModelNotAllowed {
+		ingressModelNotAllowed = true
+	}
 	upstreamError := hasOpsUpstreamErrorContext(c)
 	accountAuthFailure := hasOpsAccountAuthFailure(c)
-	if localModelConfiguration {
-		// The requested model is outside this group's configured capabilities.
-		// This is a client rejection, not a platform or account failure.
-		phase = "request"
+	if localModelConfiguration && !ingressModelNotAllowed {
+		phase = "routing"
 	} else if accountAuthFailure && !routingCapacityLimited {
 		phase = "account_auth"
 	} else if upstreamError && !routingCapacityLimited {
@@ -2307,17 +2306,14 @@ func classifyOpsErrorLog(c *gin.Context, errType, message, code string, status i
 	if clientBusinessLimited && !upstreamError && !routingCapacityLimited && !localModelConfiguration {
 		phase = "auth"
 	}
-	if routingCapacityLimited && !localModelConfiguration {
+	if routingCapacityLimited {
 		phase = "routing"
 	}
 	msg := strings.ToLower(message)
 	effectiveUpstreamError := upstreamError && !localModelConfiguration
 	localClientAuthError := !effectiveUpstreamError && phase == "auth" && isOpsClientAuthError(code, msg)
 	localBusinessLimited := !effectiveUpstreamError && classifyOpsIsBusinessLimited(errType, phase, code, status, message, localClientAuthError)
-	// An exhausted account pool is a platform capacity failure, even if the
-	// request also carries an earlier user-limit marker. Explicit local model
-	// configuration rejections still take precedence.
-	isBusinessLimited = localModelConfiguration || (!routingCapacityLimited && ((clientBusinessLimited && !effectiveUpstreamError) || localBusinessLimited))
+	isBusinessLimited = localModelConfiguration || routingCapacityLimited || (clientBusinessLimited && !effectiveUpstreamError) || localBusinessLimited
 	errorOwner = classifyOpsErrorOwner(phase, message)
 	errorSource = classifyOpsErrorSource(phase, message)
 	return phase, isBusinessLimited, errorOwner, errorSource
@@ -2371,9 +2367,7 @@ func isOpsLocalBusinessLimitError(code string, msg string) bool {
 		opsCodeSubscriptionNotFound,
 		opsCodeSubscriptionInvalid,
 		opsCodeAPIKeyQuotaExhausted,
-		opsCodeAPIKeyQueryDeprecated,
-		apiKeyQueueFullCode,
-		apiKeyQueueTimeoutCode:
+		opsCodeAPIKeyQueryDeprecated:
 		return true
 	}
 	return strings.Contains(msg, "api key in query parameter is deprecated") ||
@@ -2381,8 +2375,8 @@ func isOpsLocalBusinessLimitError(code string, msg string) bool {
 		strings.Contains(msg, "no active subscription found for this group") ||
 		strings.Contains(msg, "subscription is invalid or expired") ||
 		strings.Contains(msg, opsErrInsufficientBalance) ||
-		strings.Contains(msg, opsErrInsufficientUserBalance) ||
 		strings.Contains(msg, "insufficient account balance") ||
+		strings.Contains(msg, "insufficient user balance") ||
 		strings.Contains(msg, "api key group platform is not gemini") ||
 		strings.Contains(msg, "api key 额度已用完") ||
 		strings.Contains(msg, "api key 5小时限额已用完") ||
@@ -2394,8 +2388,6 @@ func isOpsLocalBusinessLimitError(code string, msg string) bool {
 		strings.Contains(msg, "usage quota exhausted for this platform") ||
 		strings.Contains(msg, "requests-per-minute limit exceeded") ||
 		strings.Contains(msg, "too many pending requests") ||
-		strings.Contains(msg, "api key wait queue is full") ||
-		strings.Contains(msg, "waiting for api key concurrency slot") ||
 		strings.Contains(msg, "concurrency limit exceeded") ||
 		strings.Contains(msg, "image generation concurrency limit exceeded") ||
 		strings.Contains(msg, "this group is restricted to claude code clients") ||
@@ -2408,8 +2400,7 @@ func isOpsLocalBusinessLimitError(code string, msg string) bool {
 		(strings.Contains(msg, "beta feature ") && strings.Contains(msg, " is not allowed")) ||
 		(strings.Contains(msg, "openai service_tier=") && strings.Contains(msg, " is not allowed for model")) ||
 		strings.Contains(msg, "this account only allows codex official clients") ||
-		strings.Contains(msg, "openai wsv1 is temporarily unsupported") ||
-		strings.Contains(msg, "openai codex passthrough requires a non-empty instructions field")
+		strings.Contains(msg, "openai wsv1 is temporarily unsupported")
 }
 
 func hasOpsUpstreamErrorContext(c *gin.Context) bool {
@@ -2562,8 +2553,7 @@ func shouldSkipOpsErrorLog(ctx context.Context, ops *service.OpsService, message
 
 	// Check if insufficient balance errors should be ignored
 	if settings.IgnoreInsufficientBalanceErrors {
-		if strings.Contains(bodyLower, opsErrInsufficientUserBalance) || strings.Contains(msgLower, opsErrInsufficientUserBalance) ||
-			strings.Contains(bodyLower, opsErrInsufficientBalance) || strings.Contains(bodyLower, opsErrInsufficientAccountBalance) ||
+		if strings.Contains(bodyLower, opsErrInsufficientBalance) || strings.Contains(bodyLower, opsErrInsufficientAccountBalance) ||
 			strings.Contains(bodyLower, opsErrInsufficientQuota) ||
 			strings.Contains(msgLower, opsErrInsufficientBalance) || strings.Contains(msgLower, opsErrInsufficientAccountBalance) {
 			return true

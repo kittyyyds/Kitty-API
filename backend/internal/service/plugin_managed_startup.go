@@ -19,19 +19,10 @@ func (m *PluginManager) ValidateManagedStartup(ctx context.Context) error {
 		if row == nil {
 			return errors.New("managed plugin state is invalid")
 		}
-		// This fixed package only transforms an individual request. Each instance
-		// restores and verifies its copy and reconciles the shared configuration.
-		if isPinnedGatewayPrompt(row.Manifest) && row.SignatureStatus == PluginSignatureTrusted &&
-			row.BinarySHA256 == row.Manifest.Files[row.Manifest.Runtimes[row.Manifest.RuntimeKey()].Path] {
-			reviewed := true
-			for _, binding := range row.Bindings {
-				if binding.Enabled && (binding.Capability != PluginCapabilityGatewayTransform || binding.Platform != "gateway" || binding.AccountType != "any") {
-					reviewed = false
-				}
-			}
-			if reviewed {
-				continue
-			}
+		// Retired OpenAI OAuth outbound (BPS) rows never start, so they cannot
+		// affect a managed update even if the database still marks them enabled.
+		if pluginInstallationRetired(row) || managedPluginLifecycleReviewed(row, row.Manifest.RuntimeKey()) {
+			continue
 		}
 		if row.State == PluginStateStarting || row.State == PluginStateEnabled {
 			return errors.New("enabled plugins require a reviewed multi-instance lifecycle before a managed update")
@@ -43,4 +34,27 @@ func (m *PluginManager) ValidateManagedStartup(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// The pinned prompt package processes individual host-owned requests.
+// It does not run an account pool, refresh credentials, write usage, or own
+// scheduled work. Each host restores its own verified runtime; the host
+// lifecycle drains active HTTP/SSE/WS requests before stopping that runtime.
+// Other packages, versions and binding scopes still require a separate review.
+func managedPluginLifecycleReviewed(row *PluginInstallation, runtimeKey string) bool {
+	if !isPinnedGatewayPrompt(row.Manifest) {
+		return false
+	}
+	capability, platform, accountType := PluginCapabilityGatewayTransform, "gateway", "any"
+	runtime, exists := row.Manifest.Runtimes[runtimeKey]
+	expectedHash := row.Manifest.Files[runtime.Path]
+	if !exists || expectedHash == "" || row.SignatureStatus != PluginSignatureTrusted || row.BinarySHA256 != expectedHash {
+		return false
+	}
+	for _, binding := range row.Bindings {
+		if binding.Enabled && (binding.Capability != capability || binding.Platform != platform || binding.AccountType != accountType) {
+			return false
+		}
+	}
+	return true
 }

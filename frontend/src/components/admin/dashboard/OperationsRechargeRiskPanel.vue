@@ -44,13 +44,13 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 
-defineProps<{ events: RechargeRiskEvent[]; loading: boolean; error: boolean }>()
+const props = defineProps<{ events: RechargeRiskEvent[]; loading: boolean; error: boolean; timeZone?: string }>()
 defineEmits<{ retry: [] }>()
 const { t } = useI18n()
 const selected = ref<RechargeRiskEvent | null>(null)
 function riskTitle(type: string): string { return t(`admin.operations.rechargeRisk.types.${type}`, type) }
 function formatTime(value: string): string {
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? '—' : new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short' }).format(date)
+  return Number.isNaN(date.getTime()) ? '—' : new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short', timeZone: props.timeZone }).format(date)
 }
 </script>

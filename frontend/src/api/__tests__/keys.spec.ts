@@ -12,10 +12,10 @@ describe('API key concurrency payloads', () => {
     vi.mocked(apiClient.post).mockResolvedValue({ data: key })
     vi.mocked(apiClient.put).mockResolvedValue({ data: key })
 
-    expect(await create('test-key', 42, undefined, undefined, undefined, undefined, undefined, undefined, limit)).toEqual(key)
+    expect(await create('test-key', 42, undefined, undefined, undefined, undefined, undefined, undefined, undefined, limit)).toEqual(key)
     expect(apiClient.post).toHaveBeenCalledWith('/keys', {
       name: 'test-key', group_id: 42, concurrency_limit: limit,
-    })
+    }, { headers: { 'Idempotency-Key': expect.any(String) } })
     expect(await update(1, { concurrency_limit: limit })).toEqual(key)
     expect(apiClient.put).toHaveBeenCalledWith('/keys/1', { concurrency_limit: limit })
   })
@@ -23,7 +23,7 @@ describe('API key concurrency payloads', () => {
   it('sends an explicit zero for the default create limit', async () => {
     vi.mocked(apiClient.post).mockResolvedValue({ data: {} })
     await create('test-key')
-    expect(apiClient.post).toHaveBeenCalledWith('/keys', { name: 'test-key', concurrency_limit: 0 })
+    expect(apiClient.post).toHaveBeenCalledWith('/keys', { name: 'test-key', concurrency_limit: 0 }, { headers: { 'Idempotency-Key': expect.any(String) } })
   })
 
   it('preserves server validation errors', async () => {

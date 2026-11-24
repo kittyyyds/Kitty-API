@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,8 +21,15 @@ func NewOpenAIOAuthReauthHandler(reauthService *service.OpenAIOAuthReauthService
 }
 
 type saveOpenAIOAuthReauthConfigRequest struct {
-	LoginEmail string `json:"login_email" binding:"required"`
-	OTPURL     string `json:"otp_url" binding:"required"`
+	LoginEmail     string `json:"login_email" binding:"required"`
+	CredentialMode string `json:"credential_mode"`
+	Engine         string `json:"engine"`
+	Password       string `json:"password"`
+	TOTPSecret     string `json:"totp_secret"`
+	ProxySource    string `json:"proxy_source"`
+	ProxyID        *int64 `json:"proxy_id"`
+	ClearPassword  bool   `json:"clear_password"`
+	ClearTOTP      bool   `json:"clear_totp"`
 }
 
 func parseReauthAccountID(c *gin.Context) (int64, bool) {
@@ -36,16 +42,22 @@ func parseReauthAccountID(c *gin.Context) (int64, bool) {
 }
 
 func (h *OpenAIOAuthReauthHandler) SaveConfig(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	accountID, ok := parseReauthAccountID(c)
 	if !ok {
 		return
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<10)
 	var req saveOpenAIOAuthReauthConfigRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	config, err := h.service.SaveConfig(c.Request.Context(), accountID, req.LoginEmail, req.OTPURL)
+	config, err := h.service.SaveCredentialConfig(c.Request.Context(), accountID, service.OpenAIOAuthReauthConfigInput{
+		LoginEmail: req.LoginEmail, CredentialMode: req.CredentialMode, Engine: req.Engine,
+		Password: req.Password, TOTPSecret: req.TOTPSecret, ProxySource: req.ProxySource,
+		ProxyID: req.ProxyID, ClearPassword: req.ClearPassword, ClearTOTP: req.ClearTOTP,
+	})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -54,6 +66,7 @@ func (h *OpenAIOAuthReauthHandler) SaveConfig(c *gin.Context) {
 }
 
 func (h *OpenAIOAuthReauthHandler) GetStatus(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	accountID, ok := parseReauthAccountID(c)
 	if !ok {
 		return
@@ -67,11 +80,12 @@ func (h *OpenAIOAuthReauthHandler) GetStatus(c *gin.Context) {
 }
 
 func (h *OpenAIOAuthReauthHandler) CreateTask(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	accountID, ok := parseReauthAccountID(c)
 	if !ok {
 		return
 	}
-	profile := "codex"
+	profile := "excel"
 	if c.Request.ContentLength != 0 {
 		var req struct {
 			OAuthProfile string `json:"oauth_profile"`
@@ -118,26 +132,6 @@ type reauthWorkerFailureRequest struct {
 	Reason   string `json:"reason"`
 }
 
-type sessionExportClaimRequest struct {
-	WorkerID     string   `json:"worker_id"`
-	Capabilities []string `json:"capabilities"`
-}
-
-type sessionExportProgressRequest struct {
-	WorkerID string `json:"worker_id"`
-	Stage    string `json:"stage" binding:"required"`
-}
-
-type sessionExportResultRequest struct {
-	WorkerID string          `json:"worker_id"`
-	Session  json.RawMessage `json:"session" binding:"required"`
-}
-
-type sessionExportFailRequest struct {
-	WorkerID string `json:"worker_id"`
-	Code     string `json:"code"`
-}
-
 func (h *OpenAIOAuthReauthHandler) requireWorker(c *gin.Context) bool {
 	configured, valid := h.service.WorkerAuthentication(strings.TrimSpace(c.GetHeader("X-OpenAI-Reauth-Worker-Token")))
 	if !configured {
@@ -157,6 +151,7 @@ func (h *OpenAIOAuthReauthHandler) requireWorker(c *gin.Context) bool {
 // protected by a separate high-entropy worker token and only returns a task
 // when one is queued.
 func (h *OpenAIOAuthReauthHandler) Claim(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	if !h.requireWorker(c) {
 		return
 	}
@@ -173,88 +168,8 @@ func (h *OpenAIOAuthReauthHandler) Claim(c *gin.Context) {
 	response.Success(c, claim)
 }
 
-func (h *OpenAIOAuthReauthHandler) ClaimSessionExport(c *gin.Context) {
-	if !h.requireWorker(c) {
-		return
-	}
-	var req sessionExportClaimRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid worker request")
-		return
-	}
-	claim, err := h.service.ClaimSessionExportTask(c.Request.Context(), req.WorkerID, req.Capabilities)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, claim)
-}
-
-func (h *OpenAIOAuthReauthHandler) SessionExportProgress(c *gin.Context) {
-	if !h.requireWorker(c) {
-		return
-	}
-	taskID, err := strconv.ParseInt(strings.TrimSpace(c.Param("task_id")), 10, 64)
-	if err != nil || taskID <= 0 {
-		response.BadRequest(c, "Invalid task ID")
-		return
-	}
-	var req sessionExportProgressRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid worker request")
-		return
-	}
-	if err := h.service.UpdateSessionExportStage(c.Request.Context(), taskID, req.WorkerID, req.Stage); err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, gin.H{"accepted": true})
-}
-
-func (h *OpenAIOAuthReauthHandler) SessionExportResult(c *gin.Context) {
-	if !h.requireWorker(c) {
-		return
-	}
-	taskID, err := strconv.ParseInt(strings.TrimSpace(c.Param("task_id")), 10, 64)
-	if err != nil || taskID <= 0 {
-		response.BadRequest(c, "Invalid task ID")
-		return
-	}
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
-	var req sessionExportResultRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid worker request")
-		return
-	}
-	if err := h.service.SubmitSessionExport(c.Request.Context(), taskID, req.WorkerID, req.Session); err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, gin.H{"accepted": true})
-}
-
-func (h *OpenAIOAuthReauthHandler) SessionExportFail(c *gin.Context) {
-	if !h.requireWorker(c) {
-		return
-	}
-	taskID, err := strconv.ParseInt(strings.TrimSpace(c.Param("task_id")), 10, 64)
-	if err != nil || taskID <= 0 {
-		response.BadRequest(c, "Invalid task ID")
-		return
-	}
-	var req sessionExportFailRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid worker request")
-		return
-	}
-	if err := h.service.FailSessionExport(c.Request.Context(), taskID, req.WorkerID, req.Code); err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, gin.H{"accepted": true})
-}
-
 func (h *OpenAIOAuthReauthHandler) RuntimeSettings(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	if !h.requireWorker(c) {
 		return
 	}
@@ -272,6 +187,7 @@ func (h *OpenAIOAuthReauthHandler) RuntimeSettings(c *gin.Context) {
 }
 
 func (h *OpenAIOAuthReauthHandler) Progress(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	if !h.requireWorker(c) {
 		return
 	}
@@ -292,29 +208,8 @@ func (h *OpenAIOAuthReauthHandler) Progress(c *gin.Context) {
 	response.Success(c, gin.H{"accepted": true})
 }
 
-func (h *OpenAIOAuthReauthHandler) Callback(c *gin.Context) {
-	if !h.requireWorker(c) {
-		return
-	}
-	taskID, err := strconv.ParseInt(strings.TrimSpace(c.Param("task_id")), 10, 64)
-	if err != nil || taskID <= 0 {
-		response.BadRequest(c, "Invalid task ID")
-		return
-	}
-	var req reauthWorkerCallbackRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid worker request")
-		return
-	}
-	task, err := h.service.SubmitCallback(c.Request.Context(), taskID, req.WorkerID, req.CallbackURL)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, task)
-}
-
 func (h *OpenAIOAuthReauthHandler) Credentials(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	if !h.requireWorker(c) {
 		return
 	}
@@ -323,6 +218,7 @@ func (h *OpenAIOAuthReauthHandler) Credentials(c *gin.Context) {
 		response.BadRequest(c, "Invalid task ID")
 		return
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 128<<10)
 	var req reauthWorkerCredentialsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid worker request")
@@ -337,6 +233,7 @@ func (h *OpenAIOAuthReauthHandler) Credentials(c *gin.Context) {
 }
 
 func (h *OpenAIOAuthReauthHandler) Fail(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	if !h.requireWorker(c) {
 		return
 	}
@@ -356,4 +253,11 @@ func (h *OpenAIOAuthReauthHandler) Fail(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"accepted": true})
+}
+
+// WorkerStatus exposes only runtime health; paths, credentials and worker keys
+// never leave the backend.
+func (h *OpenAIOAuthReauthHandler) WorkerStatus(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	response.Success(c, h.service.WorkerStatus())
 }

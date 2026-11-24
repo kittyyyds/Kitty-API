@@ -8,12 +8,13 @@ import (
 
 // Status constants
 const (
-	StatusActive   = domain.StatusActive
-	StatusDisabled = domain.StatusDisabled
-	StatusError    = domain.StatusError
-	StatusUnused   = domain.StatusUnused
-	StatusUsed     = domain.StatusUsed
-	StatusExpired  = domain.StatusExpired
+	StatusActive        = domain.StatusActive
+	StatusDisabled      = domain.StatusDisabled
+	StatusError         = domain.StatusError
+	StatusUnused        = domain.StatusUnused
+	StatusUsed          = domain.StatusUsed
+	StatusExpired       = domain.StatusExpired
+	StatusQualityPaused = domain.StatusQualityPaused
 )
 
 // Role constants
@@ -228,29 +229,30 @@ const (
 	// 白名单非空时，是否放行非白名单域名按主域名限量注册（每域名 1 个账户）。
 	// 默认 false：非白名单域名直接拒绝（白名单严格模式）。
 	SettingKeyRegistrationEmailDomainQuotaEnabled = "registration_email_domain_quota_enabled"
-	SettingKeyPromoCodeEnabled                    = "promo_code_enabled"                    // 是否启用优惠码功能
-	SettingKeyPasswordResetEnabled                = "password_reset_enabled"                // 是否启用忘记密码功能（需要先开启邮件验证）
-	SettingKeyFrontendURL                         = "frontend_url"                          // 前端基础URL，用于生成邮件中的重置密码链接
-	SettingKeyInvitationCodeEnabled               = "invitation_code_enabled"               // 是否启用邀请码注册
-	SettingKeyAffiliateEnabled                    = "affiliate_enabled"                     // 邀请返利功能总开关
-	SettingKeyAffiliateRebateRate                 = "affiliate_rebate_rate"                 // 邀请返利比例（百分比，0-100）
-	SettingKeyAffiliateRebateFreezeHours          = "affiliate_rebate_freeze_hours"         // 返利冻结期（小时，0=不冻结）
-	SettingKeyAffiliateRebateDurationDays         = "affiliate_rebate_duration_days"        // 返利有效期（天，0=永久）
-	SettingKeyAffiliateRebatePerInviteeCap        = "affiliate_rebate_per_invitee_cap"      // 单人返利上限（0=无上限）
-	SettingKeyAffiliateAdminRechargeEnabled       = "affiliate_admin_recharge_enabled"      // 管理员充值是否产生返利
-	SettingKeyRiskControlEnabled                  = "risk_control_enabled"                  // 是否启用风控中心入口与审计链路
-	SettingKeyContentModerationConfig             = "content_moderation_config"             // 内容审计配置（JSON）
-	SettingKeyCyberSessionBlockEnabled            = "cyber_session_block_enabled"           // cyber 命中后会话级自动屏蔽总开关(默认关)
-	SettingKeyCyberSessionBlockTTLSeconds         = "cyber_session_block_ttl_seconds"       // 会话屏蔽 TTL 秒数(默认 3600)
-	SettingKeyCyberSessionIdentityStrictEnabled   = "cyber_session_identity_strict_enabled" // 要求可信显式会话身份(默认关，仅会话屏蔽开启时生效)
-	SettingKeySafetyPromptEnabled                 = "safety_prompt_enabled"                 // 原生安全提示词注入模块总开关(默认关)
-	SettingKeySafetyPromptSignalEnabled           = "safety_prompt_signal_enabled"          // 原生独立拒绝识别(默认关，仅模块开启时生效)
-	SettingKeySafetyPromptRetentionDays           = "safety_prompt_retention_days"          // 命中事件保留天数(默认 30，范围 1-90)
-	SettingKeyLoginAgreementEnabled               = "login_agreement_enabled"               // 登录前是否要求同意条款
-	SettingKeyLoginAgreementMode                  = "login_agreement_mode"                  // 条款确认展示模式：modal / checkbox
-	SettingKeyLoginAgreementUpdatedAt             = "login_agreement_updated_at"            // 条款更新日期（展示用）
-	SettingKeyLoginAgreementDocuments             = "login_agreement_documents"             // 条款文档列表（JSON，Markdown 内容）
-	SettingKeyCyberPolicyUserAllowlist            = "cyber_policy_user_allowlist"           // Platform user IDs with log-only cyber handling
+	SettingKeyPromoCodeEnabled                    = "promo_code_enabled"               // 是否启用优惠码功能
+	SettingKeyPasswordResetEnabled                = "password_reset_enabled"           // 是否启用忘记密码功能（需要先开启邮件验证）
+	SettingKeyFrontendURL                         = "frontend_url"                     // 前端基础URL，用于生成邮件中的重置密码链接
+	SettingKeyInvitationCodeEnabled               = "invitation_code_enabled"          // 是否启用邀请码注册
+	SettingKeyAffiliateEnabled                    = "affiliate_enabled"                // 邀请返利功能总开关
+	SettingKeyAffiliateRebateRate                 = "affiliate_rebate_rate"            // 邀请返利比例（百分比，0-100）
+	SettingKeyAffiliateRebateFreezeHours          = "affiliate_rebate_freeze_hours"    // 返利冻结期（小时，0=不冻结）
+	SettingKeyAffiliateRebateDurationDays         = "affiliate_rebate_duration_days"   // 返利有效期（天，0=永久）
+	SettingKeyAffiliateRebatePerInviteeCap        = "affiliate_rebate_per_invitee_cap" // 单人返利上限（0=无上限）
+	SettingKeyAffiliateAdminRechargeEnabled       = "affiliate_admin_recharge_enabled" // 管理员充值是否产生返利
+
+	SettingKeyRiskControlEnabled                = "risk_control_enabled"                  // 是否启用风控中心入口与审计链路（默认关）
+	SettingKeyContentModerationConfig           = "content_moderation_config"             // 内容审计配置（JSON）
+	SettingKeyCyberSessionBlockEnabled          = "cyber_session_block_enabled"           // cyber 命中后会话级自动屏蔽总开关(默认关)
+	SettingKeyCyberSessionBlockTTLSeconds       = "cyber_session_block_ttl_seconds"       // 会话屏蔽 TTL 秒数(默认 3600)
+	SettingKeyCyberSessionIdentityStrictEnabled = "cyber_session_identity_strict_enabled" // 要求可信显式会话身份(默认关，仅会话屏蔽开启时生效)
+	SettingKeyCyberPolicyUserAllowlist          = "cyber_policy_user_allowlist"           // Platform user IDs with log-only cyber handling
+	SettingKeySafetyPromptEnabled       = "safety_prompt_enabled"        // 原生安全提示词注入模块总开关(默认关)
+	SettingKeySafetyPromptSignalEnabled = "safety_prompt_signal_enabled" // 原生独立拒绝识别(默认关，仅模块开启时生效)
+	SettingKeySafetyPromptRetentionDays = "safety_prompt_retention_days" // 命中事件保留天数(默认 30，范围 1-90)
+	SettingKeyLoginAgreementEnabled     = "login_agreement_enabled"      // 登录前是否要求同意条款
+	SettingKeyLoginAgreementMode        = "login_agreement_mode"         // 条款确认展示模式：modal / checkbox
+	SettingKeyLoginAgreementUpdatedAt   = "login_agreement_updated_at"   // 条款更新日期（展示用）
+	SettingKeyLoginAgreementDocuments   = "login_agreement_documents"    // 条款文档列表（JSON，Markdown 内容）
 
 	// 邮件服务设置
 	SettingKeySMTPHost     = "smtp_host"      // SMTP服务器地址
@@ -495,6 +497,9 @@ const (
 	// SettingKeyChannelMonitorEnabled is a DB-backed soft switch for the channel monitor feature.
 	// When false: runner skips scheduling and user-facing endpoints return an empty list.
 	SettingKeyChannelMonitorEnabled = "channel_monitor_enabled"
+
+	// User-facing quality results only; never controls scheduled test execution.
+	SettingKeyChannelQualityPublicEnabled = "channel_quality_public_enabled"
 
 	// SettingKeyChannelMonitorMode selects exclusive implementation:
 	// "v1" active probes, "v2" passive aggregation, "v3" component status page.
@@ -820,3 +825,16 @@ const SettingKeyUsageShowCacheRateToUsers = "usage_show_cache_rate_to_users"
 // records. Default false. Admins always see it. This does not change billing
 // or the client-facing model rewritten into gateway responses.
 const SettingKeyUsageShowUpstreamResponseModelToUsers = "usage_show_upstream_response_model_to_users"
+
+const (
+	SettingKeyRegistrationEmailBlacklist = "registration_email_blacklist"
+)
+
+const (
+	SettingKeyGuideContent   = "guide_content"    // 使用教程 Markdown（整篇形态，仅保留兼容旧数据）；空值表示使用内置教程
+	SettingKeyGuideChapters  = "guide_chapters"   // 使用教程章节列表（JSON）；空值表示使用内置教程
+	SettingKeyGuideAssets    = "guide_assets"     // 使用教程上传附件索引（JSON）
+	SettingKeyGuideVersion   = "guide_version"    // 使用教程递增版本号
+	SettingKeyGuideUpdatedAt = "guide_updated_at" // 使用教程最后更新时间（RFC3339）
+	SettingKeyGuideRevisions = "guide_revisions"  // 使用教程最近版本记录（JSON）
+)

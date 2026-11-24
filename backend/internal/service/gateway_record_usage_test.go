@@ -377,8 +377,8 @@ func TestGatewayServiceRecordUsage_PeakRateAffectsTokenModeImageOutputTokens(t *
 
 	require.InDelta(t, textInput+textOutput+imageOutput, usageRepo.lastLog.TotalCost, 1e-12)
 	require.InDelta(t, imageOutput, usageRepo.lastLog.ImageOutputCost, 1e-12)
-	require.InDelta(t, QuantizeUsageBillingAmount(expectedActual), usageRepo.lastLog.ActualCost, 1e-12)
-	require.InDelta(t, QuantizeUsageBillingAmount(expectedActual), userRepo.lastAmount, 1e-12)
+	require.InDelta(t, expectedActual, usageRepo.lastLog.ActualCost, 1e-12)
+	require.InDelta(t, expectedActual, userRepo.lastAmount, 1e-12)
 }
 
 func TestGatewayServiceRecordUsage_TimePricingUsesPricingAt(t *testing.T) {
@@ -410,7 +410,7 @@ func TestGatewayServiceRecordUsage_TimePricingUsesPricingAt(t *testing.T) {
 	require.NotNil(t, usageRepo.lastLog)
 	baseCost := 1000*3e-6 + 500*15e-6
 	require.InDelta(t, baseCost*2, usageRepo.lastLog.TotalCost, 1e-12)
-	require.InDelta(t, QuantizeUsageBillingAmount(baseCost*2*0.8), usageRepo.lastLog.ActualCost, 1e-12)
+	require.InDelta(t, baseCost*2*0.8, usageRepo.lastLog.ActualCost, 1e-12)
 	require.InDelta(t, 0.8, usageRepo.lastLog.RateMultiplier, 1e-12)
 }
 func TestGatewayServiceRecordUsage_UsesExplicitPricingAtForPeakRate(t *testing.T) {
@@ -512,9 +512,9 @@ func TestGatewayServiceRecordUsage_DeepSeekAccountStatsUsesRequestPricingAtAndUp
 				require.False(t, log.CreatedAt.Equal(slot.pricingAt), "request pricing time must differ from record creation")
 				customerTotal := 1000*inputPrice + 500*outputPrice + 1000*cachePrice
 				require.InDelta(t, customerTotal, log.TotalCost, 1e-12)
-				require.InDelta(t, QuantizeUsageBillingAmount(customerTotal*0.8), log.ActualCost, 1e-12)
+				require.InDelta(t, customerTotal*0.8, log.ActualCost, 1e-12)
 				require.Equal(t, 1, userRepo.deductCalls)
-				require.InDelta(t, QuantizeUsageBillingAmount(customerTotal*0.8), userRepo.lastAmount, 1e-12)
+				require.InDelta(t, customerTotal*0.8, userRepo.lastAmount, 1e-12)
 				require.NotNil(t, log.AccountStatsCost)
 				require.InDelta(t, model.offPeakCost*slot.multiplier, *log.AccountStatsCost, 1e-12,
 					"account cost must use the upstream model and historical PricingAt")
@@ -580,6 +580,73 @@ func TestGatewayServiceRecordUsage_UsesFallbackRequestIDForUsageLog(t *testing.T
 	require.NoError(t, err)
 	require.NotNil(t, usageRepo.lastLog)
 	require.Equal(t, "local:gateway-local-fallback", usageRepo.lastLog.RequestID)
+}
+
+func TestGatewayServiceRecordUsage_FallbackStandardGroupUsesBalanceBilling(t *testing.T) {
+	primaryGroupID := int64(61201)
+	fallbackGroupID := int64(61202)
+	user := &User{ID: 62201}
+	primary := &Group{
+		ID: primaryGroupID, Name: "primary", Platform: PlatformAnthropic,
+		Status: StatusActive, Hydrated: true, SubscriptionType: SubscriptionTypeSubscription,
+		RateMultiplier: 1,
+	}
+	fallback := &Group{
+		ID: fallbackGroupID, Name: "fallback-standard", Platform: PlatformAnthropic,
+		Status: StatusActive, Hydrated: true, SubscriptionType: SubscriptionTypeStandard,
+		RateMultiplier: 1.75,
+	}
+	apiKey := &APIKey{
+		ID: 63201, UserID: user.ID, User: user,
+		GroupID: &primaryGroupID, Group: primary,
+		FallbackGroupID: &fallbackGroupID, FallbackGroup: fallback,
+	}
+	ctx := WithAPIKeyGroupFallbackRouting(context.Background(), apiKey)
+	_, err := selectAccountWithAPIKeyGroupFallback(ctx, &primaryGroupID, "claude-sonnet-4", func(_ context.Context, groupID *int64) (*Account, error) {
+		if *groupID == primaryGroupID {
+			return nil, ErrNoAvailableAccounts
+		}
+		return &Account{ID: 64201}, nil
+	})
+	require.NoError(t, err)
+	require.True(t, isAPIKeyFallbackActive(apiKey))
+
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{active: &UserSubscription{
+		ID: 65202, UserID: user.ID, GroupID: fallbackGroupID,
+	}}
+	svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, userRepo, subRepo)
+
+	err = svc.RecordUsage(ctx, &RecordUsageInput{
+		Result: &ForwardResult{
+			RequestID: "gateway_fallback_standard_billing",
+			Usage:     ClaudeUsage{InputTokens: 1000, OutputTokens: 100},
+			Model:     "claude-sonnet-4",
+			Duration:  time.Second,
+		},
+		APIKey: apiKey, User: user,
+		Account: &Account{ID: 64201, Type: AccountTypeAPIKey},
+		// Primary subscription snapshot must not be reused after fallback.
+		Subscription: &UserSubscription{ID: 65201, UserID: user.ID, GroupID: primaryGroupID},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 0, subRepo.getActiveCalls)
+	require.Equal(t, 0, subRepo.incrementCalls)
+	require.Equal(t, 0, userRepo.deductCalls)
+	require.NotNil(t, usageRepo.lastLog)
+	require.NotNil(t, usageRepo.lastLog.GroupID)
+	require.Equal(t, fallbackGroupID, *usageRepo.lastLog.GroupID)
+	require.Nil(t, usageRepo.lastLog.SubscriptionID)
+	require.Equal(t, BillingTypeBalance, usageRepo.lastLog.BillingType)
+	require.Equal(t, 1.75, usageRepo.lastLog.RateMultiplier)
+	require.NotNil(t, billingRepo.lastCmd)
+	require.Nil(t, billingRepo.lastCmd.SubscriptionID)
+	require.Zero(t, billingRepo.lastCmd.SubscriptionCost)
+	require.Greater(t, billingRepo.lastCmd.BalanceCost, 0.0)
+	require.InDelta(t, usageRepo.lastLog.ActualCost, billingRepo.lastCmd.BalanceCost, 1e-12)
 }
 
 func TestGatewayServiceRecordUsage_PrefersClientRequestIDOverUpstreamRequestID(t *testing.T) {
@@ -669,7 +736,7 @@ func TestGatewayServiceRecordUsage_DroppedUsageLogFallsBackToSyncCreate(t *testi
 	require.NoError(t, usageRepo.lastCtxErr)
 }
 
-func TestGatewayServiceRecordUsage_BillingErrorDoesNotWriteFalseZeroCostLog(t *testing.T) {
+func TestGatewayServiceRecordUsage_BillingErrorWritesUnsettledUsageLog(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{}
 	billingErr := errors.New("billing tx failed")
 	billingRepo := &openAIRecordUsageBillingRepoStub{err: billingErr}
@@ -694,8 +761,14 @@ func TestGatewayServiceRecordUsage_BillingErrorDoesNotWriteFalseZeroCostLog(t *t
 
 	require.ErrorIs(t, err, billingErr)
 	require.Equal(t, 1, billingRepo.calls)
-	require.Zero(t, usageRepo.calls)
-	require.Nil(t, usageRepo.lastLog, "unknown settlement is not a successful zero-cost usage row")
+	require.Equal(t, 1, usageRepo.calls)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, 10, usageRepo.lastLog.InputTokens)
+	require.Equal(t, 6, usageRepo.lastLog.OutputTokens)
+	require.Greater(t, usageRepo.lastLog.InputCost, 0.0)
+	require.Greater(t, usageRepo.lastLog.OutputCost, 0.0)
+	require.Greater(t, usageRepo.lastLog.TotalCost, 0.0)
+	require.Zero(t, usageRepo.lastLog.ActualCost)
 }
 
 func TestGatewayServiceRecordUsage_ReasoningEffortPersisted(t *testing.T) {
@@ -759,14 +832,14 @@ func newGatewayRecordUsageServiceWithResolverForTest(usageRepo UsageLogRepositor
 	return svc, &APIKey{ID: 1, GroupID: &groupID, Group: &Group{ID: groupID, RateMultiplier: 1.0}}
 }
 
-func TestGatewayServiceRecordUsage_FastSpeedDowngradedByUpstreamResponse(t *testing.T) {
+func TestGatewayServiceRecordUsage_FastSpeedPreservedDespiteUpstreamResponse(t *testing.T) {
 	usageRepo := &openAIRecordUsageBestEffortLogRepoStub{}
 	svc, apiKey := newGatewayRecordUsageServiceWithResolverForTest(usageRepo)
 
 	tier := "fast"
 	err := svc.RecordUsage(context.Background(), &RecordUsageInput{
 		Result: &ForwardResult{
-			RequestID:                   "fast_downgraded_test",
+			RequestID:                   "fast_preserved_test",
 			Usage:                       ClaudeUsage{InputTokens: 100, OutputTokens: 50},
 			Model:                       "claude-opus-5",
 			Duration:                    time.Second,
@@ -781,7 +854,7 @@ func TestGatewayServiceRecordUsage_FastSpeedDowngradedByUpstreamResponse(t *test
 	require.NoError(t, err)
 	require.NotNil(t, usageRepo.lastLog)
 	require.NotNil(t, usageRepo.lastLog.ServiceTier)
-	require.Equal(t, "standard", *usageRepo.lastLog.ServiceTier)
+	require.Equal(t, "fast", *usageRepo.lastLog.ServiceTier)
 
 	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50}
 	standardCost, err := svc.billingService.CalculateCost("claude-opus-5", tokens, 1.0)
@@ -789,7 +862,8 @@ func TestGatewayServiceRecordUsage_FastSpeedDowngradedByUpstreamResponse(t *test
 	fastCost, err := svc.billingService.CalculateCostWithServiceTier("claude-opus-5", tokens, 1.0, "fast")
 	require.NoError(t, err)
 	require.Greater(t, fastCost.TotalCost, standardCost.TotalCost, "fast mode must carry a premium for the test to be meaningful")
-	require.InDelta(t, standardCost.TotalCost, usageRepo.lastLog.TotalCost, 1e-10)
+	require.InDelta(t, fastCost.TotalCost, usageRepo.lastLog.TotalCost, 1e-10)
+	require.InDelta(t, fastCost.ActualCost, usageRepo.lastLog.ActualCost, 1e-10)
 }
 
 func TestGatewayServiceRecordUsage_FastSpeedHonouredKeepsPremium(t *testing.T) {
@@ -818,4 +892,96 @@ func TestGatewayServiceRecordUsage_FastSpeedHonouredKeepsPremium(t *testing.T) {
 	fastCost, err := svc.billingService.CalculateCostWithServiceTier("claude-opus-5", UsageTokens{InputTokens: 100, OutputTokens: 50}, 1.0, "fast")
 	require.NoError(t, err)
 	require.InDelta(t, fastCost.TotalCost, usageRepo.lastLog.TotalCost, 1e-10)
+}
+
+func TestGatewayServiceRecordUsage_ForceCacheBillingUsesFinalAccountType(t *testing.T) {
+	for _, accountCase := range []struct {
+		name            string
+		accountType     string
+		force           bool
+		wantInput       int
+		wantCacheRead   int
+		wantTotal       float64
+		wantAccountCost float64
+	}{
+		{name: "api_key", accountType: AccountTypeAPIKey, force: true, wantInput: 1000, wantCacheRead: 200, wantTotal: 0.002565, wantAccountCost: 0.0038475},
+		{name: "upstream", accountType: AccountTypeUpstream, force: true, wantInput: 1000, wantCacheRead: 200, wantTotal: 0.002565, wantAccountCost: 0.0038475},
+		{name: "bedrock", accountType: AccountTypeBedrock, force: true, wantInput: 1000, wantCacheRead: 200, wantTotal: 0.002565, wantAccountCost: 0.0038475},
+		{name: "service_account", accountType: AccountTypeServiceAccount, force: true, wantInput: 1000, wantCacheRead: 200, wantTotal: 0.002565, wantAccountCost: 0.0038475},
+		{name: "unknown", accountType: "", force: true, wantInput: 1000, wantCacheRead: 200, wantTotal: 0.002565, wantAccountCost: 0.0038475},
+		{name: "oauth_compensation", accountType: AccountTypeOAuth, force: true, wantInput: 0, wantCacheRead: 1200, wantTotal: 0.000765, wantAccountCost: 0.0011475},
+		{name: "setup_token_compensation", accountType: AccountTypeSetupToken, force: true, wantInput: 0, wantCacheRead: 1200, wantTotal: 0.000765, wantAccountCost: 0.0011475},
+		{name: "oauth_without_compensation", accountType: AccountTypeOAuth, wantInput: 1000, wantCacheRead: 200, wantTotal: 0.002565, wantAccountCost: 0.0038475},
+	} {
+		for _, transport := range []struct {
+			name   string
+			stream bool
+		}{
+			{name: "buffered"},
+			{name: "streaming", stream: true},
+		} {
+			t.Run(accountCase.name+"/"+transport.name, func(t *testing.T) {
+				const model = "force-cache-billing-regression"
+				groupID := int64(7)
+				usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+				billingRepo := &openAIRecordUsageBillingRepoStub{}
+				svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo,
+					&openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+				group := &Group{
+					ID: groupID, Platform: PlatformAnthropic, RateMultiplier: 0.32,
+					ModelPricing: []ChannelModelPricing{{
+						Models: []string{model}, BillingMode: BillingModeToken,
+						InputPrice: testPtrFloat64(2e-6), OutputPrice: testPtrFloat64(4e-6),
+						CacheReadPrice: testPtrFloat64(0.2e-6), CacheWritePrice: testPtrFloat64(2.5e-6),
+					}},
+				}
+				// Independent account prices verify that its cost calculation sees the
+				// same unmodified input and real cache buckets as customer billing.
+				svc.channelService = newTestChannelServiceForStats(t, &Channel{
+					ID: 1, Status: StatusActive,
+					AccountStatsPricingRules: []AccountStatsPricingRule{{
+						GroupIDs: []int64{groupID},
+						Pricing: []ChannelModelPricing{{
+							Models: []string{model}, BillingMode: BillingModeToken,
+							InputPrice: testPtrFloat64(3e-6), OutputPrice: testPtrFloat64(6e-6),
+							CacheReadPrice: testPtrFloat64(0.3e-6), CacheWritePrice: testPtrFloat64(3.75e-6),
+						}},
+					}},
+				}, groupID, PlatformAnthropic)
+				svc.resolver = NewModelPricingResolver(svc.channelService, svc.billingService)
+				result := &ForwardResult{
+					RequestID: "forced-cache-" + accountCase.name + "-" + transport.name,
+					Model:     model, UpstreamModel: model, Stream: transport.stream,
+					Usage: ClaudeUsage{
+						InputTokens: 1000, OutputTokens: 100,
+						CacheReadInputTokens: 200, CacheCreationInputTokens: 50,
+					},
+				}
+				err := svc.RecordUsage(context.Background(), &RecordUsageInput{
+					Result: result, APIKey: &APIKey{ID: 501, GroupID: &groupID, Group: group},
+					User: &User{ID: 601}, Account: &Account{ID: 701, Platform: PlatformAnthropic, Type: accountCase.accountType},
+					ForceCacheBilling: accountCase.force,
+				})
+				require.NoError(t, err)
+				require.NotNil(t, usageRepo.lastLog)
+				log := usageRepo.lastLog
+				require.Equal(t, accountCase.wantInput, log.InputTokens)
+				require.Equal(t, accountCase.wantCacheRead, log.CacheReadTokens)
+				require.Equal(t, 50, log.CacheCreationTokens, "real cache writes must retain their own price")
+				require.Equal(t, 100, log.OutputTokens)
+				require.Equal(t, transport.stream, log.Stream)
+				require.Equal(t, accountCase.wantInput, result.Usage.InputTokens)
+				require.Equal(t, accountCase.wantCacheRead, result.Usage.CacheReadInputTokens)
+				require.InDelta(t, accountCase.wantTotal, log.TotalCost, 1e-12)
+				require.InDelta(t, accountCase.wantTotal*0.32, log.ActualCost, 1e-12)
+				require.NotNil(t, log.AccountStatsCost)
+				require.InDelta(t, accountCase.wantAccountCost, *log.AccountStatsCost, 1e-12)
+				require.NotNil(t, billingRepo.lastCmd)
+				require.Equal(t, accountCase.wantInput, billingRepo.lastCmd.InputTokens)
+				require.Equal(t, accountCase.wantCacheRead, billingRepo.lastCmd.CacheReadTokens)
+				require.Equal(t, 50, billingRepo.lastCmd.CacheCreationTokens)
+				require.InDelta(t, accountCase.wantTotal*0.32, billingRepo.lastCmd.BalanceCost, 1e-12)
+			})
+		}
+	}
 }

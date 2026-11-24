@@ -37,17 +37,6 @@ export function getSavedManualLocale(storage: Pick<Storage, 'getItem'>): LocaleC
   return !source || source === MANUAL_LOCALE_SOURCE ? saved : null
 }
 
-export function localeFromTrace(trace: string): LocaleCode | null {
-  const locationLine = trace
-    .split(/\r?\n/)
-    .find((line) => line.trim().toLowerCase().startsWith('loc='))
-  if (!locationLine) return null
-
-  const countryCode = locationLine.slice(locationLine.indexOf('=') + 1).trim().toUpperCase()
-  if (!/^[A-Z]{2}$/.test(countryCode)) return null
-  return countryCode === 'CN' ? 'zh' : 'en'
-}
-
 export function localeFromTimezone(timezone: string | undefined): LocaleCode | null {
   if (!timezone) return null
   return CHINESE_TIMEZONES.has(timezone) ? 'zh' : 'en'
@@ -59,50 +48,22 @@ export function localeFromBrowserLanguage(language: string | undefined): LocaleC
 
 interface DetectLocaleOptions {
   storage: Pick<Storage, 'getItem'>
-  fetchTrace?: () => Promise<string | null>
   timezone?: string
   browserLanguage?: string
 }
 
-export async function detectPreferredLocale({
+// Decided from local signals only, so the first screen never waits on the network.
+// The site is not behind Cloudflare, so /cdn-cgi/trace only returned the SPA page
+// and delayed every visit by up to 1.5 seconds without ever yielding a country.
+export function detectPreferredLocale({
   storage,
-  fetchTrace,
   timezone,
   browserLanguage,
-}: DetectLocaleOptions): Promise<LocaleCode> {
+}: DetectLocaleOptions): LocaleCode {
   const saved = getSavedManualLocale(storage)
   if (saved) return saved
 
-  if (fetchTrace) {
-    try {
-      const trace = await fetchTrace()
-      const networkLocale = trace ? localeFromTrace(trace) : null
-      if (networkLocale) return networkLocale
-    } catch {
-      // Region detection is optional; local signals below keep startup reliable.
-    }
-  }
-
   return localeFromTimezone(timezone) ?? localeFromBrowserLanguage(browserLanguage)
-}
-
-export async function fetchCloudflareTrace(timeoutMs = 1500): Promise<string | null> {
-  const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
-
-  try {
-    const response = await fetch('/cdn-cgi/trace', {
-      cache: 'no-store',
-      credentials: 'omit',
-      signal: controller.signal,
-    })
-    if (!response.ok) return null
-    return await response.text()
-  } catch {
-    return null
-  } finally {
-    window.clearTimeout(timeout)
-  }
 }
 
 export function getSystemTimezone(): string | undefined {

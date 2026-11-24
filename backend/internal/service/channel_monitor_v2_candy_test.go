@@ -58,7 +58,7 @@ func candyProbeFixture() ChannelMonitorV2CandyProbe {
 func candyConfigFixture() ChannelMonitorV2Config {
 	return ChannelMonitorV2Config{Version: 1, Enabled: true, Platforms: []ChannelMonitorV2PlatformConfig{{Platform: PlatformOpenAI, Enabled: true}}, CandyProbes: []ChannelMonitorV2CandyProbe{candyProbeFixture()}}
 }
-func candyServiceFixture(repo *candyRepoFake, groups *PelicanGroupTestService) *ChannelMonitorV2CandyService {
+func candyServiceFixture(repo *candyRepoFake, groups *MonitorGroupProbeService) *ChannelMonitorV2CandyService {
 	s := newChannelMonitorV2CandyService(repo, groups, channelMonitorV2RuntimeStub{rt: ChannelMonitorRuntime{Enabled: true, Mode: ChannelMonitorModeV2}})
 	s.now = func() time.Time { return groupTestNow }
 	return s
@@ -75,12 +75,11 @@ func TestChannelMonitorV2CandyGroupVerdictsAndNoCherryPicking(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := &candyRepoFake{channelMonitorV2RepoStub: channelMonitorV2RepoStub{config: candyConfigFixture()}}
 			router := &groupTestRouterFake{steps: []routeStep{{account: account(77, "scheduler choice")}, {account: account(88, "unused")}}}
-			groups, showcase := newGroupTestService(newGroupTestRepoFake(), router, func(_ context.Context, id int64, model string, cfg *PelicanTestConfig) (*ScheduledTestResult, error) {
+			groups, showcase := newGroupTestService(newGroupTestRepoFake(), router, func(_ context.Context, id int64, model string, cfg *MonitorProbeConfig) (*ScheduledTestResult, error) {
 				require.Equal(t, int64(77), id)
 				require.Equal(t, "gpt-test", model)
 				require.Equal(t, CandyPrompt, cfg.Prompt)
 				require.Equal(t, "candy", cfg.QuestionKind)
-				require.Nil(t, cfg.Quality)
 				return &ScheduledTestResult{ResponseText: tc.output, Status: tc.status, ErrorMessage: tc.message}, nil
 			})
 			s := candyServiceFixture(repo, groups)
@@ -197,7 +196,7 @@ func TestChannelMonitorV2CandyRunsEachConfiguredModel(t *testing.T) {
 	second := candyProbeFixture()
 	second.Model = "gpt-other"
 	repo.config.CandyProbes = append(repo.config.CandyProbes, second)
-	groups, _ := newGroupTestService(newGroupTestRepoFake(), &groupTestRouterFake{}, func(context.Context, int64, string, *PelicanTestConfig) (*ScheduledTestResult, error) {
+	groups, _ := newGroupTestService(newGroupTestRepoFake(), &groupTestRouterFake{}, func(context.Context, int64, string, *MonitorProbeConfig) (*ScheduledTestResult, error) {
 		return &ScheduledTestResult{Status: "success", ResponseText: "21"}, nil
 	})
 	s := candyServiceFixture(repo, groups)
@@ -211,11 +210,11 @@ type candyRouterSpy struct {
 	groups []int64
 }
 
-func (r *candyRouterSpy) route(_ context.Context, g *Group, model string, _ map[int64]struct{}) (*pelicanGroupRoute, error) {
+func (r *candyRouterSpy) route(_ context.Context, g *Group, model string, _ map[int64]struct{}) (*monitorGroupRoute, error) {
 	r.mu.Lock()
 	r.groups = append(r.groups, g.ID)
 	r.mu.Unlock()
-	return &pelicanGroupRoute{account: account(g.ID, "routed"), model: model, release: func() {}}, nil
+	return &monitorGroupRoute{account: account(g.ID, "routed"), model: model, release: func() {}}, nil
 }
 func TestChannelMonitorV2CandyBoundsGroupConcurrency(t *testing.T) {
 	repo := &candyRepoFake{channelMonitorV2RepoStub: channelMonitorV2RepoStub{config: candyConfigFixture()}}
@@ -231,7 +230,7 @@ func TestChannelMonitorV2CandyBoundsGroupConcurrency(t *testing.T) {
 	var active, maxActive atomic.Int32
 	gates := make(chan struct{}, 4)
 	release := make(chan struct{})
-	groups := &PelicanGroupTestService{groups: groupRepo, router: router, now: time.Now, runAccount: func(ctx context.Context, _ int64, _ string, _ *PelicanTestConfig) (*ScheduledTestResult, error) {
+	groups := &MonitorGroupProbeService{groups: groupRepo, router: router, runAccount: func(ctx context.Context, _ int64, _ string, _ *MonitorProbeConfig) (*ScheduledTestResult, error) {
 		n := active.Add(1)
 		defer active.Add(-1)
 		for old := maxActive.Load(); n > old; old = maxActive.Load() {

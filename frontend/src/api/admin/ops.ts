@@ -138,6 +138,21 @@ export interface OpsRequestDetail {
   account_id?: number | null
   group_id?: number | null
 
+  user_email?: string
+  group_name?: string
+  account_name?: string
+  api_key_name?: string
+  request_type?: string
+  upstream_model?: string
+  input_tokens?: number | null
+  output_tokens?: number | null
+  cache_read_tokens?: number | null
+  cache_creation_tokens?: number | null
+  image_input_tokens?: number | null
+  image_output_tokens?: number | null
+  actual_cost?: number | null
+  account_cost?: number | null
+
   stream?: boolean
 }
 
@@ -1178,6 +1193,29 @@ export async function listRequestErrorUpstreamErrors(
   return data
 }
 
+export interface OpsAccountRequestStats {
+  success_rate: number | null
+  success_requests: number
+  error_requests: number
+  request_samples: number
+  window_start: string
+  window_end: string
+  cache_rate: number | null
+  avg_first_token_ms: number | null
+  avg_duration_ms: number | null
+  cache_samples: number
+  first_token_samples: number
+  duration_samples: number
+}
+
+export async function getAccountRequestStatsBatch(accountIDs: number[]): Promise<{ stats: Record<string, OpsAccountRequestStats> }> {
+  const { data } = await apiClient.post<{ stats: Record<string, OpsAccountRequestStats> }>(
+    '/admin/ops/account-request-stats/batch',
+    { account_ids: accountIDs }
+  )
+  return data
+}
+
 export async function listRequestDetails(params: OpsRequestDetailsParams): Promise<OpsRequestDetailsResponse> {
   const { data } = await apiClient.get<OpsRequestDetailsResponse>('/admin/ops/requests', { params })
   return data
@@ -1345,6 +1383,7 @@ export const opsAPI = {
   listRequestErrorUpstreamErrors,
 
   listRequestDetails,
+  getAccountRequestStatsBatch,
   listAlertRules,
   createAlertRule,
   updateAlertRule,

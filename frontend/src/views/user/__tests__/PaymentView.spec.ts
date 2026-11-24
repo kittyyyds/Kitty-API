@@ -4,6 +4,7 @@ import PaymentView from '../PaymentView.vue'
 import { PAYMENT_RECOVERY_STORAGE_KEY } from '@/components/payment/paymentFlow'
 import { formatPaymentAmount } from '@/components/payment/currency'
 import RechargePackages from '@/components/payment/RechargePackages.vue'
+import RechargeCouponPicker from '@/components/payment/RechargeCouponPicker.vue'
 import SubscriptionPlanCard from '@/components/payment/SubscriptionPlanCard.vue'
 import en from '@/i18n/locales/en'
 import zh from '@/i18n/locales/zh'
@@ -566,6 +567,30 @@ describe('PaymentView checkout credit breakdown', () => {
     expect(refreshUser).toHaveBeenCalledOnce()
     expect(getCheckoutInfo.mock.invocationCallOrder[0]).toBeLessThan(refreshUser.mock.invocationCallOrder[0])
     expect(wrapper.get('[data-testid="projected-balance"]').text()).toBe('$19.00')
+    wrapper.unmount()
+  })
+
+  it.each([true, false])('preserves the exact package grant only for stackable coupons: %s', async (stackable) => {
+    const wrapper = await mountRecharge()
+    const picker = wrapper.getComponent(RechargeCouponPicker)
+    picker.vm.$emit('change', 9, null, true)
+    await flushPromises()
+    expect(wrapper.get('.checkout-submit').attributes('disabled')).toBeDefined()
+    picker.vm.$emit('change', 9, {
+      coupon_id: 9, name: 'test', currency: 'CNY', original_amount: 30,
+      pay_base: 20, pay_amount: 21, credited: 15, bonus_amount: 5,
+      discount_amount: 10, coupon_bonus: 0, fee_rate: 5,
+      stackable, package_bonus: stackable ? 1 : 0,
+    }, false)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="total-credit"]').text()).toBe(stackable ? '$16.00' : '$15.00')
+    expect(wrapper.find('[data-testid="new-bonus"]').exists()).toBe(stackable)
+    expect(wrapper.get('.checkout-summary__total').text()).toContain(formatPaymentAmount(21, 'CNY'))
+    expect(wrapper.get('.checkout-submit').attributes('disabled')).toBeUndefined()
+    createOrder.mockResolvedValue({ order_id: 1, amount: 15, pay_amount: 21, qr_code: 'test', expires_at: '2099-01-01' })
+    await wrapper.get('.checkout-submit').trigger('click')
+    await flushPromises()
+    expect(createOrder).toHaveBeenCalledWith(expect.objectContaining({ coupon_id: 9, amount: 30 }))
     wrapper.unmount()
   })
 

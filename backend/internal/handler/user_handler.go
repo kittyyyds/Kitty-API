@@ -2,6 +2,10 @@ package handler
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +26,114 @@ type UserHandler struct {
 	emailCache            service.EmailCache
 	affiliateService      *service.AffiliateService
 	userPlatformQuotaRepo service.UserPlatformQuotaRepository
+	scheduledTestSvc      *service.ScheduledTestService
+}
+
+func (h *UserHandler) SetScheduledTestService(svc *service.ScheduledTestService) {
+	h.scheduledTestSvc = svc
+}
+func (h *UserHandler) ListTestResults(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "authentication required")
+		return
+	}
+	if h.scheduledTestSvc == nil {
+		response.InternalError(c, "test results unavailable")
+		return
+	}
+	limit := 3
+	if n, err := strconv.Atoi(c.Query("limit")); err == nil && n > 0 && n <= 3 {
+		limit = n
+	}
+	var rows []*service.ScheduledTestResult
+	var err error
+	if c.Query("group_view") == "all" {
+		rows, err = h.scheduledTestSvc.ListVisibleGroupResults(c.Request.Context(), subject.UserID)
+	} else if raw, provided := c.GetQuery("recent_results"); provided {
+		total, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || total < 1 || total > 5 {
+			response.BadRequest(c, "recent_results must be between 1 and 5")
+			return
+		}
+		rows, err = h.scheduledTestSvc.ListVisibleResultsWithRecentResults(c.Request.Context(), subject.UserID, total)
+	} else if raw, provided := c.GetQuery("recent_html"); provided {
+		total, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || total < 1 || total > 5 {
+			response.BadRequest(c, "recent_html must be between 1 and 5")
+			return
+		}
+		rows, err = h.scheduledTestSvc.ListVisibleResultsWithRecentHTML(c.Request.Context(), subject.UserID, total)
+	} else {
+		rows, err = h.scheduledTestSvc.ListVisibleResults(c.Request.Context(), subject.UserID, limit)
+	}
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if err := h.populateAdminTestResultAccountNames(c, rows); err != nil {
+		response.InternalError(c, "test account names unavailable")
+		return
+	}
+	c.JSON(http.StatusOK, rows)
+}
+
+func (h *UserHandler) ListTestResultHistory(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "authentication required")
+		return
+	}
+	if h.scheduledTestSvc == nil {
+		response.InternalError(c, "test results unavailable")
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "invalid test result id")
+		return
+	}
+	var beforeID int64
+	if raw, provided := c.GetQuery("before_id"); provided {
+		beforeID, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || beforeID <= 0 {
+			response.BadRequest(c, "invalid history cursor")
+			return
+		}
+	}
+	limit := 20
+	if raw, provided := c.GetQuery("limit"); provided {
+		limit, err = strconv.Atoi(raw)
+		if err != nil || limit <= 0 || limit > 50 {
+			response.BadRequest(c, "history limit must be between 1 and 50")
+			return
+		}
+	}
+	page, err := h.scheduledTestSvc.ListVisibleResultHistory(c.Request.Context(), subject.UserID, id, beforeID, limit)
+	if errors.Is(err, sql.ErrNoRows) {
+		response.NotFound(c, "test result history not found")
+		return
+	}
+	if err != nil {
+		response.InternalError(c, "test result history unavailable")
+		return
+	}
+	if err := h.populateAdminTestResultAccountNames(c, page.Items); err != nil {
+		response.InternalError(c, "test account names unavailable")
+		return
+	}
+	c.JSON(http.StatusOK, page)
+}
+
+// Names are added only after the public visibility and sanitization path succeeds.
+// The role comes from authentication middleware, never request parameters.
+func (h *UserHandler) populateAdminTestResultAccountNames(c *gin.Context, rows []*service.ScheduledTestResult) error {
+	role, ok := middleware2.GetUserRoleFromContext(c)
+	if !ok || !service.IsAdminRole(role) {
+		return nil
+	}
+	c.Header("Cache-Control", "private, no-store")
+	return h.scheduledTestSvc.PopulateAdminResultAccountNames(c.Request.Context(), rows)
 }
 
 // NewUserHandler creates a new UserHandler

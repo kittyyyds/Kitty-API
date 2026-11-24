@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import RegisterView from '@/views/auth/RegisterView.vue'
+import { validateInvitationCode, validatePromoCode } from '@/api/auth'
 
 const {
   fetchPublicSettingsMock,
@@ -35,7 +36,8 @@ vi.mock('vue-i18n', async () => {
       t: (key: string) =>
         key === 'auth.emailDomainRegistrationLimit'
           ? '该邮箱域名无法注册新账户。请使用主流邮箱注册；如需使用企业邮箱，请联系客服添加域名白名单。'
-          : key === 'auth.emailAliasNotAllowed' ? '不支持使用邮箱别名注册，请去掉 Gmail 用户名中的点号、+标签或域名末尾的点号后重试。' : key
+          : key === 'auth.emailAliasNotAllowed' ? '不支持使用邮箱别名注册，请去掉 Gmail 用户名中的点号、+标签或域名末尾的点号后重试。'
+            : key === 'auth.errors.REGISTRATION_IP_LIMIT' ? '当前 IP 已注册过两个账号，如需更多账号请联系客服。' : key
     })
   }
 })
@@ -359,6 +361,73 @@ describe('RegisterView security settings bootstrap', () => {
     expect(showErrorMock).toHaveBeenCalledWith(
       '该邮箱域名无法注册新账户。请使用主流邮箱注册；如需使用企业邮箱，请联系客服添加域名白名单。'
     )
+  })
+
+  it('translates a backend reason instead of showing the generic English-pattern guess', async () => {
+    fetchPublicSettingsMock.mockResolvedValueOnce({ ...enabledSettings, turnstile_enabled: false })
+    // The API client already turned "this IP address has already registered..." into this guess.
+    registerMock.mockRejectedValueOnce({ reason: 'REGISTRATION_IP_LIMIT', message: '该内容已存在。' })
+
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('#email').setValue('third@example.com')
+    await wrapper.get('#password').setValue('secret-123')
+    await wrapper.get('#confirmPassword').setValue('secret-123')
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(showErrorMock).toHaveBeenLastCalledWith('当前 IP 已注册过两个账号，如需更多账号请联系客服。')
+  })
+
+  it('tells the visitor why submit is blocked by an invalid promo code', async () => {
+    vi.useFakeTimers()
+    fetchPublicSettingsMock.mockResolvedValueOnce({ ...enabledSettings, turnstile_enabled: false, promo_code_enabled: true })
+    vi.mocked(validatePromoCode).mockResolvedValueOnce({ valid: false, error_code: 'PROMO_CODE_NOT_FOUND' } as never)
+
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('#promo_code').setValue('NOPE')
+    await vi.advanceTimersByTimeAsync(600)
+    await flushPromises()
+    await wrapper.get('#email').setValue('new@example.com')
+    await wrapper.get('#password').setValue('secret-123')
+    await wrapper.get('#confirmPassword').setValue('secret-123')
+    showErrorMock.mockClear()
+
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(registerMock).not.toHaveBeenCalled()
+    expect(showErrorMock).toHaveBeenLastCalledWith('auth.promoCodeInvalidCannotRegister')
+  })
+
+  it('trims the invitation code it submits, matching what the validate endpoint accepted', async () => {
+    fetchPublicSettingsMock.mockResolvedValueOnce({ ...enabledSettings, turnstile_enabled: false, invitation_code_enabled: true })
+    vi.mocked(validateInvitationCode).mockResolvedValue({ valid: true } as never)
+
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('#email').setValue('new@example.com')
+    await wrapper.get('#password').setValue('secret-123')
+    await wrapper.get('#confirmPassword').setValue('secret-123')
+    await wrapper.get('#invitation_code').setValue('  INV-123  ')
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(registerMock).toHaveBeenCalledWith(expect.objectContaining({ invitation_code: 'INV-123' }))
+  })
+
+  it('repeats the validation message when the same invalid form is submitted again', async () => {
+    fetchPublicSettingsMock.mockResolvedValueOnce({ ...enabledSettings, turnstile_enabled: false })
+
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(showErrorMock.mock.calls.filter(([message]) => message === 'auth.emailRequired')).toHaveLength(2)
   })
 
   it('shows the localized email alias rejection message returned by the backend', async () => {

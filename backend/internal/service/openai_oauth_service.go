@@ -3,10 +3,11 @@ package service
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -15,26 +16,22 @@ import (
 
 // OpenAIOAuthService handles OpenAI OAuth authentication flows
 type OpenAIOAuthService struct {
-	sessionStore           *openai.SessionStore
-	proxyRepo              ProxyRepository
-	oauthClient            OpenAIOAuthClient
-	privacyClientFactory   PrivacyClientFactory               // 用于调用 chatgpt.com/backend-api（ImpersonateChrome）
-	refreshFailureRecorder CredentialOperationRefreshRecorder // wired before serving
-	refreshRecorderMu      sync.RWMutex
-}
-
-func (s *OpenAIOAuthService) SetRefreshFailureRecorder(recorder CredentialOperationRefreshRecorder) {
-	s.refreshRecorderMu.Lock()
-	defer s.refreshRecorderMu.Unlock()
-	s.refreshFailureRecorder = recorder
+	sessionStore          *openai.SessionStore
+	proxyRepo             ProxyRepository
+	oauthClient           OpenAIOAuthClient
+	privacyClientFactory  PrivacyClientFactory // 用于调用 chatgpt.com/backend-api（ImpersonateChrome）
+	passwordLogin         *openAIPasswordLoginClient
+	storedRefreshAPI      *OAuthRefreshAPI
+	storedRefreshExecutor OAuthRefreshExecutor
 }
 
 // NewOpenAIOAuthService creates a new OpenAI OAuth service
 func NewOpenAIOAuthService(proxyRepo ProxyRepository, oauthClient OpenAIOAuthClient) *OpenAIOAuthService {
 	return &OpenAIOAuthService{
-		sessionStore: openai.NewSessionStore(),
-		proxyRepo:    proxyRepo,
-		oauthClient:  oauthClient,
+		sessionStore:  openai.NewSessionStore(),
+		proxyRepo:     proxyRepo,
+		oauthClient:   oauthClient,
+		passwordLogin: newOpenAIPasswordLoginClient(),
 	}
 }
 
@@ -71,6 +68,7 @@ func (s *OpenAIOAuthService) GenerateAuthURLWithProxyURL(ctx context.Context, pr
 	if len(oauthClient) > 0 && strings.TrimSpace(oauthClient[0]) != "" {
 		profile = strings.TrimSpace(oauthClient[0])
 	}
+	// The Excel add-in client was only usable through the removed Excel BPS route.
 	if profile != "codex" {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_CLIENT", "unsupported OAuth client")
 	}
@@ -131,6 +129,7 @@ type OpenAIExchangeCodeInput struct {
 
 // OpenAITokenInfo represents the token information for OpenAI
 type OpenAITokenInfo struct {
+	refreshedAt           time.Time
 	AccessToken           string `json:"access_token"`
 	RefreshToken          string `json:"refresh_token"`
 	IDToken               string `json:"id_token,omitempty"`
@@ -155,9 +154,6 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 	if !ok {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_SESSION_NOT_FOUND", "session not found or expired")
 	}
-	if session.SIWCAccountID != 0 {
-		return nil, infraerrors.BadRequest("OPENAI_SIWC_BOUND_SESSION", "Complete SIWC authorization on the bound account")
-	}
 	if input.State == "" {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_STATE_REQUIRED", "oauth state is required")
 	}
@@ -175,10 +171,6 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 		if proxy != nil {
 			proxyURL = proxy.URL()
 		}
-	}
-
-	if session.ClientID == openai.ExcelClientID {
-		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_LEGACY_CLIENT_UNSUPPORTED", "legacy Excel OAuth credentials are no longer supported")
 	}
 
 	// Use redirect URI from session or input
@@ -216,7 +208,8 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 		RefreshToken: tokenResp.RefreshToken,
 		IDToken:      tokenResp.IDToken,
 		ExpiresIn:    int64(tokenResp.ExpiresIn),
-		ExpiresAt:    time.Now().Unix() + int64(tokenResp.ExpiresIn),
+		ExpiresAt:    openAIRefreshedTokenExpiresAt(tokenResp.AccessToken, tokenResp.ExpiresIn),
+		refreshedAt:  time.Now().UTC(),
 		ClientID:     clientID,
 	}
 
@@ -261,7 +254,8 @@ func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refre
 		RefreshToken: tokenResp.RefreshToken,
 		IDToken:      tokenResp.IDToken,
 		ExpiresIn:    int64(tokenResp.ExpiresIn),
-		ExpiresAt:    time.Now().Unix() + int64(tokenResp.ExpiresIn),
+		ExpiresAt:    openAIRefreshedTokenExpiresAt(tokenResp.AccessToken, tokenResp.ExpiresIn),
+		refreshedAt:  time.Now().UTC(),
 	}
 	if trimmed := strings.TrimSpace(clientID); trimmed != "" {
 		tokenInfo.ClientID = trimmed
@@ -275,6 +269,12 @@ func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refre
 		tokenInfo.PlanType = userInfo.PlanType
 	}
 
+	if tokenInfo.ClientID == openai.ExcelClientID {
+		if err := applyExcelAccessIdentity(tokenInfo); err != nil {
+			return nil, err
+		}
+		return tokenInfo, nil
+	}
 	s.enrichTokenInfo(ctx, tokenInfo, proxyURL)
 
 	return tokenInfo, nil
@@ -369,19 +369,13 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 	if account.Type != AccountTypeOAuth {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_ACCOUNT_TYPE", "account is not an OAuth account")
 	}
+	if account.IsOpenAIVMManaged() {
+		return nil, errOpenAIVMManagedNoToken
+	}
 
-	var proxyURL string
-	if account.ProxyID != nil {
-		var proxy *Proxy
-		var proxyErr error
-		if s.proxyRepo != nil {
-			proxy, proxyErr = s.proxyRepo.GetByID(ctx, *account.ProxyID)
-		}
-		if proxyErr == nil && proxy != nil {
-			proxyURL = proxy.URL()
-		} else {
-			return nil, infraerrors.New(http.StatusServiceUnavailable, "OPENAI_OAUTH_PROXY_UNAVAILABLE", "configured proxy is unavailable; token refresh was not sent directly")
-		}
+	proxyURL, proxyErr := resolveOpenAIAccountProxyURL(ctx, s.proxyRepo, account)
+	if proxyErr != nil {
+		return nil, proxyErr
 	}
 
 	accessToken := account.GetCredential("access_token")
@@ -417,23 +411,14 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_NO_REFRESH_TOKEN", "no refresh token available")
 	}
 
-	clientID := account.GetCredential("client_id")
-	info, err := s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)
-	s.refreshRecorderMu.RLock()
-	recorder := s.refreshFailureRecorder
-	s.refreshRecorderMu.RUnlock()
-	if err != nil && recorder != nil && !account.IsCredentialShadow() {
-		// This is an observed failed attempt, not a claim about the final
-		// background retry outcome or the account's present health.
-		at := time.Now()
-		failure := refreshOperationFailure(err, &at)
-		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
-		defer cancel()
-		if recordErr := recorder.RecordRefreshFailure(persistCtx, account.ID, failure.Code, at); recordErr != nil {
-			slog.Warn("credential_operation_refresh_failure_save_failed", "account_id", account.ID)
-		}
+	// 账号 ID 只用于隔离 Codex 设备通道的认证连接池，不会作为上游头发送。
+	ctx = openai.WithCodexAuthAccount(ctx, account.ID)
+	// 凭据面（refresh）与推理使用同一设备画像（tui/exec/vscode + 平台）。
+	if profile, ok := resolveCodexDeviceProfile(account); ok {
+		ctx = openai.WithCodexClientUserAgent(ctx, profile.UserAgent)
 	}
-	return info, err
+	clientID := account.GetCredential("client_id")
+	return s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)
 }
 
 // BuildAccountCredentials builds credentials map from token info
@@ -443,6 +428,9 @@ func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo)
 	}
 	if tokenInfo.ExpiresAt > 0 {
 		creds["expires_at"] = time.Unix(tokenInfo.ExpiresAt, 0).Format(time.RFC3339)
+	}
+	if !tokenInfo.refreshedAt.IsZero() {
+		creds["last_refresh"] = tokenInfo.refreshedAt.Format(time.RFC3339Nano)
 	}
 	// 仅在刷新响应返回了新的 refresh_token 时才更新，防止用空值覆盖已有令牌
 	if strings.TrimSpace(tokenInfo.RefreshToken) != "" {
@@ -492,4 +480,56 @@ func (s *OpenAIOAuthService) Stop() {
 
 func normalizeOpenAIOAuthPlatform(platform string) string {
 	return openai.OAuthPlatformOpenAI
+}
+
+func openAIRefreshedTokenExpiresAt(accessToken string, expiresIn int64) int64 {
+	parts := strings.Split(accessToken, ".")
+	if len(parts) == 3 {
+		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+		var claims struct {
+			ExpiresAt int64 `json:"exp"`
+		}
+		if err == nil && json.Unmarshal(payload, &claims) == nil && claims.ExpiresAt > 0 {
+			return claims.ExpiresAt
+		}
+	}
+	if expiresIn > 0 {
+		return time.Now().Unix() + expiresIn
+	}
+	return 0
+}
+
+func openAIAccessTokenExpiresAt(account *Account) *time.Time {
+	if expiresAt := openAIRefreshedTokenExpiresAt(account.GetOpenAIAccessToken(), 0); expiresAt > 0 {
+		expiry := time.Unix(expiresAt, 0)
+		return &expiry
+	}
+	return account.GetCredentialAsTime("expires_at")
+}
+
+func (s *OpenAIOAuthService) retireAccountAuthClient(ctx context.Context, account *Account) {
+	if s == nil || !canRecoverOpenAIOAuth(account) {
+		return
+	}
+	client, ok := s.oauthClient.(interface {
+		RetireAuthClient(context.Context, string, string)
+	})
+	if !ok {
+		return
+	}
+	ctx = openai.WithCodexAuthAccount(ctx, account.ID)
+	if profile, ok := resolveCodexDeviceProfile(account); ok {
+		ctx = openai.WithCodexClientUserAgent(ctx, profile.UserAgent)
+	}
+	client.RetireAuthClient(ctx, account.GetOpenAIRefreshToken(), account.GetCredential("client_id"))
+}
+
+func (s *OpenAIOAuthService) AuthCredentialsPersisted(ctx context.Context, previous *Account) {
+	if s == nil || !canRecoverOpenAIOAuth(previous) {
+		return
+	}
+	snapshot := snapshotOAuthRefreshAccount(previous)
+	AfterAccountCommit(ctx, func(committed context.Context) {
+		s.retireAccountAuthClient(committed, snapshot)
+	})
 }

@@ -12,11 +12,10 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/reauthruntime"
 )
 
-func (s *OpenAIOAuthReauthService) configureWorker(cfg *config.Config, info BuildInfo) {
+func (s *OpenAIOAuthReauthService) configureWorker(cfg *config.Config, _ BuildInfo) {
 	token := strings.TrimSpace(os.Getenv("OPENAI_REAUTH_WORKER_TOKEN"))
 	if token != "" {
 		s.workerToken = token
@@ -47,11 +46,7 @@ func (s *OpenAIOAuthReauthService) configureWorker(cfg *config.Config, info Buil
 			host = cfg.Server.Host
 		}
 	}
-	runtimeVersion := strings.TrimSpace(os.Getenv("OPENAI_REAUTH_RUNTIME_VERSION"))
-	if runtimeVersion == "" {
-		runtimeVersion = info.Version
-	}
-	s.worker = reauthruntime.New(filepath.Join(dir, "credential-worker"), runtimeVersion, "http://"+net.JoinHostPort(host, strconv.Itoa(port)), s.workerToken)
+	s.worker = reauthruntime.New(filepath.Join(dir, "credential-worker"), reauthruntime.PinnedVersion, "http://"+net.JoinHostPort(host, strconv.Itoa(port)), s.workerToken)
 }
 
 // WorkerAuthentication verifies the private protocol without exposing the key.
@@ -98,7 +93,7 @@ func (s *OpenAIOAuthReauthService) EnsureWorker() {
 
 // MarkWorkerSeen records an authenticated worker heartbeat. Workers call the
 // runtime-settings endpoint even when the queue is empty, so an idle worker is
-// still considered available for newly-created re-login or Session tasks.
+// still considered available for newly-created Excel authorization tasks.
 func (s *OpenAIOAuthReauthService) MarkWorkerSeen() {
 	if s != nil {
 		s.workerLastSeen.Store(time.Now().UnixNano())
@@ -108,19 +103,4 @@ func (s *OpenAIOAuthReauthService) stopWorker() {
 	if s != nil && s.worker != nil {
 		s.worker.Stop()
 	}
-}
-
-func (s *OpenAIOAuthReauthService) checkWorkerMode(mode string) error {
-	// Constructors used by embedders/tests do not enable a runtime implicitly.
-	if s.worker == nil {
-		return nil
-	}
-	if mode != OpenAIOAuthReauthModePasswordTOTP {
-		return infraerrors.ServiceUnavailable("OPENAI_REAUTH_MODE_UNAVAILABLE", "Email OTP re-login is unavailable in the built-in runtime")
-	}
-	s.EnsureWorker()
-	if s.WorkerStatus().State == "unavailable" {
-		return infraerrors.ServiceUnavailable("OPENAI_REAUTH_WORKER_UNAVAILABLE", "Re-login service is unavailable; see Credential Operations status")
-	}
-	return nil
 }

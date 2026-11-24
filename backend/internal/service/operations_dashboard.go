@@ -87,6 +87,9 @@ type OperationsCostCoverage struct {
 	Unknown              int64 `json:"unknown"`
 }
 type OperationsDashboardData struct {
+	TodayDate            string                       `json:"today_date"`
+	TodayStart           time.Time                    `json:"today_start"`
+	SiteTimezone         string                       `json:"site_timezone"`
 	CostCoverage         OperationsCostCoverage       `json:"cost_coverage"`
 	DetailsRetainedSince *time.Time                   `json:"details_retained_since"`
 	Metrics              OperationsDashboardMetrics   `json:"metrics"`
@@ -127,4 +130,31 @@ func (s *DashboardService) GetOperationsUserSuggestions(ctx context.Context, sea
 		return nil, ErrOperationsDashboardUnavailable
 	}
 	return repo.GetOperationsUserSuggestions(ctx, search)
+}
+
+type OperationsRechargeRankingEntry struct {
+	UserID        int64   `json:"user_id"`
+	Email         string  `json:"email"`
+	Amount        float64 `json:"amount"`
+	RechargeCount int64   `json:"recharge_count"`
+}
+type OperationsRechargeRankingData struct {
+	Users        []OperationsRechargeRankingEntry `json:"users"`
+	TotalAmount  float64                          `json:"total_amount"`
+	TotalUsers   int64                            `json:"total_users"`
+	TotalCount   int64                            `json:"total_count"`
+	Date         string                           `json:"date"`
+	StartTime    time.Time                        `json:"start_time"`
+	EndTime      time.Time                        `json:"end_time"`
+	SiteTimezone string                           `json:"site_timezone"`
+}
+
+func (s *DashboardService) GetOperationsRechargeRanking(ctx context.Context, start, end time.Time, limit int) (*OperationsRechargeRankingData, error) {
+	repo, ok := s.usageRepo.(interface {
+		GetOperationsRechargeRanking(context.Context, time.Time, time.Time, int) (*OperationsRechargeRankingData, error)
+	})
+	if !ok {
+		return nil, ErrOperationsDashboardUnavailable
+	}
+	return repo.GetOperationsRechargeRanking(ctx, start, end, limit)
 }

@@ -2,7 +2,6 @@ package service
 
 import (
 	"fmt"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"strings"
 	"time"
 )
@@ -103,13 +102,12 @@ func ApplyLegacyRequestFields(requestType RequestType, fallbackStream bool, fall
 }
 
 type UsageLog struct {
-	ContentTiming *requesttiming.ContentObservation
-	ID            int64
-	UserID        int64
-	APIKeyID      int64
-	AccountID     int64
-	RequestID     string
-	Model         string
+	ID        int64
+	UserID    int64
+	APIKeyID  int64
+	AccountID int64
+	RequestID string
+	Model     string
 	// RequestedModel is the client-requested model name recorded for stable user/admin display.
 	// Empty should be treated as Model for backward compatibility with historical rows.
 	RequestedModel string
@@ -154,8 +152,10 @@ type UsageLog struct {
 	CacheCreationTokens int
 	CacheReadTokens     int
 
-	CacheCreation5mTokens int `gorm:"column:cache_creation_5m_tokens"`
-	CacheCreation1hTokens int `gorm:"column:cache_creation_1h_tokens"`
+	CacheCreation5mTokens  int `gorm:"column:cache_creation_5m_tokens"`
+	CacheCreation1hTokens  int `gorm:"column:cache_creation_1h_tokens"`
+	CacheCreation30mTokens int `gorm:"column:cache_creation_30m_tokens"`
+	CacheCreation12hTokens int `gorm:"column:cache_creation_12h_tokens"`
 
 	ImageInputTokens  int
 	ImageInputCost    float64
@@ -185,9 +185,9 @@ type UsageLog struct {
 	// QueueWaitMs is nullable pre-forward elapsed time; QueueTiming carries the
 	// measured source and separate server/forward scopes.
 	QueueWaitMs *int
-	QueueTiming *QueueTiming
-	UserAgent   *string
-	IPAddress   *string
+
+	UserAgent *string
+	IPAddress *string
 	// SessionID is the explicit client-provided request correlation identifier
 	// (e.g. the session_id / X-Session-Id headers). Nil when the client sent no
 	// valid session header. It is never derived from prompt_cache_key or content.

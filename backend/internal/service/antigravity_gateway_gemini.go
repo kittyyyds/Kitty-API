@@ -42,6 +42,9 @@ func WithForwardGeminiSession(groupID int64, sessionHash string) ForwardGeminiOp
 }
 
 func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Context, account *Account, originalModel string, action string, stream bool, body []byte, isStickySession bool, options ...ForwardGeminiOption) (*ForwardResult, error) {
+	if err := CheckUpstreamModeration(ctx, c, account); err != nil {
+		return nil, err
+	}
 	beginUpstreamResponseModelObservation(c)
 	startTime := time.Now()
 	forwardOpts := forwardGeminiOptions{}
@@ -215,7 +218,6 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 					fallbackReq, err := antigravity.NewAPIRequest(ctx, upstreamAction, accessToken, fallbackWrapped)
 					if err == nil {
 						fallbackResp, err := s.httpUpstream.Do(fallbackReq, proxyURL, account.ID, account.Concurrency)
-						s.rateLimitService.observeQualityResponse(fallbackReq.Context(), account, fallbackResp, err)
 						if err == nil && fallbackResp.StatusCode < 400 {
 							_ = resp.Body.Close()
 							resp = fallbackResp
@@ -379,10 +381,11 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 				Message:            upstreamMsg,
 				Detail:             upstreamDetail,
 			})
-			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: unwrappedForOps, RetryableOnSameAccount: true}
+			return nil, &UpstreamFailoverError{ObservedUpstreamStatus: resp.StatusCode,
+				StatusCode: resp.StatusCode, ResponseBody: unwrappedForOps, RetryableOnSameAccount: true}
 		}
 
-		if s.shouldFailoverUpstreamError(resp.StatusCode) {
+		if s.shouldFailoverUpstreamError(resp.StatusCode) || IsUpstreamBillingError(resp.StatusCode, unwrappedForOps) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				ProxyID:            opsUpstreamProxyID(account),
 				ProxyName:          opsUpstreamProxyName(account),
@@ -395,7 +398,11 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 				Message:            upstreamMsg,
 				Detail:             upstreamDetail,
 			})
-			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: unwrappedForOps}
+			if IsUpstreamBillingError(resp.StatusCode, unwrappedForOps) {
+				return nil, newUpstreamBillingFailoverError(resp.StatusCode, resp.Header, unwrappedForOps, false)
+			}
+			return nil, &UpstreamFailoverError{ObservedUpstreamStatus: resp.StatusCode,
+				StatusCode: resp.StatusCode, ResponseBody: unwrappedForOps, ResponseHeaders: resp.Header.Clone()}
 		}
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 			ProxyID:            opsUpstreamProxyID(account),
@@ -523,11 +530,47 @@ func cleanGeminiRequest(body []byte) ([]byte, error) {
 		}
 	}
 
+	// 2. 结构化输出 Schema
+	if normalizeGeminiResponseSchema(payload) {
+		modified = true
+	}
+
 	if !modified {
 		return body, nil
 	}
 
 	return json.Marshal(payload)
+}
+
+// normalizeGeminiResponseSchema 将 generationConfig.responseJsonSchema 改写为 responseSchema。
+// Antigravity 上游接受 responseJsonSchema 字段但静默忽略（返回普通文本而非 JSON），只有 responseSchema 生效；
+// 而 @ai-sdk/google >= 4.0.70 等客户端只发送 responseJsonSchema。已有 responseSchema 时以其为准。
+func normalizeGeminiResponseSchema(payload map[string]any) bool {
+	changed := false
+	for _, configKey := range []string{"generationConfig", "generation_config"} {
+		config, ok := payload[configKey].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, schemaKey := range []string{"responseJsonSchema", "response_json_schema"} {
+			raw, exists := config[schemaKey]
+			if !exists {
+				continue
+			}
+			delete(config, schemaKey)
+			changed = true
+			_, hasSchema := config["responseSchema"]
+			_, hasSnakeSchema := config["response_schema"]
+			if hasSchema || hasSnakeSchema {
+				continue
+			}
+			if schema, ok := raw.(map[string]any); ok {
+				antigravity.DeepCleanUndefined(schema)
+				config["responseSchema"] = antigravity.CleanJSONSchema(schema)
+			}
+		}
+	}
+	return changed
 }
 
 // filterEmptyPartsFromGeminiRequest 过滤掉 parts 为空的消息

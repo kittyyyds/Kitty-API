@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -10,13 +11,14 @@ import (
 )
 
 type channelMonitorV2RepoStub struct {
-	config serviceChannelMonitorV2ConfigAlias
-	users  *ChannelMonitorV2List[ChannelMonitorV2UserRow]
-	matrix *ChannelMonitorV2Matrix
-	errors *ChannelMonitorV2List[ChannelMonitorV2ErrorRow]
-	snap   *ChannelMonitorV2Snapshot
-	group  ChannelMonitorV2GroupBy
-	admin  bool
+	config     serviceChannelMonitorV2ConfigAlias
+	users      *ChannelMonitorV2List[ChannelMonitorV2UserRow]
+	matrix     *ChannelMonitorV2Matrix
+	errors     *ChannelMonitorV2List[ChannelMonitorV2ErrorRow]
+	snap       *ChannelMonitorV2Snapshot
+	group      ChannelMonitorV2GroupBy
+	admin      bool
+	errorCalls int
 }
 
 // Alias keeps composite literals readable without introducing another package.
@@ -60,6 +62,7 @@ func (s *channelMonitorV2RepoStub) GetMatrix(_ context.Context, _ ChannelMonitor
 	return s.matrix, nil
 }
 func (s *channelMonitorV2RepoStub) GetErrors(_ context.Context, _ ChannelMonitorV2Filter, _ ChannelMonitorV2Config, admin bool) (*ChannelMonitorV2List[ChannelMonitorV2ErrorRow], error) {
+	s.errorCalls++
 	s.admin = admin
 	if s.errors != nil {
 		// Return a shallow copy so service redaction does not mutate the fixture.
@@ -150,6 +153,22 @@ func TestParseChannelMonitorV2GroupBy(t *testing.T) {
 	require.ErrorIs(t, err, ErrChannelMonitorV2InvalidGroupBy)
 }
 
+func TestChannelMonitorV2OutputSpeedRemainsVisibleWithoutVolume(t *testing.T) {
+	for _, hideThroughput := range []bool{false, true} {
+		tps := 42.5
+		metric := ChannelMonitorV2Metric{OutputTPS: &tps, TPSSamples: 100, RPM: 2, TPM: 1000, RequestCount: 100, OutputTokens: 3000}
+		redactChannelMonitorV2Metric(&metric, hideThroughput)
+		require.Equal(t, &tps, metric.OutputTPS)
+		require.Zero(t, metric.TPSSamples)
+		require.Zero(t, metric.RequestCount)
+		require.Zero(t, metric.OutputTokens)
+		if hideThroughput {
+			require.Zero(t, metric.RPM)
+			require.Zero(t, metric.TPM)
+		}
+	}
+}
+
 func TestChannelMonitorV2MatrixForwardsGroupingAndAdminScope(t *testing.T) {
 	want := &ChannelMonitorV2Matrix{GroupBy: ChannelMonitorV2GroupByPlatformModel}
 	repo := &channelMonitorV2RepoStub{config: ChannelMonitorV2Config{Enabled: true}, matrix: want}
@@ -161,6 +180,34 @@ func TestChannelMonitorV2MatrixForwardsGroupingAndAdminScope(t *testing.T) {
 
 	_, err = NewChannelMonitorV2Service(repo).Matrix(context.Background(), ChannelMonitorV2Filter{}, "bad", false)
 	require.ErrorIs(t, err, ErrChannelMonitorV2InvalidGroupBy)
+}
+
+func TestChannelMonitorV2RecentErrorDiagnosticsAreAdminOnly(t *testing.T) {
+	for _, admin := range []bool{true, false} {
+		t.Run(fmt.Sprint(admin), func(t *testing.T) {
+			repo := &channelMonitorV2RepoStub{
+				config: ChannelMonitorV2Config{Enabled: true},
+				matrix: &ChannelMonitorV2Matrix{Items: []ChannelMonitorV2MatrixRow{{RecentRequests: []ChannelMonitorV2RecentRequest{{
+					Status: "error", ErrorCategory: "internal",
+					Error: &ChannelMonitorV2RecentError{LogID: 42, StatusCode: 500, Message: "private diagnostic"},
+				}}}}},
+			}
+			result, err := NewChannelMonitorV2Service(repo).Matrix(context.Background(), ChannelMonitorV2Filter{}, ChannelMonitorV2GroupByPlatformGroup, admin)
+			require.NoError(t, err)
+			encoded, err := json.Marshal(result)
+			require.NoError(t, err)
+			require.Contains(t, string(encoded), `"status":"error"`)
+			if admin {
+				require.Contains(t, string(encoded), `"error_category":"internal"`)
+				require.Contains(t, string(encoded), `"log_id":42`)
+				require.Contains(t, string(encoded), "private diagnostic")
+			} else {
+				require.NotContains(t, string(encoded), `"error_category"`)
+				require.NotContains(t, string(encoded), `"error":`)
+				require.NotContains(t, string(encoded), "private diagnostic")
+			}
+		})
+	}
 }
 
 func TestChannelMonitorV2ConfigValidation(t *testing.T) {
@@ -185,14 +232,14 @@ func TestChannelMonitorV2ConfigValidation(t *testing.T) {
 		require.Empty(t, item.Models)
 	}
 	require.Equal(t, []int64{1, 3}, cfg.GroupIDs)
-	require.Equal(t, ChannelMonitorV2CardTimelineWindows, cfg.CardTimelineMode)
-
-	cfg.CardTimelineMode = " Samples "
-	require.NoError(t, normalizeChannelMonitorV2Config(&cfg))
 	require.Equal(t, ChannelMonitorV2CardTimelineSamples, cfg.CardTimelineMode)
-	cfg.CardTimelineMode = "bars"
-	require.ErrorIs(t, normalizeChannelMonitorV2Config(&cfg), ErrChannelMonitorV2InvalidConfig)
-	cfg.CardTimelineMode = ChannelMonitorV2CardTimelineWindows
+
+	// The removed windows mode and unknown values are saved as samples.
+	for _, mode := range []string{"windows", " Samples ", "bars"} {
+		cfg.CardTimelineMode = mode
+		require.NoError(t, normalizeChannelMonitorV2Config(&cfg))
+		require.Equal(t, ChannelMonitorV2CardTimelineSamples, cfg.CardTimelineMode)
+	}
 
 	cfg.RefreshIntervalSeconds = 120
 	require.ErrorIs(t, normalizeChannelMonitorV2Config(&cfg), ErrChannelMonitorV2InvalidConfig)
@@ -326,24 +373,25 @@ func TestChannelMonitorV2GroupOrderKeepsSequence(t *testing.T) {
 
 func TestChannelMonitorV2UpdateKeepsOmittedGroupOrder(t *testing.T) {
 	repo := &channelMonitorV2RepoStub{config: ChannelMonitorV2Config{Version: 2, RefreshIntervalSeconds: 60, CandyHistoryLimit: 15, GroupOrder: []int64{9, 3}}}
-	updated, err := NewChannelMonitorV2Service(repo).UpdateConfig(context.Background(), ChannelMonitorV2Config{Version: 2, RefreshIntervalSeconds: 60, CandyHistoryLimit: 15, CardTimelineMode: ChannelMonitorV2CardTimelineWindows}, 2, 9)
+	updated, err := NewChannelMonitorV2Service(repo).UpdateConfig(context.Background(), ChannelMonitorV2Config{Version: 2, RefreshIntervalSeconds: 60, CandyHistoryLimit: 15}, 2, 9)
 	require.NoError(t, err)
 	require.Equal(t, []int64{9, 3}, updated.GroupOrder)
 
-	updated, err = NewChannelMonitorV2Service(repo).UpdateConfig(context.Background(), ChannelMonitorV2Config{Version: 3, RefreshIntervalSeconds: 60, CandyHistoryLimit: 15, CardTimelineMode: ChannelMonitorV2CardTimelineWindows, GroupOrder: []int64{}}, 3, 9)
+	updated, err = NewChannelMonitorV2Service(repo).UpdateConfig(context.Background(), ChannelMonitorV2Config{Version: 3, RefreshIntervalSeconds: 60, CandyHistoryLimit: 15, GroupOrder: []int64{}}, 3, 9)
 	require.NoError(t, err)
 	require.Empty(t, updated.GroupOrder)
 }
 
-func TestChannelMonitorV2UpdateKeepsOmittedCardTimelineMode(t *testing.T) {
-	repo := &channelMonitorV2RepoStub{config: ChannelMonitorV2Config{Version: 2, RefreshIntervalSeconds: 60, CardTimelineMode: ChannelMonitorV2CardTimelineSamples}}
+func TestChannelMonitorV2UpdateAlwaysSavesSampleCardTimeline(t *testing.T) {
+	// A stored "windows" row and a cached admin page that still submits it both end as samples.
+	repo := &channelMonitorV2RepoStub{config: ChannelMonitorV2Config{Version: 2, RefreshIntervalSeconds: 60, CardTimelineMode: "windows"}}
 	updated, err := NewChannelMonitorV2Service(repo).UpdateConfig(context.Background(), ChannelMonitorV2Config{Version: 2, RefreshIntervalSeconds: 60, CandyHistoryLimit: 15}, 2, 9)
 	require.NoError(t, err)
 	require.Equal(t, ChannelMonitorV2CardTimelineSamples, updated.CardTimelineMode)
 
-	updated, err = NewChannelMonitorV2Service(repo).UpdateConfig(context.Background(), ChannelMonitorV2Config{Version: 3, RefreshIntervalSeconds: 60, CandyHistoryLimit: 15, CardTimelineMode: ChannelMonitorV2CardTimelineWindows}, 3, 9)
+	updated, err = NewChannelMonitorV2Service(repo).UpdateConfig(context.Background(), ChannelMonitorV2Config{Version: 3, RefreshIntervalSeconds: 60, CandyHistoryLimit: 15, CardTimelineMode: "windows"}, 3, 9)
 	require.NoError(t, err)
-	require.Equal(t, ChannelMonitorV2CardTimelineWindows, updated.CardTimelineMode)
+	require.Equal(t, ChannelMonitorV2CardTimelineSamples, updated.CardTimelineMode)
 }
 
 func TestChannelMonitorV2ErrorTaxonomyPriority(t *testing.T) {
@@ -637,7 +685,7 @@ func TestApplyIgnoredErrorsAdjustsRateOnly(t *testing.T) {
 	require.Equal(t, int64(100), m.RequestCount)
 }
 
-func TestErrorsForViewerStripsDetailsAndCountsForNonAdmin(t *testing.T) {
+func TestErrorsForViewerHidesAllErrorInformationForNonAdmin(t *testing.T) {
 	fixture := &ChannelMonitorV2List[ChannelMonitorV2ErrorRow]{
 		Items: []ChannelMonitorV2ErrorRow{{
 			Category: "timeout",
@@ -660,10 +708,9 @@ func TestErrorsForViewerStripsDetailsAndCountsForNonAdmin(t *testing.T) {
 	userList, err := svc.ErrorsForViewer(context.Background(), ChannelMonitorV2Filter{}, false)
 	require.NoError(t, err)
 	require.False(t, repo.admin)
-	require.Len(t, userList.Items, 1)
-	require.Zero(t, userList.Items[0].Count)
-	require.Empty(t, userList.Items[0].Details)
-	require.InDelta(t, 0.4, userList.Items[0].Rate, 0.0001)
+	require.NotNil(t, userList.Items)
+	require.Empty(t, userList.Items)
+	require.Zero(t, repo.errorCalls)
 
 	adminList, err := svc.ErrorsForViewer(context.Background(), ChannelMonitorV2Filter{}, true)
 	require.NoError(t, err)
@@ -671,6 +718,11 @@ func TestErrorsForViewerStripsDetailsAndCountsForNonAdmin(t *testing.T) {
 	require.Equal(t, int64(42), adminList.Items[0].Count)
 	require.Len(t, adminList.Items[0].Details, 1)
 	require.Contains(t, adminList.Items[0].Details[0].Message, "gateway timeout")
+	require.Equal(t, 1, repo.errorCalls)
+	publicList, err := svc.Errors(context.Background(), ChannelMonitorV2Filter{})
+	require.NoError(t, err)
+	require.Empty(t, publicList.Items)
+	require.Equal(t, 1, repo.errorCalls)
 }
 
 func TestSnapshotRedactsPublicConfigPolicyFields(t *testing.T) {
@@ -715,7 +767,7 @@ func TestRedactChannelMonitorV2MetricKeepsRates(t *testing.T) {
 		SuccessRequests: 90, ErrorRequests: 10, RequestCount: 100,
 		InputTokens: 1, OutputTokens: 2, CacheCreationTokens: 3, CacheReadTokens: 4,
 		TokenCount: 10, RPM: 12, TPM: 34, ErrorRate: 0.1, SuccessRate: 0.9,
-		CacheRate: 0.5, CacheRateNumerator: 4, CacheRateDenominator: 8,
+		CacheRate: 0.5, HasCacheSamples: true, CacheRateNumerator: 4, CacheRateDenominator: 8,
 		TTFT: ChannelMonitorV2Latency{SampleCount: 50, P50Ms: &p50},
 	}
 	upstream := int64(3)
@@ -725,6 +777,7 @@ func TestRedactChannelMonitorV2MetricKeepsRates(t *testing.T) {
 	require.Zero(t, m.ErrorRequests)
 	require.Zero(t, m.TokenCount)
 	require.Zero(t, m.CacheRateNumerator)
+	require.True(t, m.HasCacheSamples)
 	require.Zero(t, m.TTFT.SampleCount)
 	require.Nil(t, m.UpstreamAffectedRequests)
 	require.InDelta(t, 0.1, m.ErrorRate, 0.0001)

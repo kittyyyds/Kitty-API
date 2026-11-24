@@ -13,10 +13,15 @@ const commonHashes = {
 }
 
 describe('site identity and original QR assets', () => {
-  it('keeps B as the default and rejects misspelled deployment selectors', () => {
-    expect(resolveKittySite().id).toBe('kittyyyds')
-    expect(resolveKittySite('').id).toBe('kittyyyds')
+  it('keeps Custom as the default and rejects misspelled deployment selectors', () => {
+    expect(resolveKittySite().id).toBe('custom')
+    expect(resolveKittySite('').id).toBe('custom')
     expect(() => resolveKittySite('kitty-api')).toThrow('Invalid VITE_KITTY_SITE')
+  })
+
+  it('keeps Custom login and API links on its own origin', () => {
+    expect(resolveKittySite('custom', 'https://custom.kittyapi.xyz').primaryUrl).toBe('https://custom.kittyapi.xyz')
+    expect(resolveKittySite('custom', 'https://preview.example').domesticUrl).toBe('https://preview.example')
   })
 
   it.each([

@@ -20,8 +20,7 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string, params?: Record<string, unknown>) => params && key.includes('codexTurnTicket')
-        ? `${key}:${JSON.stringify(params)}` : key
+      t: (key: string) => key
     })
   }
 })
@@ -131,34 +130,23 @@ describe('AccountUsageCell', () => {
     })
   })
 
-  it.each(['oauth', 'setup-token'] as const)('does not display retired Codex ticket status for OpenAI %s accounts', async (type) => {
-    getUsage.mockResolvedValue({})
+  it('keeps cached Claude quota visible while a replacement batch is loading', async () => {
+    const requestBatchedUsage = vi.fn()
     const wrapper = mount(AccountUsageCell, {
-      props: {
-        account: makeAccount({
-          id: type === 'oauth' ? 9701 : 9702,
-          platform: 'openai',
-          type,
-          codex_turn_tickets: [
-            { model: 'gpt-6-astra', ready: true, remaining_seconds: 2520, blocked: false },
-            { model: 'gpt-5.6-sol', ready: false, remaining_seconds: 0, blocked: true },
-            { model: 'custom-model', ready: false, remaining_seconds: 0, blocked: false },
-          ],
-        }),
-      },
-      global: { stubs: {
-        OpenAIQuotaResetCell: { template: '<div data-test="quota-reset" />' },
-        UsageProgressBar: true,
-        AccountQuotaInfo: true,
-      } },
+      props: { account: makeAccount({ id: 98101, platform: 'anthropic', type: 'oauth' }), requestBatchedUsage,
+        batchedUsage: { five_hour: { utilization: 21 } }, batchedUsageLoading: false },
+      global: { stubs: { UsageProgressBar: { props: ['utilization'], template: '<div data-test="quota">{{ utilization }}</div>' }, AccountQuotaInfo: true } }
     })
     await flushPromises()
-    expect(wrapper.text()).not.toContain('42m00s')
-    expect(wrapper.text()).not.toContain('codexTurnTicket')
-    if (type === 'setup-token') {
-      expect(getUsage).not.toHaveBeenCalled()
-      expect(wrapper.find('[data-test="quota-reset"]').exists()).toBe(false)
-    }
+    const quota = wrapper.get('[data-test="quota"]').element
+    await wrapper.setProps({ batchedUsageLoading: true })
+    expect(wrapper.get('[data-test="quota"]').text()).toBe('21')
+    expect(wrapper.get('[data-test="quota"]').element).toBe(quota)
+    expect(wrapper.find('.animate-pulse').exists()).toBe(false)
+    expect(wrapper.attributes('aria-busy')).toBe('true')
+    await wrapper.setProps({ batchedUsage: { five_hour: { utilization: 44 } }, batchedUsageLoading: false })
+    expect(wrapper.get('[data-test="quota"]').text()).toBe('44')
+    expect(wrapper.get('[data-test="quota"]').element).toBe(quota)
     wrapper.unmount()
   })
 
@@ -482,6 +470,107 @@ describe('AccountUsageCell', () => {
     expect(wrapper.text()).toContain('admin.accounts.usageWindow.gemini3Image|70|2026-03-01T09:00:00Z')
   })
 
+  it('Antigravity shows the 5-hour and weekly window of each quota group when the summary is present', async () => {
+    getUsage.mockResolvedValue({
+      antigravity_quota: {
+        'gemini-3-flash': { utilization: 99, reset_time: '2026-11-11T15:52:48Z' }
+      },
+      antigravity_quota_groups: [
+        {
+          key: 'gemini',
+          name: 'Gemini Models',
+          windows: [
+            { window: '5h', utilization: 60, resets_at: '2026-11-04T20:52:48Z' },
+            { window: 'weekly', utilization: 25, resets_at: '2026-11-11T15:52:48Z' }
+          ]
+        },
+        {
+          key: '3p',
+          name: 'Claude and GPT models',
+          windows: [
+            { window: '5h', utilization: 0, resets_at: null },
+            { window: 'weekly', utilization: 10, resets_at: '2026-11-11T15:52:48Z' }
+          ]
+        },
+        {
+          key: 'gemini-argon-wtu',
+          name: 'Gemini 4 Argon',
+          windows: [{ window: 'weekly', utilization: 20, resets_at: '2026-11-11T17:11:15Z' }]
+        }
+      ]
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 1003, platform: 'antigravity', type: 'oauth', extra: {} })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    const bars = wrapper.findAll('.usage-bar').map((bar) => bar.text())
+    expect(bars).toEqual([
+      'admin.accounts.usageWindow.antigravityGemini5h|60|2026-11-04T20:52:48Z',
+      'admin.accounts.usageWindow.antigravityGeminiWeekly|25|2026-11-11T15:52:48Z',
+      'admin.accounts.usageWindow.antigravityOther5h|0|',
+      'admin.accounts.usageWindow.antigravityOtherWeekly|10|2026-11-11T15:52:48Z',
+      // Pro plans' separate Argon quota is its own row, not a second Claude/GPT week.
+      'admin.accounts.usageWindow.antigravityArgonWeekly|20|2026-11-11T17:11:15Z'
+    ])
+    // The per-model figure (one tighter window per model) is not shown next to the real windows.
+    expect(wrapper.text()).not.toContain('gemini3Flash')
+  })
+
+  it('Antigravity query button refreshes past the server cache', async () => {
+    const first = {
+      antigravity_quota_groups: [
+        { key: '3p', name: 'Claude and GPT models', windows: [{ window: 'weekly', utilization: 100, resets_at: '2026-11-12T03:39:37Z' }] }
+      ]
+    }
+    const upgraded = {
+      antigravity_quota_groups: [
+        { key: '3p', name: 'Claude and GPT models', windows: [{ window: 'weekly', utilization: 0, resets_at: '2026-11-14T21:22:49Z' }] }
+      ]
+    }
+    getUsage.mockResolvedValueOnce(first).mockResolvedValueOnce(upgraded)
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({ id: 1006, platform: 'antigravity', type: 'oauth', extra: {} })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+    await flushPromises()
+    expect(wrapper.find('.usage-bar').text()).toContain('|100|')
+
+    const button = wrapper.find('[data-testid="antigravity-active-query"]')
+    expect(button.exists()).toBe(true)
+    expect(button.text()).toContain('admin.accounts.usageWindow.activeQuery')
+    await button.trigger('click')
+    await flushPromises()
+
+    // An active query that bypasses the cache (an upgrade or reset shows at once).
+    expect(getUsage).toHaveBeenLastCalledWith(1006, 'active', true)
+    expect(wrapper.find('.usage-bar').text()).toContain('|0|2026-11-14T21:22:49Z')
+  })
+
   it('Antigravity 会显示 AI Credits 余额信息', async () => {
     getUsage.mockResolvedValue({
       ai_credits: [
@@ -563,8 +652,8 @@ describe('AccountUsageCell', () => {
       global: {
         stubs: {
           UsageProgressBar: {
-            props: ['label', 'utilization', 'resetsAt', 'windowStats', 'color', 'estimatedTotalCost'],
-            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ windowStats?.tokens }}|estimate={{ estimatedTotalCost?.toFixed(2) ?? "none" }}</div>'
+            props: ['label', 'utilization', 'resetsAt', 'windowStats', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ windowStats?.tokens }}</div>'
           },
           AccountQuotaInfo: true
         }
@@ -575,7 +664,7 @@ describe('AccountUsageCell', () => {
 
     expect(getUsage).toHaveBeenCalledWith(2000)
     expect(wrapper.text()).toContain('5h|15|300')
-    expect(wrapper.text()).toContain('7d|77|300|estimate=0.04')
+    expect(wrapper.text()).toContain('7d|77|300')
   })
 
   it('OpenAI OAuth 有 codex 快照时仍然使用 /usage API 数据渲染', async () => {
@@ -652,7 +741,7 @@ describe('AccountUsageCell', () => {
         utilization: 40,
         resets_at: null,
         remaining_seconds: 0,
-        window_stats: { requests: 2, tokens: 200, cost: 12, standard_cost: 24, user_cost: 6 }
+        window_stats: { requests: 2, tokens: 200, cost: 12 }
       }
     })
 
@@ -675,20 +764,6 @@ describe('AccountUsageCell', () => {
 
     expect(wrapper.text()).toContain('5h|none')
     expect(wrapper.text()).toContain('7d|30')
-
-    getUsage.mockResolvedValue({
-      seven_day: {
-        utilization: 60,
-        resets_at: null,
-        remaining_seconds: 0,
-        window_stats: { requests: 3, tokens: 300, cost: 24 }
-      }
-    })
-    await wrapper.setProps({ manualRefreshToken: 1 })
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('7d|40')
-    expect(wrapper.text()).not.toContain('7d|30')
   })
 
   it.each([
@@ -1033,7 +1108,7 @@ describe('AccountUsageCell', () => {
   expect(wrapper.text()).toContain('7d|100|106540000')
   })
 
-  it('Key 账号会展示 today stats 徽章并带 A/U 提示', async () => {
+  it('Key 账号的用量窗口不重复展示今日和总计统计', async () => {
 		const wrapper = mount(AccountUsageCell, {
 		  props: {
 		    account: makeAccount({
@@ -1059,14 +1134,11 @@ describe('AccountUsageCell', () => {
 
 		await flushPromises()
 
-		expect(wrapper.text()).toContain('1.0M req')
-		expect(wrapper.text()).toContain('1.0B')
-		expect(wrapper.text()).toContain('A $12.35')
-		expect(wrapper.text()).toContain('U $6.79')
+		expect(wrapper.text().trim()).toBe('-')
 
 		const badges = wrapper.findAll('span[title]')
-		expect(badges.some(node => node.attributes('title') === 'usage.accountBilled')).toBe(true)
-		expect(badges.some(node => node.attributes('title') === 'usage.userBilled')).toBe(true)
+		expect(badges.some(node => node.attributes('title') === 'usage.accountBilled')).toBe(false)
+		expect(badges.some(node => node.attributes('title') === 'usage.userBilled')).toBe(false)
   })
 
   it('Grok OAuth compact UI drops local chips and header quota bars', async () => {
@@ -1667,7 +1739,7 @@ describe('AccountUsageCell', () => {
     expect(prepaidOnly.text()).not.toContain('8.00/0')
   })
 
-  it('Key 账号在 today stats loading 时显示骨架屏', async () => {
+  it('Key 账号不在用量窗口重复显示本地统计的加载状态', async () => {
 		const wrapper = mount(AccountUsageCell, {
 		  props: {
 		    account: makeAccount({
@@ -1688,7 +1760,8 @@ describe('AccountUsageCell', () => {
 
 		await flushPromises()
 
-		expect(wrapper.findAll('.animate-pulse').length).toBeGreaterThan(0)
+		expect(wrapper.findAll('.animate-pulse')).toHaveLength(0)
+		expect(wrapper.text().trim()).toBe('-')
   })
 
   it('Key 账号在无 today stats 且无配额时显示兜底短横线', async () => {
@@ -1826,7 +1899,7 @@ describe('AccountUsageCell', () => {
     expect(getUsage).not.toHaveBeenCalled()
   })
 
-  it('Gemini 第三方上游 API Key 按普通 Key 账号展示今日统计与额度，不显示 Gemini 徽章', async () => {
+  it('Gemini 第三方上游 API Key 只展示额度，不重复显示本地统计或 Gemini 徽章', async () => {
     const wrapper = mount(AccountUsageCell, {
       props: {
         account: makeAccount({
@@ -1866,9 +1939,9 @@ describe('AccountUsageCell', () => {
     expect(text).not.toContain('free')
     expect(text).not.toContain('relay.example.com')
     expect(wrapper.find('account-quota-info-stub').exists()).toBe(false)
-    expect(text).toContain('123 req')
-    expect(text).toContain('A $1.79')
-    expect(text).toContain('U $0.00')
+    expect(text).not.toContain('123 req')
+    expect(text).not.toContain('A $1.79')
+    expect(text).not.toContain('U $0.00')
     const bars = wrapper.findAll('usage-progress-bar-stub')
     expect(bars.map((bar) => bar.attributes('label'))).toEqual(['1d'])
     expect(text).not.toContain('admin.accounts.gemini.quotaPolicy.title')
@@ -1912,7 +1985,7 @@ describe('AccountUsageCell', () => {
 
     const text = wrapper.text()
     expect(text).toContain('ai studio paid')
-    expect(wrapper.findComponent({ name: 'HelpTooltip' }).exists()).toBe(true)
+    expect(text).toContain('admin.accounts.gemini.quotaPolicy.title')
     expect(text).toContain('admin.accounts.gemini.quotaPolicy.simulatedNote')
     expect(getUsage).toHaveBeenCalledWith(4003)
   })

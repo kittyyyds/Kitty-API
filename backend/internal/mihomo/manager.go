@@ -1,4 +1,4 @@
-// Package mihomo manages private outbound proxies through the Mihomo kernel.
+// Package mihomo manages private, unprivileged proxies for account and BPS traffic.
 package mihomo
 
 import (
@@ -60,6 +60,8 @@ type Status struct {
 	Endpoint          string                   `json:"endpoint"`
 	Supported         bool                     `json:"supported"`
 	NodeStates        []NodeStatus             `json:"node_states"`
+	BPSWarmPool       BPSWarmStatus            `json:"bps_warm_pool"`
+	BPSIPWarmPool     BPSWarmStatus            `json:"bps_ip_warm_pool"`
 }
 
 type NodeStatus struct {
@@ -93,8 +95,18 @@ type saved struct {
 }
 
 type Manager struct {
-	astraGate            sync.RWMutex
-	astraLanes           chan int
+	bpsWarmMu     sync.Mutex
+	bpsWarmTarget int
+	bpsMu         sync.Mutex
+	bpsPorts      map[string]int
+	bpsSessions   map[string]*bpsSession
+	bpsHealth     map[string]*bpsNodeHealth
+	bpsDynamic    map[string]bool                     // configured dynamic outbound identities; protected by bpsMu
+	bpsProbe      func(context.Context, string) error // isolated tests only
+	bpsStaticMode bool                                // dedicated static (IP 管理) pool: no kernel, no listeners
+	bpsStatic     map[string]string                   // static node key -> upstream proxy URL; protected by bpsMu
+
+	kernelGate           sync.RWMutex
 	countryLookupURL     string // test-only override; administrators cannot change the lookup target
 	controllerURL        string // optional override for isolated controller tests
 	subscriptionProxyURL string // test-only override for subscription download proxy
@@ -130,7 +142,10 @@ func New(dir string) *Manager {
 }
 
 func (m *Manager) Status() Status {
-	return m.baseStatus()
+	s := m.baseStatus()
+	s.BPSWarmPool = m.BPSWarmStatus()
+	s.BPSIPWarmPool = bpsStaticManager.BPSWarmStatus()
+	return s
 }
 func (m *Manager) baseStatus() Status {
 	m.mu.Lock()
@@ -310,7 +325,7 @@ func (m *Manager) SubmitSourceManagement(action string, urls, dynamicProxies []s
 		defer cancel()
 		err := m.acquire(ctx)
 		if err == nil {
-			// A queued operation must use the latest manually disabled node state.
+			// A queued operation must see any node retired by the preceding lease.
 			m.mu.Lock()
 			next.Disabled = m.saved.Disabled
 			m.mu.Unlock()
@@ -363,10 +378,10 @@ func normalizeURLs(raw []string) ([]string, error) {
 }
 
 func (m *Manager) run(ctx context.Context, action string, next saved) error {
-	if err := waitAstraLock(ctx, m.astraGate.TryLock); err != nil {
+	if err := waitKernelLock(ctx, m.kernelGate.TryLock); err != nil {
 		return err
 	}
-	defer m.astraGate.Unlock()
+	defer m.kernelGate.Unlock()
 	if err := os.MkdirAll(m.dir, 0700); err != nil {
 		return errors.New("data directory is not writable")
 	}
@@ -481,7 +496,7 @@ func (m *Manager) run(ctx context.Context, action string, next saved) error {
 	running := m.state.Running
 	m.mu.Unlock()
 	if running {
-		if err = m.reloadAstraLocked(ctx, candidate, old.Secret); err != nil {
+		if err = m.reloadKernelLocked(ctx, candidate, old.Secret); err != nil {
 			return errors.New("configuration reload failed; previous configuration retained")
 		}
 	} else if err = m.start(ctx, candidatePath, next.Secret); err != nil {
@@ -491,7 +506,7 @@ func (m *Manager) run(ctx context.Context, action string, next saved) error {
 	if err = atomicWrite(filepath.Join(m.dir, "settings.json"), b, 0600); err != nil {
 		if running {
 			previous, _ := m.config(old)
-			_ = m.reloadAstraLocked(ctx, previous, old.Secret)
+			_ = m.reloadKernelLocked(ctx, previous, old.Secret)
 		} else {
 			m.stop()
 		}
@@ -714,7 +729,7 @@ func (m *Manager) config(s saved) ([]byte, error) {
 	}
 	group := map[string]any{"name": "CODEX-ROTATE", "type": "load-balance", "strategy": "round-robin", "proxies": names, "url": "https://www.gstatic.com/generate_204", "interval": 300}
 	groups := []any{group}
-	listeners := make([]any, 0, len(s.StaticBindings)+AstraLanes)
+	listeners := make([]any, 0)
 	staticNames := make([]string, 0, len(s.StaticBindings))
 	for name := range s.StaticBindings {
 		staticNames = append(staticNames, name)
@@ -741,14 +756,11 @@ func (m *Manager) config(s saved) ([]byte, error) {
 		}
 		listeners = append(listeners, map[string]any{"name": "STATIC-" + name, "type": "mixed", "listen": "127.0.0.1", "port": binding.Port, "proxy": target})
 	}
-	astraNames := []string{"REJECT"}
-	for _, node := range astraNodes(s) {
-		astraNames = append(astraNames, node.ID)
+	bpsListeners, err := m.bpsListeners(s)
+	if err != nil {
+		return nil, err
 	}
-	for lane := 0; lane < AstraLanes; lane++ {
-		groups = append(groups, map[string]any{"name": astraGroup(lane), "type": "select", "proxies": astraNames})
-		listeners = append(listeners, map[string]any{"name": astraGroup(lane), "type": "mixed", "listen": "127.0.0.1", "port": astraPort + lane, "proxy": astraGroup(lane)})
-	}
+	listeners = append(listeners, bpsListeners...)
 	return json.Marshal(map[string]any{"mixed-port": 3101, "allow-lan": false, "bind-address": "127.0.0.1", "mode": "rule", "log-level": "silent", "external-controller": "127.0.0.1:9098", "secret": s.Secret, "proxies": s.Nodes, "proxy-groups": groups, "listeners": listeners, "rules": []string{"MATCH,CODEX-ROTATE"}})
 }
 
@@ -781,22 +793,24 @@ func (m *Manager) control(ctx context.Context, method, path, secret string, payl
 	return nil
 }
 func (m *Manager) reload(ctx context.Context, b []byte, secret string) error {
-	if err := waitAstraLock(ctx, m.astraGate.TryLock); err != nil {
+	if err := waitKernelLock(ctx, m.kernelGate.TryLock); err != nil {
 		return err
 	}
-	defer m.astraGate.Unlock()
-	return m.reloadAstraLocked(ctx, b, secret)
+	defer m.kernelGate.Unlock()
+	return m.reloadKernelLocked(ctx, b, secret)
 }
-func (m *Manager) reloadAstraLocked(ctx context.Context, b []byte, secret string) error {
+func (m *Manager) reloadKernelLocked(ctx context.Context, b []byte, secret string) error {
 	payload, _ := json.Marshal(map[string]string{"payload": string(b)})
 	return m.control(ctx, http.MethodPut, "/configs?force=true", secret, payload)
 }
 
 func (m *Manager) start(ctx context.Context, path, secret string) error {
 	ports := []string{"127.0.0.1:3101", "127.0.0.1:9098"}
-	for lane := 0; lane < AstraLanes; lane++ {
-		ports = append(ports, fmt.Sprintf("127.0.0.1:%d", astraPort+lane))
+	m.bpsMu.Lock()
+	for _, port := range m.bpsPorts {
+		ports = append(ports, fmt.Sprintf("127.0.0.1:%d", port))
 	}
+	m.bpsMu.Unlock()
 	for _, port := range ports {
 		ln, err := net.Listen("tcp", port)
 		if err != nil {

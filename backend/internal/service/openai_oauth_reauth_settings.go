@@ -11,8 +11,13 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
-// An empty engine preserves pre-upgrade account choices until an administrator
-// explicitly selects a global engine. Concurrency alone must not reroute secrets.
+// ExcelOAuthSettings contains only the settings operations used by the worker.
+type ExcelOAuthSettings interface {
+	GetValue(context.Context, string) (string, error)
+	Set(context.Context, string, string) error
+}
+
+// An unset engine uses the local worker. Concurrency cannot reroute credentials.
 func (s *OpenAIOAuthReauthService) GetRuntimeSettings(ctx context.Context) (OpenAIOAuthReauthRuntimeSettings, error) {
 	cfg := OpenAIOAuthReauthRuntimeSettings{WorkerConcurrency: 3}
 	if n, err := strconv.Atoi(os.Getenv("OPENAI_REAUTH_CONCURRENCY")); err == nil && n >= 1 && n <= 16 {
@@ -46,7 +51,7 @@ func (s *OpenAIOAuthReauthService) GetRuntimeSettings(ctx context.Context) (Open
 }
 
 func validateReauthRuntimeSettings(cfg OpenAIOAuthReauthRuntimeSettings) error {
-	if cfg.Engine != "" && cfg.Engine != OpenAIOAuthReauthEngineLocal && cfg.Engine != OpenAIOAuthReauthEngineSessionStudio {
+	if cfg.Engine != "" && cfg.Engine != OpenAIOAuthReauthEngineLocal {
 		return infraerrors.BadRequest("OPENAI_REAUTH_ENGINE_INVALID", "Invalid re-login engine")
 	}
 	if cfg.WorkerConcurrency < 1 || cfg.WorkerConcurrency > 16 {
@@ -61,11 +66,6 @@ func (s *OpenAIOAuthReauthService) SaveRuntimeSettings(ctx context.Context, cfg 
 	}
 	if s == nil || s.settings == nil {
 		return cfg, infraerrors.ServiceUnavailable("OPENAI_REAUTH_SETTINGS_UNAVAILABLE", "Re-login settings are unavailable")
-	}
-	if cfg.Engine == OpenAIOAuthReauthEngineSessionStudio {
-		if _, _, err := s.sessionStudioConfig(ctx); err != nil {
-			return cfg, err
-		}
 	}
 	previous, err := s.GetRuntimeSettings(ctx)
 	if err != nil {

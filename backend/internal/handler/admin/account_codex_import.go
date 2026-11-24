@@ -22,24 +22,23 @@ import (
 const codexImportClockSkewSeconds int64 = 120
 
 type CodexSessionImportRequest struct {
-	ImportTicket            string         `json:"import_ticket"`
-	InitializeOpenAITwoFA   bool           `json:"initialize_openai_two_fa"`
 	Content                 string         `json:"content"`
 	Contents                []string       `json:"contents"`
 	Name                    string         `json:"name"`
 	Notes                   *string        `json:"notes"`
 	GroupIDs                []int64        `json:"group_ids"`
+	ProxyIDs                []int64        `json:"proxy_ids"`
 	ProxyID                 *int64         `json:"proxy_id"`
 	Concurrency             *int           `json:"concurrency"`
 	Priority                *int           `json:"priority"`
 	RateMultiplier          *float64       `json:"rate_multiplier"`
+	GroupRateMultiplier     *float64       `json:"group_rate_multiplier"`
 	LoadFactor              *int           `json:"load_factor"`
 	ExpiresAt               *int64         `json:"expires_at"`
 	AutoPauseOnExpired      *bool          `json:"auto_pause_on_expired"`
 	CredentialExtras        map[string]any `json:"credential_extras"`
 	Extra                   map[string]any `json:"extra"`
 	UpdateExisting          *bool          `json:"update_existing"`
-	SkipExisting            bool           `json:"skip_existing"`
 	SkipDefaultGroupBind    *bool          `json:"skip_default_group_bind"`
 	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"`
 }
@@ -79,7 +78,6 @@ type codexImportAccount struct {
 	AccessToken     string
 	RefreshToken    string
 	IDToken         string
-	ClientID        string
 	Email           string
 	AccountID       string
 	UserID          string
@@ -171,9 +169,6 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 	if err != nil {
 		return result, err
 	}
-	if req.ImportTicket != "" && (len(entries) != 1 || !req.SkipExisting) {
-		return result, errors.New("2FA 导入必须逐账号保存，已有账号保持原设置")
-	}
 	index := buildCodexAccountIndex(existingAccounts)
 
 	updateExisting := true
@@ -261,18 +256,6 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 		markCodexIdentitySeen(seenIdentity, item.IdentityKeys, entry.Index, item.UserID)
 
 		existing, matchedKey := index.Find(item.IdentityKeys, item.UserID)
-		if existing == nil && item.ClientID == "" && item.RefreshToken == "" {
-			// Reimporting the exact same AT without metadata may retain its known
-			// client/RT. Never use this fallback for a new token or explicit client.
-			existing, matchedKey = index.Find([]string{"access-only:" + codexTokenFingerprint(item.AccessToken)}, item.UserID)
-		}
-		if existing != nil && req.SkipExisting {
-			result.Skipped++
-			result.Items = append(result.Items, CodexSessionImportItem{
-				Index: entry.Index, Name: accountName, Action: "skipped", AccountID: existing.ID,
-			})
-			continue
-		}
 		if existing != nil && updateExisting {
 			if strings.HasPrefix(matchedKey, "account:") && item.UserID != "" &&
 				codexCredentialString(existing.Credentials, "chatgpt_user_id") == "" {
@@ -296,14 +279,18 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 			mergedCredentials := mergeCodexImportCredentials(existing.Credentials, credentials, item)
 			mergedExtra := mergeCodexImportMap(existing.Extra, extra)
 			updateInput := &service.UpdateAccountInput{
-				Credentials:        mergedCredentials,
-				Extra:              mergedExtra,
-				Concurrency:        req.Concurrency,
-				Priority:           req.Priority,
-				RateMultiplier:     req.RateMultiplier,
-				LoadFactor:         req.LoadFactor,
-				ExpiresAt:          effectiveExpiresAt,
-				AutoPauseOnExpired: autoPauseOnExpired,
+				Credentials:         mergedCredentials,
+				Extra:               mergedExtra,
+				Concurrency:         req.Concurrency,
+				Priority:            req.Priority,
+				RateMultiplier:      req.RateMultiplier,
+				GroupRateMultiplier: req.GroupRateMultiplier,
+				LoadFactor:          req.LoadFactor,
+				ExpiresAt:           effectiveExpiresAt,
+				AutoPauseOnExpired:  autoPauseOnExpired,
+			}
+			if req.ProxyIDs != nil {
+				updateInput.ProxyIDs = &req.ProxyIDs
 			}
 			if req.ProxyID != nil {
 				updateInput.ProxyID = req.ProxyID
@@ -348,8 +335,6 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 		}
 
 		account, createErr := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
-			ImportTicket:          req.ImportTicket,
-			InitialOpenAITwoFA:    req.InitializeOpenAITwoFA && !item.IsAgentIdentity,
 			Name:                  accountName,
 			Notes:                 req.Notes,
 			Platform:              service.PlatformOpenAI,
@@ -357,9 +342,11 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 			Credentials:           credentials,
 			Extra:                 extra,
 			ProxyID:               req.ProxyID,
+			ProxyIDs:              req.ProxyIDs,
 			Concurrency:           concurrency,
 			Priority:              priority,
 			RateMultiplier:        req.RateMultiplier,
+			GroupRateMultiplier:   req.GroupRateMultiplier,
 			LoadFactor:            req.LoadFactor,
 			GroupIDs:              req.GroupIDs,
 			ExpiresAt:             effectiveExpiresAt,
@@ -559,44 +546,26 @@ func normalizeCodexImportEntry(entry codexImportEntry) (*codexImportAccount, err
 			return item, nil
 		}
 		item.AccessToken = firstCodexString(raw,
-			[]string{"session_info", "access_token"},
 			[]string{"tokens", "access_token"},
 			[]string{"tokens", "accessToken"},
-			[]string{"credentials", "access_token"},
 			[]string{"access_token"},
 			[]string{"accessToken"},
 			[]string{"token"},
 		)
 		item.RefreshToken = firstCodexString(raw,
-			[]string{"session_info", "refresh_token"},
 			[]string{"tokens", "refresh_token"},
 			[]string{"tokens", "refreshToken"},
-			[]string{"credentials", "refresh_token"},
 			[]string{"refresh_token"},
 			[]string{"refreshToken"},
 		)
 		item.IDToken = firstCodexString(raw,
-			[]string{"session_info", "id_token"},
 			[]string{"tokens", "id_token"},
 			[]string{"tokens", "idToken"},
-			[]string{"credentials", "id_token"},
 			[]string{"id_token"},
 			[]string{"idToken"},
 		)
-		item.ClientID = firstCodexString(raw,
-			[]string{"session_info", "client_id"},
-			[]string{"tokens", "client_id"},
-			[]string{"credentials", "client_id"},
-			[]string{"client_id"},
-			[]string{"clientId"},
-		)
 		item.Email = firstCodexString(raw, []string{"email"}, []string{"user", "email"})
 		item.AccountID = firstCodexString(raw,
-			[]string{"user_info", "chatgpt_account_id"},
-			[]string{"session_info", "chatgpt_account_id"},
-			[]string{"tokens", "chatgpt_account_id"},
-			[]string{"tokens", "account_id"},
-			[]string{"credentials", "chatgpt_account_id"},
 			[]string{"chatgpt_account_id"},
 			[]string{"chatgptAccountId"},
 			[]string{"account_id"},
@@ -606,7 +575,6 @@ func normalizeCodexImportEntry(entry codexImportEntry) (*codexImportAccount, err
 			[]string{"account", "chatgpt_account_id"},
 		)
 		item.UserID = firstCodexString(raw,
-			[]string{"credentials", "chatgpt_user_id"},
 			[]string{"chatgpt_user_id"},
 			[]string{"chatgptUserId"},
 			[]string{"user_id"},
@@ -638,10 +606,8 @@ func normalizeCodexImportEntry(entry codexImportEntry) (*codexImportAccount, err
 			item.Extra["session_expires_at"] = sessionExpiresAt.Format(time.RFC3339)
 		}
 		if tokenExpiresAt, ok := firstCodexTime(raw,
-			[]string{"session_info", "expires_at"},
 			[]string{"tokens", "expires_at"},
 			[]string{"tokens", "expiresAt"},
-			[]string{"credentials", "expires_at"},
 			[]string{"expires_at"},
 			[]string{"expiresAt"},
 		); ok {
@@ -671,14 +637,6 @@ func normalizeCodexImportEntry(entry codexImportEntry) (*codexImportAccount, err
 		item.Credentials["refresh_token"] = item.RefreshToken
 		item.Credentials["client_id"] = openai.ClientID
 	}
-	// The refresh token belongs to the issuing OAuth client (for example Excel).
-	// Keep the legacy Codex default only when no client identity was supplied.
-	if item.ClientID != "" {
-		item.Credentials["client_id"] = item.ClientID
-	}
-	if item.Credentials["client_id"] == openai.ExcelClientID {
-		return nil, errors.New("legacy Excel OAuth credentials are no longer supported; import a standard Codex OAuth account")
-	}
 	if item.IDToken != "" {
 		item.Credentials["id_token"] = item.IDToken
 		_ = enrichCodexImportAccountFromJWT(item, item.IDToken, false, now)
@@ -702,7 +660,6 @@ func normalizeCodexImportEntry(entry codexImportEntry) (*codexImportAccount, err
 	fingerprint := codexTokenFingerprint(item.AccessToken)
 	item.Extra["access_token_sha256"] = fingerprint
 	item.IdentityKeys = buildCodexImportIdentityKeys(item.AccountID, item.UserID, item.Email, item.AccessToken, item.RefreshToken)
-	item.IdentityKeys = scopeCodexOAuthIdentityKeys(item.IdentityKeys, item.ClientID, item.AccountID)
 	item.Name = buildCodexImportAccountName(item, entry.Index)
 
 	return item, nil
@@ -985,24 +942,6 @@ func buildCodexStoredIdentityKeys(accountID, userID, email, accessToken string) 
 	return keys
 }
 
-// Non-Codex sessions must not overwrite the same user's Codex account, or a
-// session belonging to a different workspace. Omitted/default client IDs retain
-// the existing Codex matching behavior. Keep key kinds for member conflict checks.
-func scopeCodexOAuthIdentityKeys(keys []string, clientID, accountID string) []string {
-	clientID = strings.TrimSpace(clientID)
-	if clientID == "" || clientID == openai.ClientID {
-		return keys
-	}
-	scope, _ := json.Marshal([]string{clientID, strings.TrimSpace(accountID)})
-	prefix := codexTokenFingerprint(string(scope)) + ":"
-	scoped := make([]string, 0, len(keys))
-	for _, key := range keys {
-		kind, identity, _ := strings.Cut(key, ":")
-		scoped = append(scoped, kind+":"+prefix+identity)
-	}
-	return scoped
-}
-
 func codexCompositeIdentityKey(accountID, userID string) string {
 	return fmt.Sprintf("%d:%s%d:%s", len(accountID), accountID, len(userID), userID)
 }
@@ -1034,12 +973,6 @@ func (i *codexAccountIndex) Add(account service.Account) {
 		codexCredentialString(account.Credentials, "email"),
 		codexCredentialString(account.Credentials, "access_token"),
 	)
-	keys = scopeCodexOAuthIdentityKeys(keys,
-		codexCredentialString(account.Credentials, "client_id"),
-		codexCredentialString(account.Credentials, "chatgpt_account_id"))
-	if token := codexCredentialString(account.Credentials, "access_token"); token != "" {
-		keys = append(keys, "access-only:"+codexTokenFingerprint(token))
-	}
 	orderedKeys := make([]string, 0, len(keys)+1)
 	accountKeys := make(map[string]struct{}, len(keys)+1)
 	for _, key := range keys {
@@ -1179,9 +1112,7 @@ func mergeCodexImportCredentials(existing, incoming map[string]any, item *codexI
 	if strings.TrimSpace(item.RefreshToken) == "" {
 		if codexCredentialString(existing, "refresh_token") == "" {
 			delete(out, "refresh_token")
-			if item.ClientID == "" {
-				delete(out, "client_id")
-			}
+			delete(out, "client_id")
 		} else {
 			out["refresh_token"] = existing["refresh_token"]
 			if clientID, ok := existing["client_id"]; ok {

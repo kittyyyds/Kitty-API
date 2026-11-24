@@ -41,10 +41,6 @@ func (Proxy) Fields() []ent.Field {
 			MaxLen(255).
 			NotEmpty(),
 		field.Int("port"),
-		field.String("mihomo_node_id").
-			MaxLen(128).
-			Optional().Nillable().
-			Comment("Managed Mihomo node identity for a dedicated static proxy listener."),
 		field.String("username").
 			MaxLen(100).
 			Optional().
@@ -56,6 +52,10 @@ func (Proxy) Fields() []ent.Field {
 		field.String("status").
 			MaxLen(20).
 			Default("active"),
+		field.String("mihomo_node_id").
+			MaxLen(128).
+			Optional().Nillable().
+			Comment("Managed Mihomo node identity; ordinary proxies leave this unset."),
 		field.Time("expires_at").
 			Optional().Nillable().
 			Comment("Proxy expiration time (NULL means never expires)."),
@@ -74,6 +74,7 @@ func (Proxy) Fields() []ent.Field {
 // Edges 定义代理实体的关联关系。
 func (Proxy) Edges() []ent.Edge {
 	return []ent.Edge{
+		edge.From("pool_accounts", Account.Type).Ref("proxies"),
 		// accounts: 使用此代理的账户（反向边）
 		edge.From("accounts", Account.Type).
 			Ref("proxy"),
@@ -93,8 +94,5 @@ func (Proxy) Indexes() []ent.Index {
 		index.Fields("deleted_at"),
 		index.Fields("expires_at"),
 		index.Fields("backup_proxy_id"),
-		index.Fields("mihomo_node_id").Unique().
-			StorageKey("idx_proxies_mihomo_node_id_active").
-			Annotations(entsql.IndexWhere("mihomo_node_id IS NOT NULL AND deleted_at IS NULL")),
 	}
 }

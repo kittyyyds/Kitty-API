@@ -5,10 +5,10 @@ package service
 import (
 	"context"
 	"io"
-	"mime"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+ "strconv"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -31,7 +31,12 @@ func (s *grokMediaContentUpstreamStub) Do(req *http.Request, _ string, _ int64, 
 	if len(s.responses) > 0 {
 		resp := s.responses[0]
 		s.responses = s.responses[1:]
-		return resp, nil
+        // Real net/http populates this field from the header (or -1 when absent).
+        if resp.ContentLength == 0 {
+            resp.ContentLength = -1
+            if value := resp.Header.Get("Content-Length"); value != "" { resp.ContentLength, _ = strconv.ParseInt(value, 10, 64) }
+        }
+        return resp, nil
 	}
 	return s.response, nil
 }
@@ -84,8 +89,7 @@ func TestForwardGrokMediaContentUsesUpstreamCredentialAndStreamsRange(t *testing
 					`attachment; filename="task-1.mp4"`,
 				},
 			},
-			ContentLength: 13, // HTTP transport populates this from the response body framing.
-			Body:          io.NopCloser(strings.NewReader("video-payload")),
+			Body: io.NopCloser(strings.NewReader("video-payload")),
 		}},
 	}
 	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
@@ -113,10 +117,7 @@ func TestForwardGrokMediaContentUsesUpstreamCredentialAndStreamsRange(t *testing
 	require.Equal(t, "13", recorder.Header().Get("Content-Length"))
 	require.Equal(t, "bytes 0-12/100", recorder.Header().Get("Content-Range"))
 	require.Equal(t, "bytes", recorder.Header().Get("Accept-Ranges"))
-	disposition, params, err := mime.ParseMediaType(recorder.Header().Get("Content-Disposition"))
-	require.NoError(t, err)
-	require.Equal(t, "inline", disposition)
-	require.Equal(t, "task-1.mp4", params["filename"])
+	require.Equal(t, `inline; filename=task-1.mp4`, recorder.Header().Get("Content-Disposition"))
 	require.True(t, IsResponseCommitted(c))
 }
 
@@ -143,7 +144,6 @@ func TestForwardGrokMediaContentStreamsFullResponseWithSafeDefaults(t *testing.T
 	require.Len(t, upstream.requests, 2)
 	require.Empty(t, upstream.requests[1].Header.Get("Range"))
 	require.Equal(t, "video/mp4", recorder.Header().Get("Content-Type"))
-	require.Equal(t, "inline", recorder.Header().Get("Content-Disposition"))
 	require.Empty(t, recorder.Header().Get("Content-Length"))
 	require.Empty(t, recorder.Header().Get("Set-Cookie"))
 	require.Empty(t, recorder.Header().Get("X-Upstream-Secret"))
@@ -160,8 +160,7 @@ func TestForwardGrokMediaContentPreservesRangeNotSatisfiable(t *testing.T) {
 				"Content-Range":  []string{"bytes */100"},
 				"Accept-Ranges":  []string{"bytes"},
 			},
-			ContentLength: 11, // HTTP transport populates this from the response body framing.
-			Body:          io.NopCloser(strings.NewReader("bad-range!!")),
+			Body: io.NopCloser(strings.NewReader("bad-range!!")),
 		}},
 	}
 	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
@@ -195,8 +194,7 @@ func TestForwardGrokMediaContentFetchesValidatedSignedURLWithoutCredentials(t *t
 					"Content-Length": []string{"13"},
 					"Content-Range":  []string{"bytes 0-12/100"},
 				},
-				ContentLength: 13, // HTTP transport populates this from the response body framing.
-				Body:          io.NopCloser(strings.NewReader("video-payload")),
+				Body: io.NopCloser(strings.NewReader("video-payload")),
 			},
 		},
 	}
@@ -238,10 +236,9 @@ func TestForwardGrokMediaContentFollowsAuthenticatedSub2APIRelay(t *testing.T) {
 				responses: []*http.Response{
 					grokMediaContentStatusResponse(`{"status":"completed","video":{"url":"` + statusURL + `"}}`),
 					{
-						StatusCode:    http.StatusOK,
-						Header:        http.Header{"Content-Type": []string{"video/mp4"}},
-						ContentLength: 13, // HTTP transport populates this from the response body framing.
-						Body:          io.NopCloser(strings.NewReader("video-payload")),
+						StatusCode: http.StatusOK,
+						Header:     http.Header{"Content-Type": []string{"video/mp4"}},
+						Body:       io.NopCloser(strings.NewReader("video-payload")),
 					},
 				},
 			}
@@ -331,115 +328,6 @@ func TestForwardGrokVideoStatusRewritesOnlyProtectedContentURL(t *testing.T) {
 	require.Equal(t, "https://vidgen.x.ai/task-1.mp4", gjson.Get(recorder.Body.String(), "video_url").String())
 	require.Equal(t, "9007199254740993", gjson.Get(recorder.Body.String(), "counter").String())
 	require.NotContains(t, recorder.Body.String(), "malicious.invalid")
-}
-
-type grokVideoSourceURLSettingRepoStub struct {
-	grokBaseURLSettingRepoStub
-	lookups int
-}
-
-func (r *grokVideoSourceURLSettingRepoStub) GetValue(ctx context.Context, key string) (string, error) {
-	r.lookups++
-	return r.grokBaseURLSettingRepoStub.GetValue(ctx, key)
-}
-
-func forwardGrokVideoStatusForSourceURLTest(t *testing.T, settings map[string]string, statusBody string) (string, *grokVideoSourceURLSettingRepoStub) {
-	t.Helper()
-	upstream := &grokMediaContentUpstreamStub{response: grokMediaContentStatusResponse(statusBody)}
-	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
-	var repo *grokVideoSourceURLSettingRepoStub
-	if settings != nil {
-		repo = &grokVideoSourceURLSettingRepoStub{grokBaseURLSettingRepoStub: grokBaseURLSettingRepoStub{values: settings}}
-		svc.settingService = NewSettingService(repo, nil)
-	}
-	c, recorder := grokMediaContentTestContext(http.MethodGet, "https://api.example/v1/videos/request-1", nil)
-
-	_, err := svc.ForwardGrokMedia(
-		context.Background(), c, grokMediaContentTestAccount(),
-		GrokMediaEndpointVideoStatus, "request-1", nil, "",
-	)
-
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, recorder.Code)
-	return recorder.Body.String(), repo
-}
-
-func TestForwardGrokVideoStatusAddsSourceURLWhenEnabled(t *testing.T) {
-	body, _ := forwardGrokVideoStatusForSourceURLTest(t,
-		map[string]string{SettingKeyGrokVideoSourceURLEnabled: "true"},
-		`{"status":"done","video":{"url":"https://vidgen.x.ai/xai-vidgen-bucket/xai-video-request-1.mp4","duration":5}}`,
-	)
-
-	require.Equal(t, "/v1/videos/request-1/content", gjson.Get(body, "video.url").String())
-	require.Equal(t, "https://vidgen.x.ai/xai-vidgen-bucket/xai-video-request-1.mp4", gjson.Get(body, "video.source_url").String())
-	require.Equal(t, "5", gjson.Get(body, "video.duration").String())
-}
-
-func TestForwardGrokVideoStatusOmitsSourceURLWhenDisabledOrUnset(t *testing.T) {
-	statusBody := `{"status":"done","video":{"url":"https://vidgen.x.ai/xai-vidgen-bucket/xai-video-request-1.mp4","duration":5}}`
-	for name, settings := range map[string]map[string]string{
-		"disabled":         {SettingKeyGrokVideoSourceURLEnabled: "false"},
-		"missing":          {},
-		"no setting store": nil,
-	} {
-		t.Run(name, func(t *testing.T) {
-			body, _ := forwardGrokVideoStatusForSourceURLTest(t, settings, statusBody)
-
-			require.Equal(t, "/v1/videos/request-1/content", gjson.Get(body, "video.url").String())
-			require.False(t, gjson.Get(body, "video.source_url").Exists())
-			require.NotContains(t, body, "vidgen.x.ai")
-		})
-	}
-}
-
-func TestForwardGrokVideoStatusStripsRelayedSourceURLWhenDisabled(t *testing.T) {
-	body, _ := forwardGrokVideoStatusForSourceURLTest(t,
-		map[string]string{SettingKeyGrokVideoSourceURLEnabled: "false"},
-		`{"status":"done","video":{"url":"/v1/videos/request-1/content","source_url":"https://vidgen.x.ai/xai-vidgen-bucket/xai-video-request-1.mp4"}}`,
-	)
-
-	require.Equal(t, "/v1/videos/request-1/content", gjson.Get(body, "video.url").String())
-	require.False(t, gjson.Get(body, "video.source_url").Exists())
-}
-
-func TestForwardGrokVideoStatusForwardsValidatedRelaySourceURL(t *testing.T) {
-	body, _ := forwardGrokVideoStatusForSourceURLTest(t,
-		map[string]string{SettingKeyGrokVideoSourceURLEnabled: "true"},
-		`{"status":"done","video":{"url":"https://relay.example/v1/videos/request-1/content","source_url":"https://vidgen.x.ai/xai-vidgen-bucket/xai-video-request-1.mp4"}}`,
-	)
-
-	require.Equal(t, "/v1/videos/request-1/content", gjson.Get(body, "video.url").String())
-	require.Equal(t, "https://vidgen.x.ai/xai-vidgen-bucket/xai-video-request-1.mp4", gjson.Get(body, "video.source_url").String())
-}
-
-func TestForwardGrokVideoStatusDropsUntrustedSourceURL(t *testing.T) {
-	for _, sourceURL := range []string{
-		"https://vidgen.x.ai.attacker.invalid/video.mp4",
-		"https://vidgen.x.ai" + "@attacker.invalid/video.mp4",
-		"http://vidgen.x.ai/video.mp4",
-		"https://relay.example/v1/videos/request-1/content",
-	} {
-		t.Run(sourceURL, func(t *testing.T) {
-			body, _ := forwardGrokVideoStatusForSourceURLTest(t,
-				map[string]string{SettingKeyGrokVideoSourceURLEnabled: "true"},
-				`{"status":"done","video":{"url":"/v1/videos/request-1/content","source_url":"`+sourceURL+`"}}`,
-			)
-
-			require.Equal(t, "/v1/videos/request-1/content", gjson.Get(body, "video.url").String())
-			require.False(t, gjson.Get(body, "video.source_url").Exists())
-		})
-	}
-}
-
-func TestForwardGrokVideoStatusSkipsSettingLookupWithoutMediaURL(t *testing.T) {
-	statusBody := `{"status":"pending","progress":40}`
-	body, repo := forwardGrokVideoStatusForSourceURLTest(t,
-		map[string]string{SettingKeyGrokVideoSourceURLEnabled: "true"},
-		statusBody,
-	)
-
-	require.JSONEq(t, statusBody, body)
-	require.Zero(t, repo.lookups)
 }
 
 func TestRewriteGrokMediaVideoContentURLsPreservesOtherIDsAndHandlesNestedEscapedID(t *testing.T) {

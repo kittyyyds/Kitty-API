@@ -276,7 +276,7 @@ func TestOpenAIGatewayService_GuardianParentAffinityHonorsRequiredPrivacy(t *tes
 			require.NotNil(t, selection)
 			require.Equal(t, int64(39032), selection.Account.ID)
 			require.Zero(t, repo.setErrorCalls, "a group-scoped privacy gate must not globally error a shared account")
-			require.False(t, svc.isOpenAIAccountRequestRuntimeBlocked(&accounts[0], codexAutoReviewModel, false))
+			require.False(t, svc.isOpenAIAccountRequestRuntimeBlocked(&accounts[0], codexAutoReviewModel))
 			if selection.ReleaseFunc != nil {
 				selection.ReleaseFunc()
 			}
@@ -365,7 +365,13 @@ func TestOpenAIGatewayService_PreviousResponseHonorsGroupAndRequiredPrivacy(t *t
 			directSelection, directErr := svc.SelectAccountByPreviousResponseID(
 				context.Background(), &groupID, responseID, codexAutoReviewModel, nil, false,
 			)
-			require.NoError(t, directErr)
+			if tc.groupErr != nil {
+				// An unreadable group may have strict routing enabled. Neither a
+				// continuation nor general scheduling may silently bypass it.
+				require.ErrorIs(t, directErr, ErrStrictFailoverUnconfirmed)
+			} else {
+				require.NoError(t, directErr)
+			}
 			require.Nil(t, directSelection, "the previous-response helper must enforce fresh group/privacy state")
 
 			selection, decision, err := svc.SelectAccountWithSchedulerForCapability(
@@ -373,12 +379,18 @@ func TestOpenAIGatewayService_PreviousResponseHonorsGroupAndRequiredPrivacy(t *t
 				nil, OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityResponses,
 				false, false, true,
 			)
+			if tc.groupErr != nil {
+				require.ErrorIs(t, err, ErrStrictFailoverUnconfirmed)
+				require.Nil(t, selection)
+				require.Zero(t, repo.setErrorCalls)
+				return
+			}
 			require.NoError(t, err)
 			require.NotNil(t, selection)
 			require.Equal(t, fallback.ID, selection.Account.ID)
 			require.NotEqual(t, openAIAccountScheduleLayerPreviousResponse, decision.Layer)
 			require.Zero(t, repo.setErrorCalls)
-			require.False(t, svc.isOpenAIAccountRequestRuntimeBlocked(&accounts[0], codexAutoReviewModel, false))
+			require.False(t, svc.isOpenAIAccountRequestRuntimeBlocked(&accounts[0], codexAutoReviewModel))
 			boundAccountID, getErr := store.GetResponseAccount(context.Background(), groupID, responseID)
 			require.NoError(t, getErr)
 			require.Equal(t, tc.boundAccount.ID, boundAccountID, "transient policy misses must preserve the response binding")

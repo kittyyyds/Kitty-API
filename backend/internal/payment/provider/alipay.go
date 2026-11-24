@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -348,18 +350,23 @@ func (a *Alipay) Refund(ctx context.Context, req payment.RefundRequest) (*paymen
 		return nil, err
 	}
 
-	outRequestNo := fmt.Sprintf("%s%s%d", req.OrderID, alipayRefundRequestSep, time.Now().UnixNano())
+	outRequestNo := alipayRefundRequestNo(req)
 	result, err := alipayTradeRefund(ctx, client, alipay.TradeRefund{
 		OutTradeNo:   req.OrderID,
 		RefundAmount: req.Amount,
 		RefundReason: req.Reason,
 		OutRequestNo: outRequestNo,
 	})
-	if err != nil {
-		return nil, fmt.Errorf("alipay TradeRefund: %w", err)
+	if err != nil || result == nil {
+		// The gateway may have accepted a timed-out request. Keep the hold and
+		// query this exact operation, rather than issuing a new refund number.
+		if err == nil {
+			err = fmt.Errorf("empty response")
+		}
+		return &payment.RefundResponse{RefundID: outRequestNo, Status: payment.ProviderStatusPending}, fmt.Errorf("alipay TradeRefund outcome unknown: %w", err)
 	}
-	if result == nil {
-		return nil, fmt.Errorf("alipay TradeRefund: empty response")
+	if result.Code != "" && result.IsFailure() {
+		return nil, fmt.Errorf("alipay TradeRefund: %w", result.Error)
 	}
 
 	refundStatus := payment.ProviderStatusPending
@@ -380,7 +387,7 @@ func (a *Alipay) QueryRefund(ctx context.Context, req payment.RefundQueryRequest
 	orderID := strings.TrimSpace(req.OrderID)
 	outRequestNo := strings.TrimSpace(req.RefundID)
 	// 旧版本把支付宝交易号记为 RefundID，无法据此查询退款请求，只能人工核实。
-	if orderID == "" || !strings.HasPrefix(outRequestNo, orderID+alipayRefundRequestSep) {
+	if orderID == "" || (!strings.HasPrefix(outRequestNo, orderID+alipayRefundRequestSep) && !(strings.HasPrefix(outRequestNo, "kr1-") && len(outRequestNo) == 52)) {
 		return nil, infraerrors.BadRequest("REFUND_QUERY_UNSUPPORTED", "this refund was issued without a queryable refund request number; please verify manually")
 	}
 	client, err := a.getClient()
@@ -463,3 +470,18 @@ var (
 	_ payment.RefundQueryProvider      = (*Alipay)(nil)
 	_ payment.MerchantIdentityProvider = (*Alipay)(nil)
 )
+
+// alipayRefundRequestNo is stable for one durable operation. The legacy fallback
+// is order+amount for old callers; PaymentService always supplies OperationID.
+func alipayRefundRequestNo(req payment.RefundRequest) string {
+	amount := strings.TrimSpace(req.Amount)
+	if n, err := strconv.ParseFloat(amount, 64); err == nil {
+		amount = strconv.FormatFloat(n, 'f', 2, 64)
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(req.OrderID) + "\x00" + amount + "\x00" + strings.TrimSpace(req.OperationID)))
+	id := strings.TrimSpace(req.OrderID) + alipayRefundRequestSep + hex.EncodeToString(sum[:12])
+	if len(id) > 64 {
+		return "kr1-" + hex.EncodeToString(sum[:24])
+	}
+	return id
+}

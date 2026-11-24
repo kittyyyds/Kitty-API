@@ -25,7 +25,7 @@ var ErrNewAPIConfiguration = infraerrors.BadRequest("NEW_API_CONFIGURATION_INVAL
 var ErrNewAPIEncryptionKey = infraerrors.ServiceUnavailable("NEW_API_ENCRYPTION_KEY_REQUIRED", "Configure a fixed TOTP encryption key before saving New API authorization")
 
 func newAPIError(reason string) error {
-	return infraerrors.BadRequest("NEW_API_VERIFICATION_FAILED", "New API verification failed: "+reason)
+	return &newAPIProbeError{error: infraerrors.BadRequest("NEW_API_VERIFICATION_FAILED", "New API verification failed: "+reason), reason: reason}
 }
 
 // CanonicalNewAPISite preserves the origin and tenant path. Only a terminal v1
@@ -108,6 +108,7 @@ func matchNewAPITokens(a *Account, tokens []NewAPIToken) []NewAPIToken {
 // User credentials are applied last, so account relay-key header overrides
 // cannot impersonate a different management user.
 func (s *UpstreamBillingProbeService) newAPIRequest(ctx context.Context, a *Account, site string, userID int64, secret, method, path string, out any) error {
+	diagnostics := observeNewAPIProbeRequest(ctx, path)
 	if s.accountTestService == nil || s.accountTestService.httpUpstream == nil {
 		return newAPIError("transport_unavailable")
 	}
@@ -148,8 +149,15 @@ func (s *UpstreamBillingProbeService) newAPIRequest(ctx context.Context, a *Acco
 		return newAPIError("empty_response")
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if diagnostics != nil {
+		diagnostics.status = resp.StatusCode
+		if version := sanitizeUpstreamProbeVersion(resp.Header.Get("X-New-Api-Version")); version != "" {
+			diagnostics.version = version
+		}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return newAPIError("http_error")
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16*1024))
+		return newAPIError(classifyUpstreamBillingHTTPFailure(resp.StatusCode, resp.Header, body))
 	}
 	b, e := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024+1))
 	if e != nil || len(b) > 2*1024*1024 {
@@ -280,7 +288,7 @@ func (s *UpstreamBillingProbeService) fetchNewAPI(ctx context.Context, a *Accoun
 func newAPIFinite(n float64) bool { return !math.IsNaN(n) && !math.IsInf(n, 0) }
 func newAPISnapshot(a *Account, t NewAPIToken, d *newAPIData, interval int, now time.Time) *UpstreamBillingProbeSnapshot {
 	fresh := now.Add(2 * time.Duration(interval) * time.Minute)
-	snap := &UpstreamBillingProbeSnapshot{Status: UpstreamBillingProbeStatusUnsupported, LastAttemptAt: now, NextProbeAt: now.Add(nextProbeDelay(interval, 0)), LastError: "unsupported_group", Data: map[string]any{"provider": "new_api", "group": sanitizeUpstreamBalanceText(t.Group, 128), "token_id": t.ID, "object": "new_api.group_billing", "schema_version": 1, "billing_scope": "group"}, Balance: &UpstreamBalanceSnapshot{Status: UpstreamBillingProbeStatusOK, LastAttemptAt: now, ReceivedAt: probeTimePtr(now), FreshUntil: probeTimePtr(fresh), Data: map[string]any{"is_valid": true, "mode": "unrestricted", "wallet_balance": d.wallet, "remaining": d.wallet, "unit": "USD", "source": "new_api"}}}
+	snap := &UpstreamBillingProbeSnapshot{Protocol: "newapi", RateSource: "bound_group_pricing", Status: UpstreamBillingProbeStatusUnsupported, LastAttemptAt: now, NextProbeAt: now.Add(nextProbeDelay(interval, 0)), LastError: "unsupported_group", Data: map[string]any{"provider": "new_api", "group": sanitizeUpstreamBalanceText(t.Group, 128), "token_id": t.ID, "object": "new_api.group_billing", "schema_version": 1, "billing_scope": "group"}, Balance: &UpstreamBalanceSnapshot{Status: UpstreamBillingProbeStatusOK, LastAttemptAt: now, ReceivedAt: probeTimePtr(now), FreshUntil: probeTimePtr(fresh), Data: map[string]any{"is_valid": true, "mode": "unrestricted", "wallet_balance": d.wallet, "remaining": d.wallet, "unit": "USD", "source": "new_api"}}}
 	if rate, ok := d.ratios[t.Group]; ok && t.Group != "auto" && !t.CrossGroupRetry && len(t.RouteGroups) <= 1 {
 		snap.Status = UpstreamBillingProbeStatusOK
 		snap.LastError = ""

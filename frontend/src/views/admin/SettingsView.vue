@@ -1,6 +1,6 @@
 <template>
   <AppLayout>
-    <div class="mx-auto max-w-6xl space-y-6">
+    <div class="w-full min-w-0  space-y-6">
       <!-- Loading State -->
       <div v-if="loading" class="flex items-center justify-center py-12">
         <div
@@ -8,8 +8,7 @@
         ></div>
       </div>
 
-      <!-- Settings Form -->
-      <form v-else @submit.prevent="saveSettings" class="space-y-6" novalidate>
+      <div v-else class="space-y-6">
         <!-- Tab Navigation -->
         <div class="settings-tabs-shell">
           <nav
@@ -44,6 +43,10 @@
           </nav>
         </div>
 
+        <section v-if="activeTab === 'guide'" id="settings-section-guide"><GuideEditor /></section>
+
+      <!-- Independently saved settings stay outside this form. -->
+      <form v-show="activeTab !== 'openai-vm' && activeTab !== 'guide'" @submit.prevent="saveSettings" class="space-y-6" novalidate>
         <!-- Tab: Security — Admin API Key -->
         <div v-show="activeTab === 'security'" class="space-y-6">
           <AdminAccessKeysSettings v-if="authStore.isSuperAdmin" />
@@ -163,22 +166,25 @@
 
         <!-- Tab: Gateway -->
         <div v-show="activeTab === 'gateway'" class="space-y-6">
-          <ServerlessSettings v-if="activeTab === 'gateway'" />
-          <div class="card" data-testid="prism-browser-settings">
+          <div class="card" data-testid="upstream-error-message-settings">
             <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Prism 浏览器桥</h2>
-              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">账号可单独选择 Prism 模型范围。</p>
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t('admin.settings.upstreamErrorMessage.title') }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t('admin.settings.upstreamErrorMessage.description') }}
+              </p>
             </div>
-            <div class="space-y-4 p-6">
-              <label class="block">
-                <span class="mb-1 block text-sm text-gray-600 dark:text-gray-300">适配器 Base URL</span>
-                <input v-model="form.prism_browser_base_url" class="input w-full" placeholder="http://127.0.0.1:8319/v1" />
+            <div class="space-y-3 p-6">
+              <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                {{ t('admin.settings.upstreamErrorMessage.label') }}
+                <textarea v-model="form.upstream_error_message" rows="3" maxlength="500"
+                  class="input mt-2" data-testid="upstream-error-message"
+                  :placeholder="t('admin.settings.upstreamErrorMessage.placeholder')" />
               </label>
-              <label class="block">
-                <span class="mb-1 block text-sm text-gray-600 dark:text-gray-300">桥接 API Key（留空保持原值）</span>
-                <input v-model="form.prism_browser_api_key" type="password" autocomplete="new-password" class="input w-full" />
-              </label>
-              <p v-if="form.prism_browser_enabled && !form.prism_browser_api_key_configured" class="text-sm text-amber-600">启用前必须配置至少 32 个字符的适配器密钥。</p>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.settings.upstreamErrorMessage.hint') }}
+              </p>
             </div>
           </div>
           <!-- Overload Cooldown (529) Settings -->
@@ -1596,6 +1602,9 @@
                 />
               </div>
 
+              <!-- Exact Email Blacklist -->
+              <RegistrationEmailBlacklistEditor />
+
               <!-- Promo Code -->
               <div
                 class="flex items-center justify-between border-t border-gray-100 pt-4 dark:border-dark-700"
@@ -1813,6 +1822,29 @@
                   </p>
                 </div>
                 <Toggle v-model="form.session_binding_enabled" />
+              </div>
+
+              <!-- 中国大陆网页访问限制 -->
+              <div
+                class="flex items-start justify-between gap-4 border-t border-gray-100 pt-4 dark:border-dark-700"
+                data-testid="mainland-web-block-settings"
+              >
+                <div>
+                  <label class="font-medium text-gray-900 dark:text-white">{{
+                    t("admin.settings.security.mainlandWebBlock")
+                  }}</label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.security.mainlandWebBlockHint") }}
+                  </p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.security.mainlandWebBlockProxyHint") }}
+                  </p>
+                </div>
+                <Toggle
+                  v-model="form.mainland_web_block_enabled"
+                  data-testid="mainland-web-block-toggle"
+                  :aria-label="t('admin.settings.security.mainlandWebBlock')"
+                />
               </div>
 
               <!-- 审计日志保留天数 -->
@@ -4522,6 +4554,41 @@
 
         <!-- Tab: Gateway — Claude Code, Scheduling -->
         <div v-show="activeTab === 'gateway'" class="space-y-6">
+          <div class="card" data-testid="upstream-error-retry-settings">
+            <div class="flex items-center justify-between gap-6 border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+              <div>
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                  {{ t('admin.settings.upstreamErrorRetry.title') }}
+                </h2>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.upstreamErrorRetry.description') }}
+                </p>
+              </div>
+              <Toggle v-model="form.upstream_error_retry.enabled" data-testid="upstream-error-retry-toggle" />
+            </div>
+            <div class="space-y-4 p-6">
+              <div class="grid gap-4 sm:grid-cols-2">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.upstreamErrorRetry.maxRetries') }}
+                  <input v-model.number="form.upstream_error_retry.max_retries" type="number" min="1" max="10" step="1"
+                    class="input mt-2" data-testid="upstream-error-retry-max" />
+                </label>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.upstreamErrorRetry.delay') }}
+                  <input v-model.number="form.upstream_error_retry.delay_ms" type="number" min="100" max="10000" step="100"
+                    class="input mt-2" data-testid="upstream-error-retry-delay" />
+                </label>
+              </div>
+              <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                {{ t('admin.settings.upstreamErrorRetry.errors') }}
+                <textarea v-model="form.upstream_error_retry.errors" rows="5" maxlength="32768"
+                  class="input mt-2 font-mono text-sm" data-testid="upstream-error-retry-errors"
+                  :placeholder="'503\nserver_is_overloaded\nservers are currently overloaded'" />
+              </label>
+              <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.upstreamErrorRetry.matchHint') }}</p>
+              <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.upstreamErrorRetry.scopeHint') }}</p>
+            </div>
+          </div>
           <!-- Claude Code Settings -->
           <div class="card">
             <div
@@ -4584,7 +4651,6 @@
               </h2>
             </div>
             <div class="p-6 space-y-4">
-                <RequestTimezoneSettings v-model="form.openai_request_timezone_enabled" v-model:auto="form.openai_request_timezone_auto" />
                 <div>
                   <h3 class="text-base font-semibold text-gray-900 dark:text-white">
                     {{ t("admin.settings.gatewayForwarding.codexClientRestrictionTitle") }}
@@ -4886,6 +4952,21 @@
                   <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                     {{ t("admin.settings.upstreamBillingProbe.intervalHint") }}
                   </p>
+                </div>
+
+                <div class="border-t border-gray-100 pt-4 dark:border-dark-700">
+                  <div class="flex items-center justify-between gap-4">
+                    <div>
+                      <label class="font-medium text-gray-900 dark:text-white">{{ t("admin.settings.upstreamBillingProbe.rateNotifyEnabled") }}</label>
+                      <p class="text-sm text-gray-500 dark:text-gray-400">{{ t("admin.settings.upstreamBillingProbe.rateNotifyHint") }}</p>
+                    </div>
+                    <Toggle v-model="upstreamBillingProbeForm.rate_change_notify_enabled" :aria-label="t('admin.settings.upstreamBillingProbe.rateNotifyEnabled')" data-testid="upstream-rate-notify-enabled" />
+                  </div>
+                  <div v-if="upstreamBillingProbeForm.rate_change_notify_enabled" class="mt-3">
+                    <label for="upstream-rate-notify-email" class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.upstreamBillingProbe.rateNotifyEmail") }}</label>
+                    <input id="upstream-rate-notify-email" v-model.trim="upstreamBillingProbeForm.rate_change_notify_email" type="email" maxlength="254" class="input w-full max-w-md" data-testid="upstream-rate-notify-email" />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.settings.upstreamBillingProbe.rateNotifyEmailHint") }}</p>
+                  </div>
                 </div>
 
                 <div
@@ -5531,21 +5612,6 @@
                   </p>
                 </div>
                 <Toggle v-model="form.enable_metadata_passthrough" />
-              </div>
-
-              <!-- CCH Signing -->
-              <div class="flex items-center justify-between">
-                <div>
-                  <label
-                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
-                  >
-                    {{ t("admin.settings.gatewayForwarding.cchSigning") }}
-                  </label>
-                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                    {{ t("admin.settings.gatewayForwarding.cchSigningHint") }}
-                  </p>
-                </div>
-                <Toggle v-model="form.enable_cch_signing" />
               </div>
 
               <!-- Claude OAuth System Prompt Injection -->
@@ -6935,6 +7001,10 @@
                 <p class="mt-2 text-xs text-amber-600 dark:text-amber-400">
                   {{ t("admin.settings.site.homeContentIframeWarning") }}
                 </p>
+                <!-- The current homepage (HomeLandingView) renders its own template and reads neither setting. -->
+                <p class="mt-2 text-xs text-amber-600 dark:text-amber-400" data-testid="home-template-ignored">
+                  {{ t("admin.settings.site.homeTemplateIgnored") }}
+                </p>
               </div>
 
               <!-- Compact Home Page -->
@@ -6945,6 +7015,9 @@
                   }}</label>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
                     {{ t("admin.settings.site.compactHomeHint") }}
+                  </p>
+                  <p class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                    {{ t("admin.settings.site.homeTemplateIgnored") }}
                   </p>
                 </div>
                 <Toggle v-model="form.compact_home_enabled" data-testid="compact-home-toggle" />
@@ -7408,36 +7481,21 @@
 
         <!-- Tab: Features (功能开关) -->
         <div v-show="activeTab === 'features'" class="space-y-6">
-        <div class="card" data-testid="protocol-feature-switches">
+        <div class="card" data-testid="channel-quality-public-settings">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">协议功能</h2>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">关闭后立即停止使用对应协议，并隐藏账号编辑中的相关选项。</p>
+            <h2 id="settings-section-features-channel-quality-public" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.settings.features.channelQualityPublic.title') }}</h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.channelQualityPublic.description') }}</p>
           </div>
-          <div class="space-y-5 p-6">
-            <div class="flex items-center justify-between gap-4">
-              <span class="font-medium text-gray-900 dark:text-white">Prism 浏览器桥</span>
-              <Toggle v-model="form.prism_browser_enabled" />
+          <div class="flex items-center justify-between gap-4 p-6">
+            <div>
+              <label class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.settings.features.channelQualityPublic.enabled') }}</label>
+              <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.channelQualityPublic.hint') }}</p>
             </div>
+            <Toggle v-model="form.channel_quality_public_enabled" data-testid="channel-quality-public-toggle" />
           </div>
         </div>
-        <div class="card" data-testid="request-capture-settings">
-          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
-            <h2 id="settings-section-request-capture" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">{{ t('admin.requestCapture.title') }}</h2>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.requestCapture.description') }}</p>
-          </div>
-          <div class="space-y-5 p-6">
-            <div class="flex items-center justify-between gap-4">
-              <label for="request-capture-enabled" class="input-label">{{ t('admin.requestCapture.enabled') }}</label>
-              <Toggle id="request-capture-enabled" v-model="form.request_capture_enabled" />
-            </div>
-            <div class="grid gap-5 md:grid-cols-2">
-              <label class="space-y-1"><span class="input-label">{{ t('admin.requestCapture.quota') }}</span><input v-model.number="form.request_capture_quota_mib" class="input" type="number" min="1" step="1" required /></label>
-              <label class="space-y-1"><span class="input-label">{{ t('admin.requestCapture.retention') }}</span><input v-model.number="form.request_capture_retention_days" class="input" type="number" min="1" max="30" step="1" required /></label>
-            </div>
-            <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.requestCapture.limitsHint') }}</p>
-            <p class="text-xs text-amber-700 dark:text-amber-300">{{ t('admin.requestCapture.privacy') }}</p>
-          </div>
-        </div>
+        
+        
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
             <h2 id="settings-section-features-channel-monitor" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
@@ -7589,24 +7647,6 @@
           </div>
         </div>
 
-        <!-- The Pelican showcase is configured with its group tests under Smart Ops. -->
-        <div class="card" data-testid="pelican-showcase-moved">
-          <div class="px-6 py-4">
-            <h2 id="settings-section-features-pelican-showcase" tabindex="-1" class="text-lg font-semibold text-gray-900 dark:text-white">
-              {{ t('admin.settings.features.pelicanShowcase.title') }}
-            </h2>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              {{ t('admin.settings.features.pelicanShowcase.movedHint') }}
-              <router-link
-                to="/admin/pelican-tests"
-                class="ml-1 inline-flex items-center gap-1 text-primary-600 hover:underline dark:text-primary-400"
-              >
-                {{ t('admin.settings.features.pelicanShowcase.movedLink') }}
-                <span aria-hidden="true">→</span>
-              </router-link>
-            </p>
-          </div>
-        </div>
 
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
@@ -8479,8 +8519,8 @@
                           ) || 1
                       "
                       type="number"
-                      step="0.01"
-                      min="0.01"
+                      step="0.000001"
+                      min="0.000001"
                       class="input"
                     />
                     <p class="mt-0.5 text-xs text-gray-400">
@@ -8495,10 +8535,10 @@
                     >
                       {{
                         t("admin.settings.payment.balanceRechargePreview", {
-                          usd: (
+                          usd: formatBalanceRechargeMultiplier(
                             Number(form.payment_balance_recharge_multiplier) ||
-                            1
-                          ).toFixed(2),
+                              1,
+                          ),
                         })
                       }}
                     </p>
@@ -9300,13 +9340,17 @@
         </div>
         <!-- /Tab: Email -->
 
+        <div v-if="activeTab === 'gptDirect'">
+          <GPTDirectSettings />
+        </div>
+
         <!-- Tab: Backup -->
         <div v-show="activeTab === 'backup'">
           <BackupSettings />
         </div>
 
-        <!-- Save Button -->
-        <div v-show="activeTab !== 'backup'" class="flex justify-end">
+        <!-- Save dock — sticky so long tabs never require scrolling to the end -->
+        <div v-show="activeTab !== 'backup' && activeTab !== 'gptDirect' && activeTab !== 'guide' && activeTab !== 'openai-vm'" class="settings-save-dock">
           <button
             type="submit"
             :disabled="saving || loadFailed"
@@ -9340,6 +9384,9 @@
           </button>
         </div>
       </form>
+
+      <OpenAIVMSettings v-if="activeTab === 'openai-vm'" />
+      </div>
 
       <!-- Provider dialogs placed outside the settings form to prevent form submission bubbling -->
       <PaymentProviderDialog
@@ -9379,6 +9426,8 @@
 </template>
 
 <script setup lang="ts">
+import GPTDirectSettings from "@/components/admin/settings/GPTDirectSettings.vue";
+import OpenAIVMSettings from "@/components/admin/settings/OpenAIVMSettings.vue";
 import { ref, reactive, computed, onMounted, watch } from "vue";
 import { listPlatformIds } from "@/constants/platformCatalog";
 import { useI18n } from "vue-i18n";
@@ -9439,12 +9488,11 @@ import PaymentProviderList from "@/components/payment/PaymentProviderList.vue";
 import PaymentProviderDialog from "@/components/payment/PaymentProviderDialog.vue";
 import GroupBadge from "@/components/common/GroupBadge.vue";
 import GroupOptionItem from "@/components/common/GroupOptionItem.vue";
-import RequestTimezoneSettings from "@/components/settings/RequestTimezoneSettings.vue";
 import Toggle from "@/components/common/Toggle.vue";
 import ProxySelector from "@/components/common/ProxySelector.vue";
 import ImageUpload from "@/components/common/ImageUpload.vue";
+import GuideEditor from "@/views/admin/settings/GuideEditor.vue";
 import BackupSettings from "@/views/admin/BackupView.vue";
-import ServerlessSettings from "@/components/settings/ServerlessSettings.vue";
 import EmailTemplateEditor from "@/views/admin/settings/EmailTemplateEditor.vue";
 import RechargeBonusTierEditor from "@/components/admin/settings/RechargeBonusTierEditor.vue";
 import {
@@ -9454,6 +9502,7 @@ import {
   type RechargeBonusMode,
   type RechargeBonusTierDraft,
 } from "@/utils/rechargeBonus";
+import RegistrationEmailBlacklistEditor from "@/components/admin/settings/RegistrationEmailBlacklistEditor.vue";
 import OpenAIFastPolicyUserSelector from "@/views/admin/settings/OpenAIFastPolicyUserSelector.vue";
 import { useClipboard } from "@/composables/useClipboard";
 import {
@@ -9466,6 +9515,7 @@ import AdminAccessKeysSettings from "@/components/admin/settings/AdminAccessKeys
 import TotpStepUpDialog from "@/components/auth/TotpStepUpDialog.vue";
 import { affiliatesAPI, type AffiliateAdminEntry, type SimpleUser as AffiliateSimpleUser } from "@/api/admin/affiliates";
 import { extractApiErrorMessage, extractI18nErrorMessage } from "@/utils/apiError";
+import { formatBalanceRechargeMultiplier } from "@/utils/rechargeBonus";
 import { useAppStore } from "@/stores";
 import { useAuthStore } from "@/stores/auth";
 import { useAdminSettingsStore } from "@/stores/adminSettings";
@@ -9511,14 +9561,17 @@ const loading = ref(true);
 const loadFailed = ref(false);
 const { activeTab, selectSettingsTab } = useSettingsNavigation(loading, loadFailed);
 const settingsTabs = [
+  { key: "gptDirect" as SettingsTab, icon: "gift" as const },
   { key: "general" as SettingsTab, icon: "home" as const },
   { key: "agreement" as SettingsTab, icon: "document" as const },
   { key: "features" as SettingsTab, icon: "bolt" as const },
   { key: "security" as SettingsTab, icon: "shield" as const },
   { key: "users" as SettingsTab, icon: "user" as const },
   { key: "gateway" as SettingsTab, icon: "server" as const },
+  { key: "openai-vm" as SettingsTab, icon: "server" as const },
   { key: "payment" as SettingsTab, icon: "creditCard" as const },
   { key: "email" as SettingsTab, icon: "mail" as const },
+  { key: "guide" as SettingsTab, icon: "book" as const },
   { key: "backup" as SettingsTab, icon: "database" as const },
 ];
 
@@ -9597,6 +9650,8 @@ const upstreamBillingProbeSaving = ref(false);
 const upstreamBillingProbeForm = reactive({
   enabled: true,
   interval_minutes: 30,
+  rate_change_notify_enabled: false,
+  rate_change_notify_email: "",
 });
 
 const ollamaCloudUsageLoading = ref(true);
@@ -10178,7 +10233,6 @@ type SettingsForm = Omit<
   // 系统全局平台限额 map；form 内始终归一化为全部平台对象（模板非空绑定依赖此不变量）
   default_platform_quotas: DefaultPlatformQuotasMap;
   account_scheduling_thresholds: ReturnType<typeof normalizeAccountSchedulingThresholdsMap>;
-  prism_browser_api_key: string;
 };
 
 const schedulingThresholdPlatforms = SCHEDULING_THRESHOLD_PLATFORMS;
@@ -10194,10 +10248,6 @@ function platformQuotaRows(map: DefaultPlatformQuotasMap | undefined): string[] 
 }
 
 const form = reactive<SettingsForm>({
-  prism_browser_enabled: false,
-  prism_browser_base_url: "http://127.0.0.1:8319/v1",
-  prism_browser_api_key_configured: false,
-  prism_browser_api_key: "",
   registration_enabled: true,
   login_rate_limit_enabled: true,
   registration_ip_limit_enabled: true,
@@ -10215,6 +10265,7 @@ const form = reactive<SettingsForm>({
   passkey_rp_id: "",
   passkey_rp_origins: [],
   session_binding_enabled: false,
+  mainland_web_block_enabled: false,
   step_up_enabled: false,
   audit_log_retention_days: 180,
   login_agreement_enabled: false,
@@ -10448,10 +10499,11 @@ const form = reactive<SettingsForm>({
   openai_advanced_scheduler_weight_previous_response: "",
   openai_advanced_scheduler_weight_session_sticky: "",
   // Gateway forwarding behavior
+  upstream_error_retry: { enabled: false, max_retries: 3, delay_ms: 1000, errors: "" },
+  upstream_error_message: "",
   openai_ttft_mode: "semantic",
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
-  enable_cch_signing: false,
   enable_claude_oauth_system_prompt_injection: true,
   claude_oauth_system_prompt: "",
   claude_oauth_system_prompt_blocks: defaultClaudeOAuthSystemPromptBlocks,
@@ -10485,6 +10537,7 @@ const form = reactive<SettingsForm>({
   account_quota_notify_enabled: false,
   account_quota_notify_emails: [] as NotifyEmailEntry[],
   // Channel Monitor feature switch
+  channel_quality_public_enabled: true,
   channel_monitor_enabled: true,
   channel_monitor_mode: 'v1' as 'v1' | 'v2' | 'v3',
   channel_monitor_default_interval_seconds: 60,
@@ -10529,6 +10582,9 @@ function applyCaptchaSelection(provider: CaptchaProviderSelection | null): void 
   form.tencent_captcha_enabled = provider === "tencent";
   form.aliyun_captcha_enabled = provider === "aliyun";
 }
+
+// Keep the settings API representation as user IDs; the selector displays emails.
+
 
 // Keep the settings API representation as user IDs; the selector displays emails.
 const riskControlAllowlistedUserIds = computed<number[]>({
@@ -11504,6 +11560,7 @@ async function loadSettings() {
         (form as Record<string, unknown>)[key] = value;
       }
     }
+    form.mainland_web_block_enabled = settings.mainland_web_block_enabled === true;
     // For this optional override, null explicitly selects per-account rates.
     if (settings.openai_oauth_scheduling_rate_multiplier === null) {
       form.openai_oauth_scheduling_rate_multiplier = null;
@@ -11543,10 +11600,6 @@ async function loadSettings() {
     form.channel_monitor_hide_user_ranking = Boolean(
       settings.channel_monitor_hide_user_ranking
     );
-    form.prism_browser_enabled = Boolean(settings.prism_browser_enabled);
-    form.prism_browser_base_url = settings.prism_browser_base_url || "http://127.0.0.1:8319/v1";
-    form.prism_browser_api_key_configured = Boolean(settings.prism_browser_api_key_configured);
-    form.prism_browser_api_key = "";
     form.login_agreement_updated_at =
       settings.login_agreement_updated_at || "2026-03-31";
     form.login_agreement_documents =
@@ -11773,8 +11826,25 @@ const siteBillingModeHint = computed(() =>
 );
 
 async function saveSettings() {
+  if (activeTab.value === 'guide') return;
   saving.value = true;
   try {
+    const upstreamErrorMessage = form.upstream_error_message.trim();
+    if (Array.from(upstreamErrorMessage).length > 500) {
+      appStore.showError(t("admin.settings.upstreamErrorMessage.invalid"));
+      activeTab.value = "gateway";
+      return;
+    }
+    const retry = form.upstream_error_retry;
+    const errorLines = retry.errors.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (!Number.isInteger(retry.max_retries) || retry.max_retries < 1 || retry.max_retries > 10 ||
+        !Number.isInteger(retry.delay_ms) || retry.delay_ms < 100 || retry.delay_ms > 10000 ||
+        (retry.enabled && errorLines.length === 0) || errorLines.length > 100 ||
+        errorLines.some((line) => /^\d+$/.test(line) && (Number(line) < 400 || Number(line) > 599 || Number(line) === 429))) {
+      appStore.showError(t("admin.settings.upstreamErrorRetry.invalid"));
+      activeTab.value = "gateway";
+      return;
+    }
     const normalizedTableDefaultPageSize = Math.floor(
       Number(form.table_default_page_size),
     );
@@ -11932,9 +12002,6 @@ async function saveSettings() {
     }
 
     const payload: UpdateSettingsRequest = {
-      prism_browser_enabled: form.prism_browser_enabled,
-      prism_browser_base_url: form.prism_browser_base_url,
-      ...(form.prism_browser_api_key ? { prism_browser_api_key: form.prism_browser_api_key } : {}),
       registration_enabled: form.registration_enabled,
       login_rate_limit_enabled: form.login_rate_limit_enabled,
       registration_ip_limit_enabled: form.registration_ip_limit_enabled,
@@ -11952,6 +12019,7 @@ async function saveSettings() {
       totp_enabled: form.totp_enabled,
       passkey_enabled: form.passkey_enabled,
       session_binding_enabled: form.session_binding_enabled,
+      mainland_web_block_enabled: form.mainland_web_block_enabled,
       step_up_enabled: form.step_up_enabled,
       // 清空数字框时 v-model.number 会得到空串，后端 int 字段解析空串会 400 拒绝整次保存；
       // 空/非法值回退默认 180（与后端 parseAuditLogRetentionDays("") 语义一致，0 仍表示永久保留）。
@@ -12125,12 +12193,13 @@ async function saveSettings() {
       min_claude_code_version: form.min_claude_code_version,
       max_claude_code_version: form.max_claude_code_version,
       allow_ungrouped_key_scheduling: form.allow_ungrouped_key_scheduling,
+      upstream_error_retry: { ...form.upstream_error_retry },
+      upstream_error_message: upstreamErrorMessage,
       account_group_priority_enabled: form.account_group_priority_enabled,
       openai_ttft_mode:
         form.openai_ttft_mode === "visible" ? "visible" : "semantic",
       enable_fingerprint_unification: form.enable_fingerprint_unification,
       enable_metadata_passthrough: form.enable_metadata_passthrough,
-      enable_cch_signing: form.enable_cch_signing,
       enable_claude_oauth_system_prompt_injection:
         form.enable_claude_oauth_system_prompt_injection,
       claude_oauth_system_prompt: form.claude_oauth_system_prompt?.trim()
@@ -12255,6 +12324,7 @@ async function saveSettings() {
         form.account_quota_notify_emails || []
       ).filter((e) => e.email.trim() !== ""),
       // Channel Monitor feature switch
+      channel_quality_public_enabled: form.channel_quality_public_enabled,
       channel_monitor_enabled: form.channel_monitor_enabled,
       // Sent only when changed here: the monitor page can switch the mode on its own.
       channel_monitor_mode:
@@ -12287,9 +12357,8 @@ async function saveSettings() {
       usage_show_cache_rate: form.usage_show_cache_rate,
       usage_show_cache_rate_to_users: form.usage_show_cache_rate_to_users,
       usage_show_upstream_response_model_to_users: form.usage_show_upstream_response_model_to_users,
-      request_capture_enabled: form.request_capture_enabled,
-      request_capture_quota_mib: form.request_capture_quota_mib,
-      request_capture_retention_days: form.request_capture_retention_days,
+      // Retired request capture fields are returned as zero by the compatibility
+      // DTO. Do not submit them: their legacy validation blocks unrelated saves.
     };
 
     // 仅当 openai_fast_policy_settings 已成功从后端加载时才回写，
@@ -13948,5 +14017,13 @@ h2[id^="settings-section-"]:target {
 
 .settings-tab-label {
   @apply min-w-0 overflow-hidden text-ellipsis whitespace-nowrap leading-none;
+}
+
+/* ============ 系统设置 保存浮标 ============ */
+.settings-save-dock {
+  @apply sticky bottom-3 z-20 ml-auto flex w-fit items-center rounded-full border border-white/80 bg-white/90 p-1.5 backdrop-blur-xl;
+  box-shadow:
+    0 10px 26px rgb(15 23 42 / 0.12),
+    0 1px 0 rgb(255 255 255 / 0.9) inset;
 }
 </style>

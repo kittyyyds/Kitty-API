@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"github.com/lib/pq"
 )
 
@@ -58,7 +60,8 @@ func (r *channelMonitorV2Repository) GetConfig(ctx context.Context) (*service.Ch
 		_ = json.Unmarshal(thresholds, &cfg.HealthThresholds)
 	}
 	cfg.HealthThresholds = service.NormalizeChannelMonitorV2HealthThresholds(cfg.HealthThresholds)
-	cfg.CardTimelineMode = service.NormalizeChannelMonitorV2CardTimelineMode(cfg.CardTimelineMode)
+	// A row saved while the time-window mode existed may still hold "windows".
+	cfg.CardTimelineMode = service.ChannelMonitorV2CardTimelineSamples
 	return &cfg, nil
 }
 
@@ -100,7 +103,7 @@ func (r *channelMonitorV2Repository) UpdateConfig(ctx context.Context, cfg servi
 		          COALESCE(health_thresholds, '{}'::jsonb), candy_probes,
 		          candy_history_limit, updated_at, updated_by`,
 		cfg.Enabled, cfg.RefreshIntervalSeconds, platforms, pq.Array(cfg.GroupIDs),
-		pq.Array(cfg.IgnoredErrorCategories), thresholds, cfg.UpdatedBy, expectedVersion, probes, cfg.CandyHistoryLimit, cfg.CardTimelineMode, pq.Array(cfg.GroupOrder),
+		pq.Array(cfg.IgnoredErrorCategories), thresholds, cfg.UpdatedBy, expectedVersion, probes, cfg.CandyHistoryLimit, service.ChannelMonitorV2CardTimelineSamples, pq.Array(cfg.GroupOrder),
 	).Scan(&updated.Version, &updated.Enabled, &updated.RefreshIntervalSeconds, &updated.CardTimelineMode, &raw,
 		pq.Array(&updated.GroupIDs), pq.Array(&updated.GroupOrder), pq.Array(&updated.IgnoredErrorCategories),
 		&rawThresholds, &rawProbes, &updated.CandyHistoryLimit,
@@ -130,16 +133,17 @@ func (r *channelMonitorV2Repository) UpdateConfig(ctx context.Context, cfg servi
 	updated.HealthThresholds = service.DefaultChannelMonitorV2HealthThresholds()
 	_ = json.Unmarshal(rawThresholds, &updated.HealthThresholds)
 	updated.HealthThresholds = service.NormalizeChannelMonitorV2HealthThresholds(updated.HealthThresholds)
-	updated.CardTimelineMode = service.NormalizeChannelMonitorV2CardTimelineMode(updated.CardTimelineMode)
+	updated.CardTimelineMode = service.ChannelMonitorV2CardTimelineSamples
 	return &updated, nil
 }
 
 type channelMonitorV2Fact struct {
-	BucketStart, Platform, GroupName, Model             string
-	GroupID                                             int64
-	Success, Errors, UpstreamAffected, UpstreamAttempts int64
-	Input, Output, CacheCreation, CacheRead             int64
-	TTFTSum, TTFTCount, DurationSum, DurationCount      int64
+	TPSOutputTokens, TPSGenerationMS, TPSSamples                                                          int64
+	BucketStart, Platform, GroupName, Model                                                               string
+	GroupID                                                                                               int64
+	Success, Errors, UpstreamAffected, UpstreamAttempts                                                   int64
+	Input, CacheEligibleInput, Output, CacheCreation, CacheRead, CacheEligibleCreation, CacheEligibleRead int64
+	TTFTSum, TTFTCount, DurationSum, DurationCount                                                        int64
 }
 
 type channelMonitorV2Histogram struct {
@@ -164,7 +168,7 @@ func (r *channelMonitorV2Repository) GetDimensions(ctx context.Context, filter s
 	// Catalog dimensions must stay independent of the currently selected
 	// platform/group/model multi-select filters so pickers keep their full option set.
 	// Time/coverage still come from the request filter; config scope (enabled platforms,
-	// group allow-list, display-model collapse) still applies.
+	// group allow-list) still applies.
 	catalogFilter := channelMonitorV2CatalogFilter(channelMonitorV2CommonCoverageFilter(filter, *coverage))
 	where, args, _ := channelMonitorV2WhereWithRollup(catalogFilter, cfg, "m")
 	query := `SELECT m.platform, COALESCE(g.name, ''), lower(COALESCE(NULLIF(TRIM(g.platform), ''), 'unknown')), m.group_id, m.model,
@@ -193,14 +197,6 @@ func (r *channelMonitorV2Repository) GetDimensions(ctx context.Context, filter s
 	groupCounts := map[int64]groupValue{}
 	for _, platform := range channelMonitorV2EnabledPlatforms(cfg) {
 		platformCounts[platform] += 0
-		for _, p := range cfg.Platforms {
-			if p.Platform != platform || len(p.Models) == 0 {
-				continue
-			}
-			for _, model := range p.Models {
-				modelCounts[platform+"\x00"+model] = modelValue{platform: platform, count: 0}
-			}
-		}
 	}
 	groupInfo, err := r.loadChannelMonitorV2GroupInfo(ctx, configuredChannelMonitorV2GroupIDs(catalogFilter, cfg))
 	if err != nil {
@@ -240,8 +236,9 @@ func (r *channelMonitorV2Repository) GetDimensions(ctx context.Context, filter s
 	for value, count := range platformCounts {
 		result.Platforms = append(result.Platforms, service.ChannelMonitorV2Dimension{Value: value, Label: service.ChannelMonitorV2PlatformLabel(value), RequestCount: count})
 	}
-	for value, meta := range modelCounts {
-		result.Models = append(result.Models, service.ChannelMonitorV2Dimension{Value: value, Label: channelMonitorV2ModelLabel(value), Platform: meta.platform, RequestCount: meta.count})
+	for key, meta := range modelCounts {
+		model := strings.SplitN(key, "\x00", 2)[1]
+		result.Models = append(result.Models, service.ChannelMonitorV2Dimension{Value: model, Label: channelMonitorV2ModelLabel(model), Platform: meta.platform, RequestCount: meta.count})
 	}
 	for id, value := range groupCounts {
 		result.Groups = append(result.Groups, service.ChannelMonitorV2GroupDimension{ID: id, Name: value.name, Platform: value.platform, RequestCount: value.count})
@@ -339,21 +336,6 @@ func (r *channelMonitorV2Repository) GetModels(ctx context.Context, filter servi
 		return nil, err
 	}
 	accs := map[string]*metricAccumulator{}
-	for _, platform := range channelMonitorV2EnabledPlatforms(cfg) {
-		if len(filter.Platforms) > 0 && !containsString(filter.Platforms, platform) {
-			continue
-		}
-		models := configuredChannelMonitorV2Models(cfg, platform, filter)
-		for _, model := range models {
-			if model == "" {
-				continue
-			}
-			key := platform + "\x00" + model
-			if accs[key] == nil {
-				accs[key] = newMetricAccumulator()
-			}
-		}
-	}
 	for _, fact := range facts {
 		if !channelMonitorV2ModelSelected(filter, cfg, fact.Platform, fact.Model) {
 			continue
@@ -498,6 +480,8 @@ func (r *channelMonitorV2Repository) GetMatrix(ctx context.Context, filter servi
 		metrics := acc.total.metric(minutes, admin)
 		applyIgnoredErrors(&metrics, ignoredByDim[key])
 		row := service.ChannelMonitorV2MatrixRow{Platform: key.platform, GroupName: acc.groupName, Model: key.model, Metrics: metrics, Health: service.ChannelMonitorV2HealthForWithThresholds(metrics, cfg.HealthThresholds), Buckets: []service.ChannelMonitorV2TrendPoint{}}
+		// Preserve actual traffic before ignored errors and volume privacy redaction.
+		row.HasTraffic = acc.total.success+acc.total.errors > 0
 		if key.groupID > 0 {
 			groupID := key.groupID
 			row.GroupID = &groupID
@@ -526,6 +510,11 @@ func (r *channelMonitorV2Repository) GetMatrix(ctx context.Context, filter servi
 	sort.Slice(result.Items, func(i, j int) bool {
 		return channelMonitorV2MatrixLess(cfg, groupOrder, result.Items[i], result.Items[j])
 	})
+	if filter.IncludeRecentRequests {
+		if err := r.loadChannelMonitorV2RecentRequests(ctx, filter, cfg, result.Items, admin); err != nil {
+			return nil, fmt.Errorf("load recent monitor requests: %w", err)
+		}
+	}
 	if filter.IncludeRecentSamples && groupBy == service.ChannelMonitorV2GroupByPlatformGroup {
 		if err := r.attachRecentSampleBuckets(ctx, result, filter, cfg, admin); err != nil {
 			return nil, err
@@ -547,6 +536,9 @@ func channelMonitorV2MatrixDimensionKey(groupBy service.ChannelMonitorV2GroupBy,
 
 func seedChannelMonitorV2MatrixAccumulators(filter service.ChannelMonitorV2Filter, cfg service.ChannelMonitorV2Config, groupBy service.ChannelMonitorV2GroupBy, groupInfo map[int64]channelMonitorV2GroupInfo) map[channelMonitorV2MatrixKey]*channelMonitorV2MatrixAccumulator {
 	accs := map[channelMonitorV2MatrixKey]*channelMonitorV2MatrixAccumulator{}
+	if groupBy == service.ChannelMonitorV2GroupByPlatformModel || groupBy == service.ChannelMonitorV2GroupByPlatformGroupModel {
+		return accs
+	}
 	platforms := channelMonitorV2EnabledPlatforms(cfg)
 	if len(filter.Platforms) > 0 {
 		platforms = intersectStrings(platforms, filter.Platforms)
@@ -571,13 +563,6 @@ func seedChannelMonitorV2MatrixAccumulators(filter service.ChannelMonitorV2Filte
 		}
 	}
 	for _, platform := range platforms {
-		models := []string{""}
-		if groupBy == service.ChannelMonitorV2GroupByPlatformModel || groupBy == service.ChannelMonitorV2GroupByPlatformGroupModel {
-			models = configuredChannelMonitorV2Models(cfg, platform, filter)
-			if len(models) == 0 {
-				models = []string{""}
-			}
-		}
 		for _, groupID := range groupIDs {
 			info := groupInfo[groupID]
 			if needsGroup {
@@ -588,40 +573,16 @@ func seedChannelMonitorV2MatrixAccumulators(filter service.ChannelMonitorV2Filte
 					continue
 				}
 			}
-			for _, model := range models {
-				key := channelMonitorV2MatrixKey{platform: platform}
-				if needsGroup {
-					key.groupID = groupID
-				}
-				if groupBy == service.ChannelMonitorV2GroupByPlatformModel || groupBy == service.ChannelMonitorV2GroupByPlatformGroupModel {
-					key.model = model
-				}
-				if accs[key] == nil {
-					accs[key] = &channelMonitorV2MatrixAccumulator{groupName: info.name, total: newMetricAccumulator(), buckets: make(map[string]*metricAccumulator)}
-				}
+			key := channelMonitorV2MatrixKey{platform: platform}
+			if needsGroup {
+				key.groupID = groupID
+			}
+			if accs[key] == nil {
+				accs[key] = &channelMonitorV2MatrixAccumulator{groupName: info.name, total: newMetricAccumulator(), buckets: make(map[string]*metricAccumulator)}
 			}
 		}
 	}
 	return accs
-}
-
-func configuredChannelMonitorV2Models(cfg service.ChannelMonitorV2Config, platform string, filter service.ChannelMonitorV2Filter) []string {
-	models := []string{}
-	for _, p := range cfg.Platforms {
-		if p.Platform != platform {
-			continue
-		}
-		models = append(models, p.Models...)
-		break
-	}
-	if len(filter.Models) > 0 {
-		if len(models) == 0 {
-			models = append(models, filter.Models...)
-		} else {
-			models = intersectStrings(models, filter.Models)
-		}
-	}
-	return models
 }
 
 // channelMonitorV2CatalogFilter clears multi-select dimensions so catalog endpoints
@@ -794,6 +755,7 @@ func (r *channelMonitorV2Repository) loadErrorDetails(ctx context.Context, filte
 		"current_error.created_at >= $1",
 		"current_error.created_at < $2",
 		"NOT current_error.is_count_tokens",
+		"NOT " + opsClientRejectionSQL("current_error"),
 		"(COALESCE(current_error.status_code, 0) >= 400 OR current_error.error_type = 'cyber_policy')",
 		`(NULLIF(current_error.request_id, '') IS NULL OR NOT EXISTS (
 				SELECT 1 FROM ops_error_logs newer
@@ -878,20 +840,15 @@ func (r *channelMonitorV2Repository) loadErrorDetails(ctx context.Context, filte
 	return out, rows.Err()
 }
 
+var channelMonitorV2CredentialPattern = regexp.MustCompile(`(?i)\b(bearer\s+|sk-)[^\s,"'<>]+`)
+
 func sanitizeChannelMonitorV2ErrorDetail(message string) string {
+	message = channelMonitorV2CredentialPattern.ReplaceAllString(message, "${1}****")
+	message = logredact.RedactText(message, "authorization", "api_key", "api-key", "key", "token", "secret")
 	message = strings.Join(strings.Fields(message), " ")
-	replacements := []string{"Bearer ", "bearer ", "sk-", "sk-proj-"}
-	for _, marker := range replacements {
-		if idx := strings.Index(message, marker); idx >= 0 {
-			end := idx + len(marker)
-			for end < len(message) && message[end] != ' ' && message[end] != ',' && message[end] != '"' {
-				end++
-			}
-			message = message[:idx] + marker + "****" + message[end:]
-		}
-	}
-	if len(message) > 240 {
-		message = message[:240] + "…"
+	runes := []rune(message)
+	if len(runes) > 240 {
+		message = string(runes[:240]) + "…"
 	}
 	return message
 }
@@ -905,7 +862,7 @@ func (r *channelMonitorV2Repository) GetUsers(ctx context.Context, filter servic
 	filter = effectiveFilter
 	where, args, _ := channelMonitorV2WhereWithRollup(filter, cfg, "m")
 	query := `SELECT m.user_id,COALESCE(u.email,''),COALESCE(u.username,''),m.platform,m.model,
-	SUM(m.success_requests),SUM(m.error_requests),SUM(m.input_tokens),SUM(m.output_tokens),SUM(m.cache_creation_tokens),SUM(m.cache_read_tokens),SUM(m.ttft_sum_ms),SUM(m.ttft_count),SUM(m.duration_sum_ms),SUM(m.duration_count)
+	SUM(m.success_requests),SUM(m.error_requests),SUM(m.input_tokens),SUM(m.cache_eligible_input_tokens),SUM(m.output_tokens),SUM(m.cache_creation_tokens),SUM(m.cache_read_tokens),SUM(m.cache_eligible_creation_tokens),SUM(m.cache_eligible_read_tokens),SUM(m.ttft_sum_ms),SUM(m.ttft_count),SUM(m.duration_sum_ms),SUM(m.duration_count),SUM(m.tps_output_tokens),SUM(m.tps_generation_ms),SUM(m.tps_samples)
 	FROM ` + channelMonitorV2UserMetricsTable(filter) + ` m LEFT JOIN users u ON u.id=m.user_id ` + where + ` GROUP BY m.user_id,u.email,u.username,m.platform,m.model`
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -919,7 +876,7 @@ func (r *channelMonitorV2Repository) GetUsers(ctx context.Context, filter servic
 		var uid int64
 		var email, username string
 		var f channelMonitorV2Fact
-		if err := rows.Scan(&uid, &email, &username, &f.Platform, &f.Model, &f.Success, &f.Errors, &f.Input, &f.Output, &f.CacheCreation, &f.CacheRead, &f.TTFTSum, &f.TTFTCount, &f.DurationSum, &f.DurationCount); err != nil {
+		if err := rows.Scan(&uid, &email, &username, &f.Platform, &f.Model, &f.Success, &f.Errors, &f.Input, &f.CacheEligibleInput, &f.Output, &f.CacheCreation, &f.CacheRead, &f.CacheEligibleCreation, &f.CacheEligibleRead, &f.TTFTSum, &f.TTFTCount, &f.DurationSum, &f.DurationCount, &f.TPSOutputTokens, &f.TPSGenerationMS, &f.TPSSamples); err != nil {
 			return nil, err
 		}
 		if !channelMonitorV2ModelSelected(filter, cfg, f.Platform, f.Model) {
@@ -999,7 +956,7 @@ func (r *channelMonitorV2Repository) loadFacts(ctx context.Context, filter servi
 			group = bucketExpr + "," + group
 		}
 	}
-	query := `SELECT ` + bucketExpr + `,m.platform,m.group_id,COALESCE(g.name,''),m.model,SUM(m.success_requests),SUM(m.error_requests),SUM(m.upstream_affected_requests),SUM(m.upstream_attempt_count),SUM(m.input_tokens),SUM(m.output_tokens),SUM(m.cache_creation_tokens),SUM(m.cache_read_tokens),SUM(m.ttft_sum_ms),SUM(m.ttft_count),SUM(m.duration_sum_ms),SUM(m.duration_count) FROM ` + channelMonitorV2MetricsTable(filter) + ` m LEFT JOIN groups g ON g.id=NULLIF(m.group_id,0) ` + where + ` GROUP BY ` + group
+	query := `SELECT ` + bucketExpr + `,m.platform,m.group_id,COALESCE(g.name,''),m.model,SUM(m.success_requests),SUM(m.error_requests),SUM(m.upstream_affected_requests),SUM(m.upstream_attempt_count),SUM(m.input_tokens),SUM(m.cache_eligible_input_tokens),SUM(m.output_tokens),SUM(m.cache_creation_tokens),SUM(m.cache_read_tokens),SUM(m.cache_eligible_creation_tokens),SUM(m.cache_eligible_read_tokens),SUM(m.ttft_sum_ms),SUM(m.ttft_count),SUM(m.duration_sum_ms),SUM(m.duration_count),SUM(m.tps_output_tokens),SUM(m.tps_generation_ms),SUM(m.tps_samples) FROM ` + channelMonitorV2MetricsTable(filter) + ` m LEFT JOIN groups g ON g.id=NULLIF(m.group_id,0) ` + where + ` GROUP BY ` + group
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -1009,7 +966,7 @@ func (r *channelMonitorV2Repository) loadFacts(ctx context.Context, filter servi
 	for rows.Next() {
 		var bucket time.Time
 		var f channelMonitorV2Fact
-		if err := rows.Scan(&bucket, &f.Platform, &f.GroupID, &f.GroupName, &f.Model, &f.Success, &f.Errors, &f.UpstreamAffected, &f.UpstreamAttempts, &f.Input, &f.Output, &f.CacheCreation, &f.CacheRead, &f.TTFTSum, &f.TTFTCount, &f.DurationSum, &f.DurationCount); err != nil {
+		if err := rows.Scan(&bucket, &f.Platform, &f.GroupID, &f.GroupName, &f.Model, &f.Success, &f.Errors, &f.UpstreamAffected, &f.UpstreamAttempts, &f.Input, &f.CacheEligibleInput, &f.Output, &f.CacheCreation, &f.CacheRead, &f.CacheEligibleCreation, &f.CacheEligibleRead, &f.TTFTSum, &f.TTFTCount, &f.DurationSum, &f.DurationCount, &f.TPSOutputTokens, &f.TPSGenerationMS, &f.TPSSamples); err != nil {
 			return nil, err
 		}
 		f.BucketStart = bucket.UTC().Format(time.RFC3339Nano)
@@ -1293,33 +1250,12 @@ func channelMonitorV2EnabledPlatforms(cfg service.ChannelMonitorV2Config) []stri
 	return out
 }
 
-// channelMonitorV2DisplayModel maps a raw model name for presentation.
-// Semantics (parallel to empty group_ids = all groups):
-//   - platform not in config / disabled → keep raw model (still collected)
-//   - models list empty → show the real model name (no collapsing)
-//   - models list non-empty → selected keep identity; everything else → __other__
-func channelMonitorV2DisplayModel(cfg service.ChannelMonitorV2Config, platform, model string) string {
+// Keep observed model identities even when an older config contains a named-model list.
+func channelMonitorV2DisplayModel(_ service.ChannelMonitorV2Config, _, model string) string {
 	model = strings.TrimSpace(model)
 	if model == "" {
-		return service.ChannelMonitorV2OtherModel
+		return "unknown"
 	}
-	for _, p := range cfg.Platforms {
-		if p.Platform != platform {
-			continue
-		}
-		// Empty allow-list: surface every real model instead of dumping into __other__.
-		// Operators opt into the named + __other__ split only by listing models.
-		if len(p.Models) == 0 {
-			return model
-		}
-		for _, selected := range p.Models {
-			if selected == model {
-				return model
-			}
-		}
-		return service.ChannelMonitorV2OtherModel
-	}
-	// Platform not configured: still show the real model so traffic is visible.
 	return model
 }
 func channelMonitorV2ModelSelected(filter service.ChannelMonitorV2Filter, cfg service.ChannelMonitorV2Config, platform, model string) bool {
@@ -1382,15 +1318,6 @@ func intersectStrings(a, b []string) []string {
 	return out
 }
 
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
-}
-
 func intersectInt64(a, b []int64) []int64 {
 	set := map[int64]struct{}{}
 	for _, v := range b {
@@ -1414,8 +1341,9 @@ func shiftSQLPlaceholders(query string, offset int) string {
 }
 
 type metricAccumulator struct {
-	success, errors, upstreamAffected, upstreamAttempts, input, output, cacheCreation, cacheRead, ttftSum, ttftCount, durationSum, durationCount int64
-	hist                                                                                                                                         map[string]map[int64]int64
+	tpsOutputTokens, tpsGenerationMS, tpsSamples                                                                                                                                                               int64
+	success, errors, upstreamAffected, upstreamAttempts, input, cacheEligibleInput, output, cacheCreation, cacheRead, cacheEligibleCreation, cacheEligibleRead, ttftSum, ttftCount, durationSum, durationCount int64
+	hist                                                                                                                                                                                                       map[string]map[int64]int64
 }
 
 func newMetricAccumulator() *metricAccumulator {
@@ -1427,13 +1355,19 @@ func (a *metricAccumulator) addFact(f channelMonitorV2Fact) {
 	a.upstreamAffected += f.UpstreamAffected
 	a.upstreamAttempts += f.UpstreamAttempts
 	a.input += f.Input
+	a.cacheEligibleInput += f.CacheEligibleInput
 	a.output += f.Output
 	a.cacheCreation += f.CacheCreation
 	a.cacheRead += f.CacheRead
+	a.cacheEligibleCreation += f.CacheEligibleCreation
+	a.cacheEligibleRead += f.CacheEligibleRead
 	a.ttftSum += f.TTFTSum
 	a.ttftCount += f.TTFTCount
 	a.durationSum += f.DurationSum
 	a.durationCount += f.DurationCount
+	a.tpsOutputTokens += f.TPSOutputTokens
+	a.tpsGenerationMS += f.TPSGenerationMS
+	a.tpsSamples += f.TPSSamples
 }
 func (a *metricAccumulator) addHistogram(h channelMonitorV2Histogram) {
 	if a.hist[h.Metric] == nil {
@@ -1444,17 +1378,23 @@ func (a *metricAccumulator) addHistogram(h channelMonitorV2Histogram) {
 func (a *metricAccumulator) metric(minutes float64, admin bool) service.ChannelMonitorV2Metric {
 	requests := a.success + a.errors
 	tokens := a.input + a.output + a.cacheCreation + a.cacheRead
-	denom := a.input + a.cacheCreation + a.cacheRead
+	// Only streaming/WS requests contribute to cache rate; keep full token
+	// totals above for traffic metrics independently of cache eligibility.
+	denom := a.cacheEligibleInput + a.cacheEligibleCreation + a.cacheEligibleRead
 	if minutes <= 0 {
 		minutes = 1
 	}
-	m := service.ChannelMonitorV2Metric{SuccessRequests: a.success, ErrorRequests: a.errors, RequestCount: requests, InputTokens: a.input, OutputTokens: a.output, CacheCreationTokens: a.cacheCreation, CacheReadTokens: a.cacheRead, TokenCount: tokens, RPM: float64(requests) / minutes, TPM: float64(tokens) / minutes, CacheRateNumerator: a.cacheRead, CacheRateDenominator: denom, TTFT: latencyMetric(a.ttftSum, a.ttftCount, a.hist["ttft"]), Duration: latencyMetric(a.durationSum, a.durationCount, a.hist["duration"])}
+	m := service.ChannelMonitorV2Metric{SuccessRequests: a.success, ErrorRequests: a.errors, RequestCount: requests, InputTokens: a.input, CacheEligibleInputTokens: a.cacheEligibleInput, OutputTokens: a.output, CacheCreationTokens: a.cacheCreation, CacheReadTokens: a.cacheRead, TokenCount: tokens, RPM: float64(requests) / minutes, TPM: float64(tokens) / minutes, CacheRateNumerator: a.cacheEligibleRead, CacheRateDenominator: denom, TTFT: latencyMetric(a.ttftSum, a.ttftCount, a.hist["ttft"]), Duration: latencyMetric(a.durationSum, a.durationCount, a.hist["duration"])}
+	if a.tpsSamples > 0 { m.OutputTPS = service.OutputTokensPerSecond(a.tpsOutputTokens, float64(a.tpsGenerationMS)) }
+	m.TPSSamples = a.tpsSamples
+	m.OutputTPSSamples = a.tpsSamples
 	if requests > 0 {
 		m.ErrorRate = float64(a.errors) / float64(requests)
 		m.SuccessRate = float64(a.success) / float64(requests)
 	}
 	if denom > 0 {
-		m.CacheRate = float64(a.cacheRead) / float64(denom)
+		m.HasCacheSamples = true
+		m.CacheRate = float64(a.cacheEligibleRead) / float64(denom)
 	}
 	if admin {
 		affected, attempts := a.upstreamAffected, a.upstreamAttempts

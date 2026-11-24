@@ -100,11 +100,15 @@ var (
 )
 
 type BatchImageJob struct {
-	ID                int64
-	BatchID           string
-	UserID            int64
-	APIKeyID          *int64
-	AccountID         *int64
+	ID        int64
+	BatchID   string
+	UserID    int64
+	APIKeyID  *int64
+	AccountID *int64
+	// RoutedGroupID is the effective billing group: group-level account fallback
+	// retains the source, while API-key fallback switches it. It is persisted for
+	// asynchronous settlement; nil is retained for legacy jobs without a snapshot.
+	RoutedGroupID     *int64
 	Provider          string
 	Model             string
 	TaskName          string
@@ -165,6 +169,7 @@ type CreateBatchImageJobParams struct {
 	UserID            int64
 	APIKeyID          *int64
 	AccountID         *int64
+	RoutedGroupID     *int64
 	Provider          string
 	Model             string
 	TaskName          string

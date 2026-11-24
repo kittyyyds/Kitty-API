@@ -16,6 +16,7 @@ func RegisterUserRoutes(
 	auditLog middleware.AuditLogMiddleware,
 	settingService *service.SettingService,
 	panelRateLimiter *middleware.PanelRateLimiter,
+	panelKeyAuth ...gin.HandlerFunc,
 ) {
 	authenticated := v1.Group("")
 	authenticated.Use(gin.HandlerFunc(jwtAuth))
@@ -36,21 +37,33 @@ func RegisterUserRoutes(
 	authenticated.GET("/video-tasks", h.OpenAIGateway.ListMyVideoTasks)
 	authenticated.GET("/video-tasks/stats", h.OpenAIGateway.MyVideoTaskStats)
 	{
-		// 用户接口
 		if h.QQBot != nil {
 			bot := authenticated.Group("/user/qqbot")
 			bot.GET("/binding", h.QQBot.Binding)
 			bot.POST("/binding-code", panelRateLimiter.Heavy(), h.QQBot.CreateBindingCode)
 			bot.POST("/binding-confirm", h.QQBot.ConfirmBinding)
 		}
+		// 用户接口
 		user := authenticated.Group("/user")
 		{
 			user.GET("/profile", h.User.GetProfile)
+			if h.Admin != nil && h.Admin.Setting != nil {
+				user.GET("/key-risks", h.Admin.Setting.GetMyKeyRisks)
+				user.POST("/key-risks/:id/acknowledge", h.Admin.Setting.AcknowledgeMyKeyRisk)
+			}
 			if h.Admin != nil && h.Admin.PromptAudit != nil {
 				user.GET("/security/summary", h.Admin.PromptAudit.MyPenaltySummary)
 				user.GET("/security/events", h.Admin.PromptAudit.MyPenaltyEvents)
 				user.GET("/security/events/:id", h.Admin.PromptAudit.MyPenaltyEvent)
 			}
+			if h.MCPOAuth != nil {
+				user.GET("/mcp/config", h.MCPOAuth.ConnectionConfig)
+				user.GET("/mcp/grants", h.MCPOAuth.ListGrants)
+				user.DELETE("/mcp/grants/:id", h.MCPOAuth.RevokeGrant)
+				user.GET("/mcp/authorize", h.MCPOAuth.Preview)
+				user.POST("/mcp/authorize", h.MCPOAuth.Decide)
+			}
+
 			user.PUT("/password", h.User.ChangePassword)
 			user.PUT("", h.User.UpdateProfile)
 			user.GET("/aff", h.User.GetAffiliate)
@@ -61,6 +74,7 @@ func RegisterUserRoutes(
 			user.POST("/auth-identities/bind/start", h.User.StartIdentityBinding)
 			user.GET("/api-keys/:id/usage/daily", panelRateLimiter.Heavy(), h.Usage.GetMyAPIKeyDailyUsage)
 			user.GET("/platform-quotas", h.User.GetMyPlatformQuotas)
+			registerChannelQualityPublicRoutes(user, h.User, settingService)
 
 			// 通知邮箱管理
 			notifyEmail := user.Group("/notify-email")
@@ -101,9 +115,30 @@ func RegisterUserRoutes(
 			// 必须在动态 /:id 路由之前注册，避免被参数路由吞掉。
 			keys.GET("/concurrency", h.APIKey.GetConcurrencyQueue)
 			keys.GET("/:id", h.APIKey.GetByID)
-			keys.POST("", h.APIKey.Create)
+			keys.POST("", panelRateLimiter.Heavy(), h.Totp.RequireKeyStepUp, h.APIKey.Create)
+			keys.POST("/:id/regenerate", panelRateLimiter.Heavy(), h.Totp.RequireKeyStepUp, h.APIKey.Regenerate)
 			keys.PUT("/:id", h.APIKey.Update)
 			keys.DELETE("/:id", h.APIKey.Delete)
+		}
+
+		if h.BatchImage != nil && len(panelKeyAuth) > 0 {
+			batches := authenticated.Group("/key-image-batches/:key_id")
+			batches.Use(panelKeyAuth[0])
+			batches.Use(func(c *gin.Context) {
+				ctx := service.WithUpstreamErrorMessage(c.Request.Context(), settingService.GetUpstreamErrorMessage(c.Request.Context()))
+				c.Request = c.Request.WithContext(ctx)
+				c.Next()
+			})
+			batches.POST("", panelRateLimiter.Heavy(), h.BatchImage.Submit)
+			batches.GET("", h.BatchImage.List)
+			batches.GET("/models", h.BatchImage.Models)
+			batches.GET("/:id", h.BatchImage.Get)
+			batches.GET("/:id/items", h.BatchImage.Items)
+			batches.GET("/:id/items/:custom_id/content", h.BatchImage.ItemContent)
+			batches.GET("/:id/download", h.BatchImage.Download)
+			batches.POST("/:id/cancel", h.BatchImage.Cancel)
+			batches.DELETE("/:id", h.BatchImage.DeleteRecord)
+			batches.DELETE("/:id/outputs", h.BatchImage.DeleteOutputs)
 		}
 
 		// 用户可用分组（非管理员接口）
@@ -152,19 +187,17 @@ func RegisterUserRoutes(
 			announcements.POST("/:id/read", h.Announcement.MarkRead)
 		}
 
-		// 应用中心：目录、运行历史和客户端执行工作流。
-		apps := authenticated.Group("/apps")
-		{
-			apps.GET("", h.ApplicationCenter.ListApplications)
-			apps.GET("/runs", h.ApplicationCenter.ListRuns)
-			apps.GET("/runs/:run_id", h.ApplicationCenter.GetRun)
-			apps.POST("/:slug/runs", h.ApplicationCenter.StartRun)
-			apps.POST("/runs/:run_id/steps/:step_key/complete", h.ApplicationCenter.CompleteStep)
-			apps.POST("/runs/:run_id/steps/:step_key/checkpoint", h.ApplicationCenter.CheckpointStep)
-			apps.POST("/runs/:run_id/steps/:step_key/fail", h.ApplicationCenter.FailStep)
-			apps.POST("/runs/:run_id/cancel", h.ApplicationCenter.CancelRun)
-			apps.POST("/runs/:run_id/retry", h.ApplicationCenter.RetryRun)
+		if h.GPTDirect != nil {
+			direct := authenticated.Group("/gpt-direct")
+			direct.GET("/config", h.GPTDirect.Config)
+			for _, operation := range []string{"verify", "query", "redeem", "subscription"} {
+				direct.POST("/"+operation, panelRateLimiter.Heavy(), h.GPTDirect.Operation(operation))
+			}
+			direct.POST("/task", h.GPTDirect.Operation("task"))
 		}
+
+		// 应用中心：目录、运行历史和客户端执行工作流。
+
 		// 工单
 
 		// 账单：月账单与用量导出
@@ -207,13 +240,6 @@ func RegisterUserRoutes(
 		{
 			monitors.GET("", h.ChannelMonitor.List)
 			monitors.GET("/:id/status", h.ChannelMonitor.GetStatus)
-		}
-
-		// 鹈鹕测智展示（用户只读；功能关闭时返回空画廊）
-		showcase := authenticated.Group("/pelican-showcase")
-		{
-			showcase.GET("", h.PelicanShowcase.List)
-			showcase.GET("/items/:id", h.PelicanShowcase.GetItem)
 		}
 
 		// V2 passive views require feature on + mode=v2.

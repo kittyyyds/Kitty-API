@@ -26,6 +26,7 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
+      locale: { value: 'zh' },
       t: (key: string) => key
     })
   }
@@ -118,22 +119,26 @@ describe('AccountTestModal', () => {
     localStorage.clear()
   })
 
-  it('only shows upstream status after a response and preserves HTTP 200 on terminal failure', async () => {
-    const wrapper = mount(AccountTestModal, { props: { show: true, account: buildAccount() }, global: { stubs: { BaseDialog: BaseDialogStub, Select: SelectStub, TextArea: TextAreaStub, Icon: true } } })
+  it.each([false, true])('handles fragmented UTF-8 and final SSE line, complete=%s', async (complete) => {
+    const bytes = new TextEncoder().encode('data: {"type":"status","text":"连接成功"}\n\n' +
+      (complete ? 'data: {"type":"test_complete","success":true}' : ''))
+    let index = 0
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, body: { getReader: () => ({
+      read: async () => index < bytes.length
+        ? { done: false, value: bytes.slice(index, ++index) }
+        : { done: true }
+    }) } })
+    const wrapper = mount(AccountTestModal, {
+      props: { show: true, account: buildAccount() },
+      global: { stubs: { BaseDialog: BaseDialogStub, Select: SelectStub, TextArea: TextAreaStub, Icon: true } }
+    })
     await flushPromises()
-    const vm = wrapper.vm as any
-    vm.handleEvent({ type: 'test_start', model: 'alias' })
-    expect(wrapper.find('[data-testid="upstream-evidence"]').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('admin.accounts.connectedToApi')
-    vm.handleEvent({ type: 'upstream_response', upstream_status: 200, upstream_model: 'gpt-6-astra', request_id: 'req_example' })
-    vm.handleEvent({ type: 'error', error: 'stream ended early' })
+    ;(wrapper.vm as any).selectedModelId = 'gpt-5.4'
+    await (wrapper.vm as any).startTest()
     await flushPromises()
-    expect(wrapper.get('[data-testid="upstream-evidence"]').text()).toContain('200')
-    expect(wrapper.text()).toContain('req_example')
-    expect(wrapper.emitted('tested')).toHaveLength(1)
-    vm.resetState()
-    await flushPromises()
-    expect(wrapper.find('[data-testid="upstream-evidence"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('连接成功')
+    expect(wrapper.text().includes('accountTestTiming.delivery.incomplete')).toBe(!complete)
+    expect((wrapper.vm as any).status).toBe(complete ? 'success' : 'error')
   })
 
   it('posts compact mode for OpenAI compact probe', async () => {
@@ -206,26 +211,5 @@ describe('AccountTestModal', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('已通过 /v1/chat/completions 验证')
-  })
-})
-
-
-describe('Model catalog load errors', () => {
-  it('shows a safe error, blocks an empty test and allows reloading', async () => {
-    getAvailableModelsMock.mockReset()
-    getAvailableModelsMock.mockRejectedValueOnce({reason: 'MODEL_CATALOG_UNAVAILABLE', message: 'private error must not be rendered'})
-    const wrapper = mount(AccountTestModal, {props: {show: false, account: buildAccount()}, global: {stubs: {BaseDialog: BaseDialogStub, Select: SelectStub, TextArea: TextAreaStub, Icon: true}}})
-    await wrapper.setProps({show: true})
-    await flushPromises()
-    expect(wrapper.get('[role="alert"]').text()).toContain('admin.accounts.modelsLoadFailed')
-    expect(wrapper.text()).not.toContain('private error')
-    const start = wrapper.findAll('button').find(b => b.text().includes('admin.accounts.startTest'))!
-    expect(start.attributes('disabled')).toBeDefined()
-    getAvailableModelsMock.mockResolvedValueOnce([{id:'gpt-6-astra',display_name:'Astra'}])
-    await wrapper.get('[role="alert"] button').trigger('click')
-    await flushPromises()
-    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
-    expect(start.attributes('disabled')).toBeUndefined()
-    wrapper.unmount()
   })
 })

@@ -15,6 +15,7 @@ export type AuthInputMethod =
   | 'codex_pat'
   | 'sso_cookie'
   | 'email_password'
+  | 'openai_password'
 
 export interface OAuthState {
   authUrl: string

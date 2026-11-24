@@ -50,38 +50,30 @@ func (h *GatewayHandler) checkSecurityAudit(c *gin.Context, reqLog *zap.Logger, 
 	if h == nil {
 		return nil
 	}
-	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, "http", h.securityPolicyService)
+	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, "http")
 }
 
 func (h *OpenAIGatewayHandler) checkSecurityAudit(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte) *securityaudit.Decision {
 	if h == nil {
 		return nil
 	}
-	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, "http", h.securityPolicyService)
+	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, "http")
 }
 
 func (h *OpenAIGatewayHandler) checkSecurityAuditStage(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) *securityaudit.Decision {
 	if h == nil {
 		return nil
 	}
-	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, stage, h.securityPolicyService)
+	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, stage)
 }
 
-func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securityaudit.Coordinator, legacy *service.ContentModerationService, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string, policies ...*service.SecurityPolicyService) *securityaudit.Decision {
-	var securityPolicy *service.SecurityPolicyService
-	if len(policies) > 0 {
-		securityPolicy = policies[0]
-	}
+func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securityaudit.Coordinator, legacy *service.ContentModerationService, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) *securityaudit.Decision {
 	if c == nil || c.Request == nil {
 		return nil
 	}
+	prepareUpstreamAudit(c, reqLog, coordinator, legacy, apiKey, subject, protocol, model, body, stage)
 	if legacy != nil {
 		c.Set("content_moderation.user_version", legacy.CaptureModerationUserVersion(c.Request.Context(), subject.UserID))
-	}
-	// 分组安全策略优先于全局审计：本地关键词前置 + 已终止会话入口检查。
-	// 开关关闭时为纯 no-op，不影响既有行为。
-	if decision := checkGroupSecurityPolicy(c, securityPolicy, apiKey, protocol, model, body); decision != nil {
-		return decision
 	}
 	defer requesttiming.Observe(c.Request.Context(), "security_audit")()
 	cacheCompletion := cachesSecurityAuditCompletion(stage)
@@ -179,6 +171,7 @@ func buildSecurityAuditRequest(c *gin.Context, apiKey *service.APIKey, subject m
 		APIKeyID: legacy.APIKeyID, APIKeyName: legacy.APIKeyName, GroupID: cloneSecurityAuditGroupID(legacy.GroupID),
 		GroupName: legacy.GroupName, Provider: legacy.Provider, Endpoint: legacy.Endpoint,
 		Protocol: legacy.Protocol, Model: legacy.Model, Body: body, Stage: strings.TrimSpace(stage),
+		NoBodyRetention: service.HasRecoveredContextPrivacy(c.Request.Context()),
 	}
 	if apiKey != nil && apiKey.User != nil {
 		request.Username = apiKey.User.Username

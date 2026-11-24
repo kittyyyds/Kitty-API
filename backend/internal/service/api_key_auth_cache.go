@@ -4,18 +4,20 @@ import "time"
 
 // APIKeyAuthSnapshot API Key 认证缓存快照（仅包含认证所需字段）
 type APIKeyAuthSnapshot struct {
+	Version         int                      `json:"version"`
+	APIKeyID        int64                    `json:"api_key_id"`
+	UserID          int64                    `json:"user_id"`
+	GroupID         *int64                   `json:"group_id,omitempty"`
+	FallbackGroupID *int64                   `json:"fallback_group_id,omitempty"`
+	Name            string                   `json:"name"`
+	Status          string                   `json:"status"`
+	IPWhitelist     []string                 `json:"ip_whitelist,omitempty"`
+	IPBlacklist     []string                 `json:"ip_blacklist,omitempty"`
+	User            APIKeyAuthUserSnapshot   `json:"user"`
+	Group           *APIKeyAuthGroupSnapshot `json:"group,omitempty"`
+	FallbackGroup   *APIKeyAuthGroupSnapshot `json:"fallback_group,omitempty"`
 	ConcurrencyLimit int                      `json:"concurrency_limit"`
-	Version          int                      `json:"version"`
-	APIKeyID         int64                    `json:"api_key_id"`
-	UserID           int64                    `json:"user_id"`
 	GroupIDs         []int64                  `json:"group_ids,omitempty"`
-	GroupID          *int64                   `json:"group_id,omitempty"`
-	Name             string                   `json:"name"`
-	Status           string                   `json:"status"`
-	IPWhitelist      []string                 `json:"ip_whitelist,omitempty"`
-	IPBlacklist      []string                 `json:"ip_blacklist,omitempty"`
-	User             APIKeyAuthUserSnapshot   `json:"user"`
-	Group            *APIKeyAuthGroupSnapshot `json:"group,omitempty"`
 
 	// Quota fields for API Key independent quota feature
 	Quota     float64 `json:"quota"`      // Quota limit in USD (0 = unlimited)
@@ -32,12 +34,13 @@ type APIKeyAuthSnapshot struct {
 
 // APIKeyAuthUserSnapshot 用户快照
 type APIKeyAuthUserSnapshot struct {
-	ID            int64   `json:"id"`
-	Status        string  `json:"status"`
-	Role          string  `json:"role"`
-	Balance       float64 `json:"balance"`
-	Concurrency   int     `json:"concurrency"`
-	AllowedGroups []int64 `json:"allowed_groups,omitempty"`
+	UserGroupRPMOverrideGroupID int64   `json:"user_group_rpm_override_group_id,omitempty"`
+	ID                          int64   `json:"id"`
+	Status                      string  `json:"status"`
+	Role                        string  `json:"role"`
+	Balance                     float64 `json:"balance"`
+	Concurrency                 int     `json:"concurrency"`
+	AllowedGroups               []int64 `json:"allowed_groups,omitempty"`
 
 	// Balance notification fields (required for CheckBalanceAfterDeduction)
 	Email                      string             `json:"email"`
@@ -67,6 +70,7 @@ type APIKeyAuthGroupSnapshot struct {
 	SecurityPolicyEmailEnabled      bool                          `json:"security_policy_email_enabled"`
 	ID                              int64                         `json:"id"`
 	Name                            string                        `json:"name"`
+	Description                     string                        `json:"description,omitempty"`
 	Platform                        string                        `json:"platform"`
 	IsExclusive                     bool                          `json:"is_exclusive"`
 	Status                          string                        `json:"status"`
@@ -75,6 +79,7 @@ type APIKeyAuthGroupSnapshot struct {
 	DailyLimitUSD                   *float64                      `json:"daily_limit_usd,omitempty"`
 	WeeklyLimitUSD                  *float64                      `json:"weekly_limit_usd,omitempty"`
 	MonthlyLimitUSD                 *float64                      `json:"monthly_limit_usd,omitempty"`
+	DefaultValidityDays             int                           `json:"default_validity_days"`
 	AllowImageGeneration            bool                          `json:"allow_image_generation"`
 	AllowBatchImageGeneration       bool                          `json:"allow_batch_image_generation"`
 	ImageCountBilling               bool                          `json:"image_count_billing"`
@@ -83,6 +88,8 @@ type APIKeyAuthGroupSnapshot struct {
 	ImagePrice1K                    *float64                      `json:"image_price_1k,omitempty"`
 	ImagePrice2K                    *float64                      `json:"image_price_2k,omitempty"`
 	ImagePrice4K                    *float64                      `json:"image_price_4k,omitempty"`
+	BatchImageDiscountMultiplier    float64                       `json:"batch_image_discount_multiplier"`
+	BatchImageHoldMultiplier        float64                       `json:"batch_image_hold_multiplier"`
 	ImageModelPrices                map[string]map[string]float64 `json:"image_model_prices,omitempty"`
 	VideoRateIndependent            bool                          `json:"video_rate_independent"`
 	VideoRateMultiplier             float64                       `json:"video_rate_multiplier"`
@@ -100,6 +107,7 @@ type APIKeyAuthGroupSnapshot struct {
 	ClaudeCodeOnly                  bool                          `json:"claude_code_only"`
 	FallbackGroupID                 *int64                        `json:"fallback_group_id,omitempty"`
 	FallbackGroupIDOnInvalidRequest *int64                        `json:"fallback_group_id_on_invalid_request,omitempty"`
+	FallbackGroupIDOnUnavailable    *int64                        `json:"fallback_group_id_on_unavailable,omitempty"`
 	StreamOnly                      bool                          `json:"stream_only"`
 	CodexCLIOnly                    bool                          `json:"codex_cli_only"`
 	BlockSubagents                  bool                          `json:"block_subagents"`
@@ -112,11 +120,15 @@ type APIKeyAuthGroupSnapshot struct {
 
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes []string `json:"supported_model_scopes,omitempty"`
+	SortOrder            int      `json:"sort_order"`
 
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	AllowMessagesDispatch       bool                              `json:"allow_messages_dispatch"`
 	AllowLive                   bool                              `json:"allow_live"`
+	RequireOAuthOnly            bool                              `json:"require_oauth_only"`
+	RequirePrivacySet           bool                              `json:"require_privacy_set"`
 	ForceOpenAIFast             bool                              `json:"force_openai_fast"`
+	ForceOpenAIServiceTier      string                            `json:"force_openai_service_tier"`
 	FreeOpenAIFast              bool                              `json:"free_openai_fast"`
 	DefaultMappedModel          string                            `json:"default_mapped_model,omitempty"`
 	MessagesDispatchModelConfig OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config,omitempty"`
@@ -124,9 +136,12 @@ type APIKeyAuthGroupSnapshot struct {
 	// CodexModelsManifestConfig 与 ModelAllowlist 一样在认证快照分组里透传，
 	// Codex /models handler 直接读认证分组对象。
 	CodexModelsManifestConfig GroupCodexModelsManifestConfig `json:"codex_models_manifest_config,omitempty"`
+	StrictFailover            StrictFailoverConfig           `json:"strict_failover,omitempty"`
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制）；用于 billing_cache_service.checkRPM 级联判断。
 	RPMLimit int `json:"rpm_limit"`
+	// UserConcurrencyLimit 分组内每个用户的并发上限（0 = 不限制）。
+	UserConcurrencyLimit int `json:"user_concurrency_limit"`
 
 	// MaxReasoningEffort Anthropic/OpenAI 请求的推理强度上限，空字符串表示不限制。
 	MaxReasoningEffort string `json:"max_reasoning_effort,omitempty"`

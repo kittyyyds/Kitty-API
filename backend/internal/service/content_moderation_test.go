@@ -1829,12 +1829,18 @@ func TestContentModerationUpdateConfig_CyberPolicyExcludeFromBanCount(t *testing
 	settingRepo := &contentModerationTestSettingRepo{values: map[string]string{}}
 	svc := NewContentModerationService(settingRepo, nil, nil, nil, nil, nil, nil, nil)
 
-	// 默认值必须是 false（计入，保持现状）
+	// Kitty 默认值是 true（cyber_policy 不计入封号计数；ranxi 出厂为计入）
 	view, err := svc.GetConfig(context.Background())
 	require.NoError(t, err)
-	require.False(t, view.CyberPolicyExcludeFromBanCount, "默认必须计入封号计数")
+	require.True(t, view.CyberPolicyExcludeFromBanCount, "默认不得计入封号计数")
 
-	// 指针式部分更新为 true
+	// 先主动改为 false，再验证指针式部分更新为 true
+	include := false
+	view, err = svc.UpdateConfig(context.Background(), UpdateContentModerationConfigInput{
+		CyberPolicyExcludeFromBanCount: &include,
+	})
+	require.NoError(t, err)
+	require.False(t, view.CyberPolicyExcludeFromBanCount)
 	exclude := true
 	view, err = svc.UpdateConfig(context.Background(), UpdateContentModerationConfigInput{
 		CyberPolicyExcludeFromBanCount: &exclude,
@@ -1864,8 +1870,4 @@ func TestContentModerationUpdateConfig_CyberPolicyExcludeFromBanCount(t *testing
 	})
 	require.NoError(t, err)
 	require.False(t, view.CyberPolicyExcludeFromBanCount)
-}
-
-func (r *contentModerationTestRepo) UpdateLogOverturned(ctx context.Context, id int64) error {
-	return nil
 }

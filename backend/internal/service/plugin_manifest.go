@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	PluginCapabilityGatewayTransform    = "gateway.request_transform.v1"
+	// PluginCapabilityOpenAIOAuthOutbound is retired (removed BPS plugin); it is
+	// kept only to recognize stale installation rows and reject new packages.
 	PluginCapabilityOpenAIOAuthOutbound = "openai.oauth.outbound_transport.v1"
+	PluginCapabilityGatewayTransform    = "gateway.request_transform.v1"
 	PluginStateDisabled                 = "disabled"
 	PluginStateStarting                 = "starting"
 	PluginStateEnabled                  = "enabled"
@@ -170,11 +172,11 @@ func (m PluginManifest) Validate() error {
 		return errors.New("插件必须声明至少一个能力")
 	}
 	for _, capability := range m.Capabilities {
-		if capability.ID == PluginCapabilityGatewayTransform && capability.Platform == "gateway" && capability.AccountType == "any" && len(m.Capabilities) == 1 {
-			continue
+		if capability.ID == PluginCapabilityOpenAIOAuthOutbound {
+			return errPluginCapabilityRetired
 		}
-		if capability.ID != PluginCapabilityOpenAIOAuthOutbound || capability.Platform != PlatformOpenAI || capability.AccountType != AccountTypeOAuth {
-			return fmt.Errorf("初期仅支持能力 %s", PluginCapabilityOpenAIOAuthOutbound)
+		if capability.ID != PluginCapabilityGatewayTransform || capability.Platform != "gateway" || capability.AccountType != "any" {
+			return fmt.Errorf("仅支持能力 %s", PluginCapabilityGatewayTransform)
 		}
 	}
 	runtimeEntry, ok := m.Runtimes[m.RuntimeKey()]

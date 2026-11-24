@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -125,4 +126,16 @@ func TestProviderHubRejectsMalformedInventoryAndDuplicatePurchaseInput(t *testin
 	require.Equal(t, 1.0, *c.FXToUSD)
 	c.Model = "gpt-*"
 	require.ErrorIs(t, ValidateProviderHubCommand(&c), ErrProviderHubInput)
+}
+
+func TestProviderHubCacheWrite12hPricePreservesOptionalZeroAndRejectsInvalid(t *testing.T) {
+	for _, price := range []*float64{nil, float64Ptr(0), float64Ptr(3.5)} {
+		c := ProviderHubCommand{Action: "rule", ID: 1, Revision: 1, Model: "*", Method: "tokens", CacheWritePrice: 2, CacheWrite12hPrice: price, Currency: "USD"}
+		require.NoError(t, ValidateProviderHubCommand(&c))
+		require.Equal(t, price, c.CacheWrite12hPrice)
+	}
+	for _, price := range []float64{-1, math.NaN(), math.Inf(1), 1e13} {
+		c := ProviderHubCommand{Action: "rule", ID: 1, Revision: 1, Model: "*", Method: "tokens", CacheWrite12hPrice: &price, Currency: "USD"}
+		require.ErrorIs(t, ValidateProviderHubCommand(&c), ErrProviderHubInput)
+	}
 }

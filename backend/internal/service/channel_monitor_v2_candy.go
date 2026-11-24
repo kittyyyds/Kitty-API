@@ -67,13 +67,13 @@ type ChannelMonitorV2CandyRepository interface {
 type ChannelMonitorV2CandyService struct {
 	config   ChannelMonitorV2Repository
 	repo     ChannelMonitorV2CandyRepository
-	groups   *PelicanGroupTestService
+	groups   *MonitorGroupProbeService
 	settings channelMonitorRuntimeReader
 	tick     sync.Mutex
 	now      func() time.Time
 }
 
-func newChannelMonitorV2CandyService(repo ChannelMonitorV2Repository, groups *PelicanGroupTestService, settings channelMonitorRuntimeReader) *ChannelMonitorV2CandyService {
+func newChannelMonitorV2CandyService(repo ChannelMonitorV2Repository, groups *MonitorGroupProbeService, settings channelMonitorRuntimeReader) *ChannelMonitorV2CandyService {
 	store, ok := repo.(ChannelMonitorV2CandyRepository)
 	if !ok || groups == nil {
 		return nil
@@ -122,7 +122,7 @@ func normalizeChannelMonitorV2CandyProbes(probes []ChannelMonitorV2CandyProbe) e
 		if p.ReasoningEffort == "" {
 			p.ReasoningEffort = "medium"
 		}
-		p.ReasoningEffort = normalizePelicanReasoningEffort(p.ReasoningEffort)
+		p.ReasoningEffort = normalizeMonitorReasoningEffort(p.ReasoningEffort)
 		if p.ReasoningEffort == "" {
 			return fmt.Errorf("%w: invalid candy reasoning effort", ErrChannelMonitorV2InvalidConfig)
 		}
@@ -229,7 +229,8 @@ func (s *ChannelMonitorV2CandyService) runOne(ctx context.Context, probe Channel
 	defer func() {
 		if recover() != nil {
 			result.Verdict = "error"
-			result.Reason = "probe_failed"
+			result.Reason = "internal"
+			logger.LegacyPrintf("service.channel_monitor_v2", "candy probe panic group=%d", probe.GroupID)
 		}
 		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -239,7 +240,7 @@ func (s *ChannelMonitorV2CandyService) runOne(ctx context.Context, probe Channel
 	}()
 	runCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	plan := &PelicanGroupTestPlan{GroupID: probe.GroupID, ModelID: probe.Model, PelicanConfig: &PelicanTestConfig{QuestionKind: "candy", Prompt: CandyPrompt, ReasoningEffort: probe.ReasoningEffort, ParallelCount: 1, ModelID: probe.Model}}
+	plan := &MonitorProbePlan{GroupID: probe.GroupID, ModelID: probe.Model, Config: &MonitorProbeConfig{QuestionKind: "candy", Prompt: CandyPrompt, ReasoningEffort: probe.ReasoningEffort, ParallelCount: 1, ModelID: probe.Model}}
 	sample := s.groups.runSample(runCtx, plan, group)
 	result.LatencyMs = s.now().Sub(result.CheckedAt).Milliseconds()
 	if runCtx.Err() != nil {
@@ -254,7 +255,7 @@ func (s *ChannelMonitorV2CandyService) runOne(ctx context.Context, probe Channel
 	preview := []rune(answer)
 	result.AnswerPreview = string(preview[:min(len(preview), 512)])
 	if sample.Status != "success" && !strings.HasPrefix(sample.ErrorMessage, "answer_mismatch:") {
-		result.Reason = "probe_failed"
+		result.Reason = monitorProbeErrorCategory(sample.ErrorMessage)
 		return
 	}
 	if answer == "" {

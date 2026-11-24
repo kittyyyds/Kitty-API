@@ -17,6 +17,7 @@ import (
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
+	"github.com/Wei-Shaw/sub2api/ent/accountproxy"
 	"github.com/Wei-Shaw/sub2api/ent/announcement"
 	"github.com/Wei-Shaw/sub2api/ent/announcementread"
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
@@ -34,6 +35,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/idempotencyrecord"
 	"github.com/Wei-Shaw/sub2api/ent/identityadoptiondecision"
+	"github.com/Wei-Shaw/sub2api/ent/invoicerequest"
 	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/paymentproviderinstance"
@@ -42,7 +44,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
 	"github.com/Wei-Shaw/sub2api/ent/proxy"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
-	"github.com/Wei-Shaw/sub2api/ent/securitypolicykeyword"
 	"github.com/Wei-Shaw/sub2api/ent/securitysecret"
 	"github.com/Wei-Shaw/sub2api/ent/setting"
 	"github.com/Wei-Shaw/sub2api/ent/subscriptionplan"
@@ -70,6 +71,8 @@ type Client struct {
 	Account *AccountClient
 	// AccountGroup is the client for interacting with the AccountGroup builders.
 	AccountGroup *AccountGroupClient
+	// AccountProxy is the client for interacting with the AccountProxy builders.
+	AccountProxy *AccountProxyClient
 	// Announcement is the client for interacting with the Announcement builders.
 	Announcement *AnnouncementClient
 	// AnnouncementRead is the client for interacting with the AnnouncementRead builders.
@@ -102,6 +105,8 @@ type Client struct {
 	IdempotencyRecord *IdempotencyRecordClient
 	// IdentityAdoptionDecision is the client for interacting with the IdentityAdoptionDecision builders.
 	IdentityAdoptionDecision *IdentityAdoptionDecisionClient
+	// InvoiceRequest is the client for interacting with the InvoiceRequest builders.
+	InvoiceRequest *InvoiceRequestClient
 	// PaymentAuditLog is the client for interacting with the PaymentAuditLog builders.
 	PaymentAuditLog *PaymentAuditLogClient
 	// PaymentOrder is the client for interacting with the PaymentOrder builders.
@@ -118,8 +123,6 @@ type Client struct {
 	Proxy *ProxyClient
 	// RedeemCode is the client for interacting with the RedeemCode builders.
 	RedeemCode *RedeemCodeClient
-	// SecurityPolicyKeyword is the client for interacting with the SecurityPolicyKeyword builders.
-	SecurityPolicyKeyword *SecurityPolicyKeywordClient
 	// SecuritySecret is the client for interacting with the SecuritySecret builders.
 	SecuritySecret *SecuritySecretClient
 	// Setting is the client for interacting with the Setting builders.
@@ -158,6 +161,7 @@ func (c *Client) init() {
 	c.APIKey = NewAPIKeyClient(c.config)
 	c.Account = NewAccountClient(c.config)
 	c.AccountGroup = NewAccountGroupClient(c.config)
+	c.AccountProxy = NewAccountProxyClient(c.config)
 	c.Announcement = NewAnnouncementClient(c.config)
 	c.AnnouncementRead = NewAnnouncementReadClient(c.config)
 	c.AuthIdentity = NewAuthIdentityClient(c.config)
@@ -174,6 +178,7 @@ func (c *Client) init() {
 	c.Group = NewGroupClient(c.config)
 	c.IdempotencyRecord = NewIdempotencyRecordClient(c.config)
 	c.IdentityAdoptionDecision = NewIdentityAdoptionDecisionClient(c.config)
+	c.InvoiceRequest = NewInvoiceRequestClient(c.config)
 	c.PaymentAuditLog = NewPaymentAuditLogClient(c.config)
 	c.PaymentOrder = NewPaymentOrderClient(c.config)
 	c.PaymentProviderInstance = NewPaymentProviderInstanceClient(c.config)
@@ -182,7 +187,6 @@ func (c *Client) init() {
 	c.PromoCodeUsage = NewPromoCodeUsageClient(c.config)
 	c.Proxy = NewProxyClient(c.config)
 	c.RedeemCode = NewRedeemCodeClient(c.config)
-	c.SecurityPolicyKeyword = NewSecurityPolicyKeywordClient(c.config)
 	c.SecuritySecret = NewSecuritySecretClient(c.config)
 	c.Setting = NewSettingClient(c.config)
 	c.SubscriptionPlan = NewSubscriptionPlanClient(c.config)
@@ -290,6 +294,7 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 		APIKey:                        NewAPIKeyClient(cfg),
 		Account:                       NewAccountClient(cfg),
 		AccountGroup:                  NewAccountGroupClient(cfg),
+		AccountProxy:                  NewAccountProxyClient(cfg),
 		Announcement:                  NewAnnouncementClient(cfg),
 		AnnouncementRead:              NewAnnouncementReadClient(cfg),
 		AuthIdentity:                  NewAuthIdentityClient(cfg),
@@ -306,6 +311,7 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 		Group:                         NewGroupClient(cfg),
 		IdempotencyRecord:             NewIdempotencyRecordClient(cfg),
 		IdentityAdoptionDecision:      NewIdentityAdoptionDecisionClient(cfg),
+		InvoiceRequest:                NewInvoiceRequestClient(cfg),
 		PaymentAuditLog:               NewPaymentAuditLogClient(cfg),
 		PaymentOrder:                  NewPaymentOrderClient(cfg),
 		PaymentProviderInstance:       NewPaymentProviderInstanceClient(cfg),
@@ -314,7 +320,6 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 		PromoCodeUsage:                NewPromoCodeUsageClient(cfg),
 		Proxy:                         NewProxyClient(cfg),
 		RedeemCode:                    NewRedeemCodeClient(cfg),
-		SecurityPolicyKeyword:         NewSecurityPolicyKeywordClient(cfg),
 		SecuritySecret:                NewSecuritySecretClient(cfg),
 		Setting:                       NewSettingClient(cfg),
 		SubscriptionPlan:              NewSubscriptionPlanClient(cfg),
@@ -349,6 +354,7 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 		APIKey:                        NewAPIKeyClient(cfg),
 		Account:                       NewAccountClient(cfg),
 		AccountGroup:                  NewAccountGroupClient(cfg),
+		AccountProxy:                  NewAccountProxyClient(cfg),
 		Announcement:                  NewAnnouncementClient(cfg),
 		AnnouncementRead:              NewAnnouncementReadClient(cfg),
 		AuthIdentity:                  NewAuthIdentityClient(cfg),
@@ -365,6 +371,7 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 		Group:                         NewGroupClient(cfg),
 		IdempotencyRecord:             NewIdempotencyRecordClient(cfg),
 		IdentityAdoptionDecision:      NewIdentityAdoptionDecisionClient(cfg),
+		InvoiceRequest:                NewInvoiceRequestClient(cfg),
 		PaymentAuditLog:               NewPaymentAuditLogClient(cfg),
 		PaymentOrder:                  NewPaymentOrderClient(cfg),
 		PaymentProviderInstance:       NewPaymentProviderInstanceClient(cfg),
@@ -373,7 +380,6 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 		PromoCodeUsage:                NewPromoCodeUsageClient(cfg),
 		Proxy:                         NewProxyClient(cfg),
 		RedeemCode:                    NewRedeemCodeClient(cfg),
-		SecurityPolicyKeyword:         NewSecurityPolicyKeywordClient(cfg),
 		SecuritySecret:                NewSecuritySecretClient(cfg),
 		Setting:                       NewSettingClient(cfg),
 		SubscriptionPlan:              NewSubscriptionPlanClient(cfg),
@@ -415,17 +421,18 @@ func (c *Client) Close() error {
 // In order to add hooks to a specific client, call: `client.Node.Use(...)`.
 func (c *Client) Use(hooks ...Hook) {
 	for _, n := range []interface{ Use(...Hook) }{
-		c.APIKey, c.Account, c.AccountGroup, c.Announcement, c.AnnouncementRead,
-		c.AuthIdentity, c.AuthIdentityChannel, c.BatchImageEvent, c.BatchImageItem,
-		c.BatchImageJob, c.ChannelMonitor, c.ChannelMonitorDailyRollup,
-		c.ChannelMonitorHistory, c.ChannelMonitorRequestTemplate,
-		c.CompositeModelRoute, c.ErrorPassthroughRule, c.Group, c.IdempotencyRecord,
-		c.IdentityAdoptionDecision, c.PaymentAuditLog, c.PaymentOrder,
-		c.PaymentProviderInstance, c.PendingAuthSession, c.PromoCode, c.PromoCodeUsage,
-		c.Proxy, c.RedeemCode, c.SecurityPolicyKeyword, c.SecuritySecret, c.Setting,
-		c.SubscriptionPlan, c.TLSFingerprintProfile, c.UsageCleanupTask, c.UsageLog,
-		c.User, c.UserAllowedGroup, c.UserAttributeDefinition, c.UserAttributeValue,
-		c.UserPlatformQuota, c.UserSubscription,
+		c.APIKey, c.Account, c.AccountGroup, c.AccountProxy, c.Announcement,
+		c.AnnouncementRead, c.AuthIdentity, c.AuthIdentityChannel, c.BatchImageEvent,
+		c.BatchImageItem, c.BatchImageJob, c.ChannelMonitor,
+		c.ChannelMonitorDailyRollup, c.ChannelMonitorHistory,
+		c.ChannelMonitorRequestTemplate, c.CompositeModelRoute, c.ErrorPassthroughRule,
+		c.Group, c.IdempotencyRecord, c.IdentityAdoptionDecision, c.InvoiceRequest,
+		c.PaymentAuditLog, c.PaymentOrder, c.PaymentProviderInstance,
+		c.PendingAuthSession, c.PromoCode, c.PromoCodeUsage, c.Proxy, c.RedeemCode,
+		c.SecuritySecret, c.Setting, c.SubscriptionPlan, c.TLSFingerprintProfile,
+		c.UsageCleanupTask, c.UsageLog, c.User, c.UserAllowedGroup,
+		c.UserAttributeDefinition, c.UserAttributeValue, c.UserPlatformQuota,
+		c.UserSubscription,
 	} {
 		n.Use(hooks...)
 	}
@@ -435,17 +442,18 @@ func (c *Client) Use(hooks ...Hook) {
 // In order to add interceptors to a specific client, call: `client.Node.Intercept(...)`.
 func (c *Client) Intercept(interceptors ...Interceptor) {
 	for _, n := range []interface{ Intercept(...Interceptor) }{
-		c.APIKey, c.Account, c.AccountGroup, c.Announcement, c.AnnouncementRead,
-		c.AuthIdentity, c.AuthIdentityChannel, c.BatchImageEvent, c.BatchImageItem,
-		c.BatchImageJob, c.ChannelMonitor, c.ChannelMonitorDailyRollup,
-		c.ChannelMonitorHistory, c.ChannelMonitorRequestTemplate,
-		c.CompositeModelRoute, c.ErrorPassthroughRule, c.Group, c.IdempotencyRecord,
-		c.IdentityAdoptionDecision, c.PaymentAuditLog, c.PaymentOrder,
-		c.PaymentProviderInstance, c.PendingAuthSession, c.PromoCode, c.PromoCodeUsage,
-		c.Proxy, c.RedeemCode, c.SecurityPolicyKeyword, c.SecuritySecret, c.Setting,
-		c.SubscriptionPlan, c.TLSFingerprintProfile, c.UsageCleanupTask, c.UsageLog,
-		c.User, c.UserAllowedGroup, c.UserAttributeDefinition, c.UserAttributeValue,
-		c.UserPlatformQuota, c.UserSubscription,
+		c.APIKey, c.Account, c.AccountGroup, c.AccountProxy, c.Announcement,
+		c.AnnouncementRead, c.AuthIdentity, c.AuthIdentityChannel, c.BatchImageEvent,
+		c.BatchImageItem, c.BatchImageJob, c.ChannelMonitor,
+		c.ChannelMonitorDailyRollup, c.ChannelMonitorHistory,
+		c.ChannelMonitorRequestTemplate, c.CompositeModelRoute, c.ErrorPassthroughRule,
+		c.Group, c.IdempotencyRecord, c.IdentityAdoptionDecision, c.InvoiceRequest,
+		c.PaymentAuditLog, c.PaymentOrder, c.PaymentProviderInstance,
+		c.PendingAuthSession, c.PromoCode, c.PromoCodeUsage, c.Proxy, c.RedeemCode,
+		c.SecuritySecret, c.Setting, c.SubscriptionPlan, c.TLSFingerprintProfile,
+		c.UsageCleanupTask, c.UsageLog, c.User, c.UserAllowedGroup,
+		c.UserAttributeDefinition, c.UserAttributeValue, c.UserPlatformQuota,
+		c.UserSubscription,
 	} {
 		n.Intercept(interceptors...)
 	}
@@ -460,6 +468,8 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.Account.mutate(ctx, m)
 	case *AccountGroupMutation:
 		return c.AccountGroup.mutate(ctx, m)
+	case *AccountProxyMutation:
+		return c.AccountProxy.mutate(ctx, m)
 	case *AnnouncementMutation:
 		return c.Announcement.mutate(ctx, m)
 	case *AnnouncementReadMutation:
@@ -492,6 +502,8 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.IdempotencyRecord.mutate(ctx, m)
 	case *IdentityAdoptionDecisionMutation:
 		return c.IdentityAdoptionDecision.mutate(ctx, m)
+	case *InvoiceRequestMutation:
+		return c.InvoiceRequest.mutate(ctx, m)
 	case *PaymentAuditLogMutation:
 		return c.PaymentAuditLog.mutate(ctx, m)
 	case *PaymentOrderMutation:
@@ -508,8 +520,6 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.Proxy.mutate(ctx, m)
 	case *RedeemCodeMutation:
 		return c.RedeemCode.mutate(ctx, m)
-	case *SecurityPolicyKeywordMutation:
-		return c.SecurityPolicyKeyword.mutate(ctx, m)
 	case *SecuritySecretMutation:
 		return c.SecuritySecret.mutate(ctx, m)
 	case *SettingMutation:
@@ -672,6 +682,22 @@ func (c *APIKeyClient) QueryGroup(_m *APIKey) *GroupQuery {
 			sqlgraph.From(apikey.Table, apikey.FieldID, id),
 			sqlgraph.To(group.Table, group.FieldID),
 			sqlgraph.Edge(sqlgraph.M2O, true, apikey.GroupTable, apikey.GroupColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryFallbackGroup queries the fallback_group edge of a APIKey.
+func (c *APIKeyClient) QueryFallbackGroup(_m *APIKey) *GroupQuery {
+	query := (&GroupClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(apikey.Table, apikey.FieldID, id),
+			sqlgraph.To(group.Table, group.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, apikey.FallbackGroupTable, apikey.FallbackGroupColumn),
 		)
 		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
 		return fromV, nil
@@ -862,6 +888,22 @@ func (c *AccountClient) QueryProxy(_m *Account) *ProxyQuery {
 	return query
 }
 
+// QueryProxies queries the proxies edge of a Account.
+func (c *AccountClient) QueryProxies(_m *Account) *ProxyQuery {
+	query := (&ProxyClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(account.Table, account.FieldID, id),
+			sqlgraph.To(proxy.Table, proxy.FieldID),
+			sqlgraph.Edge(sqlgraph.M2M, false, account.ProxiesTable, account.ProxiesPrimaryKey...),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // QueryParent queries the parent edge of a Account.
 func (c *AccountClient) QueryParent(_m *Account) *AccountQuery {
 	query := (&AccountClient{config: c.config}).Query()
@@ -919,6 +961,22 @@ func (c *AccountClient) QueryAccountGroups(_m *Account) *AccountGroupQuery {
 			sqlgraph.From(account.Table, account.FieldID, id),
 			sqlgraph.To(accountgroup.Table, accountgroup.AccountColumn),
 			sqlgraph.Edge(sqlgraph.O2M, true, account.AccountGroupsTable, account.AccountGroupsColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryAccountProxies queries the account_proxies edge of a Account.
+func (c *AccountClient) QueryAccountProxies(_m *Account) *AccountProxyQuery {
+	query := (&AccountProxyClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(account.Table, account.FieldID, id),
+			sqlgraph.To(accountproxy.Table, accountproxy.AccountColumn),
+			sqlgraph.Edge(sqlgraph.O2M, true, account.AccountProxiesTable, account.AccountProxiesColumn),
 		)
 		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
 		return fromV, nil
@@ -1066,6 +1124,122 @@ func (c *AccountGroupClient) mutate(ctx context.Context, m *AccountGroupMutation
 		return (&AccountGroupDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
 	default:
 		return nil, fmt.Errorf("ent: unknown AccountGroup mutation op: %q", m.Op())
+	}
+}
+
+// AccountProxyClient is a client for the AccountProxy schema.
+type AccountProxyClient struct {
+	config
+}
+
+// NewAccountProxyClient returns a client for the AccountProxy from the given config.
+func NewAccountProxyClient(c config) *AccountProxyClient {
+	return &AccountProxyClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `accountproxy.Hooks(f(g(h())))`.
+func (c *AccountProxyClient) Use(hooks ...Hook) {
+	c.hooks.AccountProxy = append(c.hooks.AccountProxy, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `accountproxy.Intercept(f(g(h())))`.
+func (c *AccountProxyClient) Intercept(interceptors ...Interceptor) {
+	c.inters.AccountProxy = append(c.inters.AccountProxy, interceptors...)
+}
+
+// Create returns a builder for creating a AccountProxy entity.
+func (c *AccountProxyClient) Create() *AccountProxyCreate {
+	mutation := newAccountProxyMutation(c.config, OpCreate)
+	return &AccountProxyCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of AccountProxy entities.
+func (c *AccountProxyClient) CreateBulk(builders ...*AccountProxyCreate) *AccountProxyCreateBulk {
+	return &AccountProxyCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *AccountProxyClient) MapCreateBulk(slice any, setFunc func(*AccountProxyCreate, int)) *AccountProxyCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &AccountProxyCreateBulk{err: fmt.Errorf("calling to AccountProxyClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*AccountProxyCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &AccountProxyCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for AccountProxy.
+func (c *AccountProxyClient) Update() *AccountProxyUpdate {
+	mutation := newAccountProxyMutation(c.config, OpUpdate)
+	return &AccountProxyUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *AccountProxyClient) UpdateOne(_m *AccountProxy) *AccountProxyUpdateOne {
+	mutation := newAccountProxyMutation(c.config, OpUpdateOne)
+	mutation.account = &_m.AccountID
+	mutation.proxy = &_m.ProxyID
+	return &AccountProxyUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for AccountProxy.
+func (c *AccountProxyClient) Delete() *AccountProxyDelete {
+	mutation := newAccountProxyMutation(c.config, OpDelete)
+	return &AccountProxyDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Query returns a query builder for AccountProxy.
+func (c *AccountProxyClient) Query() *AccountProxyQuery {
+	return &AccountProxyQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeAccountProxy},
+		inters: c.Interceptors(),
+	}
+}
+
+// QueryAccount queries the account edge of a AccountProxy.
+func (c *AccountProxyClient) QueryAccount(_m *AccountProxy) *AccountQuery {
+	return c.Query().
+		Where(accountproxy.AccountID(_m.AccountID), accountproxy.ProxyID(_m.ProxyID)).
+		QueryAccount()
+}
+
+// QueryProxy queries the proxy edge of a AccountProxy.
+func (c *AccountProxyClient) QueryProxy(_m *AccountProxy) *ProxyQuery {
+	return c.Query().
+		Where(accountproxy.AccountID(_m.AccountID), accountproxy.ProxyID(_m.ProxyID)).
+		QueryProxy()
+}
+
+// Hooks returns the client hooks.
+func (c *AccountProxyClient) Hooks() []Hook {
+	return c.hooks.AccountProxy
+}
+
+// Interceptors returns the client interceptors.
+func (c *AccountProxyClient) Interceptors() []Interceptor {
+	return c.inters.AccountProxy
+}
+
+func (c *AccountProxyClient) mutate(ctx context.Context, m *AccountProxyMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&AccountProxyCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&AccountProxyUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&AccountProxyUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&AccountProxyDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown AccountProxy mutation op: %q", m.Op())
 	}
 }
 
@@ -3148,6 +3322,22 @@ func (c *GroupClient) QueryAPIKeys(_m *Group) *APIKeyQuery {
 	return query
 }
 
+// QueryFallbackAPIKeys queries the fallback_api_keys edge of a Group.
+func (c *GroupClient) QueryFallbackAPIKeys(_m *Group) *APIKeyQuery {
+	query := (&APIKeyClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(group.Table, group.FieldID, id),
+			sqlgraph.To(apikey.Table, apikey.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, group.FallbackAPIKeysTable, group.FallbackAPIKeysColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // QueryRedeemCodes queries the redeem_codes edge of a Group.
 func (c *GroupClient) QueryRedeemCodes(_m *Group) *RedeemCodeQuery {
 	query := (&RedeemCodeClient{config: c.config}).Query()
@@ -3582,6 +3772,139 @@ func (c *IdentityAdoptionDecisionClient) mutate(ctx context.Context, m *Identity
 		return (&IdentityAdoptionDecisionDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
 	default:
 		return nil, fmt.Errorf("ent: unknown IdentityAdoptionDecision mutation op: %q", m.Op())
+	}
+}
+
+// InvoiceRequestClient is a client for the InvoiceRequest schema.
+type InvoiceRequestClient struct {
+	config
+}
+
+// NewInvoiceRequestClient returns a client for the InvoiceRequest from the given config.
+func NewInvoiceRequestClient(c config) *InvoiceRequestClient {
+	return &InvoiceRequestClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `invoicerequest.Hooks(f(g(h())))`.
+func (c *InvoiceRequestClient) Use(hooks ...Hook) {
+	c.hooks.InvoiceRequest = append(c.hooks.InvoiceRequest, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `invoicerequest.Intercept(f(g(h())))`.
+func (c *InvoiceRequestClient) Intercept(interceptors ...Interceptor) {
+	c.inters.InvoiceRequest = append(c.inters.InvoiceRequest, interceptors...)
+}
+
+// Create returns a builder for creating a InvoiceRequest entity.
+func (c *InvoiceRequestClient) Create() *InvoiceRequestCreate {
+	mutation := newInvoiceRequestMutation(c.config, OpCreate)
+	return &InvoiceRequestCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of InvoiceRequest entities.
+func (c *InvoiceRequestClient) CreateBulk(builders ...*InvoiceRequestCreate) *InvoiceRequestCreateBulk {
+	return &InvoiceRequestCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *InvoiceRequestClient) MapCreateBulk(slice any, setFunc func(*InvoiceRequestCreate, int)) *InvoiceRequestCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &InvoiceRequestCreateBulk{err: fmt.Errorf("calling to InvoiceRequestClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*InvoiceRequestCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &InvoiceRequestCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for InvoiceRequest.
+func (c *InvoiceRequestClient) Update() *InvoiceRequestUpdate {
+	mutation := newInvoiceRequestMutation(c.config, OpUpdate)
+	return &InvoiceRequestUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *InvoiceRequestClient) UpdateOne(_m *InvoiceRequest) *InvoiceRequestUpdateOne {
+	mutation := newInvoiceRequestMutation(c.config, OpUpdateOne, withInvoiceRequest(_m))
+	return &InvoiceRequestUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *InvoiceRequestClient) UpdateOneID(id int64) *InvoiceRequestUpdateOne {
+	mutation := newInvoiceRequestMutation(c.config, OpUpdateOne, withInvoiceRequestID(id))
+	return &InvoiceRequestUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for InvoiceRequest.
+func (c *InvoiceRequestClient) Delete() *InvoiceRequestDelete {
+	mutation := newInvoiceRequestMutation(c.config, OpDelete)
+	return &InvoiceRequestDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *InvoiceRequestClient) DeleteOne(_m *InvoiceRequest) *InvoiceRequestDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *InvoiceRequestClient) DeleteOneID(id int64) *InvoiceRequestDeleteOne {
+	builder := c.Delete().Where(invoicerequest.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &InvoiceRequestDeleteOne{builder}
+}
+
+// Query returns a query builder for InvoiceRequest.
+func (c *InvoiceRequestClient) Query() *InvoiceRequestQuery {
+	return &InvoiceRequestQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeInvoiceRequest},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a InvoiceRequest entity by its id.
+func (c *InvoiceRequestClient) Get(ctx context.Context, id int64) (*InvoiceRequest, error) {
+	return c.Query().Where(invoicerequest.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *InvoiceRequestClient) GetX(ctx context.Context, id int64) *InvoiceRequest {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// Hooks returns the client hooks.
+func (c *InvoiceRequestClient) Hooks() []Hook {
+	return c.hooks.InvoiceRequest
+}
+
+// Interceptors returns the client interceptors.
+func (c *InvoiceRequestClient) Interceptors() []Interceptor {
+	return c.inters.InvoiceRequest
+}
+
+func (c *InvoiceRequestClient) mutate(ctx context.Context, m *InvoiceRequestMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&InvoiceRequestCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&InvoiceRequestUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&InvoiceRequestUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&InvoiceRequestDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown InvoiceRequest mutation op: %q", m.Op())
 	}
 }
 
@@ -4587,6 +4910,22 @@ func (c *ProxyClient) GetX(ctx context.Context, id int64) *Proxy {
 	return obj
 }
 
+// QueryPoolAccounts queries the pool_accounts edge of a Proxy.
+func (c *ProxyClient) QueryPoolAccounts(_m *Proxy) *AccountQuery {
+	query := (&AccountClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(proxy.Table, proxy.FieldID, id),
+			sqlgraph.To(account.Table, account.FieldID),
+			sqlgraph.Edge(sqlgraph.M2M, true, proxy.PoolAccountsTable, proxy.PoolAccountsPrimaryKey...),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
 // QueryAccounts queries the accounts edge of a Proxy.
 func (c *ProxyClient) QueryAccounts(_m *Proxy) *AccountQuery {
 	query := (&AccountClient{config: c.config}).Query()
@@ -4824,157 +5163,6 @@ func (c *RedeemCodeClient) mutate(ctx context.Context, m *RedeemCodeMutation) (V
 		return (&RedeemCodeDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
 	default:
 		return nil, fmt.Errorf("ent: unknown RedeemCode mutation op: %q", m.Op())
-	}
-}
-
-// SecurityPolicyKeywordClient is a client for the SecurityPolicyKeyword schema.
-type SecurityPolicyKeywordClient struct {
-	config
-}
-
-// NewSecurityPolicyKeywordClient returns a client for the SecurityPolicyKeyword from the given config.
-func NewSecurityPolicyKeywordClient(c config) *SecurityPolicyKeywordClient {
-	return &SecurityPolicyKeywordClient{config: c}
-}
-
-// Use adds a list of mutation hooks to the hooks stack.
-// A call to `Use(f, g, h)` equals to `securitypolicykeyword.Hooks(f(g(h())))`.
-func (c *SecurityPolicyKeywordClient) Use(hooks ...Hook) {
-	c.hooks.SecurityPolicyKeyword = append(c.hooks.SecurityPolicyKeyword, hooks...)
-}
-
-// Intercept adds a list of query interceptors to the interceptors stack.
-// A call to `Intercept(f, g, h)` equals to `securitypolicykeyword.Intercept(f(g(h())))`.
-func (c *SecurityPolicyKeywordClient) Intercept(interceptors ...Interceptor) {
-	c.inters.SecurityPolicyKeyword = append(c.inters.SecurityPolicyKeyword, interceptors...)
-}
-
-// Create returns a builder for creating a SecurityPolicyKeyword entity.
-func (c *SecurityPolicyKeywordClient) Create() *SecurityPolicyKeywordCreate {
-	mutation := newSecurityPolicyKeywordMutation(c.config, OpCreate)
-	return &SecurityPolicyKeywordCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// CreateBulk returns a builder for creating a bulk of SecurityPolicyKeyword entities.
-func (c *SecurityPolicyKeywordClient) CreateBulk(builders ...*SecurityPolicyKeywordCreate) *SecurityPolicyKeywordCreateBulk {
-	return &SecurityPolicyKeywordCreateBulk{config: c.config, builders: builders}
-}
-
-// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
-// a builder and applies setFunc on it.
-func (c *SecurityPolicyKeywordClient) MapCreateBulk(slice any, setFunc func(*SecurityPolicyKeywordCreate, int)) *SecurityPolicyKeywordCreateBulk {
-	rv := reflect.ValueOf(slice)
-	if rv.Kind() != reflect.Slice {
-		return &SecurityPolicyKeywordCreateBulk{err: fmt.Errorf("calling to SecurityPolicyKeywordClient.MapCreateBulk with wrong type %T, need slice", slice)}
-	}
-	builders := make([]*SecurityPolicyKeywordCreate, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		builders[i] = c.Create()
-		setFunc(builders[i], i)
-	}
-	return &SecurityPolicyKeywordCreateBulk{config: c.config, builders: builders}
-}
-
-// Update returns an update builder for SecurityPolicyKeyword.
-func (c *SecurityPolicyKeywordClient) Update() *SecurityPolicyKeywordUpdate {
-	mutation := newSecurityPolicyKeywordMutation(c.config, OpUpdate)
-	return &SecurityPolicyKeywordUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOne returns an update builder for the given entity.
-func (c *SecurityPolicyKeywordClient) UpdateOne(_m *SecurityPolicyKeyword) *SecurityPolicyKeywordUpdateOne {
-	mutation := newSecurityPolicyKeywordMutation(c.config, OpUpdateOne, withSecurityPolicyKeyword(_m))
-	return &SecurityPolicyKeywordUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// UpdateOneID returns an update builder for the given id.
-func (c *SecurityPolicyKeywordClient) UpdateOneID(id int64) *SecurityPolicyKeywordUpdateOne {
-	mutation := newSecurityPolicyKeywordMutation(c.config, OpUpdateOne, withSecurityPolicyKeywordID(id))
-	return &SecurityPolicyKeywordUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// Delete returns a delete builder for SecurityPolicyKeyword.
-func (c *SecurityPolicyKeywordClient) Delete() *SecurityPolicyKeywordDelete {
-	mutation := newSecurityPolicyKeywordMutation(c.config, OpDelete)
-	return &SecurityPolicyKeywordDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
-}
-
-// DeleteOne returns a builder for deleting the given entity.
-func (c *SecurityPolicyKeywordClient) DeleteOne(_m *SecurityPolicyKeyword) *SecurityPolicyKeywordDeleteOne {
-	return c.DeleteOneID(_m.ID)
-}
-
-// DeleteOneID returns a builder for deleting the given entity by its id.
-func (c *SecurityPolicyKeywordClient) DeleteOneID(id int64) *SecurityPolicyKeywordDeleteOne {
-	builder := c.Delete().Where(securitypolicykeyword.ID(id))
-	builder.mutation.id = &id
-	builder.mutation.op = OpDeleteOne
-	return &SecurityPolicyKeywordDeleteOne{builder}
-}
-
-// Query returns a query builder for SecurityPolicyKeyword.
-func (c *SecurityPolicyKeywordClient) Query() *SecurityPolicyKeywordQuery {
-	return &SecurityPolicyKeywordQuery{
-		config: c.config,
-		ctx:    &QueryContext{Type: TypeSecurityPolicyKeyword},
-		inters: c.Interceptors(),
-	}
-}
-
-// Get returns a SecurityPolicyKeyword entity by its id.
-func (c *SecurityPolicyKeywordClient) Get(ctx context.Context, id int64) (*SecurityPolicyKeyword, error) {
-	return c.Query().Where(securitypolicykeyword.ID(id)).Only(ctx)
-}
-
-// GetX is like Get, but panics if an error occurs.
-func (c *SecurityPolicyKeywordClient) GetX(ctx context.Context, id int64) *SecurityPolicyKeyword {
-	obj, err := c.Get(ctx, id)
-	if err != nil {
-		panic(err)
-	}
-	return obj
-}
-
-// QueryGroup queries the group edge of a SecurityPolicyKeyword.
-func (c *SecurityPolicyKeywordClient) QueryGroup(_m *SecurityPolicyKeyword) *GroupQuery {
-	query := (&GroupClient{config: c.config}).Query()
-	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
-		id := _m.ID
-		step := sqlgraph.NewStep(
-			sqlgraph.From(securitypolicykeyword.Table, securitypolicykeyword.FieldID, id),
-			sqlgraph.To(group.Table, group.FieldID),
-			sqlgraph.Edge(sqlgraph.M2O, false, securitypolicykeyword.GroupTable, securitypolicykeyword.GroupColumn),
-		)
-		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
-		return fromV, nil
-	}
-	return query
-}
-
-// Hooks returns the client hooks.
-func (c *SecurityPolicyKeywordClient) Hooks() []Hook {
-	hooks := c.hooks.SecurityPolicyKeyword
-	return append(hooks[:len(hooks):len(hooks)], securitypolicykeyword.Hooks[:]...)
-}
-
-// Interceptors returns the client interceptors.
-func (c *SecurityPolicyKeywordClient) Interceptors() []Interceptor {
-	inters := c.inters.SecurityPolicyKeyword
-	return append(inters[:len(inters):len(inters)], securitypolicykeyword.Interceptors[:]...)
-}
-
-func (c *SecurityPolicyKeywordClient) mutate(ctx context.Context, m *SecurityPolicyKeywordMutation) (Value, error) {
-	switch m.Op() {
-	case OpCreate:
-		return (&SecurityPolicyKeywordCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdate:
-		return (&SecurityPolicyKeywordUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpUpdateOne:
-		return (&SecurityPolicyKeywordUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
-	case OpDelete, OpDeleteOne:
-		return (&SecurityPolicyKeywordDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
-	default:
-		return nil, fmt.Errorf("ent: unknown SecurityPolicyKeyword mutation op: %q", m.Op())
 	}
 }
 
@@ -7000,28 +7188,28 @@ func (c *UserSubscriptionClient) mutate(ctx context.Context, m *UserSubscription
 // hooks and interceptors per client, for fast access.
 type (
 	hooks struct {
-		APIKey, Account, AccountGroup, Announcement, AnnouncementRead, AuthIdentity,
-		AuthIdentityChannel, BatchImageEvent, BatchImageItem, BatchImageJob,
-		ChannelMonitor, ChannelMonitorDailyRollup, ChannelMonitorHistory,
-		ChannelMonitorRequestTemplate, CompositeModelRoute, ErrorPassthroughRule,
-		Group, IdempotencyRecord, IdentityAdoptionDecision, PaymentAuditLog,
-		PaymentOrder, PaymentProviderInstance, PendingAuthSession, PromoCode,
-		PromoCodeUsage, Proxy, RedeemCode, SecurityPolicyKeyword, SecuritySecret,
-		Setting, SubscriptionPlan, TLSFingerprintProfile, UsageCleanupTask, UsageLog,
-		User, UserAllowedGroup, UserAttributeDefinition, UserAttributeValue,
-		UserPlatformQuota, UserSubscription []ent.Hook
+		APIKey, Account, AccountGroup, AccountProxy, Announcement, AnnouncementRead,
+		AuthIdentity, AuthIdentityChannel, BatchImageEvent, BatchImageItem,
+		BatchImageJob, ChannelMonitor, ChannelMonitorDailyRollup,
+		ChannelMonitorHistory, ChannelMonitorRequestTemplate, CompositeModelRoute,
+		ErrorPassthroughRule, Group, IdempotencyRecord, IdentityAdoptionDecision,
+		InvoiceRequest, PaymentAuditLog, PaymentOrder, PaymentProviderInstance,
+		PendingAuthSession, PromoCode, PromoCodeUsage, Proxy, RedeemCode,
+		SecuritySecret, Setting, SubscriptionPlan, TLSFingerprintProfile,
+		UsageCleanupTask, UsageLog, User, UserAllowedGroup, UserAttributeDefinition,
+		UserAttributeValue, UserPlatformQuota, UserSubscription []ent.Hook
 	}
 	inters struct {
-		APIKey, Account, AccountGroup, Announcement, AnnouncementRead, AuthIdentity,
-		AuthIdentityChannel, BatchImageEvent, BatchImageItem, BatchImageJob,
-		ChannelMonitor, ChannelMonitorDailyRollup, ChannelMonitorHistory,
-		ChannelMonitorRequestTemplate, CompositeModelRoute, ErrorPassthroughRule,
-		Group, IdempotencyRecord, IdentityAdoptionDecision, PaymentAuditLog,
-		PaymentOrder, PaymentProviderInstance, PendingAuthSession, PromoCode,
-		PromoCodeUsage, Proxy, RedeemCode, SecurityPolicyKeyword, SecuritySecret,
-		Setting, SubscriptionPlan, TLSFingerprintProfile, UsageCleanupTask, UsageLog,
-		User, UserAllowedGroup, UserAttributeDefinition, UserAttributeValue,
-		UserPlatformQuota, UserSubscription []ent.Interceptor
+		APIKey, Account, AccountGroup, AccountProxy, Announcement, AnnouncementRead,
+		AuthIdentity, AuthIdentityChannel, BatchImageEvent, BatchImageItem,
+		BatchImageJob, ChannelMonitor, ChannelMonitorDailyRollup,
+		ChannelMonitorHistory, ChannelMonitorRequestTemplate, CompositeModelRoute,
+		ErrorPassthroughRule, Group, IdempotencyRecord, IdentityAdoptionDecision,
+		InvoiceRequest, PaymentAuditLog, PaymentOrder, PaymentProviderInstance,
+		PendingAuthSession, PromoCode, PromoCodeUsage, Proxy, RedeemCode,
+		SecuritySecret, Setting, SubscriptionPlan, TLSFingerprintProfile,
+		UsageCleanupTask, UsageLog, User, UserAllowedGroup, UserAttributeDefinition,
+		UserAttributeValue, UserPlatformQuota, UserSubscription []ent.Interceptor
 	}
 )
 

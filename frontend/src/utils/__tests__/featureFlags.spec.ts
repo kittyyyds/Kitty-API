@@ -62,4 +62,12 @@ describe('resolveFeatureFlag', () => {
     useAppStore().cachedPublicSettings = { subscription_enabled: false } as PublicSettings
     expect(isFeatureFlagEnabled(FeatureFlags.subscription)).toBe(false)
   })
+
+  it('controls quality results independently from the channel status page', () => {
+    const settings = { channel_quality_public_enabled: false, channel_monitor_enabled: true } as PublicSettings
+    expect(resolveFeatureFlag(settings, FeatureFlags.channelQualityPublic)).toBe(false)
+    expect(resolveFeatureFlag(settings, FeatureFlags.channelMonitor)).toBe(true)
+    expect(resolveFeatureFlag({}, FeatureFlags.channelQualityPublic)).toBe(true)
+    expect(resolveFeatureFlag({ channel_quality_public_enabled: true }, FeatureFlags.channelQualityPublic)).toBe(true)
+  })
 })

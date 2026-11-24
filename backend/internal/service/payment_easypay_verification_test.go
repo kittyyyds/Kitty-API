@@ -73,6 +73,29 @@ func TestEasyPayUnverifiedNotificationCannotCredit(t *testing.T) {
 	}
 }
 
+func TestEasyPayCouponNotificationStillRequiresProviderVerification(t *testing.T) {
+	s, o, p, u, r := easyPayVerificationFixture(t, OrderStatusPending)
+	ctx := context.Background()
+	s.entClient.PaymentOrder.UpdateOneID(o.ID).SetProviderSnapshot(map[string]any{"recharge_coupon_id": 42}).ExecX(ctx)
+	p.resp.Status = payment.ProviderStatusPending
+	err := s.HandlePaymentNotification(ctx, &payment.PaymentNotification{OrderID: o.OutTradeNo, TradeNo: o.PaymentTradeNo, Amount: 100, Status: payment.NotificationStatusSuccess, Metadata: map[string]string{"pid": "123"}}, payment.TypeEasyPay)
+	require.Error(t, err)
+	require.Equal(t, OrderStatusPending, s.entClient.PaymentOrder.GetX(ctx, o.ID).Status)
+	require.Zero(t, u.getByIDUser.Balance)
+	require.Empty(t, r.useCalls)
+}
+
+func TestEasyPayCouponCannotReuseAnotherOrdersTransaction(t *testing.T) {
+	s, o, _, u, _ := easyPayVerificationFixture(t, OrderStatusPending)
+	ctx := context.Background()
+	o = s.entClient.PaymentOrder.UpdateOneID(o.ID).SetProviderSnapshot(map[string]any{"recharge_coupon_id": 42}).SaveX(ctx)
+	s.entClient.PaymentOrder.Create().SetUserID(o.UserID).SetUserEmail(o.UserEmail).SetUserName("test").SetAmount(100).SetPayAmount(100).SetRechargeCode("OTHER").SetOutTradeNo("sub2_other_coupon").SetPaymentType(payment.TypeEasyPay).SetPaymentTradeNo(o.PaymentTradeNo).SetOrderType(payment.OrderTypeBalance).SetStatus(OrderStatusCompleted).SetExpiresAt(time.Now()).SetClientIP("127.0.0.1").SetSrcHost("test.invalid").SaveX(ctx)
+	err := s.HandlePaymentNotification(ctx, &payment.PaymentNotification{OrderID: o.OutTradeNo, TradeNo: o.PaymentTradeNo, Amount: 100, Status: payment.NotificationStatusSuccess, Metadata: map[string]string{"pid": "123"}}, payment.TypeEasyPay)
+	require.ErrorContains(t, err, "already bound")
+	require.Equal(t, OrderStatusPending, s.entClient.PaymentOrder.GetX(ctx, o.ID).Status)
+	require.Zero(t, u.getByIDUser.Balance)
+}
+
 func TestEasyPayVerifiedPaymentCreditsOnceAndUsesOneQuery(t *testing.T) {
 	s, o, p, u, r := easyPayVerificationFixture(t, OrderStatusPending)
 	n := &payment.PaymentNotification{OrderID: o.OutTradeNo, TradeNo: o.PaymentTradeNo, Amount: 100, Status: payment.NotificationStatusSuccess, Metadata: map[string]string{"pid": "123"}}

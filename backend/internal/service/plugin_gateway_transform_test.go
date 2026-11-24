@@ -42,7 +42,7 @@ func TestGatewayPromptPinnedCompatibilityAndManagedStartup(t *testing.T) {
 	var manifest PluginManifest
 	require.NoError(t, json.Unmarshal([]byte(gatewayPromptPinnedManifest), &manifest))
 	host := PluginHostInfo{Version: "2.9.9-kitty.6", BuildType: "release"}
-	for _, version := range []string{"2.9.9-kitty.3", "2.9.9-kitty.4", "2.9.9-kitty.5", "2.9.9-kitty.6"} {
+	for _, version := range []string{"0.2.21-custom.1-kitty.15"} {
 		require.True(t, EvaluatePluginCompatibility(manifest, PluginHostInfo{Version: version}).Tested)
 	}
 	require.False(t, EvaluatePluginCompatibility(manifest, PluginHostInfo{Version: "2.9.9-kitty.7"}).Compatible)
@@ -67,7 +67,7 @@ func TestGatewayPromptRealPackage(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	cfg := testPluginConfig(root, false)
-	host := PluginHostInfo{Version: "2.9.9-kitty.3", BuildType: "release"}
+	host := PluginHostInfo{Version: "0.2.21-custom.1-kitty.15", BuildType: "release"}
 	installer := NewPluginPackageInstaller(cfg, host)
 	i, err := installer.Install(ctx, bytes.NewReader(data), nil)
 	require.NoError(t, err)
@@ -128,11 +128,8 @@ func TestGatewayPromptRealPackage(t *testing.T) {
 	}
 	wg.Wait()
 	require.Zero(t, r.inFlight.Load())
-	// The OAuth route must survive gateway route removal, and vice versa.
-	oauth := &pluginRoute{pluginID: 99, rolloutPercent: 100}
-	m.route.Store(oauth)
-	m.detachCapabilityRuntimes(PluginCapabilityGatewayTransform)
-	require.Same(t, oauth, m.route.Load())
+	// Detaching the retired OAuth outbound capability must not touch the
+	// gateway transform route.
 	m.transformRoute.Store(&pluginRoute{pluginID: 1, runtime: r, rolloutPercent: 100})
 	m.detachCapabilityRuntimes(PluginCapabilityOpenAIOAuthOutbound)
 	require.True(t, m.HasGatewayPrompt())

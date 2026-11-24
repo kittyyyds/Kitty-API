@@ -515,6 +515,18 @@ func TestCreateShadow_StructuredErrors(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, infraerrors.Code(err), "非 OAuth 母账号应 400")
 	})
 
+	t.Run("excel_primary_parent_400", func(t *testing.T) {
+		repo := newSparkShadowRepoStub()
+		svc := &adminServiceImpl{accountRepo: repo}
+		parent := &Account{Name: "excel-parent", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive,
+			Credentials: map[string]any{"client_id": "app_fnr0pYvVwwFDocDumLG3H2Bp", "access_token": "excel-token"}}
+		require.NoError(t, repo.Create(ctx, parent))
+		_, err := svc.CreateShadow(ctx, parent.ID, ShadowOptions{Name: "s"})
+		require.Error(t, err)
+		require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
+		require.Len(t, repo.accounts, 1, "rejection must not create a shadow")
+	})
+
 	t.Run("duplicate_409", func(t *testing.T) {
 		repo := newSparkShadowRepoStub()
 		svc := &adminServiceImpl{accountRepo: repo}
@@ -763,10 +775,8 @@ type sparkShadowValidatingGroupRepoStub struct {
 }
 
 func (s *sparkShadowValidatingGroupRepoStub) GetByID(_ context.Context, id int64) (*Group, error) {
-	if !s.existing[id] {
-		return nil, ErrGroupNotFound
-	}
-	return &Group{ID: id, Platform: PlatformOpenAI}, nil
+    if !s.existing[id] { return nil, ErrGroupNotFound }
+    return &Group{ID:id, Platform:PlatformOpenAI, Status:StatusActive}, nil
 }
 
 func (s *sparkShadowValidatingGroupRepoStub) ExistsByIDs(_ context.Context, ids []int64) (map[int64]bool, error) {

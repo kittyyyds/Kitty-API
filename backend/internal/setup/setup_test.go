@@ -317,11 +317,7 @@ func TestDatabaseConnectionUsesConfiguredTargetBeforeBootstrapDatabase(t *testin
 	if err != nil {
 		t.Fatalf("sqlmock.New() error = %v", err)
 	}
-	t.Cleanup(func() {
-		if err := targetDB.Close(); err != nil {
-			t.Errorf("close target database: %v", err)
-		}
-	})
+	defer func() { _ = targetDB.Close() }()
 
 	var opened []string
 	openDatabase := func(_ *DatabaseConfig, dbName string) (*sql.DB, error) {
@@ -343,20 +339,12 @@ func TestDatabaseConnectionUsesLegacyBootstrapOnlyForMissingTarget(t *testing.T)
 	if err != nil {
 		t.Fatalf("sqlmock.New() bootstrap error = %v", err)
 	}
-	t.Cleanup(func() {
-		if err := bootstrapDB.Close(); err != nil {
-			t.Errorf("close bootstrap database: %v", err)
-		}
-	})
+	defer func() { _ = bootstrapDB.Close() }()
 	targetDB, _, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New() target error = %v", err)
 	}
-	t.Cleanup(func() {
-		if err := targetDB.Close(); err != nil {
-			t.Errorf("close target database: %v", err)
-		}
-	})
+	defer func() { _ = targetDB.Close() }()
 
 	bootstrapMock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM pg_database WHERE datname = \$1\)`).
 		WithArgs(cfg.DBName).
@@ -536,8 +524,8 @@ func TestPrepareAdminCredentialsAcceptsBcryptMaxLengthPassword(t *testing.T) {
 func expectAdminBootstrapCounts(mock sqlmock.Sqlmock, totalUsers, adminUsers int64) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(1) FROM users")).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(totalUsers))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(1) FROM users WHERE role IN ($1, $2)")).
-		WithArgs(service.RoleAdmin, service.RoleSuperAdmin).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(1) FROM users WHERE role = $1")).
+		WithArgs(service.RoleAdmin).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(adminUsers))
 }
 
@@ -610,7 +598,7 @@ func TestBootstrapAdminUserCreatesAdminWithGeneratedCredentials(t *testing.T) {
 	expectAdminBootstrapCounts(mock, 0, 0)
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO users")).
 		WithArgs(
-			sqlmock.AnyArg(), sqlmock.AnyArg(), service.RoleSuperAdmin, sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), service.RoleAdmin, sqlmock.AnyArg(),
 			sqlmock.AnyArg(), service.StatusActive, sqlmock.AnyArg(), sqlmock.AnyArg(),
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))

@@ -24,10 +24,11 @@ import (
 )
 
 var (
-	ErrEmailNotConfigured    = infraerrors.ServiceUnavailable("EMAIL_NOT_CONFIGURED", "email service not configured")
-	ErrInvalidVerifyCode     = infraerrors.BadRequest("INVALID_VERIFY_CODE", "invalid or expired verification code")
-	ErrVerifyCodeTooFrequent = infraerrors.TooManyRequests("VERIFY_CODE_TOO_FREQUENT", "please wait before requesting a new code")
-	ErrVerifyCodeMaxAttempts = infraerrors.TooManyRequests("VERIFY_CODE_MAX_ATTEMPTS", "too many failed attempts, please request a new code")
+	ErrEmailCacheEntryNotFound = errors.New("email cache entry not found")
+	ErrEmailNotConfigured      = infraerrors.ServiceUnavailable("EMAIL_NOT_CONFIGURED", "email service not configured")
+	ErrInvalidVerifyCode       = infraerrors.BadRequest("INVALID_VERIFY_CODE", "invalid or expired verification code")
+	ErrVerifyCodeTooFrequent   = infraerrors.TooManyRequests("VERIFY_CODE_TOO_FREQUENT", "please wait before requesting a new code")
+	ErrVerifyCodeMaxAttempts   = infraerrors.TooManyRequests("VERIFY_CODE_MAX_ATTEMPTS", "too many failed attempts, please request a new code")
 
 	// Password reset errors
 	ErrInvalidResetToken = infraerrors.BadRequest("INVALID_RESET_TOKEN", "invalid or expired password reset token")
@@ -326,8 +327,14 @@ func (s *EmailService) GenerateVerifyCode() (string, error) {
 
 // SendVerifyCode 发送验证码邮件
 func (s *EmailService) SendVerifyCode(ctx context.Context, email, siteName string, locale ...string) error {
+	if s == nil || s.cache == nil {
+		return ErrServiceUnavailable
+	}
 	// 检查是否在冷却期内
 	existing, err := s.cache.GetVerificationCode(ctx, email)
+	if err != nil && !errors.Is(err, ErrEmailCacheEntryNotFound) {
+		return fmt.Errorf("check verification code cooldown: %w", err)
+	}
 	if err == nil && existing != nil {
 		if time.Since(existing.CreatedAt) < verifyCodeCooldown {
 			return ErrVerifyCodeTooFrequent
@@ -366,6 +373,7 @@ func (s *EmailService) SendVerifyCode(ctx context.Context, email, siteName strin
 			return nil
 		}
 		if !shouldFallbackNotificationEmail(err) {
+			clearUndeliveredEmailCode(ctx, s.cache, email, code, false)
 			return err
 		}
 		slog.Warn("failed to send templated verification email, falling back to legacy template", "recipient_hash", notificationEmailHash(email), "error", err)
@@ -377,6 +385,7 @@ func (s *EmailService) SendVerifyCode(ctx context.Context, email, siteName strin
 
 	// 发送邮件
 	if err := s.SendEmail(ctx, email, subject, body); err != nil {
+		clearUndeliveredEmailCode(ctx, s.cache, email, code, false)
 		return fmt.Errorf("send email: %w", err)
 	}
 

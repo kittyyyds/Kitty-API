@@ -43,13 +43,3 @@ func TestOpenAIOAuthService_GenerateAuthURL_OpenAIKeepsCodexFlow(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, openai.ClientID, session.ClientID)
 }
-
-func TestOpenAIOAuthService_GenerateAuthURL_RejectsRetiredAndUnknownClients(t *testing.T) {
-	svc := NewOpenAIOAuthService(nil, &openaiOAuthClientAuthURLStub{})
-	defer svc.Stop()
-	for _, profile := range []string{"excel", "unknown"} {
-		result, err := svc.GenerateAuthURL(context.Background(), nil, "", PlatformOpenAI, profile)
-		require.ErrorContains(t, err, "unsupported OAuth client")
-		require.Nil(t, result)
-	}
-}

@@ -28,7 +28,7 @@ useHeyRouteStepSequence(sectionRef, gridRef)
       <ol ref="gridRef" class="hr-step-list">
         <li class="hr-step-item">
           <div class="hr-step-reveal">
-            <div class="hr-step-preview preview-key" data-hr-tilt="3">
+            <div class="hr-step-preview preview-key">
               <span>{{ copy.apiKey }}</span>
               <strong>sk-••••••••••••</strong>
               <em>{{ copy.created }}</em>
@@ -40,7 +40,7 @@ useHeyRouteStepSequence(sectionRef, gridRef)
         </li>
         <li class="hr-step-item">
           <div class="hr-step-reveal">
-            <div class="hr-step-preview preview-config" data-hr-tilt="3">
+            <div class="hr-step-preview preview-config">
               <div><span>{{ copy.baseUrl }}</span><strong>{{ apiBaseUrl }}</strong></div>
               <div><span>{{ copy.apiKey }}</span><strong>sk-••••••••</strong></div>
               <div><span>{{ copy.model }}</span><strong>gpt-5.6</strong></div>
@@ -52,7 +52,7 @@ useHeyRouteStepSequence(sectionRef, gridRef)
         </li>
         <li class="hr-step-item">
           <div class="hr-step-reveal">
-            <div class="hr-step-preview preview-request" data-hr-tilt="3">
+            <div class="hr-step-preview preview-request">
               <span>{{ copy.success }}</span>
               <strong>200</strong>
               <code>POST /v1/responses</code>

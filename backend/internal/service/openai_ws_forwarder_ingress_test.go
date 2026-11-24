@@ -27,9 +27,6 @@ func TestIsOpenAIWSClientDisconnectError(t *testing.T) {
 		{name: "io_eof", err: io.EOF, want: true},
 		{name: "net_closed", err: net.ErrClosed, want: true},
 		{name: "context_canceled", err: context.Canceled, want: true},
-		{name: "local_cancel", err: NewOpenAIWSClientCloseError(coderws.StatusGoingAway, "websocket request canceled", context.Canceled), want: false},
-		{name: "local_deadline", err: NewOpenAIWSClientCloseError(coderws.StatusGoingAway, "websocket request canceled", context.DeadlineExceeded), want: false},
-		{name: "local_policy_wrapping_eof", err: NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "policy", io.EOF), want: false},
 		{name: "ws_normal_closure", err: coderws.CloseError{Code: coderws.StatusNormalClosure}, want: true},
 		{name: "ws_going_away", err: coderws.CloseError{Code: coderws.StatusGoingAway}, want: true},
 		{name: "ws_no_status", err: coderws.CloseError{Code: coderws.StatusNoStatusRcvd}, want: true},
@@ -152,7 +149,7 @@ func TestNormalizeOpenAIWSContextWindowBoundary(t *testing.T) {
 
 	t.Run("same_window_keeps_previous_response_id", func(t *testing.T) {
 		payload := []byte("{\"type\":\"response.create\",\"previous_response_id\":\"resp_old\",\"client_metadata\":{\"x-codex-window-id\":\"window-a\"}}")
-		updated, boundary, err := normalizeOpenAIWSContextWindowBoundary(payload, "window-a", openAIWSPayloadCodexWindowID(payload))
+		updated, boundary, err := normalizeOpenAIWSContextWindowBoundary(payload, "window-a")
 		require.NoError(t, err)
 		require.False(t, boundary.Changed)
 		require.False(t, boundary.PreviousResponseIDRemoved)
@@ -160,19 +157,19 @@ func TestNormalizeOpenAIWSContextWindowBoundary(t *testing.T) {
 		require.Equal(t, "resp_old", gjson.GetBytes(updated, "previous_response_id").String())
 	})
 
-	t.Run("new_window_drops_previous_response_id", func(t *testing.T) {
+	t.Run("new_window_preserves_explicit_previous_response_id", func(t *testing.T) {
 		payload := []byte("{\"type\":\"response.create\",\"previous_response_id\":\"resp_old\",\"client_metadata\":{\"x-codex-window-id\":\"window-b\"}}")
-		updated, boundary, err := normalizeOpenAIWSContextWindowBoundary(payload, "window-a", openAIWSPayloadCodexWindowID(payload))
+		updated, boundary, err := normalizeOpenAIWSContextWindowBoundary(payload, "window-a")
 		require.NoError(t, err)
 		require.True(t, boundary.Changed)
-		require.True(t, boundary.PreviousResponseIDRemoved)
+		require.False(t, boundary.PreviousResponseIDRemoved)
 		require.Equal(t, "window-b", boundary.WindowID)
-		require.False(t, gjson.GetBytes(updated, "previous_response_id").Exists())
+		require.Equal(t, "resp_old", gjson.GetBytes(updated, "previous_response_id").String())
 	})
 
 	t.Run("new_window_without_previous_response_id_still_marks_boundary", func(t *testing.T) {
 		payload := []byte("{\"type\":\"response.create\",\"client_metadata\":{\"x-codex-window-id\":\"window-b\"}}")
-		updated, boundary, err := normalizeOpenAIWSContextWindowBoundary(payload, "window-a", openAIWSPayloadCodexWindowID(payload))
+		updated, boundary, err := normalizeOpenAIWSContextWindowBoundary(payload, "window-a")
 		require.NoError(t, err)
 		require.True(t, boundary.Changed)
 		require.False(t, boundary.PreviousResponseIDRemoved)
@@ -181,12 +178,12 @@ func TestNormalizeOpenAIWSContextWindowBoundary(t *testing.T) {
 
 	t.Run("embedded_turn_metadata_is_fallback", func(t *testing.T) {
 		payload := []byte("{\"type\":\"response.create\",\"previous_response_id\":\"resp_old\",\"client_metadata\":{\"x-codex-turn-metadata\":\"{\\\"window_id\\\":\\\"window-b\\\"}\"}}")
-		updated, boundary, err := normalizeOpenAIWSContextWindowBoundary(payload, "window-a", openAIWSPayloadCodexWindowID(payload))
+		updated, boundary, err := normalizeOpenAIWSContextWindowBoundary(payload, "window-a")
 		require.NoError(t, err)
 		require.True(t, boundary.Changed)
-		require.True(t, boundary.PreviousResponseIDRemoved)
+		require.False(t, boundary.PreviousResponseIDRemoved)
 		require.Equal(t, "window-b", boundary.WindowID)
-		require.False(t, gjson.GetBytes(updated, "previous_response_id").Exists())
+		require.Equal(t, "resp_old", gjson.GetBytes(updated, "previous_response_id").String())
 	})
 }
 
@@ -657,7 +654,7 @@ func TestOpenAIWSExtractNormalizedInputSequence(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, exists)
 		require.Len(t, items, 1)
-		require.Equal(t, `"hello"`, string(items[0]))
+		require.JSONEq(t, `{"type":"message","role":"user","content":"hello"}`, string(items[0]))
 	})
 
 	t.Run("input_number", func(t *testing.T) {
@@ -899,7 +896,7 @@ func TestBuildOpenAIWSReplayInputSequence(t *testing.T) {
 		require.Equal(t, "world", gjson.GetBytes(items[1], "text").String())
 	})
 
-	t.Run("previous_response_id_filters_orphan_historical_custom_tool_call", func(t *testing.T) {
+	t.Run("previous_response_id_preserves_unmatched_historical_custom_tool_call", func(t *testing.T) {
 		previousFull := []json.RawMessage{
 			json.RawMessage(`{"type":"input_text","text":"hello"}`),
 			json.RawMessage(`{"type":"custom_tool_call","id":"item_orphan","call_id":"call_orphan","name":"exec","input":"pwd"}`),
@@ -912,9 +909,10 @@ func TestBuildOpenAIWSReplayInputSequence(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.True(t, exists)
-		require.Len(t, items, 2)
+		require.Len(t, items, 3)
 		require.Equal(t, "hello", gjson.GetBytes(items[0], "text").String())
-		require.Equal(t, "user", gjson.GetBytes(items[1], "role").String())
+		require.Equal(t, "custom_tool_call", gjson.GetBytes(items[1], "type").String())
+		require.Equal(t, "user", gjson.GetBytes(items[2], "role").String())
 	})
 
 	t.Run("previous_response_id_preserves_paired_historical_function_call", func(t *testing.T) {
@@ -965,9 +963,10 @@ func TestBuildOpenAIWSReplayInputSequence(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.True(t, exists)
-		require.Len(t, items, 2)
-		require.Equal(t, "item_reference", gjson.GetBytes(items[0], "type").String())
-		require.Equal(t, "user", gjson.GetBytes(items[1], "role").String())
+		require.Len(t, items, 3)
+		require.Equal(t, "custom_tool_call", gjson.GetBytes(items[0], "type").String())
+		require.Equal(t, "item_reference", gjson.GetBytes(items[1], "type").String())
+		require.Equal(t, "user", gjson.GetBytes(items[2], "role").String())
 	})
 
 	t.Run("previous_response_id_preserves_current_orphan_custom_tool_call", func(t *testing.T) {
@@ -984,18 +983,15 @@ func TestBuildOpenAIWSReplayInputSequence(t *testing.T) {
 		require.Equal(t, "call_live", gjson.GetBytes(items[1], "call_id").String())
 	})
 
-	t.Run("previous_response_id_full_input_replace", func(t *testing.T) {
-		items, exists, err := buildOpenAIWSReplayInputSequence(
-			lastFull,
-			true,
-			[]byte(`{"previous_response_id":"resp_1","input":[{"type":"input_text","text":"hello"},{"type":"input_text","text":"world"}]}`),
-			true,
-		)
+	t.Run("previous_response_id_user_overlap_is_delta", func(t *testing.T) {
+		items, exists, err := buildOpenAIWSReplayInputSequence(lastFull, true,
+			[]byte(`{"previous_response_id":"resp_1","input":[{"type":"input_text","text":"hello"},{"type":"input_text","text":"world"}]}`), true)
 		require.NoError(t, err)
 		require.True(t, exists)
-		require.Len(t, items, 2)
+		require.Len(t, items, 3)
 		require.Equal(t, "hello", gjson.GetBytes(items[0], "text").String())
-		require.Equal(t, "world", gjson.GetBytes(items[1], "text").String())
+		require.Equal(t, "hello", gjson.GetBytes(items[1], "text").String())
+		require.Equal(t, "world", gjson.GetBytes(items[2], "text").String())
 	})
 }
 
@@ -1119,14 +1115,17 @@ func TestOpenAIWSReplaySequenceSharesBodies(t *testing.T) {
 	})
 
 	t.Run("build_prefix_hit_transfers_current_items", func(t *testing.T) {
-		history := []json.RawMessage{json.RawMessage(`{"type":"input_text","text":"hello"}`)}
-		payload := []byte(`{"previous_response_id":"resp_1","input":[{"type":"input_text","text":"hello"},{"type":"input_text","text":"world"}]}`)
-		items, exists, err := buildOpenAIWSReplayInputSequence(history, true, payload, true)
+		observed := json.RawMessage(`{"type":"message","id":"msg_observed","role":"assistant","content":[]}`)
+		history := []json.RawMessage{json.RawMessage(`{"role":"user","content":"hello"}`), observed}
+		var proof openAIWSObservedOutputProvenance
+		proof.observeCompleteOutput([]json.RawMessage{observed})
+		payload := []byte(`{"previous_response_id":"resp_1","input":[{"role":"user","content":"hello"},` + string(observed) + `,{"role":"user","content":"world"}]}`)
+		items, exists, err := buildOpenAIWSReplayInputSequence(history, true, payload, true, &proof)
 		require.NoError(t, err)
 		require.True(t, exists)
-		require.Len(t, items, 2)
-		start := bytes.Index(payload, []byte(items[1]))
+		require.Len(t, items, 3)
+		start := bytes.Index(payload, []byte(items[2]))
 		require.GreaterOrEqual(t, start, 0)
-		require.Same(t, &payload[start], &items[1][0], "prefix 命中应转移当前 items 所有权并共享 payload 底层数组")
+		require.Same(t, &payload[start], &items[2][0], "proven prefix transfers current items and shares payload bodies")
 	})
 }

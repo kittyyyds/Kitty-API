@@ -241,8 +241,15 @@ func TestOpenAIStreamMetadataAndKeepaliveBeforeOverloadFailOver(t *testing.T) {
 			require.True(t, failoverErr.RequestScopedTransient)
 			require.Equal(t, http.StatusServiceUnavailable, failoverErr.ClientStatusCode)
 			require.Contains(t, failoverErr.ClientMessage, "servers are currently overloaded")
-			require.False(t, c.Writer.Written())
-			require.Empty(t, rec.Body.String())
+			if tt.name == "native" {
+				require.Contains(t, rec.Body.String(), `"type":"keepalive"`)
+				require.NotContains(t, rec.Body.String(), `response.created`)
+				require.NotContains(t, rec.Body.String(), `response.metadata`)
+				require.False(t, openAIStreamClientOutputStarted(c, false))
+			} else {
+				require.False(t, c.Writer.Written())
+				require.Empty(t, rec.Body.String())
+			}
 		})
 	}
 }
@@ -354,7 +361,12 @@ func TestOpenAIStreamKeepaliveOnlyFailureDoesNotRecordFirstToken(t *testing.T) {
 			require.ErrorAs(t, err, &failoverErr)
 			require.True(t, failoverErr.RetryableOnSameAccount)
 			require.True(t, failoverErr.RequestScopedTransient)
-			require.Empty(t, rec.Body.String())
+			if name == "native" {
+				require.Equal(t, "data: {\"type\":\"keepalive\"}\n\n", rec.Body.String())
+				require.False(t, openAIStreamClientOutputStarted(c, false))
+			} else {
+				require.Empty(t, rec.Body.String())
+			}
 		})
 	}
 }
@@ -448,7 +460,8 @@ func TestOpenAIStreamCapacityShedAfterOutputRewritesCodeForClient(t *testing.T) 
 	require.Equal(t, 1, strings.Count(body, `"code":"server_error"`))
 	require.Contains(t, body, `"code":"server_error"`)
 	require.NotContains(t, body, "server_is_overloaded")
-	require.Contains(t, body, "Our servers are currently overloaded")
+	require.Contains(t, body, OpenAIUpstreamFailureClientMessage)
+	require.ErrorContains(t, err, "Our servers are currently overloaded")
 	require.True(t, logSink.ContainsMessage("gateway.failover_suppressed_after_semantic_output"))
 	require.True(t, logSink.ContainsFieldValue("path", "native_sse"))
 	require.True(t, logSink.ContainsFieldValue("upstream_request_id", "rid-shed-after-output"))

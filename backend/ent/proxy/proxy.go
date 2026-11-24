@@ -29,14 +29,14 @@ const (
 	FieldHost = "host"
 	// FieldPort holds the string denoting the port field in the database.
 	FieldPort = "port"
-	// FieldMihomoNodeID holds the string denoting the mihomo_node_id field in the database.
-	FieldMihomoNodeID = "mihomo_node_id"
 	// FieldUsername holds the string denoting the username field in the database.
 	FieldUsername = "username"
 	// FieldPassword holds the string denoting the password field in the database.
 	FieldPassword = "password"
 	// FieldStatus holds the string denoting the status field in the database.
 	FieldStatus = "status"
+	// FieldMihomoNodeID holds the string denoting the mihomo_node_id field in the database.
+	FieldMihomoNodeID = "mihomo_node_id"
 	// FieldExpiresAt holds the string denoting the expires_at field in the database.
 	FieldExpiresAt = "expires_at"
 	// FieldFallbackMode holds the string denoting the fallback_mode field in the database.
@@ -45,6 +45,8 @@ const (
 	FieldBackupProxyID = "backup_proxy_id"
 	// FieldExpiryWarnDays holds the string denoting the expiry_warn_days field in the database.
 	FieldExpiryWarnDays = "expiry_warn_days"
+	// EdgePoolAccounts holds the string denoting the pool_accounts edge name in mutations.
+	EdgePoolAccounts = "pool_accounts"
 	// EdgeAccounts holds the string denoting the accounts edge name in mutations.
 	EdgeAccounts = "accounts"
 	// EdgePrimaryProxies holds the string denoting the primary_proxies edge name in mutations.
@@ -53,6 +55,11 @@ const (
 	EdgeBackupProxy = "backup_proxy"
 	// Table holds the table name of the proxy in the database.
 	Table = "proxies"
+	// PoolAccountsTable is the table that holds the pool_accounts relation/edge. The primary key declared below.
+	PoolAccountsTable = "account_proxies"
+	// PoolAccountsInverseTable is the table name for the Account entity.
+	// It exists in this package in order to avoid circular dependency with the "account" package.
+	PoolAccountsInverseTable = "accounts"
 	// AccountsTable is the table that holds the accounts relation/edge.
 	AccountsTable = "accounts"
 	// AccountsInverseTable is the table name for the Account entity.
@@ -80,15 +87,21 @@ var Columns = []string{
 	FieldProtocol,
 	FieldHost,
 	FieldPort,
-	FieldMihomoNodeID,
 	FieldUsername,
 	FieldPassword,
 	FieldStatus,
+	FieldMihomoNodeID,
 	FieldExpiresAt,
 	FieldFallbackMode,
 	FieldBackupProxyID,
 	FieldExpiryWarnDays,
 }
+
+var (
+	// PoolAccountsPrimaryKey and PoolAccountsColumn2 are the table columns denoting the
+	// primary key for the pool_accounts relation (M2M).
+	PoolAccountsPrimaryKey = []string{"account_id", "proxy_id"}
+)
 
 // ValidColumn reports if the column name is valid (part of the table columns).
 func ValidColumn(column string) bool {
@@ -120,8 +133,6 @@ var (
 	ProtocolValidator func(string) error
 	// HostValidator is a validator for the "host" field. It is called by the builders before save.
 	HostValidator func(string) error
-	// MihomoNodeIDValidator is a validator for the "mihomo_node_id" field. It is called by the builders before save.
-	MihomoNodeIDValidator func(string) error
 	// UsernameValidator is a validator for the "username" field. It is called by the builders before save.
 	UsernameValidator func(string) error
 	// PasswordValidator is a validator for the "password" field. It is called by the builders before save.
@@ -130,6 +141,8 @@ var (
 	DefaultStatus string
 	// StatusValidator is a validator for the "status" field. It is called by the builders before save.
 	StatusValidator func(string) error
+	// MihomoNodeIDValidator is a validator for the "mihomo_node_id" field. It is called by the builders before save.
+	MihomoNodeIDValidator func(string) error
 	// DefaultFallbackMode holds the default value on creation for the "fallback_mode" field.
 	DefaultFallbackMode string
 	// FallbackModeValidator is a validator for the "fallback_mode" field. It is called by the builders before save.
@@ -181,11 +194,6 @@ func ByPort(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldPort, opts...).ToFunc()
 }
 
-// ByMihomoNodeID orders the results by the mihomo_node_id field.
-func ByMihomoNodeID(opts ...sql.OrderTermOption) OrderOption {
-	return sql.OrderByField(FieldMihomoNodeID, opts...).ToFunc()
-}
-
 // ByUsername orders the results by the username field.
 func ByUsername(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldUsername, opts...).ToFunc()
@@ -199,6 +207,11 @@ func ByPassword(opts ...sql.OrderTermOption) OrderOption {
 // ByStatus orders the results by the status field.
 func ByStatus(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldStatus, opts...).ToFunc()
+}
+
+// ByMihomoNodeID orders the results by the mihomo_node_id field.
+func ByMihomoNodeID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldMihomoNodeID, opts...).ToFunc()
 }
 
 // ByExpiresAt orders the results by the expires_at field.
@@ -219,6 +232,20 @@ func ByBackupProxyID(opts ...sql.OrderTermOption) OrderOption {
 // ByExpiryWarnDays orders the results by the expiry_warn_days field.
 func ByExpiryWarnDays(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldExpiryWarnDays, opts...).ToFunc()
+}
+
+// ByPoolAccountsCount orders the results by pool_accounts count.
+func ByPoolAccountsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newPoolAccountsStep(), opts...)
+	}
+}
+
+// ByPoolAccounts orders the results by pool_accounts terms.
+func ByPoolAccounts(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newPoolAccountsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
 }
 
 // ByAccountsCount orders the results by accounts count.
@@ -254,6 +281,13 @@ func ByBackupProxyField(field string, opts ...sql.OrderTermOption) OrderOption {
 	return func(s *sql.Selector) {
 		sqlgraph.OrderByNeighborTerms(s, newBackupProxyStep(), sql.OrderByField(field, opts...))
 	}
+}
+func newPoolAccountsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(PoolAccountsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.M2M, true, PoolAccountsTable, PoolAccountsPrimaryKey...),
+	)
 }
 func newAccountsStep() *sqlgraph.Step {
 	return sqlgraph.NewStep(

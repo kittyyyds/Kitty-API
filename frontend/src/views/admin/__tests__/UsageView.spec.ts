@@ -221,11 +221,10 @@ describe('admin UsageView route filters', () => {
     wrapper.unmount()
   })
 
-  it('Issue603 embeds latency observations in the real admin usage page', async () => {
+  it('keeps the migrated usage table in the real admin usage page', async () => {
     const wrapper = mountRouteFilteredUsageView()
     await flushPromises()
-    expect(wrapper.find('[data-testid="latency-observability"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('latencyObservability.sourceNone')
+    expect(wrapper.find('usage-table-stub').exists()).toBe(true)
     wrapper.unmount()
   })
 
@@ -508,7 +507,7 @@ describe('admin UsageView column visibility', () => {
     vi.useRealTimers()
   })
 
-  it('shows the admin-only cache hit rate by default and allows toggling columns', async () => {
+  it('keeps cache hit rate inside latency instead of a separate column', async () => {
     const wrapper = mount(UsageView, {
       global: {
         stubs: {
@@ -535,9 +534,8 @@ describe('admin UsageView column visibility', () => {
     await wrapper.vm.$nextTick()
 
     const usageTable = wrapper.findComponent(UsageTableStub)
-    expect(usageTable.props('showCacheHitRate')).toBe(true)
-    expect(usageTable.props('columns')).toEqual(
-      expect.arrayContaining([expect.objectContaining({ key: 'cache_hit_rate', label: 'Cache Hit Rate' })]),
+    expect(usageTable.props('columns')).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ key: 'cache_hit_rate' })]),
     )
     expect(usageTable.props('columns')).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ key: 'request_id' })]),
@@ -546,9 +544,8 @@ describe('admin UsageView column visibility', () => {
     await wrapper.get('button[title="admin.users.columnSettings"]').trigger('click')
     const cacheHitRateToggle = wrapper.findAll('button').find((button) => button.text() === 'Cache Hit Rate')
     const requestIdToggle = wrapper.findAll('button').find((button) => button.text() === 'Request ID')
-    expect(cacheHitRateToggle).toBeDefined()
+    expect(cacheHitRateToggle).toBeUndefined()
     expect(requestIdToggle).toBeDefined()
-    await cacheHitRateToggle!.trigger('click')
     expect(usageTable.props('columns')).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ key: 'cache_hit_rate' })]),
     )

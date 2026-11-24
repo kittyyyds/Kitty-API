@@ -5,7 +5,6 @@ import {
   LOCALE_SOURCE_KEY,
   MANUAL_LOCALE_SOURCE,
   detectPreferredLocale,
-  fetchCloudflareTrace,
   getSavedManualLocale,
   getSystemTimezone,
   isLocaleCode,
@@ -48,9 +47,8 @@ export async function loadLocaleMessages(locale: LocaleCode): Promise<void> {
 }
 
 export async function initI18n(): Promise<void> {
-  const preferred = await detectPreferredLocale({
+  const preferred = detectPreferredLocale({
     storage: localStorage,
-    fetchTrace: fetchCloudflareTrace,
     timezone: getSystemTimezone(),
     browserLanguage: navigator.language,
   })

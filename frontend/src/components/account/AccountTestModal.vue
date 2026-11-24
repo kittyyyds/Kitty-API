@@ -6,12 +6,9 @@
     @close="handleClose"
   >
     <div class="space-y-4">
-      <AccountTestTiming :timing="connectionTiming.timing.value" :delivery="connectionTiming.delivery.value" />
       <div v-if="modelLoadError" role="alert" class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-200">
         <p>{{ modelLoadError }}</p>
-        <div class="mt-2 flex gap-4">
-          <button type="button" :disabled="loadingModels" class="underline" @click="loadAvailableModels">{{ t('admin.accounts.retryModels') }}</button>
-        </div>
+        <button type="button" :disabled="loadingModels" class="mt-2 underline" @click="loadAvailableModels">{{ t('admin.accounts.retryModels') }}</button>
       </div>
       <AccountTestEvidence v-if="upstreamEvidence" :evidence="upstreamEvidence" />
       <!-- Account Info Card -->
@@ -250,15 +247,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
-import { useI18n } from 'vue-i18n'
-import AccountTestTiming from '@/components/account/AccountTestTiming.vue'
-import { useAccountTestTiming, type AccountTestTiming as TimingPayload } from '@/composables/useAccountTestTiming'
 import { consumeAccountTestStream } from '@/utils/accountTestStream'
+import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import AccountTestEvidence from '@/components/account/AccountTestEvidence.vue'
+import type { AccountTestUpstreamEvidence } from '@/types/accountTestEvidence'
+import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
-import AccountTestEvidence from './AccountTestEvidence.vue'
-import type { AccountTestUpstreamEvidence } from '@/types/accountTestEvidence'
 import TextArea from '@/components/common/TextArea.vue'
 import { Icon } from '@/components/icons'
 import { useClipboard } from '@/composables/useClipboard'
@@ -267,8 +262,6 @@ import { adminAPI } from '@/api/admin'
 import type { Account, ClaudeModel } from '@/types'
 
 const { t } = useI18n()
-const connectionTiming = useAccountTestTiming()
-let streamGeneration = 0
 const { copyToClipboard } = useClipboard()
 
 interface OutputLine {
@@ -291,20 +284,21 @@ const emit = defineEmits<{
   (e: 'tested'): void
 }>()
 
-let reportedTestCompletion = false
-const notifyTestComplete = () => { if (!reportedTestCompletion) { reportedTestCompletion = true; emit('tested') } }
-const upstreamEvidence = ref<AccountTestUpstreamEvidence | null>(null)
 const terminalRef = ref<HTMLElement | null>(null)
 const status = ref<'idle' | 'connecting' | 'success' | 'error'>('idle')
 const outputLines = ref<OutputLine[]>([])
 const streamingContent = ref('')
 const errorMessage = ref('')
+const upstreamEvidence = ref<AccountTestUpstreamEvidence | null>(null)
+const modelLoadError = ref('')
+let modelLoadGeneration = 0
+let testGeneration = 0
+let testNotified = false
+const notifyTested = () => { if (!testNotified) { testNotified = true; emit('tested') } }
 const availableModels = ref<ClaudeModel[]>([])
 const selectedModelId = ref('')
 const testPrompt = ref('')
 const loadingModels = ref(false)
-const modelLoadError = ref('')
-let modelLoadGeneration = 0
 let abortController: AbortController | null = null
 const generatedImages = ref<PreviewImage[]>([])
 const testMode = ref<'default' | 'compact'>('default')
@@ -345,13 +339,14 @@ const sortTestModels = (models: ClaudeModel[]) => {
 watch(
   () => [props.show, props.account?.id] as const,
   async ([newVal]) => {
+    abortStream()
     if (newVal && props.account) {
       testPrompt.value = ''
       testMode.value = 'default'
       resetState()
       await loadAvailableModels()
     } else {
-      ++modelLoadGeneration
+      modelLoadGeneration++
       modelLoadError.value = ''
       abortStream()
     }
@@ -368,13 +363,13 @@ const loadAvailableModels = async () => {
   if (!props.account) return
 
   const generation = ++modelLoadGeneration
+  const accountID = props.account.id
   loadingModels.value = true
   modelLoadError.value = ''
-  availableModels.value = []
   selectedModelId.value = '' // Reset selection before loading
   try {
-    const models = await adminAPI.accounts.getAvailableModels(props.account.id)
-    if (generation !== modelLoadGeneration) return
+    const models = await adminAPI.accounts.getAvailableModels(accountID)
+    if (generation !== modelLoadGeneration || props.account?.id !== accountID) return
     availableModels.value = props.account.platform === 'gemini' || props.account.platform === 'antigravity'
       ? sortTestModels(models)
       : models
@@ -388,7 +383,7 @@ const loadAvailableModels = async () => {
         selectedModelId.value = sonnetModel?.id || availableModels.value[0].id
       }
     }
-  } catch (error) {
+  } catch {
     if (generation !== modelLoadGeneration) return
     modelLoadError.value = t('admin.accounts.modelsLoadFailed')
     // Fallback to empty list
@@ -400,13 +395,12 @@ const loadAvailableModels = async () => {
 }
 
 const resetState = () => {
-  connectionTiming.reset()
-  reportedTestCompletion = false
-  upstreamEvidence.value = null
   status.value = 'idle'
   outputLines.value = []
   streamingContent.value = ''
   errorMessage.value = ''
+  upstreamEvidence.value = null
+  testNotified = false
   generatedImages.value = []
   previewImageUrl.value = ''
 }
@@ -417,14 +411,14 @@ const handleClose = () => {
 }
 
 const abortStream = () => {
-  streamGeneration++
+  testGeneration++
   if (abortController) {
-    connectionTiming.cancel()
-    status.value = 'idle'
     abortController.abort()
     abortController = null
   }
 }
+
+onBeforeUnmount(() => { modelLoadGeneration++; abortStream() })
 
 const addLine = (text: string, className: string = 'text-gray-300') => {
   outputLines.value.push({ text, class: className })
@@ -441,17 +435,17 @@ const scrollToBottom = async () => {
 const startTest = async () => {
   if (!props.account || !selectedModelId.value) return
 
-  abortStream()
   resetState()
-  connectionTiming.begin()
   status.value = 'connecting'
   addLine(t('admin.accounts.startingTestForAccount', { name: props.account.name }), 'text-blue-400')
   addLine(t('admin.accounts.testAccountTypeLabel', { type: props.account.type }), 'text-gray-400')
   addLine('', 'text-gray-300')
 
-  const generation = ++streamGeneration
+  abortStream()
+
   const controller = new AbortController()
   abortController = controller
+  const generation = testGeneration
 
   try {
     // Use the configured API base; EventSource does not support POST.
@@ -472,53 +466,52 @@ const startTest = async () => {
       signal: controller.signal
     })
 
+    if (generation !== testGeneration) return
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`)
     }
 
-    await consumeAccountTestStream(response, controller.signal, (event) => {
-      if (generation === streamGeneration) handleEvent(event)
+    let completed = false
+    await consumeAccountTestStream(response, controller.signal, event => {
+      if (generation !== testGeneration) return
+      if (event.type === 'test_complete') completed = true
+      handleEvent(event)
     })
-    if (generation !== streamGeneration) return
-    connectionTiming.finish()
-    if (status.value === 'connecting') {
-      status.value = 'error'
-      errorMessage.value = t('accountTestTiming.delivery.incomplete')
+    if (generation !== testGeneration || controller.signal.aborted) return
+    if (!completed && status.value === 'connecting') {
+      throw new Error(t('accountTestTiming.delivery.incomplete'))
     }
   } catch (error: unknown) {
-    if (generation !== streamGeneration) return
+    if (generation !== testGeneration) return
     if (error instanceof DOMException && error.name === 'AbortError') {
-      connectionTiming.cancel()
       status.value = 'idle'
       return
     }
-    connectionTiming.fail()
+    notifyTested()
     status.value = 'error'
     const msg = error instanceof Error ? error.message : 'Unknown error'
     errorMessage.value = msg
     addLine(`Error: ${msg}`, 'text-red-400')
   }
-  finally { if (generation === streamGeneration) abortController = null }
+  finally { if (generation === testGeneration) abortController = null }
 }
 
 const handleEvent = (event: {
-  timing?: TimingPayload
   type: string
+  upstream_status?: number
+  upstream_model?: string
+  request_id?: string
+  upstream_error_code?: string
   text?: string
   model?: string
   success?: boolean
   error?: string
   image_url?: string
   mime_type?: string
-  upstream_status?: number
-  upstream_model?: string
-  request_id?: string
-  upstream_error_code?: string
 }) => {
-  connectionTiming.accept(event)
   switch (event.type) {
     case 'test_start':
-      addLine(t('admin.accounts.testRequestStarted'), 'text-gray-400')
+      addLine(t('admin.accounts.testRequestStarted'), 'text-blue-400')
       if (event.model) {
         addLine(t('admin.accounts.usingModel', { model: event.model }), 'text-cyan-400')
       }
@@ -562,7 +555,7 @@ const handleEvent = (event: {
       break
 
     case 'test_complete':
-      notifyTestComplete()
+      notifyTested()
       // Move streaming content to output lines
       if (streamingContent.value) {
         addLine(streamingContent.value, 'text-green-300')
@@ -577,7 +570,7 @@ const handleEvent = (event: {
       break
 
     case 'error':
-      notifyTestComplete()
+      notifyTested()
       status.value = 'error'
       errorMessage.value = event.error || 'Unknown error'
       if (streamingContent.value) {
@@ -587,9 +580,6 @@ const handleEvent = (event: {
       break
   }
 }
-
-onBeforeUnmount(abortStream)
-watch(() => props.account?.id, () => { abortStream(); resetState() })
 
 const copyOutput = () => {
   const text = outputLines.value.map((l) => l.text).join('\n')

@@ -31,14 +31,14 @@ type Proxy struct {
 	Host string `json:"host,omitempty"`
 	// Port holds the value of the "port" field.
 	Port int `json:"port,omitempty"`
-	// Managed Mihomo node identity for a dedicated static proxy listener.
-	MihomoNodeID *string `json:"mihomo_node_id,omitempty"`
 	// Username holds the value of the "username" field.
 	Username *string `json:"username,omitempty"`
 	// Password holds the value of the "password" field.
 	Password *string `json:"password,omitempty"`
 	// Status holds the value of the "status" field.
 	Status string `json:"status,omitempty"`
+	// Managed Mihomo node identity; ordinary proxies leave this unset.
+	MihomoNodeID *string `json:"mihomo_node_id,omitempty"`
 	// Proxy expiration time (NULL means never expires).
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	// Fallback target on expiry: none | proxy | direct.
@@ -55,6 +55,8 @@ type Proxy struct {
 
 // ProxyEdges holds the relations/edges for other nodes in the graph.
 type ProxyEdges struct {
+	// PoolAccounts holds the value of the pool_accounts edge.
+	PoolAccounts []*Account `json:"pool_accounts,omitempty"`
 	// Accounts holds the value of the accounts edge.
 	Accounts []*Account `json:"accounts,omitempty"`
 	// PrimaryProxies holds the value of the primary_proxies edge.
@@ -63,13 +65,22 @@ type ProxyEdges struct {
 	BackupProxy *Proxy `json:"backup_proxy,omitempty"`
 	// loadedTypes holds the information for reporting if a
 	// type was loaded (or requested) in eager-loading or not.
-	loadedTypes [3]bool
+	loadedTypes [4]bool
+}
+
+// PoolAccountsOrErr returns the PoolAccounts value or an error if the edge
+// was not loaded in eager-loading.
+func (e ProxyEdges) PoolAccountsOrErr() ([]*Account, error) {
+	if e.loadedTypes[0] {
+		return e.PoolAccounts, nil
+	}
+	return nil, &NotLoadedError{edge: "pool_accounts"}
 }
 
 // AccountsOrErr returns the Accounts value or an error if the edge
 // was not loaded in eager-loading.
 func (e ProxyEdges) AccountsOrErr() ([]*Account, error) {
-	if e.loadedTypes[0] {
+	if e.loadedTypes[1] {
 		return e.Accounts, nil
 	}
 	return nil, &NotLoadedError{edge: "accounts"}
@@ -78,7 +89,7 @@ func (e ProxyEdges) AccountsOrErr() ([]*Account, error) {
 // PrimaryProxiesOrErr returns the PrimaryProxies value or an error if the edge
 // was not loaded in eager-loading.
 func (e ProxyEdges) PrimaryProxiesOrErr() ([]*Proxy, error) {
-	if e.loadedTypes[1] {
+	if e.loadedTypes[2] {
 		return e.PrimaryProxies, nil
 	}
 	return nil, &NotLoadedError{edge: "primary_proxies"}
@@ -89,7 +100,7 @@ func (e ProxyEdges) PrimaryProxiesOrErr() ([]*Proxy, error) {
 func (e ProxyEdges) BackupProxyOrErr() (*Proxy, error) {
 	if e.BackupProxy != nil {
 		return e.BackupProxy, nil
-	} else if e.loadedTypes[2] {
+	} else if e.loadedTypes[3] {
 		return nil, &NotFoundError{label: proxy.Label}
 	}
 	return nil, &NotLoadedError{edge: "backup_proxy"}
@@ -102,7 +113,7 @@ func (*Proxy) scanValues(columns []string) ([]any, error) {
 		switch columns[i] {
 		case proxy.FieldID, proxy.FieldPort, proxy.FieldBackupProxyID, proxy.FieldExpiryWarnDays:
 			values[i] = new(sql.NullInt64)
-		case proxy.FieldName, proxy.FieldProtocol, proxy.FieldHost, proxy.FieldMihomoNodeID, proxy.FieldUsername, proxy.FieldPassword, proxy.FieldStatus, proxy.FieldFallbackMode:
+		case proxy.FieldName, proxy.FieldProtocol, proxy.FieldHost, proxy.FieldUsername, proxy.FieldPassword, proxy.FieldStatus, proxy.FieldMihomoNodeID, proxy.FieldFallbackMode:
 			values[i] = new(sql.NullString)
 		case proxy.FieldCreatedAt, proxy.FieldUpdatedAt, proxy.FieldDeletedAt, proxy.FieldExpiresAt:
 			values[i] = new(sql.NullTime)
@@ -170,13 +181,6 @@ func (_m *Proxy) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.Port = int(value.Int64)
 			}
-		case proxy.FieldMihomoNodeID:
-			if value, ok := values[i].(*sql.NullString); !ok {
-				return fmt.Errorf("unexpected type %T for field mihomo_node_id", values[i])
-			} else if value.Valid {
-				_m.MihomoNodeID = new(string)
-				*_m.MihomoNodeID = value.String
-			}
 		case proxy.FieldUsername:
 			if value, ok := values[i].(*sql.NullString); !ok {
 				return fmt.Errorf("unexpected type %T for field username", values[i])
@@ -196,6 +200,13 @@ func (_m *Proxy) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field status", values[i])
 			} else if value.Valid {
 				_m.Status = value.String
+			}
+		case proxy.FieldMihomoNodeID:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field mihomo_node_id", values[i])
+			} else if value.Valid {
+				_m.MihomoNodeID = new(string)
+				*_m.MihomoNodeID = value.String
 			}
 		case proxy.FieldExpiresAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
@@ -234,6 +245,11 @@ func (_m *Proxy) assignValues(columns []string, values []any) error {
 // This includes values selected through modifiers, order, etc.
 func (_m *Proxy) Value(name string) (ent.Value, error) {
 	return _m.selectValues.Get(name)
+}
+
+// QueryPoolAccounts queries the "pool_accounts" edge of the Proxy entity.
+func (_m *Proxy) QueryPoolAccounts() *AccountQuery {
+	return NewProxyClient(_m.config).QueryPoolAccounts(_m)
 }
 
 // QueryAccounts queries the "accounts" edge of the Proxy entity.
@@ -297,11 +313,6 @@ func (_m *Proxy) String() string {
 	builder.WriteString("port=")
 	builder.WriteString(fmt.Sprintf("%v", _m.Port))
 	builder.WriteString(", ")
-	if v := _m.MihomoNodeID; v != nil {
-		builder.WriteString("mihomo_node_id=")
-		builder.WriteString(*v)
-	}
-	builder.WriteString(", ")
 	if v := _m.Username; v != nil {
 		builder.WriteString("username=")
 		builder.WriteString(*v)
@@ -314,6 +325,11 @@ func (_m *Proxy) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("status=")
 	builder.WriteString(_m.Status)
+	builder.WriteString(", ")
+	if v := _m.MihomoNodeID; v != nil {
+		builder.WriteString("mihomo_node_id=")
+		builder.WriteString(*v)
+	}
 	builder.WriteString(", ")
 	if v := _m.ExpiresAt; v != nil {
 		builder.WriteString("expires_at=")

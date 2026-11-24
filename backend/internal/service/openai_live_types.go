@@ -15,14 +15,11 @@ const (
 )
 
 var (
-	ErrLiveUnavailable            = errors.New("live is unavailable")
-	ErrLiveConcurrencyFull        = errors.New("live concurrency is full")
-	ErrLiveCallNotFound           = errors.New("live call not found")
-	ErrLiveIdentityMismatch       = errors.New("live call identity mismatch")
-	ErrLiveControllerChanged      = errors.New("live controller changed")
-	ErrLiveLeaseSourceLost        = errors.New("live source reservation lost before transfer")
-	ErrLiveLeaseTransferUncertain = errors.New("live lease transfer result is unknown")
-	ErrLiveLeaseTransferFenced    = errors.New("live lease transfer was already fenced")
+	ErrLiveUnavailable       = errors.New("live is unavailable")
+	ErrLiveConcurrencyFull   = errors.New("live concurrency is full")
+	ErrLiveCallNotFound      = errors.New("live call not found")
+	ErrLiveIdentityMismatch  = errors.New("live call identity mismatch")
+	ErrLiveControllerChanged = errors.New("live controller changed")
 )
 
 type LiveAttestationUnavailableError struct {
@@ -43,39 +40,38 @@ type LiveCallRequest struct {
 }
 
 type LiveCallIdentity struct {
-	APIKeyConcurrencyLimit int
-	APIKeyID               int64
-	UserID                 int64
-	GroupID                *int64
-	SubscriptionID         *int64
-	UserAgent              string
-	IPAddress              string
-	InboundEndpoint        string
-	// KeyReservation is the already-waited regular key slot that the Live
-	// lease atomically consumes. Nil means no key-level limit applies.
-	KeyReservation *APIKeySlotReservation
-	// UserRequestID is the exact ordinary user member that the Live transfer
-	// consumes. Empty is only valid when user concurrency is unlimited.
-	UserRequestID string
-}
-
-type LiveCallRecord struct {
-	CallID          string
-	CallHash        string
-	AccountID       int64
-	APIKeyID        int64
-	UserID          int64
-	GroupID         int64
-	SubscriptionID  int64
-	LeaseID         string
-	Model           string
-	CreatedAt       time.Time
-	ExpiresAt       time.Time
-	Controller      string
-	ControllerOwner string
+	APIKeyID int64
+	UserID   int64
+	GroupID  *int64
+	// FallbackGroupID is retained for sideband identity checks. A sideband
+	// request authenticates the API key again and therefore starts with the
+	// primary GroupID, while the original Live call may have been created in
+	// this fallback group.
+	FallbackGroupID *int64
+	SubscriptionID  *int64
 	UserAgent       string
 	IPAddress       string
 	InboundEndpoint string
+}
+
+type LiveCallRecord struct {
+	CallID                string
+	CallHash              string
+	AccountID             int64
+	APIKeyID              int64
+	UserID                int64
+	GroupID               int64
+	GroupConcurrencyLimit int
+	SubscriptionID        int64
+	LeaseID               string
+	Model                 string
+	CreatedAt             time.Time
+	ExpiresAt             time.Time
+	Controller            string
+	ControllerOwner       string
+	UserAgent             string
+	IPAddress             string
+	InboundEndpoint       string
 	// AttestationCiphertext 仅用于让同一会话的 Sideband 复用创建时的证明。
 	AttestationCiphertext string
 }
@@ -105,7 +101,6 @@ type LiveConcurrencyCache interface {
 		userID int64,
 		userMax int,
 		apiKeyID int64,
-		apiKeyMax int,
 		leaseID string,
 		replacingRegularSlots bool,
 	) (bool, error)
@@ -113,42 +108,22 @@ type LiveConcurrencyCache interface {
 	ReleaseLiveLease(ctx context.Context, accountID, userID, apiKeyID int64, leaseID string) error
 }
 
-// LiveLeaseTransferRequest carries one ordinary account/user/key reservation
-// each. RequestID fields are the exact Redis members owned by the caller; an
-// empty ID is only valid when the matching Max is 0 (the dimension is
-// unlimited and has no ordinary member to move).
-type LiveLeaseTransferRequest struct {
-	AccountID        int64
-	AccountMax       int
-	AccountRequestID string
-	UserID           int64
-	UserMax          int
-	UserRequestID    string
-	APIKeyID         int64
-	APIKeyMax        int
-	KeyRequestID     string
-	LeaseID          string
-	// ReplacedAccountID is the account whose Live member is replaced when an
-	// already-held joint Key/user lease migrates to a new account after a
-	// retryable SDP failure. Zero means no previous account member is held.
-	ReplacedAccountID int64
-}
-
-// LiveLeaseTransferCache is optionally implemented by the Live lease cache. It
-// moves the exact ordinary members into one Live lease in a single atomic
-// operation, so no user/account/key dimension is counted twice and a missing
-// source fails closed.
-type LiveLeaseTransferCache interface {
-	AcquireLiveLeaseTransferring(ctx context.Context, request LiveLeaseTransferRequest) (bool, error)
-	// MigrateLiveLeaseAccount keeps an existing joint Key/user Live lease and
-	// atomically replaces its account member with the new ordinary account
-	// reservation. The Key and user members are never released or re-queued.
-	MigrateLiveLeaseAccount(ctx context.Context, request LiveLeaseTransferRequest) (bool, error)
-	// ReleaseLiveLeaseAccount removes only the current account's Live member,
-	// keeping the joint Key/user members for the next retry attempt.
-	ReleaseLiveLeaseAccount(ctx context.Context, accountID int64, leaseID string) error
-	// AbortLiveLeaseTransfer fences this exact transfer and removes its members
-	// after an unknown acknowledgement. It runs caller-supplied bounded cleanup
-	// and never touches another lease.
-	AbortLiveLeaseTransfer(ctx context.Context, request LiveLeaseTransferRequest) error
+// LiveUserGroupConcurrencyCache is an optional extension for caches that also
+// keep a Live lease in the per-(user,group) concurrency dimension. Older cache
+// implementations remain valid through the LiveConcurrencyCache fallback.
+type LiveUserGroupConcurrencyCache interface {
+	AcquireLiveLeaseForGroup(
+		ctx context.Context,
+		accountID int64,
+		accountMax int,
+		userID int64,
+		userMax int,
+		groupID int64,
+		groupMax int,
+		apiKeyID int64,
+		leaseID string,
+		replacingRegularSlots bool,
+	) (bool, error)
+	RefreshLiveLeaseForGroup(ctx context.Context, accountID, userID, groupID, apiKeyID int64, leaseID string) (bool, error)
+	ReleaseLiveLeaseForGroup(ctx context.Context, accountID, userID, groupID, apiKeyID int64, leaseID string) error
 }

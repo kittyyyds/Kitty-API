@@ -34,11 +34,14 @@ func pluginInstallationCapability(i *PluginInstallation) string {
 	return PluginCapabilityOpenAIOAuthOutbound
 }
 
+// routeSlot returns the gateway transform route, the only capability that still
+// publishes a runtime. Retired capabilities get a detached empty slot, so a
+// stray load reads nil and a stray store cannot replace the transform route.
 func (m *PluginManager) routeSlot(capability string) *atomic.Pointer[pluginRoute] {
 	if capability == PluginCapabilityGatewayTransform {
 		return &m.transformRoute
 	}
-	return &m.route
+	return new(atomic.Pointer[pluginRoute])
 }
 
 func hasEnabledCapability(bindings []PluginBinding, capability string) bool {

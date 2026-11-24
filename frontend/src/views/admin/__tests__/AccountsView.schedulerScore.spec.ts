@@ -17,6 +17,7 @@ const {
   getAllGroups: vi.fn()
 }))
 
+
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
@@ -67,8 +68,8 @@ const DataTableStub = {
   props: ['columns', 'data'],
   template: `
     <div data-test="data-table">
-      <div v-for="row in data" :key="row.id" :data-test="'scheduler-score-' + row.id">
-        <slot name="cell-scheduler_score" :row="row" />
+      <div v-for="row in data" :key="row.id">
+        <div :data-test="'scheduler-score-' + row.id"><slot name="cell-scheduler_score" :row="row" /></div>
       </div>
     </div>
   `
@@ -201,6 +202,8 @@ describe('admin AccountsView scheduler score column', () => {
       include_scheduler_score: '0'
     }))
 
+    expect(wrapper.getComponent(DataTableStub).props('columns').some((column: { key: string }) => column.key === 'quality_score')).toBe(false)
+
     const ungroupedCell = wrapper.find('[data-test="scheduler-score-1"]')
     expect(ungroupedCell.exists()).toBe(true)
     expect(ungroupedCell.text()).toContain('1.234567')
@@ -250,4 +253,5 @@ describe('admin AccountsView scheduler score column', () => {
     expect(emptyCell.exists()).toBe(true)
     expect(emptyCell.text()).toBe('-')
   })
+
 })

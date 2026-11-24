@@ -46,6 +46,7 @@ type CopyStatus = 'copied' | 'error' | 'idle'
 const activePlatformId = shallowRef('')
 const copyStatus = shallowRef<CopyStatus>('idle')
 const closeButtonRef = shallowRef<HTMLButtonElement | null>(null)
+const dialogRef = shallowRef<HTMLElement | null>(null)
 const titleId = computed(() => `hr-${props.dialogId}-dialog-title`)
 const activePlatform = computed(() => (
   props.platforms.find((platform) => platform.id === activePlatformId.value)
@@ -53,6 +54,9 @@ const activePlatform = computed(() => (
 ))
 let resetCopyTimer: ReturnType<typeof setTimeout> | undefined
 let savedBodyOverflow = ''
+let returnFocusTarget: HTMLElement | null = null
+
+const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 function legacyCopy(value: string): boolean {
   const textarea = document.createElement('textarea')
@@ -105,8 +109,31 @@ function close(): void {
   emit('close')
 }
 
+function trapFocus(event: KeyboardEvent): void {
+  const dialog = dialogRef.value
+  if (!dialog) return
+  const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(focusableSelector))
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (!first || !last) {
+    event.preventDefault()
+    return
+  }
+  const focused = document.activeElement
+  const focusInside = dialog.contains(focused)
+  if (event.shiftKey && (!focusInside || focused === first)) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && (!focusInside || focused === last)) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
 function handleKeydown(event: KeyboardEvent): void {
-  if (props.open && event.key === 'Escape') close()
+  if (!props.open) return
+  if (event.key === 'Escape') close()
+  else if (event.key === 'Tab') trapFocus(event)
 }
 
 watch(
@@ -123,6 +150,8 @@ watch(
   () => props.open,
   async (isOpen) => {
     if (isOpen) {
+      const focused = document.activeElement
+      returnFocusTarget = focused instanceof HTMLElement && focused !== document.body ? focused : null
       activePlatformId.value = props.platforms[0]?.id ?? ''
       resetCopyStatus()
       savedBodyOverflow = document.body.style.overflow
@@ -133,6 +162,9 @@ watch(
     }
 
     document.body.style.overflow = savedBodyOverflow
+    const target = returnFocusTarget
+    returnFocusTarget = null
+    if (target?.isConnected) target.focus()
   },
 )
 
@@ -157,6 +189,7 @@ onBeforeUnmount(() => {
         @pointerdown.self="close"
       >
         <section
+          ref="dialogRef"
           class="hr-contact-dialog"
           role="dialog"
           aria-modal="true"

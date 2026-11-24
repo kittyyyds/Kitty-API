@@ -87,26 +87,26 @@ describe('feature search dialog', () => {
     expect(wrapper.emitted('navigate')).toEqual([['/admin/channels/pricing']])
     expect(document.querySelector('[role=dialog]')).toBeNull()
   })
-  it('finds cyber and navigates directly to the risk settings card', async () => {
+  it('finds support tickets and navigates directly to the settings card', async () => {
     const { wrapper, router } = await setup()
     await wrapper.get('button').trigger('click')
     await flushPromises()
     const input = document.querySelector<HTMLInputElement>('[role=combobox]')!
-    input.value = 'cyber'
+    input.value = '网站工单'
     input.dispatchEvent(new Event('input', { bubbles: true }))
     await flushPromises()
     expect(document.querySelectorAll('[role=option]')).toHaveLength(1)
-    expect(document.querySelector('[role=option]')?.textContent).toContain('风控中心')
+    expect(document.querySelector('[role=option]')?.textContent).toContain('网站工单')
     await key(input, 'Enter')
-    expect(router.currentRoute.value.fullPath).toBe('/admin/settings?tab=features#settings-section-features-risk-control')
+    expect(router.currentRoute.value.fullPath).toBe('/admin/settings?tab=features#settings-section-features-support-tickets')
     const heading = document.createElement('h2')
-    heading.id = 'settings-section-features-risk-control'
+    heading.id = 'settings-section-features-support-tickets'
     heading.tabIndex = -1
     document.body.appendChild(heading)
     await wrapper.get('button').trigger('click')
     await flushPromises()
     const repeatedInput = document.querySelector<HTMLInputElement>('[role=combobox]')!
-    repeatedInput.value = '风控'
+    repeatedInput.value = '网站工单'
     repeatedInput.dispatchEvent(new Event('input', { bubbles: true }))
     await flushPromises()
     await key(repeatedInput, 'Enter')

@@ -49,7 +49,7 @@ func (u *openAIResponsesFailoverCancelUpstream) calls() []int64 {
 	return append([]int64(nil), u.accountIDs...)
 }
 
-func newOpenAIResponsesFailoverTestHandler(t *testing.T, upstream service.HTTPUpstream) *OpenAIGatewayHandler {
+func newOpenAIResponsesFailoverTestHandler(t *testing.T, upstream service.HTTPUpstream, repositories ...service.AccountRepository) *OpenAIGatewayHandler {
 	t.Helper()
 	accounts := []service.Account{
 		{
@@ -75,15 +75,13 @@ func newOpenAIResponsesFailoverTestHandler(t *testing.T, upstream service.HTTPUp
 			Credentials: map[string]any{"access_token": "token-2"},
 		},
 	}
-	// This fixture is shared by the regular and Astra Pro failover handlers.
-	for i := range accounts {
-		accounts[i].GroupIDs = []int64{3131, 3132}
+	var accountRepo service.AccountRepository = openAIImagesFailoverAccountRepo{accounts: accounts}
+	if len(repositories) > 0 {
+		accountRepo = repositories[0]
 	}
-	accountRepo := openAIImagesFailoverAccountRepo{accounts: accounts}
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	gatewayService := service.NewOpenAIGatewayService(
 		accountRepo,
-		nil,
 		nil,
 		nil,
 		nil,
@@ -116,7 +114,7 @@ func newOpenAIResponsesFailoverTestHandler(t *testing.T, upstream service.HTTPUp
 		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg),
 		nil,
 		nil,
-		nil,
+
 		nil,
 		cfg,
 	)

@@ -15,6 +15,10 @@
             {{ methodLabel }}
           </label>
           <div class="flex flex-wrap gap-4">
+            <label v-if="showOpenaiPasswordOption && platform === 'openai'" class="flex cursor-pointer items-center gap-2">
+              <input v-model="inputMethod" type="radio" value="openai_password" class="text-blue-600 focus:ring-blue-500" />
+              <span class="text-sm text-blue-900 dark:text-blue-200">{{ t('admin.accounts.oauth.openai.passwordLogin.title') }}</span>
+            </label>
             <label v-if="showManualOption" class="flex cursor-pointer items-center gap-2">
               <input
                 v-model="inputMethod"
@@ -140,6 +144,9 @@
         </div>
 
         <!-- Refresh Token Input (OpenAI / Antigravity / Mobile RT) -->
+        <OpenAIPasswordLogin v-if="inputMethod === 'openai_password' && showOpenaiPasswordOption && platform === 'openai'"
+          :proxy-id="proxyId" :loading="loading" :error="error" :reauthorize="reauthorize" :account-id="reauthorizeAccountId"
+          @authorized="emit('openai-password-authorized', $event)" />
         <div v-if="inputMethod === 'refresh_token' || inputMethod === 'mobile_refresh_token'" class="space-y-4">
           <div
             class="rounded-lg border border-blue-300 bg-white/80 p-4 dark:border-blue-600 dark:bg-gray-800/80"
@@ -901,6 +908,8 @@ import Icon from '@/components/icons/Icon.vue'
 import type { AddMethod, AuthInputMethod } from '@/composables/useAccountOAuth'
 import type { AccountPlatform } from '@/types'
 import { adminAPI } from '@/api/admin'
+import OpenAIPasswordLogin from './OpenAIPasswordLogin.vue'
+import type { PasswordLoginResult } from '@/api/admin/openaiPasswordLogin'
 
 interface Props {
   addMethod: AddMethod
@@ -923,6 +932,10 @@ interface Props {
   showSsoOption?: boolean
   /** Grok email----password login (admin; password never persisted). */
   showEmailPasswordOption?: boolean
+  showOpenaiPasswordOption?: boolean
+  reauthorize?: boolean
+  reauthorizeAccountId?: number | null
+  proxyId?: number | null
   showManualOption?: boolean
   initialInputMethod?: AuthInputMethod
   /**
@@ -953,6 +966,10 @@ const props = withDefaults(defineProps<Props>(), {
   showCodexPatOption: false,
   showSsoOption: false,
   showEmailPasswordOption: false,
+  showOpenaiPasswordOption: false,
+  reauthorize: false,
+  reauthorizeAccountId: null,
+  proxyId: null,
   showManualOption: true,
   initialInputMethod: 'manual',
   initialEmailPassword: '',
@@ -972,6 +989,7 @@ const emit = defineEmits<{
   'import-codex-pat': [accessToken: string]
   'import-sso': [content: string]
   'authorize-password': [emailPasswordInput: string]
+  'openai-password-authorized': [result: PasswordLoginResult]
   'update:inputMethod': [method: AuthInputMethod]
 }>()
 
@@ -1026,7 +1044,6 @@ const showHelpDialog = ref(false)
 const oauthState = ref('')
 const projectId = ref('')
 
-
 watch(
   () => [props.platform, props.showEmailPasswordOption] as const,
   async ([platform, requested]) => {
@@ -1058,6 +1075,7 @@ const methodOptionCount = computed(() => [
   props.showAgentIdentityOption,
   props.showCodexPatOption,
   props.showSsoOption,
+  props.showOpenaiPasswordOption && props.platform === 'openai',
   emailPasswordOptionEnabled.value
 ].filter(Boolean).length)
 const showMethodSelection = computed(() => methodOptionCount.value > 1)
@@ -1177,8 +1195,7 @@ const handleCopyUrl = () => {
 
 const handleRegenerate = () => {
   authCodeInput.value = ''
-  oauthState.value = ''
-  handleGenerateUrl()
+  emit('generate-url')
 }
 
 const handleCookieAuth = () => {

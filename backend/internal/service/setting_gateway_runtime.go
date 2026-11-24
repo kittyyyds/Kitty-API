@@ -212,6 +212,12 @@ type cachedCodexRestrictionPolicy struct {
 	expiresAt int64 // unix nano
 }
 
+const openAIQuotaAutoPauseSettingsCacheTTL = 60 * time.Second
+const openAIQuotaAutoPauseSettingsErrorTTL = 5 * time.Second
+const openAIQuotaAutoPauseSettingsDBTimeout = 5 * time.Second
+
+const openAIQuotaAutoPauseSettingsRefreshKey = "openai_quota_auto_pause_settings"
+
 // cachedCyberSessionBlockRuntime cyber 会话屏蔽开关、TTL 与用户白名单缓存（60s TTL）。
 // GetCyberSessionBlockRuntime 在网关请求热路径上被调用，避免每次访问 DB。
 type cachedCyberSessionBlockRuntime struct {
@@ -225,12 +231,6 @@ type cachedCyberSessionBlockRuntime struct {
 const cyberSessionBlockRuntimeCacheTTL = 60 * time.Second
 const cyberSessionBlockRuntimeErrorTTL = 5 * time.Second
 const cyberSessionBlockRuntimeDBTimeout = 5 * time.Second
-
-const openAIQuotaAutoPauseSettingsCacheTTL = 60 * time.Second
-const openAIQuotaAutoPauseSettingsErrorTTL = 5 * time.Second
-const openAIQuotaAutoPauseSettingsDBTimeout = 5 * time.Second
-
-const openAIQuotaAutoPauseSettingsRefreshKey = "openai_quota_auto_pause_settings"
 
 // GetCyberSessionBlockRuntime 返回 (开关, TTL)，进程内缓存 ~60s，
 // 供网关热路径读取时避免 DB 往返。
@@ -463,7 +463,14 @@ func (s *SettingService) GetOpenAICodexClientVersion(ctx context.Context) string
 		}
 		version := NormalizeCodexClientVersion(values[SettingKeyOpenAICodexClientVersion])
 		if version == "" {
+			// Automatic sync may only select releases with an exact verified wire
+			// profile; values written by older builds that followed unverified
+			// releases fall back to the compiled identity until resynced. An
+			// administrator's explicit panel version is still honored as-is.
 			version = NormalizeCodexClientVersion(values[SettingKeyOpenAICodexClientVersionSynced])
+			if _, verified := verifiedCodexWireProfile(version); !verified {
+				version = ""
+			}
 		}
 		if version == "" {
 			version = fallback

@@ -13,16 +13,8 @@
         </div>
         <p class="text-sm text-gray-500">{{ t('qqbot.inviteEnabledHelp') }}</p>
       </div>
-      <div class="grid gap-4 sm:grid-cols-2">
-        <label class="space-y-1">
-          {{ t('qqbot.inviteReward') }}
-          <input v-model.number="form.invite_reward" data-testid="invite-reward" class="input" type="number" min="0" max="1000" step="0.00000001" required />
-        </label>
-        <label class="space-y-1">
-          {{ t('qqbot.inviteDaily') }}
-          <input v-model.number="form.invite_daily_limit" data-testid="invite-daily-limit" class="input" type="number" min="0" max="100000" step="1" required />
-        </label>
-      </div>
+      <QQBotRewardItems :model-value="form" prefix="invite" :allowed-types="['balance', 'coupon']" amount-field="invite_reward" amount-test-id="invite-reward" />
+      <label class="block space-y-1">{{ t('qqbot.inviteDaily') }}<input v-model.number="form.invite_daily_limit" data-testid="invite-daily-limit" class="input" type="number" min="0" max="100000" step="1" required /></label>
       <div class="space-y-3 rounded-lg border p-4 dark:border-dark-700">
         <h3 class="font-medium">{{ t('qqbot.rechargeEligibility') }}</h3>
         <p class="text-sm text-gray-500">{{ t('qqbot.inviteRechargeEligibilityHelp') }}</p>
@@ -45,11 +37,13 @@
 </template>
 
 <script setup lang="ts">
+import QQBotRewardItems from './QQBotRewardItems.vue'
 import { useQQDraft } from './useQQDraft'
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { qqbotAPI, type QQInviteConfig } from '@/api/qqbot'
 import Toggle from '@/components/common/Toggle.vue'
+import { validCouponReward, validRewardAmount } from './rewardItems'
 
 const { t } = useI18n()
 const form = ref<QQInviteConfig | null>(null)
@@ -60,6 +54,9 @@ const notice = ref('')
 
 async function save() {
   if (!form.value || busy.value) return
+  error.value = ''; notice.value = ''
+  if (!validRewardAmount(form.value.invite_reward)) { error.value = t('qqbot.invalidRange'); return }
+  if (!validCouponReward(form.value)) { error.value = t('qqbot.rewardEditor.invalidCoupon'); return }
   busy.value = true
   error.value = ''; notice.value = ''
   if (![form.value.min_recharge_total, form.value.min_recharge_30d].every(n => Number.isFinite(n) && n >= 0 && n <= 1_000_000_000 && Number(n.toFixed(2)) === n)) {
@@ -86,6 +83,8 @@ onMounted(async () => {
     const config = await qqbotAPI.inviteConfig()
     form.value = {
       ...config,
+      coupon_template_id: config.coupon_template_id ?? 0,
+      coupon_quantity: config.coupon_quantity ?? 0,
       enabled: typeof config.enabled === 'boolean' ? config.enabled : config.invite_reward > 0 && config.invite_daily_limit > 0,
       recharge_window_days: config.recharge_window_days || 30
     }

@@ -14,7 +14,7 @@ import ChannelStatusV3View from './ChannelStatusV3View.vue'
 const mode = computed(() => {
   if (isChannelMonitorV3Mode()) return 'v3'
   if (isChannelMonitorV1Mode()) return 'v1'
-  if (isChannelMonitorV2Mode() && new URLSearchParams(window.location.search).get('monitor_view') === 'v2') return 'v2'
-  return 'v3'
+  if (isChannelMonitorV2Mode()) return 'v2'
+  return 'v2'
 })
 </script>

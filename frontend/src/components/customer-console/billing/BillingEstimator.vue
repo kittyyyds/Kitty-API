@@ -15,6 +15,7 @@ const {
   selectedGroupId,
   selectedModelKey,
   selectedGroup,
+  selectedModel,
   serviceTier,
   advancedOpen,
   catalogLoading,
@@ -272,7 +273,7 @@ function pricingSourceLabel(source: string): string {
 
         <Transition name="advanced-fields">
           <div v-if="advancedOpen" class="billing-estimator__advanced">
-            <label class="estimator-field">
+            <label v-if="selectedModel?.platform !== 'openai'" class="estimator-field">
               <span>{{ t('native.billing.calculator.cacheWrite5m') }}</span>
               <input
                 v-model.number="tokens.cacheWrite5m"
@@ -285,7 +286,7 @@ function pricingSourceLabel(source: string): string {
                 @blur="sanitizeToken('cacheWrite5m')"
               />
             </label>
-            <label class="estimator-field">
+            <label v-if="selectedModel?.platform !== 'openai'" class="estimator-field">
               <span>{{ t('native.billing.calculator.cacheWrite1h') }}</span>
               <input
                 v-model.number="tokens.cacheWrite1h"
@@ -296,6 +297,32 @@ function pricingSourceLabel(source: string): string {
                 max="1000000000"
                 step="1000"
                 @blur="sanitizeToken('cacheWrite1h')"
+              />
+            </label>
+            <label v-if="selectedModel?.platform === 'openai'" class="estimator-field">
+              <span>{{ t('native.billing.calculator.cacheWrite30m') }}</span>
+              <input
+                v-model.number="tokens.cacheWrite30m"
+                data-testid="cache-write-30m-tokens"
+                type="number"
+                inputmode="numeric"
+                min="0"
+                max="1000000000"
+                step="1000"
+                @blur="sanitizeToken('cacheWrite30m')"
+              />
+            </label>
+            <label v-if="selectedModel?.platform === 'openai'" class="estimator-field">
+              <span>{{ t('native.billing.calculator.cacheWrite12h') }}</span>
+              <input
+                v-model.number="tokens.cacheWrite12h"
+                data-testid="cache-write-12h-tokens"
+                type="number"
+                inputmode="numeric"
+                min="0"
+                max="1000000000"
+                step="1000"
+                @blur="sanitizeToken('cacheWrite12h')"
               />
             </label>
             <label class="estimator-field">

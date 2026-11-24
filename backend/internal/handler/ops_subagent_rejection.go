@@ -43,7 +43,6 @@ func logOpsSubagentRejection(c *gin.Context, ops *service.OpsService) {
 		StatusCode: http.StatusForbidden, IsBusinessLimited: true,
 		ErrorMessage: middleware2.GroupSubagentsBlockedMessage, ErrorBody: body,
 		ErrorSource: "client_request", ErrorOwner: "client", CreatedAt: time.Now(),
-		DurationMs: getContextLatencyMs(c, service.OpsRequestDurationMsKey),
 	}
 	if key.User != nil {
 		entry.UserID = &key.User.ID

@@ -108,12 +108,11 @@ func (i *PluginPackageInstaller) Install(ctx context.Context, reader io.Reader, 
 		return nil, fmt.Errorf("插件包不是有效的 ZIP: %w", err)
 	}
 	archiveClosed := false
-	closeArchive := func() error {
+	closeArchive := func() {
 		if !archiveClosed {
 			archiveClosed = true
-			return archive.Close()
+			_ = archive.Close()
 		}
-		return nil
 	}
 	defer closeArchive()
 	manifest, _, signatureStatus, err := i.inspectArchive(&archive.Reader)
@@ -121,7 +120,7 @@ func (i *PluginPackageInstaller) Install(ctx context.Context, reader io.Reader, 
 		return nil, err
 	}
 	if manifest.ID == gatewayPromptPluginID && (!isPinnedGatewayPrompt(manifest) || artifactSHA != gatewayPromptPackageSHA256) {
-		return nil, errors.New("分组提示词兼容包哈希不匹配，请使用已验证的原始发布包")
+		return nil, errors.New("分组提示词兼容包哈希不匹配")
 	}
 	compatibility := EvaluatePluginCompatibility(manifest, i.hostInfo)
 	initialState := PluginStateDisabled
@@ -148,11 +147,8 @@ func (i *PluginPackageInstaller) Install(ctx context.Context, reader io.Reader, 
 	if err := i.extractArchive(ctx, &archive.Reader, manifest, extractPath); err != nil {
 		return nil, err
 	}
-	// Windows does not allow the uploaded archive to be renamed while the ZIP
-	// reader still holds its file handle. Close it before committing either path.
-	if err := closeArchive(); err != nil {
-		return nil, fmt.Errorf("关闭插件包: %w", err)
-	}
+	// Windows 不允许重命名仍被打开的文件，提交前先释放 ZIP 读取器。
+	closeArchive()
 	if err := os.Rename(extractPath, installPath); err != nil {
 		return nil, fmt.Errorf("提交插件安装目录: %w", err)
 	}
@@ -299,7 +295,6 @@ func trustedPluginPublisherKey(cfg *config.Config, keyID, pluginID string) strin
 		}
 		return gatewayPromptPublisherKey
 	}
-
 	// 内置公钥是官方私有插件的固定信任根，不允许被部署配置覆盖。
 	if keyID == builtInOpenAITransportPublisherKeyID {
 		if pluginID != builtInOpenAITransportPluginID {

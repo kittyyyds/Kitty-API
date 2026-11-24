@@ -35,16 +35,18 @@ type BillingCatalogGroup struct {
 }
 
 type BillingPreviewInput struct {
-	GroupID               int64  `json:"group_id"`
-	Model                 string `json:"model"`
-	ModelPlatform         string `json:"model_platform"`
-	InputTokens           int    `json:"input_tokens"`
-	OutputTokens          int    `json:"output_tokens"`
-	CacheCreationTokens   int    `json:"cache_creation_tokens"`
-	CacheReadTokens       int    `json:"cache_read_tokens"`
-	CacheCreation5mTokens int    `json:"cache_creation_5m_tokens"`
-	CacheCreation1hTokens int    `json:"cache_creation_1h_tokens"`
-	ServiceTier           string `json:"service_tier"`
+	GroupID                int64  `json:"group_id"`
+	Model                  string `json:"model"`
+	ModelPlatform          string `json:"model_platform"`
+	InputTokens            int    `json:"input_tokens"`
+	OutputTokens           int    `json:"output_tokens"`
+	CacheCreationTokens    int    `json:"cache_creation_tokens"`
+	CacheReadTokens        int    `json:"cache_read_tokens"`
+	CacheCreation5mTokens  int    `json:"cache_creation_5m_tokens"`
+	CacheCreation1hTokens  int    `json:"cache_creation_1h_tokens"`
+	CacheCreation30mTokens int    `json:"cache_creation_30m_tokens"`
+	CacheCreation12hTokens int    `json:"cache_creation_12h_tokens"`
+	ServiceTier            string `json:"service_tier"`
 }
 
 type BillingPreviewBreakdown struct {
@@ -148,12 +150,14 @@ func (s *BillingPreviewService) Preview(ctx context.Context, userID int64, input
 		GroupID: &groupID,
 		Group:   &entry.group,
 		Tokens: UsageTokens{
-			InputTokens:           input.InputTokens,
-			OutputTokens:          input.OutputTokens,
-			CacheCreationTokens:   input.CacheCreationTokens,
-			CacheReadTokens:       input.CacheReadTokens,
-			CacheCreation5mTokens: input.CacheCreation5mTokens,
-			CacheCreation1hTokens: input.CacheCreation1hTokens,
+			InputTokens:            input.InputTokens,
+			OutputTokens:           input.OutputTokens,
+			CacheCreationTokens:    input.CacheCreationTokens,
+			CacheReadTokens:        input.CacheReadTokens,
+			CacheCreation5mTokens:  input.CacheCreation5mTokens,
+			CacheCreation1hTokens:  input.CacheCreation1hTokens,
+			CacheCreation30mTokens: input.CacheCreation30mTokens,
+			CacheCreation12hTokens: input.CacheCreation12hTokens,
 		},
 		RateMultiplier: entry.public.EffectiveRateMultiplier,
 		ServiceTier:    normalizeBillingServiceTier(input.ServiceTier),
@@ -328,6 +332,8 @@ func validateBillingPreviewInput(input BillingPreviewInput) error {
 		input.CacheReadTokens,
 		input.CacheCreation5mTokens,
 		input.CacheCreation1hTokens,
+		input.CacheCreation30mTokens,
+		input.CacheCreation12hTokens,
 	}
 	for _, value := range values {
 		if value < 0 || value > MaxBillingPreviewTokens {

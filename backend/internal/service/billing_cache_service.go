@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"math"
 	"strconv"
 	"sync"
@@ -743,7 +742,7 @@ func (s *BillingCacheService) QueueUpdateAPIKeyRateLimitUsage(apiKeyID int64, co
 // 把 TOCTOU 超支窗口限制在并发 in-flight 请求数量内（而非随时间无限累积）。
 // 写延迟通常 < 1ms（本地 Redis），换取 quota 视图实时性的取舍合理。
 //
-// Redis 写失败用 ALERT 级 log；DB 持久化由 caller 单独 goroutine 兜底（gateway_service.go）。
+// Redis 写失败用 ALERT 级 log；DB 持久化由计费 worker 内同步执行或批量 flusher 处理。
 func (s *BillingCacheService) IncrementUserPlatformQuotaUsage(userID int64, platform string, cost float64) {
 	if s.cache == nil {
 		return
@@ -771,15 +770,28 @@ func (s *BillingCacheService) IncrementUserPlatformQuotaUsage(userID int64, plat
 // 订阅模式：检查缓存用量未超过限额（Group限额从参数传入）
 // platform 为请求的目标平台（如 "anthropic"），传空串 "" 时跳过 user × platform quota 检查。
 func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user *User, apiKey *APIKey, group *Group, subscription *UserSubscription, platform string) error {
-	defer requesttiming.Observe(ctx, "billing_check")()
-	// 简易模式默认跳过所有计费检查. An explicit key-window opt-in keeps
-	// balance/subscription/platform checks bypassed while enforcing the three
-	// API-key monetary windows from the database source of truth.
+	// Simple mode preserves its existing billing bypass on every route.
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		if s.cfg.SimpleModeKeyRateLimitEnabled {
 			return s.checkSimpleModeAPIKeyRateLimits(ctx, apiKey)
 		}
 		return nil
+	}
+	if isAPIKeyFallbackActive(apiKey) {
+		var err error
+		subscription, err = resolveUsageSubscription(ctx, s.subRepo, apiKey, user, subscription)
+		if err != nil {
+			return err
+		}
+	}
+	if r := fallbackRouting(ctx); r != nil && apiKey == r.apiKey && !isAPIKeyFallbackActive(apiKey) {
+		r.billingAdmission = func(admissionCtx context.Context, candidate *APIKey) (*UserSubscription, error) {
+			sub, err := resolveUsageSubscription(admissionCtx, s.subRepo, candidate, candidate.User, nil)
+			if err != nil {
+				return nil, err
+			}
+			return sub, s.CheckBillingEligibility(admissionCtx, candidate.User, candidate, candidate.Group, sub, platform)
+		}
 	}
 	if s.circuitBreaker != nil && !s.circuitBreaker.Allow() {
 		return ErrBillingServiceUnavailable
@@ -968,9 +980,9 @@ func (s *BillingCacheService) checkRPM(ctx context.Context, user *User, group *G
 
 	// ── 第一层：分组级检查（override 或 group.rpm_limit） ──
 	if group != nil {
-		// 解析 override：优先从 auth cache snapshot，nil 时回退 DB。
+		// 解析 override：优先从 auth cache snapshot；snapshot 未确认该分组时回退 DB。
 		var override *int
-		if user.UserGroupRPMOverride != nil {
+		if user.UserGroupRPMOverride != nil || user.UserGroupRPMOverrideGroupID == group.ID {
 			override = user.UserGroupRPMOverride
 		} else if s.userGroupRateRepo != nil {
 			dbOverride, err := s.userGroupRateRepo.GetRPMOverrideByUserAndGroup(ctx, user.ID, group.ID)
@@ -1018,6 +1030,11 @@ func (s *BillingCacheService) checkRPM(ctx context.Context, user *User, group *G
 	}
 
 	// ── 第二层：用户级全局硬上限（始终生效） ──
+	// The primary admission already counted this request globally. Switching
+	// groups consumes the target group's RPM, not a second user RPM.
+	if fallback, _ := ctx.Value(fallbackBillingAdmissionKey{}).(bool); fallback {
+		return nil
+	}
 	if user.RPMLimit > 0 {
 		count, err := s.userRPMCache.IncrementUserRPM(ctx, user.ID)
 		if err != nil {

@@ -19,8 +19,8 @@ const (
 	// Five-minute rollups are retained for 7 days, which is the lookback limit.
 	ChannelMonitorV2RecentSampleLimit  = 18
 	ChannelMonitorV2RecentSampleBucket = 5 * time.Minute
-	// Card timeline is an operator choice, not a visitor toggle.
-	ChannelMonitorV2CardTimelineWindows = "windows"
+	// Cards always show recent samples. The time-window mode was removed; the
+	// value is still stored and returned so older cached pages keep working.
 	ChannelMonitorV2CardTimelineSamples = "samples"
 )
 
@@ -51,9 +51,10 @@ var ChannelMonitorV2FactoryPlatforms = []string{
 const channelMonitorV2MaxPlatforms = 64
 
 type ChannelMonitorV2PlatformConfig struct {
-	Platform string   `json:"platform"`
-	Enabled  bool     `json:"enabled"`
-	Models   []string `json:"models"`
+	Platform string `json:"platform"`
+	Enabled  bool   `json:"enabled"`
+	// Models is retained for old configuration compatibility; observed names are always shown.
+	Models []string `json:"models"`
 }
 
 // ChannelMonitorV2Config is the saved operator document.
@@ -68,8 +69,8 @@ type ChannelMonitorV2Config struct {
 	Version                int  `json:"version"`
 	Enabled                bool `json:"enabled"`
 	RefreshIntervalSeconds int  `json:"refresh_interval_seconds"`
-	// CardTimelineMode chooses the user card bars: windows or samples.
-	// Empty means windows, including configs saved before the field existed.
+	// CardTimelineMode is always "samples". Any submitted or stored value,
+	// including the removed "windows", is replaced with it.
 	CardTimelineMode string                           `json:"card_timeline_mode"`
 	Platforms        []ChannelMonitorV2PlatformConfig `json:"platforms"`
 	GroupIDs         []int64                          `json:"group_ids"`
@@ -108,13 +109,14 @@ var ChannelMonitorV2ErrorCategories = []string{
 }
 
 type ChannelMonitorV2Filter struct {
-	Range     string
-	Platforms []string
-	GroupIDs  []int64
-	// AllowedGroupIDs is the server-derived group scope for an ordinary viewer.
-	// RestrictGroups distinguishes an explicitly restricted viewer with no
-	// allowed groups from the unrestricted administrator/configuration scope
-	// represented by an empty slice.
+	// Only the card view needs raw, capped request history. Aggregation is unchanged.
+	IncludeRecentRequests bool
+	Range                 string
+	Platforms             []string
+	GroupIDs              []int64
+	// AllowedGroupIDs is the authenticated viewer's server-derived group scope.
+	// RestrictGroups distinguishes an ordinary user with no allowed groups from
+	// the unrestricted admin/configured scope represented by an empty slice.
 	AllowedGroupIDs []int64
 	RestrictGroups  bool
 	Models          []string
@@ -127,22 +129,33 @@ type ChannelMonitorV2Filter struct {
 }
 
 type ChannelMonitorV2Metric struct {
-	HasSamples               bool                    `json:"has_samples"`
-	SuccessRequests          int64                   `json:"success_requests"`
-	ErrorRequests            int64                   `json:"error_requests"`
-	RequestCount             int64                   `json:"request_count"`
-	InputTokens              int64                   `json:"input_tokens"`
-	OutputTokens             int64                   `json:"output_tokens"`
-	CacheCreationTokens      int64                   `json:"cache_creation_tokens"`
-	CacheReadTokens          int64                   `json:"cache_read_tokens"`
-	TokenCount               int64                   `json:"token_count"`
-	RPM                      float64                 `json:"rpm"`
-	TPM                      float64                 `json:"tpm"`
-	ErrorRate                float64                 `json:"error_rate"`
-	SuccessRate              float64                 `json:"success_rate"`
-	CacheRate                float64                 `json:"cache_rate"`
-	CacheRateNumerator       int64                   `json:"cache_rate_numerator"`
-	CacheRateDenominator     int64                   `json:"cache_rate_denominator"`
+	// OutputTPS measures generated output tokens per second after the first token.
+	// It is independent of fleet throughput (TPM) and is nil without valid samples.
+	OutputTPS            *float64 `json:"output_tps"`
+	TPSSamples           int64    `json:"tps_samples"`
+	SuccessRequests      int64    `json:"success_requests"`
+	ErrorRequests        int64    `json:"error_requests"`
+	RequestCount         int64    `json:"request_count"`
+	InputTokens          int64    `json:"input_tokens"`
+	OutputTokens         int64    `json:"output_tokens"`
+	CacheCreationTokens  int64    `json:"cache_creation_tokens"`
+	CacheReadTokens      int64    `json:"cache_read_tokens"`
+	TokenCount           int64    `json:"token_count"`
+	RPM                  float64  `json:"rpm"`
+	TPM                  float64  `json:"tpm"`
+	ErrorRate            float64  `json:"error_rate"`
+	SuccessRate          float64  `json:"success_rate"`
+	CacheRate            float64  `json:"cache_rate"`
+	HasCacheSamples      bool     `json:"has_cache_samples"`
+	CacheRateNumerator   int64    `json:"cache_rate_numerator"`
+	CacheRateDenominator int64    `json:"cache_rate_denominator"`
+	// CacheEligibleInputTokens counts streaming/WS input tokens. Cache rate uses
+	// this subset together with its eligible cache creation and read tokens.
+	CacheEligibleInputTokens int64                   `json:"cache_eligible_input_tokens,omitempty"`
+	HasSamples          bool    `json:"has_samples"`
+	// OutputTPS uses only measured successful stream generation time after TTFT.
+	// Nil means no valid post-upgrade observations; TPM is aggregate throughput.
+	OutputTPSSamples         int64                   `json:"output_tps_samples"`
 	TTFT                     ChannelMonitorV2Latency `json:"ttft"`
 	Duration                 ChannelMonitorV2Latency `json:"duration"`
 	UpstreamAffectedRequests *int64                  `json:"upstream_affected_requests,omitempty"`
@@ -283,21 +296,44 @@ type ChannelMonitorV2ModelRow struct {
 }
 
 type ChannelMonitorV2MatrixRow struct {
-	// Candy is the first enabled probe, kept so older clients still render one model.
+	HasTraffic     bool                            `json:"has_traffic"`
+	RecentRequests []ChannelMonitorV2RecentRequest `json:"recent_requests,omitempty"`
+	Platform       string                          `json:"platform"`
+	GroupID        *int64                          `json:"group_id,omitempty"`
+	GroupName      string                          `json:"group_name,omitempty"`
+	Model          string                          `json:"model,omitempty"`
+	Metrics        ChannelMonitorV2Metric          `json:"metrics"`
+	Health         ChannelMonitorV2Health          `json:"health"`
+	Buckets        []ChannelMonitorV2TrendPoint    `json:"buckets"`	// Candy is the first enabled probe, kept so older clients still render one model.
 	Candy               *ChannelMonitorV2CandyHistory  `json:"candy,omitempty"`
 	CandyChecks         []ChannelMonitorV2CandyHistory `json:"candy_checks,omitempty"`
 	GroupRateMultiplier *float64                       `json:"group_rate_multiplier,omitempty"`
-	Platform            string                         `json:"platform"`
-	GroupID             *int64                         `json:"group_id,omitempty"`
-	GroupName           string                         `json:"group_name,omitempty"`
-	Model               string                         `json:"model,omitempty"`
-	Metrics             ChannelMonitorV2Metric         `json:"metrics"`
-	Health              ChannelMonitorV2Health         `json:"health"`
-	Buckets             []ChannelMonitorV2TrendPoint   `json:"buckets"`
 	// SampleBuckets is the newest 5-minute buckets that meet the minimum sample,
 	// independent of the selected range. Nil means the request did not ask for
 	// them. A non-nil empty slice means history was searched and none qualified.
 	SampleBuckets *[]ChannelMonitorV2TrendPoint `json:"sample_buckets,omitempty"`
+
+}
+
+// ChannelMonitorV2RecentRequest exposes diagnostics only to administrators.
+type ChannelMonitorV2RecentRequest struct {
+	OutputTPS     *float64                     `json:"output_tps"`
+	OccurredAt    time.Time                    `json:"occurred_at"`
+	Model         string                       `json:"model"`
+	Status        string                       `json:"status"`
+	TTFTMs        *int64                       `json:"ttft_ms,omitempty"`
+	DurationMs    *int64                       `json:"duration_ms,omitempty"`
+	CacheRate     *float64                     `json:"cache_rate,omitempty"`
+	ErrorCategory string                       `json:"error_category,omitempty"`
+	Error         *ChannelMonitorV2RecentError `json:"error,omitempty"`
+}
+
+type ChannelMonitorV2RecentError struct {
+	LogID              int64  `json:"log_id"`
+	ErrorType          string `json:"error_type,omitempty"`
+	StatusCode         int    `json:"status_code,omitempty"`
+	UpstreamStatusCode int    `json:"upstream_status_code,omitempty"`
+	Message            string `json:"message,omitempty"`
 }
 
 type ChannelMonitorV2Matrix struct {
@@ -481,11 +517,11 @@ func (s *ChannelMonitorV2Service) getEnabledConfig(ctx context.Context) (*Channe
 }
 
 func (s *ChannelMonitorV2Service) UpdateConfig(ctx context.Context, cfg ChannelMonitorV2Config, expectedVersion int, actorID int64) (*ChannelMonitorV2Config, error) {
-	// Older admin bundles omit candy_history_limit, card_timeline_mode,
-	// group_order, or the platforms list. Read once when any of those is absent
-	// so a partial save cannot reset the others.
+	// Older admin bundles omit candy_history_limit, group_order, or the
+	// platforms list. Read once when any of those is absent so a partial save
+	// cannot reset the others.
 	var current *ChannelMonitorV2Config
-	if s.repo != nil && (cfg.CandyHistoryLimit == 0 || cfg.Platforms == nil || strings.TrimSpace(cfg.CardTimelineMode) == "" || cfg.GroupOrder == nil) {
+	if s.repo != nil && (cfg.CandyHistoryLimit == 0 || cfg.Platforms == nil || cfg.GroupOrder == nil) {
 		loaded, err := s.repo.GetConfig(ctx)
 		if err != nil {
 			return nil, err
@@ -497,9 +533,6 @@ func (s *ChannelMonitorV2Service) UpdateConfig(ctx context.Context, cfg ChannelM
 	}
 	if cfg.Platforms == nil && current != nil {
 		cfg.Platforms = append([]ChannelMonitorV2PlatformConfig(nil), current.Platforms...)
-	}
-	if strings.TrimSpace(cfg.CardTimelineMode) == "" && current != nil {
-		cfg.CardTimelineMode = current.CardTimelineMode
 	}
 	if cfg.GroupOrder == nil && current != nil {
 		cfg.GroupOrder = append([]int64(nil), current.GroupOrder...)
@@ -609,6 +642,10 @@ func (s *ChannelMonitorV2Service) Matrix(ctx context.Context, filter ChannelMoni
 		hideTP := s.hideThroughputForViewer(ctx, admin)
 		for i := range matrix.Items {
 			redactChannelMonitorV2Metric(&matrix.Items[i].Metrics, hideTP)
+			for j := range matrix.Items[i].RecentRequests {
+				matrix.Items[i].RecentRequests[j].ErrorCategory = ""
+				matrix.Items[i].RecentRequests[j].Error = nil
+			}
 			for j := range matrix.Items[i].Buckets {
 				redactChannelMonitorV2Metric(&matrix.Items[i].Buckets[j].Metrics, hideTP)
 			}
@@ -652,25 +689,17 @@ func (s *ChannelMonitorV2Service) Errors(ctx context.Context, filter ChannelMoni
 	return s.ErrorsForViewer(ctx, filter, false)
 }
 
-// ErrorsForViewer returns the error breakdown.
-// Non-admin callers receive category rates + ignored flags only: absolute Count
-// is zeroed and Details (upstream messages / status codes / volume) are omitted.
+// ErrorsForViewer returns the error breakdown only to administrators.
+// Public callers receive no categories, messages, status codes or log identifiers.
 func (s *ChannelMonitorV2Service) ErrorsForViewer(ctx context.Context, filter ChannelMonitorV2Filter, admin bool) (*ChannelMonitorV2List[ChannelMonitorV2ErrorRow], error) {
 	cfg, err := s.getEnabledConfig(ctx)
 	if err != nil {
 		return nil, err
 	}
-	list, err := s.repo.GetErrors(ctx, filter, *cfg, admin)
-	if err != nil {
-		return nil, err
+	if !admin {
+		return &ChannelMonitorV2List[ChannelMonitorV2ErrorRow]{Items: []ChannelMonitorV2ErrorRow{}}, nil
 	}
-	if !admin && list != nil {
-		for i := range list.Items {
-			list.Items[i].Count = 0
-			list.Items[i].Details = nil
-		}
-	}
-	return list, nil
+	return s.repo.GetErrors(ctx, filter, *cfg, true)
 }
 
 // RedactChannelMonitorV2Dimensions clears absolute request counts on filter chips.
@@ -737,9 +766,12 @@ func redactChannelMonitorV2Metric(m *ChannelMonitorV2Metric, hideThroughput bool
 	m.TokenCount = 0
 	m.CacheRateNumerator = 0
 	m.CacheRateDenominator = 0
+	m.CacheEligibleInputTokens = 0
 	// Latency sample_count is also a volume signal.
 	m.TTFT.SampleCount = 0
 	m.Duration.SampleCount = 0
+	m.TPSSamples = 0
+	m.OutputTPSSamples = 0
 	m.UpstreamAffectedRequests = nil
 	m.UpstreamAttemptCount = nil
 	if hideThroughput {
@@ -836,15 +868,6 @@ func channelMonitorV2TopUsersWithSelf(items []ChannelMonitorV2UserRow, selfIndex
 	return out
 }
 
-// NormalizeChannelMonitorV2CardTimelineMode maps an empty or unknown stored
-// value to windows. Saves reject unknown values before they are stored.
-func NormalizeChannelMonitorV2CardTimelineMode(mode string) string {
-	if strings.EqualFold(strings.TrimSpace(mode), ChannelMonitorV2CardTimelineSamples) {
-		return ChannelMonitorV2CardTimelineSamples
-	}
-	return ChannelMonitorV2CardTimelineWindows
-}
-
 func normalizeChannelMonitorV2Config(cfg *ChannelMonitorV2Config) error {
 	var err error
 	if err = normalizeChannelMonitorV2CandyProbes(cfg.CandyProbes); err != nil {
@@ -859,11 +882,7 @@ func normalizeChannelMonitorV2Config(cfg *ChannelMonitorV2Config) error {
 	if cfg.RefreshIntervalSeconds != 60 && cfg.RefreshIntervalSeconds != 300 {
 		return fmt.Errorf("%w: refresh_interval_seconds must be 60 or 300", ErrChannelMonitorV2InvalidConfig)
 	}
-	mode := strings.ToLower(strings.TrimSpace(cfg.CardTimelineMode))
-	if mode != "" && mode != ChannelMonitorV2CardTimelineWindows && mode != ChannelMonitorV2CardTimelineSamples {
-		return fmt.Errorf("%w: card_timeline_mode must be windows or samples", ErrChannelMonitorV2InvalidConfig)
-	}
-	cfg.CardTimelineMode = NormalizeChannelMonitorV2CardTimelineMode(mode)
+	cfg.CardTimelineMode = ChannelMonitorV2CardTimelineSamples
 	cfg.GroupIDs, err = normalizeChannelMonitorV2GroupIDs(cfg.GroupIDs)
 	if err != nil {
 		return err

@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   showError: vi.fn()
 }))
 
+vi.mock('@/api/admin/groups', () => ({ getSmartWS: vi.fn().mockResolvedValue({ enabled: false, revision: 0 }), setSmartWS: vi.fn() }))
+
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     groups: {

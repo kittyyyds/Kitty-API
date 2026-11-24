@@ -224,7 +224,6 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 			}
 
 			retryResp, retryErr := p.httpUpstream.Do(retryReq, p.proxyURL, p.account.ID, p.account.Concurrency)
-			s.rateLimitService.observeQualityResponse(retryReq.Context(), p.account, retryResp, retryErr)
 			if retryErr == nil && retryResp != nil && retryResp.StatusCode != http.StatusTooManyRequests && retryResp.StatusCode != http.StatusServiceUnavailable {
 				log.Printf("%s status=%d smart_retry_success attempt=%d/%d", p.prefix, retryResp.StatusCode, attempt, maxAttempts)
 				// 重试成功，清除 MODEL_CAPACITY_EXHAUSTED cooldown
@@ -400,7 +399,6 @@ func (s *AntigravityGatewayService) handleSingleAccountRetryInPlace(
 		}
 
 		retryResp, retryErr := p.httpUpstream.Do(retryReq, p.proxyURL, p.account.ID, p.account.Concurrency)
-		s.rateLimitService.observeQualityResponse(retryReq.Context(), p.account, retryResp, retryErr)
 		if retryErr == nil && retryResp != nil && retryResp.StatusCode != http.StatusTooManyRequests && retryResp.StatusCode != http.StatusServiceUnavailable {
 			logger.LegacyPrintf("service.antigravity_gateway", "%s status=%d single_account_503_retry_success attempt=%d/%d total_waited=%v",
 				p.prefix, retryResp.StatusCode, attempt, antigravitySingleAccountSmartRetryMaxAttempts, totalWaited)
@@ -538,13 +536,21 @@ urlFallbackLoop:
 				return nil, err
 			}
 
+			if p.ctx.Value(accountTestUsageKey{}) != nil {
+				resp, err = executeQualityTestHTTP(upstreamReq, p.account.ID, func(req *http.Request) (*http.Response, error) {
+					return p.httpUpstream.Do(req, p.proxyURL, p.account.ID, p.account.Concurrency)
+				})
+				if err != nil {
+					return nil, err
+				}
+				return &antigravityRetryLoopResult{resp: resp}, nil
+			}
 			resp, err = p.httpUpstream.Do(upstreamReq, p.proxyURL, p.account.ID, p.account.Concurrency)
-			s.rateLimitService.observeQualityResponse(upstreamReq.Context(), p.account, resp, err)
 			if err == nil && resp == nil {
 				err = errors.New("upstream returned nil response")
 			}
-			if err != nil {
 
+			if err != nil {
 				safeErr := sanitizeUpstreamErrorMessage(err.Error())
 				appendOpsUpstreamError(p.c, OpsUpstreamErrorEvent{
 					ProxyID:            opsUpstreamProxyID(p.account),
@@ -690,7 +696,7 @@ urlFallbackLoop:
 
 				// INTERNAL 500 渐进惩罚：3 次重试全部命中特定 500 时递增计数器并惩罚
 				if allAttemptsInternal500 && isAntigravityInternalServerError(resp.StatusCode, respBody) {
-					s.handleInternal500RetryExhausted(p.ctx, p.prefix, p.account)
+					s.handleInternal500ForModel(p.ctx, p.prefix, p.account, resolveFinalAntigravityModelKey(p.ctx, p.account, p.requestedModel))
 				}
 
 				// 其他 4xx 错误或重试用尽，直接返回
@@ -886,7 +892,7 @@ func (s *AntigravityGatewayService) setAntigravityModelRateLimits(ctx context.Co
 	if account == nil || repo == nil {
 		return false
 	}
-	keys := antigravityModelRateLimitKeys(modelName)
+	keys := antigravityModelRateLimitKeys(account, modelName)
 	if len(keys) == 0 {
 		return false
 	}
@@ -1206,6 +1212,19 @@ func (s *AntigravityGatewayService) handleUpstreamError(
 ) *handleModelRateLimitResult {
 	// 遵守自定义错误码策略：未命中则跳过所有限流处理
 	if !account.ShouldHandleErrorCode(statusCode) {
+		return nil
+	}
+	// Billing exhaustion can be encoded as 400/403/429 by the upstream. The
+	// regular status-code branches below do not classify those as account
+	// health failures, so apply the shared account transition before the
+	// caller turns the response into a failover error. Keep 402 on its legacy
+	// branch to avoid duplicate side effects.
+	if statusCode != http.StatusPaymentRequired && IsUpstreamBillingError(statusCode, body) {
+		if s.rateLimitService != nil {
+			if s.rateLimitService.HandleUpstreamError(ctx, account, statusCode, headers, body) {
+				logger.LegacyPrintf("service.antigravity_gateway", "%s status=%d billing_exhausted account=%d", prefix, statusCode, account.ID)
+			}
+		}
 		return nil
 	}
 	// 模型级限流处理（优先）

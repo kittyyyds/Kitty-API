@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,9 +9,13 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 var codexModelMap = map[string]string{
+	"gpt-6.2-astra":        "gpt-6.2-astra",
+	"gpt-6.2-sol":          "gpt-6.2-sol",
 	"gpt-6.1-terra":        "gpt-6.1-terra",
 	"gpt-6.1-sol":          "gpt-6.1-sol",
 	"gpt-6-sol":            "gpt-6-sol",
@@ -87,16 +92,29 @@ type codexTransformResult struct {
 	PromptCacheKey  string
 	ToolNameReverse map[string]string
 	Error           error
+	// Records an actual history compatibility insertion, not a tool inferred
+	// from the final body. Used only by bounded validation diagnostics.
+	WebSearchHistoryInjected bool
 }
 
 type codexOAuthTransformOptions struct {
-	IsCodexCLI                          bool
-	IsCompact                           bool
-	SkipDefaultInstructions             bool
-	PreserveToolCallIDs                 bool
+	IsCodexCLI              bool
+	IsCompact               bool
+	SkipDefaultInstructions bool
+	PreserveToolCallIDs     bool
+	// Enabled by the actual Codex OAuth destination, not by generic legacy
+	// helper callers or SetupToken paths sharing parts of this transform.
+	NativeItemIDs bool
+	// Typed native history already owns its item/call identity. Legacy input
+	// filtering is only for compatibility requests.
+	PreserveNativeInput                 bool
 	OmitPromotedSystemMessagesFromInput bool
 	// ResponsesLite selects where an injected hosted tool is declared.
 	ResponsesLite bool
+	// WireProfile applies version-specific 0.164 behavior and native Codex
+	// request defaults. Nil keeps the legacy shape (SetupToken, VM-routed,
+	// non-OpenAI platforms, tests).
+	WireProfile *codexWireProfile
 }
 
 const (
@@ -180,7 +198,8 @@ func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact
 
 func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuthTransformOptions) codexTransformResult {
 	result := codexTransformResult{}
-	if normalizeOpenAIOAuthResponsesCompatibilityFields(reqBody) {
+	keepContentMetadata := opts.ResponsesLite || (opts.WireProfile != nil && !opts.WireProfile.ClearContentItemMetadata)
+	if normalizeOpenAIOAuthResponsesCompatibilityFieldsWithMetadata(reqBody, opts.WireProfile != nil && !opts.IsCompact, keepContentMetadata) {
 		result.Modified = true
 	}
 	// 工具续链需求会影响存储策略与 input 过滤逻辑。
@@ -225,6 +244,18 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 	for _, key := range openAICodexOAuthUnsupportedFields {
 		if _, ok := reqBody[key]; ok {
 			delete(reqBody, key)
+			result.Modified = true
+		}
+	}
+
+	if opts.WireProfile != nil {
+		// Codex accepts native TTL-only prompt_cache_options, but not Platform
+		// modes or content breakpoints (openai_codex_prompt_cache.go).
+		if options, exists := reqBody["prompt_cache_options"]; exists && (opts.IsCompact || !validCodexPromptCacheOptions(options)) {
+			delete(reqBody, "prompt_cache_options")
+			result.Modified = true
+		}
+		if deleteOpenAIPromptCacheBreakpoints(reqBody) {
 			result.Modified = true
 		}
 	}
@@ -318,7 +349,7 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 	}
 
 	// 续链场景保留 item_reference 与 id，避免 call_id 上下文丢失。
-	if input, ok := reqBody["input"].([]any); ok {
+	if input, ok := reqBody["input"].([]any); ok && !opts.PreserveNativeInput {
 		if normalizedInput, modified := normalizeCodexToolRoleMessages(input); modified {
 			input = normalizedInput
 			result.Modified = true
@@ -330,7 +361,11 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 		input = filterCodexInputWithOptions(input, codexInputFilterOptions{
 			PreserveReferences: needsToolContinuation,
 			PreserveCallIDs:    opts.PreserveToolCallIDs,
+			NativeItemIDs:      opts.NativeItemIDs,
 		})
+		if reordered, moved := ensureCodexBaseInstructionsFirst(input); moved {
+			input = reordered
+		}
 		reqBody["input"] = input
 		result.Modified = true
 	} else if inputStr, ok := reqBody["input"].(string); ok {
@@ -355,9 +390,95 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 	// compact endpoint has its own wire shape and is left untouched.
 	if !opts.IsCompact && ensureOpenAIOAuthWebSearchToolForHistory(reqBody, opts.ResponsesLite) {
 		result.Modified = true
+		result.WebSearchHistoryInjected = true
 	}
 
+	if opts.WireProfile != nil && applyCodexWireProfileInputRules(reqBody, *opts.WireProfile, opts.ResponsesLite) {
+		result.Modified = true
+	}
+	// Native Codex request defaults are part of the OAuth wire shape only.
+	if opts.WireProfile != nil && !opts.IsCompact && ensureCodexResponsesDefaults(reqBody) {
+		result.Modified = true
+	}
 	return result
+}
+
+// applyCodexWireProfileInputRules applies version-scoped input transformations
+// from the 0.164 profiles: clear content_item_metadata for non-lite models,
+// dedupe adjacent configuration_update items (keeping the latest), and honor
+// the prompt_cache_key policy.
+func applyCodexWireProfileInputRules(reqBody map[string]any, profile codexWireProfile, responsesLite bool) bool {
+	if reqBody == nil {
+		return false
+	}
+	modified := false
+	if profile.PromptCacheKeyPolicy == codexPromptCacheKeyOmit {
+		if _, ok := reqBody["prompt_cache_key"]; ok {
+			delete(reqBody, "prompt_cache_key")
+			modified = true
+		}
+	}
+	if !profile.ClearContentItemMetadata && !profile.DedupeConfigurationUpdates {
+		return modified
+	}
+	input, ok := reqBody["input"].([]any)
+	if !ok || len(input) == 0 {
+		return modified
+	}
+	next := make([]any, 0, len(input))
+	previousConfigurationUpdate := -1
+	for _, raw := range input {
+		item, isMap := raw.(map[string]any)
+		itemType := ""
+		if isMap {
+			itemType, _ = item["type"].(string)
+		} else if rawMessage, ok := raw.(json.RawMessage); ok {
+			itemType = gjson.GetBytes(rawMessage, "type").String()
+		}
+		if profile.DedupeConfigurationUpdates && itemType == "configuration_update" {
+			if previousConfigurationUpdate >= 0 {
+				// Keep the latest adjacent update only.
+				next = append(next[:previousConfigurationUpdate], next[previousConfigurationUpdate+1:]...)
+				modified = true
+			}
+			previousConfigurationUpdate = len(next)
+			next = append(next, raw)
+			continue
+		}
+		previousConfigurationUpdate = -1
+		if profile.ClearContentItemMetadata && !responsesLite {
+			switch v := raw.(type) {
+			case map[string]any:
+				if meta, ok := v["internal_chat_message_metadata_passthrough"].(map[string]any); ok {
+					if _, exists := meta["content_item_metadata"]; exists {
+						delete(meta, "content_item_metadata")
+						modified = true
+					}
+					if len(meta) == 0 {
+						delete(v, "internal_chat_message_metadata_passthrough")
+						modified = true
+					}
+				}
+			case json.RawMessage:
+				path := "internal_chat_message_metadata_passthrough.content_item_metadata"
+				meta := gjson.GetBytes(v, "internal_chat_message_metadata_passthrough")
+				fields := meta.Map()
+				if meta.IsObject() && (len(fields) == 0 || (len(fields) == 1 && meta.Get("content_item_metadata").Exists())) {
+					path = "internal_chat_message_metadata_passthrough"
+				}
+				if updated, err := sjson.DeleteBytes(v, path); err == nil && !bytes.Equal(updated, v) {
+					next = append(next, json.RawMessage(updated))
+					modified = true
+					continue
+				}
+			}
+		}
+		next = append(next, raw)
+	}
+	if modified {
+		reqBody["input"] = next
+	}
+	return modified
 }
 
 func normalizeCodexToolChoice(reqBody map[string]any) bool {
@@ -399,7 +520,7 @@ func normalizeCodexToolChoice(reqBody map[string]any) bool {
 			delete(choiceMap, "function")
 			modified = true
 		}
-		if !codexToolsContainFunctionName(reqBody["tools"], name) {
+		if !codexRequestContainsFunctionName(reqBody, name) {
 			reqBody["tool_choice"] = "auto"
 			return true
 		}
@@ -440,6 +561,33 @@ func codexToolsContainType(rawTools any, toolType string) bool {
 			continue
 		}
 		if strings.TrimSpace(firstNonEmptyString(tool["type"])) == toolType {
+			return true
+		}
+	}
+	return false
+}
+
+func codexRequestContainsFunctionName(reqBody map[string]any, name string) bool {
+	if reqBody == nil {
+		return false
+	}
+	if codexToolsContainFunctionName(reqBody["tools"], name) {
+		return true
+	}
+	return codexInputAdditionalToolsContainFunctionName(reqBody["input"], name)
+}
+
+func codexInputAdditionalToolsContainFunctionName(rawInput any, name string) bool {
+	input, ok := rawInput.([]any)
+	if !ok || strings.TrimSpace(name) == "" {
+		return false
+	}
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok || strings.TrimSpace(firstNonEmptyString(item["type"])) != "additional_tools" {
+			continue
+		}
+		if codexToolsContainFunctionName(item["tools"], name) {
 			return true
 		}
 	}
@@ -982,86 +1130,13 @@ func normalizeOpenAIResponseFormatSchemas(reqBody map[string]any) bool {
 	return modified
 }
 
-func normalizeOpenAIResponseJSONSchema(schema map[string]any) bool {
-	if schema == nil {
-		return false
-	}
-	modified := false
-	for _, key := range []string{"uniqueItems", "minProperties"} {
-		if _, exists := schema[key]; exists {
-			delete(schema, key)
-			modified = true
-		}
-	}
-	if rawType, exists := schema["type"]; !exists || rawType == nil {
-		switch {
-		case schema["properties"] != nil:
-			schema["type"] = "object"
-			modified = true
-		case schema["items"] != nil:
-			schema["type"] = "array"
-			modified = true
-		}
-	}
-	if properties, ok := schema["properties"].(map[string]any); ok {
-		for _, raw := range properties {
-			if child, ok := raw.(map[string]any); ok && normalizeOpenAIResponseJSONSchema(child) {
-				modified = true
-			}
-		}
-	}
-	switch items := schema["items"].(type) {
-	case map[string]any:
-		if normalizeOpenAIResponseJSONSchema(items) {
-			modified = true
-		}
-	case []any:
-		for _, raw := range items {
-			if child, ok := raw.(map[string]any); ok && normalizeOpenAIResponseJSONSchema(child) {
-				modified = true
-			}
-		}
-	}
-	for _, key := range []string{
-		"additionalProperties",
-		"additionalItems",
-		"contains",
-		"not",
-		"if",
-		"then",
-		"else",
-		"propertyNames",
-		"unevaluatedProperties",
-		"unevaluatedItems",
-	} {
-		if child, ok := schema[key].(map[string]any); ok && normalizeOpenAIResponseJSONSchema(child) {
-			modified = true
-		}
-	}
-	for _, key := range []string{"anyOf", "oneOf", "allOf", "prefixItems"} {
-		children, _ := schema[key].([]any)
-		for _, raw := range children {
-			if child, ok := raw.(map[string]any); ok && normalizeOpenAIResponseJSONSchema(child) {
-				modified = true
-			}
-		}
-	}
-	for _, key := range []string{"$defs", "definitions", "patternProperties", "dependentSchemas"} {
-		children, _ := schema[key].(map[string]any)
-		for _, raw := range children {
-			if child, ok := raw.(map[string]any); ok && normalizeOpenAIResponseJSONSchema(child) {
-				modified = true
-			}
-		}
-	}
-	if dependencies, ok := schema["dependencies"].(map[string]any); ok {
-		for _, raw := range dependencies {
-			if child, ok := raw.(map[string]any); ok && normalizeOpenAIResponseJSONSchema(child) {
-				modified = true
-			}
-		}
-	}
-	return modified
+// normalizeOpenAIResponseJSONSchema deliberately preserves the caller's schema.
+// Removing constraints or inferring object/array types changes its acceptance
+// set. No semantics-preserving rewrite is established for the historical
+// "invalid schema keyword" error, which did not identify a keyword. Keep this
+// boundary for callers; unsupported schemas must retain their parameter error.
+func normalizeOpenAIResponseJSONSchema(_ map[string]any) bool {
+	return false
 }
 
 func ensureOpenAIResponsesImageGenerationTool(reqBody map[string]any) bool {
@@ -1252,6 +1327,9 @@ func normalizeOpenAIModelForUpstream(account *Account, model string) string {
 		// 出站前剥离泄漏的客户端上下文后缀，转发规范名给上游。
 		return normalizeClaudeCodeLongContextModel(model)
 	}
+	if account.IsOpenAI() && account.Type == AccountTypeAPIKey && !account.IsOpenAIPassthroughEnabled() && openai.IsGPT62ModelSpelling(model) {
+		return normalizeKnownOpenAICodexModel(model)
+	}
 	return model
 }
 
@@ -1432,6 +1510,51 @@ func defaultCodexSynthInstructions(model string) string {
 	return "You are a helpful coding assistant."
 }
 
+// ensureCodexResponsesDefaults fills fields that the native Codex request
+// builder always serializes. Existing caller values remain authoritative.
+func ensureCodexResponsesDefaults(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+	changed := false
+	if _, ok := reqBody["reasoning"]; !ok {
+		reqBody["reasoning"] = map[string]any{}
+		changed = true
+	}
+	if _, ok := reqBody["tool_choice"]; !ok {
+		reqBody["tool_choice"] = "auto"
+		changed = true
+	}
+	if _, ok := reqBody["parallel_tool_calls"]; !ok {
+		reqBody["parallel_tool_calls"] = openAIRequestBodyHasToolsMap(reqBody)
+		changed = true
+	}
+	if _, ok := reqBody["include"]; !ok {
+		reqBody["include"] = []any{"reasoning.encrypted_content"}
+		changed = true
+	} else if ensureCodexReasoningInclude(reqBody) {
+		changed = true
+	}
+	return changed
+}
+
+func openAIRequestBodyHasToolsMap(reqBody map[string]any) bool {
+	if tools, ok := reqBody["tools"].([]any); ok && len(tools) > 0 {
+		return true
+	}
+	input, _ := reqBody["input"].([]any)
+	for _, raw := range input {
+		item, ok := raw.(map[string]any)
+		if !ok || item["type"] != "additional_tools" {
+			continue
+		}
+		if tools, ok := item["tools"].([]any); ok && len(tools) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // ensureCodexReasoningInclude 在请求带 reasoning 时补齐 include:["reasoning.encrypted_content"]。
 //
 // 真实 Codex 在 reasoning 存在时总会请求加密推理内容（ChatGPT/store=false 场景下用于上下文回放）。
@@ -1502,8 +1625,11 @@ func applyCodexClientMetadata(reqBody map[string]any, account *Account) bool {
 }
 
 // applyInstructions 处理 instructions 字段：仅在 instructions 为空时填充默认值。
+// Codex ≥ 0.162 把基础指令放在 input 首位的 developer 消息
+// （content_item_kinds=["model.base_instructions"]），不发顶层 instructions；
+// 此时补默认值会让上游收到两份基础 prompt，故跳过。
 func applyInstructions(reqBody map[string]any, isCodexCLI bool) bool {
-	if !isInstructionsEmpty(reqBody) {
+	if !isInstructionsEmpty(reqBody) || codexInputMapCarriesBaseInstructions(reqBody) {
 		return false
 	}
 	model, _ := reqBody["model"].(string)
@@ -1531,6 +1657,9 @@ func isInstructionsEmpty(reqBody map[string]any) bool {
 type codexInputFilterOptions struct {
 	PreserveReferences bool
 	PreserveCallIDs    bool
+	// Only the Codex backend transform opts into its prefix_suffix identity
+	// contract; direct compatibility helper callers retain their legacy policy.
+	NativeItemIDs bool
 }
 
 // filterCodexInput 按需过滤 item_reference 与 id。
@@ -1619,6 +1748,13 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 			continue
 		}
 		typ, _ := m["type"].(string)
+		if typ != "" && !isCodexToolCallItemType(typ) && !isCodexKnownNonToolCallItemType(typ) {
+			// Unfamiliar native families have no local normalization contract.
+			// Keep their identities and payload intact; they still cannot prove
+			// complete history or authorize replay/cross-account continuation.
+			filtered = append(filtered, item)
+			continue
+		}
 
 		// chatgpt.com codex (OAuth path) runs with store=false (forced by
 		// applyCodexOAuthTransform). Replaying a reasoning item with its rs_*
@@ -1746,14 +1882,37 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 		if !opts.PreserveReferences {
 			ensureCopy()
 			delete(newItem, "id")
-		} else if id, ok := m["id"].(string); ok && shouldStripOpenAIResponsesInputItemID(typ, id) {
-			ensureCopy()
-			delete(newItem, "id")
+		} else if id, ok := m["id"].(string); ok {
+			// Native Codex IDs must be prefixed (prefix_suffix); this fork's
+			// type-specific sanitizer (e.g. a stale fc_* on custom_tool_call)
+			// still applies on top of that contract.
+			strip := shouldStripOpenAIResponsesInputItemID(typ, id)
+			if opts.NativeItemIDs && !hasNativeCodexInputItemID(id) {
+				strip = true
+			}
+			if strip {
+				ensureCopy()
+				delete(newItem, "id")
+			}
 		}
 
 		filtered = append(filtered, newItem)
 	}
 	return filtered
+}
+
+// isCodexKnownNonToolCallItemType bounds legacy cleanup to known passive or
+// hosted items. Unknown native families must retain fields whose meaning the
+// gateway has not established. This does not classify them as replayable tools.
+func isCodexKnownNonToolCallItemType(typ string) bool {
+	switch typ {
+	case "", "message", "reasoning", "item_reference", "compaction",
+		"additional_tools", "configuration_update", "image_generation_call",
+		"web_search_call", "file_search_call", "code_interpreter_call":
+		return true
+	default:
+		return false
+	}
 }
 
 func isCodexToolCallItemType(typ string) bool {
@@ -1875,4 +2034,69 @@ func normalizeCodexTools(reqBody map[string]any) bool {
 	}
 
 	return modified
+}
+
+// ensureCodexBaseInstructionsFirst moves the model.base_instructions developer
+// message to input[0]. The official client always sends it first; bridge paths
+// (for example the Claude Code todo guard) may prepend another developer item
+// after synthesis, which would otherwise change the prefix the model sees.
+func ensureCodexBaseInstructionsFirst(input []any) ([]any, bool) {
+	if len(input) < 2 {
+		return input, false
+	}
+	baseIndex := -1
+	for i, raw := range input {
+		item, ok := raw.(map[string]any)
+		if ok {
+			if isCodexBaseInstructionsItem(item) {
+				baseIndex = i
+				break
+			}
+			continue
+		}
+		rawMessage, ok := raw.(json.RawMessage)
+		if !ok {
+			continue
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(rawMessage, &decoded); err != nil {
+			continue
+		}
+		if isCodexBaseInstructionsItem(decoded) {
+			baseIndex = i
+			break
+		}
+	}
+	if baseIndex <= 0 {
+		return input, false
+	}
+	reordered := make([]any, 0, len(input))
+	reordered = append(reordered, input[baseIndex])
+	reordered = append(reordered, input[:baseIndex]...)
+	reordered = append(reordered, input[baseIndex+1:]...)
+	return reordered, true
+}
+
+// ensureCodexBaseInstructionsFirstInBody re-applies the input[0] invariant
+// after bridge-specific prepends (for example the Claude Code todo guard).
+func ensureCodexBaseInstructionsFirstInBody(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+	input, ok := reqBody["input"].([]any)
+	if !ok {
+		return false
+	}
+	reordered, moved := ensureCodexBaseInstructionsFirst(input)
+	if moved {
+		reqBody["input"] = reordered
+	}
+	return moved
+}
+
+// hasNativeCodexInputItemID reports the official prefixed item ID shape
+// (Codex protocol/response_item_id.rs::is_prefixed: nonempty prefix and suffix).
+func hasNativeCodexInputItemID(id string) bool {
+	prefix, suffix, found := strings.Cut(id, "_")
+	return found && prefix != "" && suffix != ""
 }

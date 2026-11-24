@@ -169,6 +169,7 @@ interface Emits {
   (e: 'update:modelValue', value: any): void
   (e: 'change', value: any, option: SelectOption | null): void
   (e: 'search', query: string): void
+  (e: 'open-change', open: boolean): void
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -402,6 +403,7 @@ watch(() => props.disabled, (disabled) => {
 })
 
 watch(isOpen, (open) => {
+  emit('open-change', open)
   if (open) {
     emit('open')
     calculateDropdownPosition()

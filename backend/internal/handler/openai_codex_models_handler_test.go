@@ -155,7 +155,6 @@ func TestCodexModelsAppliesLocalFiltersBeforeClientETag(t *testing.T) {
 	}
 	gatewayService := service.NewOpenAIGatewayService(
 		repo,
-		nil,
 		nil, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeSimple}, nil, nil, nil, nil, nil,
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
@@ -225,7 +224,6 @@ func TestCodexModelsAPIKeyCacheDoesNotLeakGroupFilters(t *testing.T) {
 	}
 	gatewayService := service.NewOpenAIGatewayService(
 		repo,
-		nil,
 		nil, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeSimple}, nil, nil, nil, nil, nil,
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
@@ -332,7 +330,6 @@ func TestCodexModelsSupplementsConfiguredModelsWithUnmappedAccountDefaults(t *te
 	upstream := &codexModelsFailoverHTTPUpstream{firstStatus: http.StatusNotFound}
 	gatewayService := service.NewOpenAIGatewayService(
 		repo,
-		nil,
 		nil, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeSimple}, nil, nil, nil, nil, nil,
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
@@ -382,7 +379,6 @@ func TestCodexModelsUnmappedParentAndSparkShadowHonorCustomListAndETag(t *testin
 	upstream := &codexModelsFailoverHTTPUpstream{firstStatus: http.StatusNotFound}
 	gatewayService := service.NewOpenAIGatewayService(
 		repo,
-		nil,
 		nil, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeSimple}, nil, nil, nil, nil, nil,
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
@@ -581,15 +577,17 @@ func newCodexModelsFailoverTestHandlerWithAccountCount(firstStatus, accountCount
 	groupID := int64(42)
 	accounts := make([]service.Account, 0, accountCount)
 	for i := 1; i <= accountCount; i++ {
+		retryCount := 0
 		accounts = append(accounts, service.Account{
-			ID:          int64(i),
-			Name:        fmt.Sprintf("upstream-%d", i),
-			Platform:    service.PlatformOpenAI,
-			Type:        service.AccountTypeAPIKey,
-			Status:      service.StatusActive,
-			Schedulable: true,
-			Priority:    i - 1,
-			Concurrency: 1,
+			ID:                     int64(i),
+			Name:                   fmt.Sprintf("upstream-%d", i),
+			Platform:               service.PlatformOpenAI,
+			Type:                   service.AccountTypeAPIKey,
+			Status:                 service.StatusActive,
+			Schedulable:            true,
+			Priority:               i - 1,
+			Concurrency:            1,
+			RateLimit429RetryCount: &retryCount,
 			Credentials: map[string]any{
 				"api_key":  fmt.Sprintf("sk-%d", i),
 				"base_url": fmt.Sprintf("https://upstream-%d.example/v1", i),
@@ -600,7 +598,6 @@ func newCodexModelsFailoverTestHandlerWithAccountCount(firstStatus, accountCount
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	gatewayService := service.NewOpenAIGatewayService(
 		codexModelsFailoverAccountRepo{accounts: accounts},
-		nil,
 		nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil,
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,
@@ -764,7 +761,6 @@ func newPinnedCodexTestHandler(accounts []service.Account, upstream *codexModels
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	gatewayService := service.NewOpenAIGatewayService(
 		codexModelsFailoverAccountRepo{accounts: accounts},
-		nil,
 		nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil,
 		upstream,
 		nil, nil, nil, nil, nil, nil, nil, nil,

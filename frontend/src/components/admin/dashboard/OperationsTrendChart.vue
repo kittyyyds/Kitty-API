@@ -35,10 +35,10 @@ import { useMutationObserver } from '@vueuse/core'
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend, type ChartOptions } from 'chart.js'
 import { Line } from 'vue-chartjs'
 import type { OperationsProfitTrendPoint } from '@/api/admin/dashboard'
-import { dateRange, formatMoney, localDate } from '@/views/admin/operationsUtils'
+import { dateRange, formatMoney, shiftDate } from '@/views/admin/operationsUtils'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend)
-const props = defineProps<{ points: OperationsProfitTrendPoint[]; days: number }>()
+const props = defineProps<{ points: OperationsProfitTrendPoint[]; days: number; timeZone?: string }>()
 const { t } = useI18n()
 const profitOnly = ref(false)
 const dark = ref(document.documentElement.classList.contains('dark'))
@@ -49,14 +49,11 @@ const seriesDefinitions = [
   { key: 'user_cost', label: 'admin.operations.userCost', color: '#5c9865' },
   { key: 'profit', label: 'admin.operations.profit', color: '#d99a00' }
 ] as const
-const range = computed(() => dateRange(props.days))
+const range = computed(() => dateRange(props.days, new Date(), props.timeZone))
 const points = computed(() => {
   const byDate = new Map(props.points.map(point => [point.date, point]))
-  const today = new Date()
   return Array.from({ length: props.days }, (_, index) => {
-    const date = new Date(today)
-    date.setDate(date.getDate() - props.days + index + 1)
-    const key = localDate(date)
+    const key = shiftDate(range.value.start, index)
     return byDate.get(key) ?? { date: key, upstream_cost: 0, user_cost: 0, profit: 0 }
   })
 })

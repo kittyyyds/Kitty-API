@@ -95,7 +95,6 @@
     <!-- Quick Actions -->
     <div class="mb-4 flex flex-wrap gap-2">
       <button
-        v-if="hasRelatedModels && showCatalogButton"
         type="button"
         @click="fillRelated"
         class="rounded-lg border border-blue-200 px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 dark:hover:bg-blue-900/30"
@@ -167,12 +166,14 @@ const props = withDefaults(defineProps<{
   platform?: string
   platforms?: string[]
   accountId?: number
-  syncBlockedReason?: string
-  syncCredentials?: SyncUpstreamPreviewParams
+  syncCredentials?: {
+    platform: string
+    type: string
+    base_url?: string
+    api_key: string
+  }
   showSyncButton?: boolean
-  showCatalogButton?: boolean
-  catalogModels?: readonly string[]
-}>(), { showSyncButton: true, showCatalogButton: true })
+}>(), { showSyncButton: true })
 
 const emit = defineEmits<{
   'update:modelValue': [value: string[]]
@@ -231,26 +232,19 @@ const canSyncUpstream = computed(() => {
 })
 
 const availableOptions = computed(() => {
-  if (props.catalogModels) {
-    return [...new Set([...props.catalogModels, ...props.modelValue])].map(value => ({value, label: value}))
-  }
   if (normalizedPlatforms.value.length === 0) {
     return allModels
   }
 
   const allowedModels = new Set<string>()
   for (const platform of normalizedPlatforms.value) {
-    for (const model of getModelsByPlatform(platform)) {
+    for (const model of getModelsByPlatform(platform, true)) {
       allowedModels.add(model)
     }
   }
 
   return allModels.filter(model => allowedModels.has(model.value))
 })
-
-const hasRelatedModels = computed(() => normalizedPlatforms.value.some(
-  platform => getModelsByPlatform(platform).length > 0
-))
 
 const filteredModels = computed(() => {
   const query = searchQuery.value.toLowerCase().trim()
@@ -315,7 +309,6 @@ const fillRelated = () => {
 
 const syncUpstreamModels = async () => {
   if (isSyncingUpstream.value || !canSyncUpstream.value) return
-  if (props.syncBlockedReason) { appStore.showError(props.syncBlockedReason); return }
 
   const syncVersion = upstreamSyncVersion
   const accountId = props.accountId
@@ -324,13 +317,10 @@ const syncUpstreamModels = async () => {
   isSyncingUpstream.value = true
   try {
     let result
-    // When editing an existing account, use freshly entered credentials for a
-    // preview before the user saves the account. If no new key is entered,
-    // fall back to the persisted account credentials.
-    if (previewCredentials) {
-      result = await accountsAPI.syncUpstreamModelsPreview(previewCredentials as SyncUpstreamPreviewParams)
-    } else if (accountId) {
+    if (accountId) {
       result = await accountsAPI.syncUpstreamModels(accountId)
+    } else if (previewCredentials) {
+      result = await accountsAPI.syncUpstreamModelsPreview(previewCredentials as SyncUpstreamPreviewParams)
     } else {
       return
     }

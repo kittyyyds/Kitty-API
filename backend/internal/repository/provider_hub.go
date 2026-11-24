@@ -216,7 +216,7 @@ func (r *channelRepository) MutateProviderHub(ctx context.Context, c service.Pro
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE kitty_supplier_cost_rules SET ended_at=clock_timestamp() WHERE wallet_id=$1 AND model=$2 AND ended_at IS NULL`, id, c.Model)
 		if err == nil {
-			_, err = tx.ExecContext(ctx, `INSERT INTO kitty_supplier_cost_rules(wallet_id,model,method,multiplier,input_price,output_price,cache_read_price,cache_write_price,unit_price,currency,note,fx_to_usd) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, id, c.Model, c.Method, c.Multiplier, c.InputPrice, c.OutputPrice, c.CacheReadPrice, c.CacheWritePrice, c.UnitPrice, c.Currency, c.Note, c.FXToUSD)
+			_, err = tx.ExecContext(ctx, `INSERT INTO kitty_supplier_cost_rules(wallet_id,model,method,multiplier,input_price,output_price,cache_read_price,cache_write_price,cache_write_12h_price,unit_price,currency,note,fx_to_usd) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, id, c.Model, c.Method, c.Multiplier, c.InputPrice, c.OutputPrice, c.CacheReadPrice, c.CacheWritePrice, c.CacheWrite12hPrice, c.UnitPrice, c.Currency, c.Note, c.FXToUSD)
 		}
 		if err == nil {
 			err = hubBumpWallet(ctx, tx, id)
@@ -388,13 +388,13 @@ func (r *channelRepository) ReadProviderOperations(ctx context.Context, f servic
 	}
 	// Site-wide cash and balances keep their own scope even when request filters are set.
 	var cash, balances, monitoring, purchases json.RawMessage
-	if err = tx.QueryRowContext(ctx, financeCashSQL, f.From, f.Until).Scan(&cash); err != nil {
+	if err = tx.QueryRowContext(ctx, providerCashSQL, f.From, f.Until).Scan(&cash); err != nil {
 		return nil, err
 	}
-	if err = tx.QueryRowContext(ctx, financeBalancesSQL).Scan(&balances); err != nil {
+	if err = tx.QueryRowContext(ctx, providerBalancesSQL).Scan(&balances); err != nil {
 		return nil, err
 	}
-	if err = tx.QueryRowContext(ctx, financeMonitoringSQL, f.From, f.Until).Scan(&monitoring); err != nil {
+	if err = tx.QueryRowContext(ctx, providerMonitoringSQL, f.From, f.Until).Scan(&monitoring); err != nil {
 		return nil, err
 	}
 	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(jsonb_agg(v ORDER BY currency),'[]') FROM (SELECT cash_currency AS currency,

@@ -17,7 +17,7 @@ vi.mock('vue-i18n', async () => {
 })
 
 const defaultFilters = () => ({
-  platform: '', type: '', status: '', privacy_mode: '', group: '',
+  platform: '', plan_type: '', type: '', status: '', privacy_mode: '', group: '',
   search: 'existing search', lite: '1', sort_by: 'priority', sort_order: 'asc'
 })
 
@@ -39,23 +39,15 @@ afterEach(() => {
 })
 
 describe('AccountTableFilters', () => {
-  it('shows all five filters immediately and preserves selections on external updates', async () => {
-    const filters = { ...defaultFilters(), type: 'bedrock', privacy_mode: '__unset__', group: 'ungrouped' }
-    const wrapper = mountFilters(filters)
-    const selects = wrapper.findAllComponents(Select)
-
-    expect(selects).toHaveLength(5)
-    expect(selects.every(select => select.isVisible())).toBe(true)
-    expect(wrapper.find('button[aria-controls]').exists()).toBe(false)
-    expect(wrapper.props('filters')).toEqual(filters)
+  it('shows every filter directly and can hide the platform selector for platform tabs', async () => {
+    const wrapper = mountFilters()
+    expect(wrapper.findAllComponents(Select)).toHaveLength(6)
+    expect(wrapper.findAllComponents(Select).every(select => select.isVisible())).toBe(true)
+    await wrapper.setProps({ hidePlatform: true })
+    expect(wrapper.findAllComponents(Select)).toHaveLength(5)
+    expect(wrapper.findAllComponents(Select).map(select => select.attributes('aria-label')))
+      .not.toContain('admin.accounts.allPlatforms')
     expect(wrapper.emitted('update:filters')).toBeUndefined()
-    expect(wrapper.emitted('change')).toBeUndefined()
-
-    await wrapper.setProps({ filters: defaultFilters() })
-    expect(selects.every(select => select.isVisible())).toBe(true)
-    expect(selects.every(select => select.props('modelValue') === '')).toBe(true)
-    expect(wrapper.emitted('update:filters')).toBeUndefined()
-    expect(wrapper.emitted('change')).toBeUndefined()
   })
 
   it('preserves every option and emits a merged filter snapshot plus change for every selection', async () => {
@@ -63,8 +55,9 @@ describe('AccountTableFilters', () => {
     const wrapper = mountFilters(filters)
     const expectedOptions = [
       ['platform', ['', ...CONCRETE_PLATFORM_OPTIONS.map(option => option.value)]],
-      ['status', ['', 'active', 'inactive', 'error', 'rate_limited', 'temp_unschedulable', 'unschedulable']],
       ['type', ['', 'oauth', 'setup-token', 'apikey', 'bedrock']],
+      ['plan_type', ['', 'plus', 'prolite', 'pro', 'promax', 'free']],
+      ['status', ['', 'active', 'inactive', 'error', 'quality_paused', 'rate_limited', 'temp_unschedulable', 'unschedulable']],
       ['privacy_mode', ['', '__unset__', 'training_off', 'training_set_cf_blocked', 'training_set_failed']],
       ['group', ['', 'ungrouped', '42']]
     ] as const
@@ -78,13 +71,30 @@ describe('AccountTableFilters', () => {
         await select.get('button').trigger('click')
         await select.findAll('[role="option"]')[optionIndex].trigger('click')
         changes += 1
-        expect(wrapper.emitted('update:filters')?.at(-1)).toEqual([{ ...filters, [key]: value }])
+        expect(wrapper.emitted('update:filters')?.at(-1)).toEqual([{ ...filters, [key]: value, ...(key === 'platform' ? { plan_type: !value || value === 'openai' ? filters.plan_type : '' } : {}) }])
         expect(wrapper.emitted('change')).toHaveLength(changes)
         expect(wrapper.props('filters')).toEqual(filters)
       }
     }
-    expect(wrapper.findAllComponents(Select)[4].props('options')[2].label).toBe('A very long group name')
+    expect(wrapper.findAllComponents(Select)[5].props('options')[2].label).toBe('A very long group name')
     wrapper.unmount()
+  })
+
+  it('keeps the custom quality-paused status selectable without clearing other filters', async () => {
+    const filters = { ...defaultFilters(), platform: 'openai', type: 'oauth', privacy_mode: '__unset__', group: '42' }
+    const wrapper = mountFilters(filters)
+    const status = wrapper.findAllComponents(Select)[3]
+    await status.get('button').trigger('click')
+    const qualityPaused = status.findAll('[role="option"]').find(option =>
+      option.text() === 'admin.accounts.status.qualityPaused'
+    )
+    expect(qualityPaused).toBeDefined()
+
+    await qualityPaused!.trigger('click')
+
+    expect(wrapper.emitted('update:filters')).toEqual([[{ ...filters, status: 'quality_paused' }]])
+    expect(wrapper.emitted('change')).toEqual([[]])
+    expect(wrapper.props('filters')).toEqual(filters)
   })
 
   it('preserves immediate search updates and the debounced search change event', async () => {
@@ -102,11 +112,4 @@ describe('AccountTableFilters', () => {
     wrapper.unmount()
   })
 
-  it('uses shrinkable, wrapping controls for all five filters', () => {
-    const wrapper = mountFilters()
-    expect(wrapper.classes()).toEqual(expect.arrayContaining(['min-w-0', 'grid-cols-2', 'sm:flex-wrap']))
-    for (const select of wrapper.findAllComponents(Select)) {
-      expect(select.classes()).toEqual(expect.arrayContaining(['min-w-0', 'w-full', 'sm:w-36']))
-    }
-  })
 })

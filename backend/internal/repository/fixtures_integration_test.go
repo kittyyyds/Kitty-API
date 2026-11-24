@@ -91,6 +91,7 @@ func mustCreateGroup(t *testing.T, client *dbent.Client, g *service.Group) *serv
 		SetRateMultiplier(g.RateMultiplier).
 		SetIsExclusive(g.IsExclusive).
 		SetForceOpenaiFast(g.ForceOpenAIFast).
+		SetForceOpenaiServiceTier(g.ForceOpenAIServiceTier).
 		SetFreeOpenaiFast(g.FreeOpenAIFast).
 		SetModelAllowlist(service.DomainGroupModelAllowlist(g.ModelAllowlist)).
 		SetCodexModelsManifestConfig(g.CodexModelsManifestConfig).
@@ -273,7 +274,7 @@ func mustCreateApiKey(t *testing.T, client *dbent.Client, k *service.APIKey) *se
 
 	create := client.APIKey.Create().
 		SetUserID(k.UserID).
-		SetKey(k.Key).
+		SetKey(service.APIKeyStoredValue(k.Key)).
 		SetName(k.Name).
 		SetStatus(k.Status)
 	if k.Quota != 0 {

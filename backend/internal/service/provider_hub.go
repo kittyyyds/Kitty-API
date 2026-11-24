@@ -49,6 +49,7 @@ type ProviderHubCommand struct {
 	OutputPrice         float64   `json:"output_price"`
 	CacheReadPrice      float64   `json:"cache_read_price"`
 	CacheWritePrice     float64   `json:"cache_write_price"`
+	CacheWrite12hPrice  *float64  `json:"cache_write_12h_price"`
 	UnitPrice           float64   `json:"unit_price"`
 	FXToUSD             *float64  `json:"fx_to_usd"`
 	APIKeyID            int64     `json:"api_key_id"`
@@ -174,6 +175,9 @@ func ValidateProviderHubCommand(c *ProviderHubCommand) error {
 			if !hubNumber(v) {
 				return ErrProviderHubInput
 			}
+		}
+		if c.CacheWrite12hPrice != nil && !hubNumber(*c.CacheWrite12hPrice) {
+			return ErrProviderHubInput
 		}
 	case "adjustment":
 		if c.APIKeyID <= 0 || len(c.RequestKey) < 1 || len(c.RequestKey) > 512 || len(c.OperationID) < 12 || strings.TrimSpace(c.Reference) == "" || !hubCurrency.MatchString(c.Currency) || !hubNumber(c.Amount) {

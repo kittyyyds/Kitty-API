@@ -2,10 +2,8 @@ package cyberevidence
 
 import (
 	"context"
-
 	"encoding/json"
 	"errors"
-	"github.com/Wei-Shaw/sub2api/internal/managedinstance"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -84,9 +82,8 @@ type Stats struct {
 	QueueCapacity     int    `json:"queue_capacity"`
 }
 type job struct {
-	id   int64
-	p    Prepared
-	done func()
+	id int64
+	p  Prepared
 }
 type Service struct {
 	pendingPreparations                                                       chan struct{}
@@ -226,14 +223,12 @@ func (s *Service) Enqueue(id int64, p Prepared) {
 		s.setStatus(id, "interrupted")
 		return
 	}
-	done := managedinstance.Track()
 	select {
-	case s.queue <- job{id: id, p: p, done: done}:
+	case s.queue <- job{id, p}:
 		s.queued.Add(1)
 	default:
 		s.dropped.Add(1)
 		s.setStatus(id, "queue_full")
-		done()
 	}
 }
 func (s *Service) write(j job) {
@@ -295,16 +290,10 @@ func (s *Service) run() {
 					}
 					s.dropped.Add(1)
 					s.markInterrupted(j.id, interruptDeadline)
-					if j.done != nil {
-						j.done()
-					}
 					continue
 				default:
 				}
 				s.write(j)
-				if j.done != nil {
-					j.done()
-				}
 			}
 		}()
 	}
@@ -318,14 +307,9 @@ func (s *Service) run() {
 			return
 		case <-ticker.C:
 			s.refresh()
-			ctx, done, allowed := managedinstance.Begin(context.Background())
-			if !allowed {
-				continue
-			}
-			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_, err := s.store.Cleanup(ctx, s.Config().RetentionDays)
 			cancel()
-			done()
 			if err != nil {
 				s.cleanupFailed.Add(1)
 			}

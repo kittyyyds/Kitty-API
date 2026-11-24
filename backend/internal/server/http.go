@@ -3,8 +3,6 @@ package server
 
 import (
 	"context"
-	"fmt"
-	"github.com/Wei-Shaw/sub2api/internal/serverless"
 	"log"
 	"log/slog"
 	"net/http"
@@ -14,14 +12,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/setup"
+
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/iprisk"
 	"github.com/Wei-Shaw/sub2api/internal/managedinstance"
+	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
-	"github.com/Wei-Shaw/sub2api/internal/setup"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/wire"
@@ -101,38 +101,36 @@ func ProvideRouter(
 		service.SetWebSearchManager(websearch.NewManager(configs, redisClient))
 	})
 
-	manager, err := serverless.New(serverless.Runtime{ID: cfg.Runtime.ServerlessID, Endpoint: cfg.Runtime.ServerlessEndpoint, Region: cfg.Runtime.ServerlessRegion, Secret: cfg.Runtime.ServerlessSecret, Gateway: cfg.Runtime.Role == config.RuntimeRoleGateway, Version: settingService.ServerlessVersion()}, redisClient, settingService.ServerlessStore())
-	if err != nil {
-		panic(err)
-	}
-	settingService.Serverless = manager
-	settingService.IPRisk = iprisk.New(settingService.IPRiskStore(), redisClient, serverless.NewGeoJSResolver(redisClient), strings.EqualFold(os.Getenv("IP_RISK_DISABLED"), "true"))
+	settingService.IPRisk = iprisk.New(settingService.IPRiskStore(), redisClient, iprisk.NewGeoJSResolver(redisClient), strings.EqualFold(os.Getenv("IP_RISK_DISABLED"), "true"))
 	settingService.IPRisk.Start()
+	if cfg.Runtime.Role != config.RuntimeRoleGateway && handlers.Admin != nil && handlers.Admin.Setting != nil {
+		handlers.Admin.Setting.SetKeyRiskAPIKeys(apiKeyService)
+		stop, err := handlers.Admin.Setting.StartKeyRisk(cfg.Database.DSN())
+		if err != nil {
+			slog.Warn("key risk initialization failed")
+		} else {
+			lifecycle.onDrain = append(lifecycle.onDrain, stop)
+		}
+	}
 	if handlers.Admin != nil && handlers.Admin.Setting != nil {
 		if handlers.Admin.PromptAudit != nil {
 			handlers.Admin.Setting.ConfigureIPAudit(handlers.Admin.AuditLog, handlers.Admin.PromptAudit.IPAuditPenaltySummary, handlers.Admin.PromptAudit.ReleaseIPAuditPenalty)
 		}
 	}
 	lifecycle.onDrain = append(lifecycle.onDrain, settingService.IPRisk.Stop)
-	manager.Start(func(ctx context.Context) error {
-		if lifecycle.isDraining() {
-			return fmt.Errorf("draining")
-		}
-		return lifecycle.checkWithinBudget(ctx)
-	})
-	lifecycle.onDrain = append(lifecycle.onDrain, manager.Stop)
-	r.Use(manager.Ingress())
 	if handlers.Admin != nil && handlers.Admin.Usage != nil {
 		stop, err := handlers.Admin.Usage.ConfigureTrafficDelivery(func() string {
 			return filepath.Join(setup.GetDataDir(), "user-traffic-pending")
 		})
 		if err != nil {
-			log.Printf("Traffic statistics disabled: %v", err)
+			log.Printf("Traffic statistics unavailable: %v", err)
 		} else {
 			lifecycle.onDrain = append(lifecycle.onDrain, stop)
 		}
 	}
-	r.GET("/internal/serverless/probe", manager.ProbeHandler)
+	guideAssets := service.NewGuideAssetStore(settingService)
+	handlers.Setting.SetGuideAssetStore(guideAssets)
+	handlers.Admin.Setting.SetGuideAssetStore(guideAssets)
 	SetupRouter(r, handlers, jwtAuth, optionalJWTAuth, adminAuth, apiKeyAuth, auditLog, stepUpAuth, apiKeyService, subscriptionService, opsService, settingService, userService, compositeResolver, cfg, redisClient)
 	if err := mediaIntegration.mount(r, lifecycle, jwtAuth, settingService); err != nil {
 		panic(err)
@@ -185,7 +183,7 @@ func ProvideHTTPServer(cfg *config.Config, router *gin.Engine, lifecycle *Lifecy
 		// IdleTimeout: 空闲连接超时时间，释放不活跃的连接资源
 		IdleTimeout: time.Duration(cfg.Server.IdleTimeout) * time.Second,
 		// 注意：不设置 WriteTimeout，因为流式响应可能持续十几分钟
-		// 不设置 ReadTimeout，因为大请求体可能需要较长时间读取
+		// 请求体使用逐次读取的 idle deadline，不设置覆盖整个大请求上传的 ReadTimeout。
 	}
 
 	globalMaxSize := cfg.Server.MaxRequestBodySize
@@ -223,6 +221,8 @@ func ProvideHTTPServer(cfg *config.Config, router *gin.Engine, lifecycle *Lifecy
 		}
 	}
 
+	httpHandler = pkghttputil.WithBodyReadTimeout(httpHandler, time.Duration(cfg.Gateway.RequestBodyReadTimeoutSeconds)*time.Second)
+	httpHandler = pkghttputil.WithWriteTimeout(httpHandler, time.Duration(cfg.Gateway.DownstreamWriteTimeoutSeconds)*time.Second)
 	server.Handler = lifecycle.Wrap(httpHandler)
 	return server
 }

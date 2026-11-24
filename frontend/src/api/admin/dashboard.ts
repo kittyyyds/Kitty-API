@@ -1,5 +1,6 @@
+import { shiftDate, zonedDayStart } from '@/views/admin/operationsUtils'
 import type { GroupPlatform } from '@/types'
-import type { RechargeChannel, RechargeOrder, RechargeOrderPage, RechargeRiskEvent, RechargeStatus } from '@/views/admin/operationsRechargeTypes'
+import type { RechargeChannel, RechargeOrder, RechargeOrderPage, RechargeRiskEvent, RechargeStatus, RechargeSummary } from '@/views/admin/operationsRechargeTypes'
 /**
  * Admin Dashboard API endpoints
  * Provides system-wide statistics and metrics
@@ -416,6 +417,9 @@ export interface OperationsUserSpendParams {
 }
 
 export interface OperationsDashboardResponse {
+  today_date?: string
+  today_start?: string
+  site_timezone?: string
  cost_coverage: { requests: number; reconciled: number; procurement_estimated: number; account_estimated: number; unknown: number }
  details_retained_since: string | null
   metrics: OperationsDashboardMetrics
@@ -443,7 +447,23 @@ export async function getOperationsUserSuggestions(q: string): Promise<Array<{ u
   return data
 }
 
+export interface OperationsRechargeRankingResponse {
+  users: Array<{ user_id: number; email: string; amount: number; recharge_count: number }>
+  total_amount: number
+  total_users: number
+  total_count: number
+  date: string
+  start_time: string
+  end_time: string
+  site_timezone: string
+}
+export async function getOperationsRechargeRanking(): Promise<OperationsRechargeRankingResponse> {
+  const { data } = await apiClient.get<OperationsRechargeRankingResponse>('/admin/dashboard/operations/recharge-ranking')
+  return data
+}
+
 export interface OperationsRechargeOrderParams {
+  timezone?: string
   page: number
   page_size: 25
   start_date: string
@@ -454,9 +474,8 @@ export interface OperationsRechargeOrderParams {
 }
 
 export async function getOperationsRechargeOrders(params: OperationsRechargeOrderParams): Promise<RechargeOrderPage> {
-  const start = new Date(`${params.start_date}T00:00:00`)
-  const end = new Date(`${params.end_date}T00:00:00`)
-  end.setDate(end.getDate() + 1)
+  const start = zonedDayStart(params.start_date, params.timezone)
+  const end = zonedDayStart(shiftDate(params.end_date, 1), params.timezone)
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error('Invalid recharge date range')
   const query = {
     page: params.page,
@@ -471,6 +490,17 @@ export async function getOperationsRechargeOrders(params: OperationsRechargeOrde
   return { ...data, items: (data.items ?? []).map(order => ({ ...order, channel: order.channel === 'redeem' ? 'code' : order.channel })) }
 }
 
+export async function getOperationsRechargeSummary(params: Omit<OperationsRechargeOrderParams, 'page' | 'page_size' | 'status'>): Promise<RechargeSummary> {
+  const start = zonedDayStart(params.start_date, params.timezone)
+  const end = zonedDayStart(shiftDate(params.end_date, 1), params.timezone)
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error('Invalid recharge date range')
+  const { data } = await apiClient.get<RechargeSummary>('/admin/payment/recharge-activity/summary', { params: {
+    email: params.search, channel: params.channel === 'code' ? 'redeem' : params.channel,
+    start_time: start.toISOString(), end_time: end.toISOString()
+  } })
+  return data
+}
+
 export async function getOperationsRechargeRisks(): Promise<RechargeRiskEvent[]> {
   const { data } = await apiClient.get<RechargeRiskEvent[]>('/admin/payment/recharge-risks')
   return data
@@ -478,7 +508,7 @@ export async function getOperationsRechargeRisks(): Promise<RechargeRiskEvent[]>
 
 
 export const dashboardAPI = {
- getOperationsDashboard, getOperationsUserSpend, getOperationsUserSuggestions, getOperationsRechargeOrders, getOperationsRechargeRisks,
+ getOperationsDashboard, getOperationsRechargeRanking, getOperationsRechargeSummary, getOperationsUserSpend, getOperationsUserSuggestions, getOperationsRechargeOrders, getOperationsRechargeRisks,
   getStats,
   getRealtimeMetrics,
   getUsageTrend,

@@ -424,7 +424,7 @@ func TestUsageCleanupRepositoryDeleteUsageLogsBatch(t *testing.T) {
 	mock.ExpectQuery("DELETE FROM usage_logs").
 		WithArgs(start, end, userID, "gpt-4", 2).
 		WillReturnRows(sqlmock.NewRows([]string{"created_at"}).AddRow(start.Add(time.Hour)).AddRow(start.Add(2 * time.Hour)))
-	mock.ExpectExec(`UPDATE usage_group_rollup_state`).
+	mock.ExpectExec(`SELECT invalidate_group_usage_rollups_at\(\$1, \$2\)`).
 		WithArgs(start.Add(time.Hour), "Asia/Shanghai").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -454,7 +454,7 @@ func TestUsageCleanupRepositoryDeleteUsageLogsBatchAtomicallyInvalidatesGroupRol
 		WillReturnRows(sqlmock.NewRows([]string{"created_at"}).
 			AddRow(firstDeletedAt).
 			AddRow(secondDeletedAt))
-	mock.ExpectExec(`UPDATE usage_group_rollup_state`).
+	mock.ExpectExec(`SELECT invalidate_group_usage_rollups_at\(\$1, \$2\)`).
 		WithArgs(firstDeletedAt, "Asia/Shanghai").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -481,7 +481,7 @@ func TestUsageCleanupRepositoryDeleteUsageLogsBatchRollsBackWhenInvalidationFail
 	mock.ExpectQuery(`(?s)DELETE FROM usage_logs.*RETURNING created_at`).
 		WithArgs(start, end, 1).
 		WillReturnRows(sqlmock.NewRows([]string{"created_at"}).AddRow(deletedAt))
-	mock.ExpectExec(`UPDATE usage_group_rollup_state`).
+	mock.ExpectExec(`SELECT invalidate_group_usage_rollups_at\(\$1, \$2\)`).
 		WithArgs(deletedAt, "Asia/Shanghai").
 		WillReturnError(sql.ErrConnDone)
 	mock.ExpectRollback()

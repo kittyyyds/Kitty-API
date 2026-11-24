@@ -52,6 +52,8 @@ func SkipAudit(c *gin.Context) {
 // scalar, non-secret operation summaries. Request bodies and arbitrary maps
 // are never accepted through this channel.
 var auditExtraAllowedKeys = map[string]struct{}{
+	"admin_key_id": {}, "full_access": {}, "full_access_before": {},
+	"mcp_grant_id": {}, "mcp_tool": {},
 	"source": {}, "target_channel_id": {}, "reason_code": {}, "readback": {}, "remaining_count": {}, "target_user_id": {},
 	"anonymous_api_enabled": {},
 	"result":                {}, "error_code": {}, "enabled": {}, "blocking_enabled": {},
@@ -60,6 +62,7 @@ var auditExtraAllowedKeys = map[string]struct{}{
 	"http_status": {}, "latency_ms": {}, "token_applied": {}, "retryable": {},
 	"event_id": {}, "requested_count": {}, "deleted_events": {}, "deleted_jobs": {},
 	"matched_count": {}, "snapshot_max_id": {}, "filter_hash": {}, "confirm": {},
+	"qq_app_id": {}, "qq_member_id": {},
 }
 
 // SetAuditExtra adds allowlisted, scalar details to the current audit entry.
@@ -111,64 +114,76 @@ func truncateAuditExtraString(value string, limit int) string {
 
 // auditSensitiveReads 需要审计的敏感 GET 读取（method+FullPath → 动作名）。
 var auditSensitiveReads = map[string]string{
-	"GET /api/v1/admin/risk-control/logs/:id/evidence":                        "admin.cyber_evidence.read",
-	"GET /api/v1/admin/risk-control/logs/:id/evidence/export":                 "admin.cyber_evidence.export",
-	"GET /api/v1/admin/risk-control/evidence/config":                          "admin.cyber_evidence.config.read",
-	"GET /api/v1/admin/settings/ip-audit":                                     "admin.ip_audit.read",
+	"GET /api/v1/admin/qqbot/records/:kind":                                   "admin.qqbot.activities.records.read",
+	"GET /api/v1/admin/qqbot/lottery/draws":                                   "admin.qqbot.lottery.draws.read",
+	"GET /api/v1/admin/qqbot/lottery/users/:user_id":                          "admin.qqbot.lottery.chances.read",
+	"GET /api/v1/admin/qqbot/bindings":                                        "admin.qqbot.bindings.read",
+	"GET /api/v1/admin/qqbot/reward-codes":                                    "admin.qqbot.reward_codes.read",
+	"GET /api/v1/admin/accounts/data":                                         "admin.accounts.export",
+	"GET /api/v1/admin/proxies/data":                                          "admin.proxies.export",
+	"GET /api/v1/admin/redeem-codes/export":                                   "admin.redeem_codes.export",
+	"GET /api/v1/admin/backups/:id/download-url":                              "admin.backups.download",
+	"GET /api/v1/admin/settings/admin-api-key":                                "admin.admin_api_key.read",
+	"GET /api/v1/admin/users/:id/api-keys":                                    "admin.users.api_keys.read",
+	"GET /api/v1/admin/groups/:id/api-keys":                                   "admin.groups.api_keys.read",
+	"GET /api/v1/admin/backups/s3-config":                                     "admin.backups.s3_config.read",
+	"GET /api/v1/admin/data-management/s3/config":                             "admin.data_management.s3_config.read",
 	"GET /api/v1/admin/request-captures/:task/requests/:record":               "admin.request_capture.read",
 	"GET /api/v1/admin/request-captures/:task/requests/:record/content/:part": "admin.request_capture.content",
 	"GET /api/v1/admin/request-captures/:task/export":                         "admin.request_capture.export",
 	"GET /api/v1/admin/request-captures/:task/requests/:record/export":        "admin.request_capture.export",
 
-	"GET /api/v1/admin/accounts/data":                   "admin.accounts.export",
-	"GET /api/v1/admin/proxies/data":                    "admin.proxies.export",
-	"GET /api/v1/admin/redeem-codes/export":             "admin.redeem_codes.export",
-	"GET /api/v1/admin/backups/:id/download-url":        "admin.backups.download",
-	"GET /api/v1/admin/settings/admin-api-key":          "admin.admin_api_key.read",
 	"GET /api/v1/admin/settings/ip-risk":                "admin.ip_risk.config.read",
 	"GET /api/v1/admin/settings/ip-risk/events":         "admin.ip_risk.events.read",
 	"GET /api/v1/admin/settings/ip-risk/anonymous-bans": "admin.ip_risk.anonymous.bans.read",
 	"GET /api/v1/admin/settings/ip-risk/bans":           "admin.ip_risk.bans.read",
-	"GET /api/v1/admin/users/:id/api-keys":              "admin.users.api_keys.read",
-	"GET /api/v1/admin/groups/:id/api-keys":             "admin.groups.api_keys.read",
-	"GET /api/v1/admin/backups/s3-config":               "admin.backups.s3_config.read",
-	"GET /api/v1/admin/data-management/s3/config":       "admin.data_management.s3_config.read",
 }
 
 // auditActionOverrides 变更类请求的动作名精确映射（未命中时自动推导）。
 var auditActionOverrides = map[string]string{
-	"PUT /api/v1/admin/risk-control/evidence/config":          "admin.cyber_evidence.config.update",
-	"DELETE /api/v1/admin/risk-control/logs/:id/evidence":     "admin.cyber_evidence.delete",
-	"POST /api/v1/auth/login":                                 service.AuditActionLogin,
-	"POST /api/v1/auth/login/2fa":                             service.AuditActionLogin2FA,
-	"POST /api/v1/auth/passkey/login/finish":                  service.AuditActionLogin,
-	"POST /api/v1/auth/register":                              service.AuditActionRegister,
-	"POST /api/v1/auth/refresh":                               service.AuditActionTokenRefresh,
-	"POST /api/v1/user/totp/step-up":                          service.AuditActionStepUpVerify,
-	"POST /api/v1/admin/audit-logs/clear":                     service.AuditActionAuditLogClear,
-	"POST /api/v1/admin/accounts/data":                        "admin.accounts.import",
-	"POST /api/v1/admin/backups":                              "admin.backups.create",
-	"POST /api/v1/admin/backups/:id/restore":                  "admin.backups.restore",
-	"DELETE /api/v1/admin/backups/:id":                        "admin.backups.delete",
-	"PUT /api/v1/admin/backups/s3-config":                     "admin.backups.s3_config.update",
-	"POST /api/v1/admin/settings/admin-api-key/regenerate":    "admin.admin_api_key.regenerate",
-	"DELETE /api/v1/admin/settings/admin-api-key":             "admin.admin_api_key.delete",
-	"PUT /api/v1/admin/prompt-audit/config":                   "admin.prompt_audit.config.update",
-	"POST /api/v1/admin/prompt-audit/endpoints/probe":         "admin.prompt_audit.endpoint.probe",
-	"DELETE /api/v1/admin/prompt-audit/events/:id":            "admin.prompt_audit.event.delete",
-	"POST /api/v1/admin/prompt-audit/events/batch-delete":     "admin.prompt_audit.events.batch_delete",
-	"POST /api/v1/admin/prompt-audit/events/delete-preview":   "admin.prompt_audit.events.delete_preview",
-	"POST /api/v1/admin/prompt-audit/events/delete-by-filter": "admin.prompt_audit.events.filter_delete",
+	"DELETE /api/v1/admin/qqbot/bindings/:user_id":         "admin.qqbot.bindings.unbind",
+	"POST /api/v1/auth/login":                              service.AuditActionLogin,
+	"POST /api/v1/auth/login/2fa":                          service.AuditActionLogin2FA,
+	"POST /api/v1/auth/passkey/login/finish":               service.AuditActionLogin,
+	"POST /api/v1/auth/register":                           service.AuditActionRegister,
+	"POST /api/v1/auth/refresh":                            service.AuditActionTokenRefresh,
+	"POST /api/v1/user/totp/step-up":                       service.AuditActionStepUpVerify,
+	"POST /api/v1/admin/audit-logs/clear":                  service.AuditActionAuditLogClear,
+	"POST /api/v1/admin/accounts/data":                     "admin.accounts.import",
+	"POST /api/v1/admin/backups":                           "admin.backups.create",
+	"POST /api/v1/admin/backups/:id/restore":               "admin.backups.restore",
+	"DELETE /api/v1/admin/backups/:id":                     "admin.backups.delete",
+	"PUT /api/v1/admin/backups/s3-config":                  "admin.backups.s3_config.update",
+	"POST /api/v1/admin/settings/admin-api-key/regenerate": "admin.admin_api_key.regenerate",
+	"DELETE /api/v1/admin/settings/admin-api-key":          "admin.admin_api_key.delete",
 }
 
 // auditBodyOmittedRoutes 请求体几乎整体由凭证构成的路由（如整块粘贴 auth JSON 的导入接口）。
 // 这类 body 的凭证内嵌在普通字符串值里，键级脱敏无法覆盖，整体不入库。
 var auditBodyOmittedRoutes = map[string]struct{}{
+	"POST /api/v1/admin/openai/password-login/tasks":                 {},
+	"POST /api/v1/admin/openai/password-login/tasks/:jobID/code":     {},
+	"POST /api/v1/admin/openai/password-login/tasks/:jobID/exchange": {},
+	// VM2-managed account operations: the body can be an account password, a
+	// 2FA secret, an OAuth code or a pasted auth.json, in values no key-level
+	// redaction recognises.
+	"POST /api/v1/admin/accounts/:id/vm-managed/op/*operation":  {},
+	"POST /api/v1/admin/openai-vm/managed-batches":              {},
+	"POST /api/v1/admin/openai-vm/managed-batches/preview":      {},
+	"PUT /api/v1/admin/accounts/:id/openai-reauth/config":       {},
+	"POST /api/v1/gpt-direct/verify":                            {},
+	"POST /api/v1/gpt-direct/query":                             {},
+	"POST /api/v1/gpt-direct/redeem":                            {},
+	"POST /api/v1/gpt-direct/subscription":                      {},
+	"POST /api/v1/gpt-direct/task":                              {},
+	"PUT /api/v1/admin/qqbot/config":                            {},
+	"POST /api/v1/user/qqbot/binding-code":                      {},
+	"POST /api/v1/qqbot/email-binding/preview":                  {},
+	"POST /api/v1/qqbot/email-binding/confirm":                  {},
 	"POST /api/v1/admin/upstream-channels":                      {},
 	"PUT /api/v1/admin/upstream-channels/:id":                   {},
 	"DELETE /api/v1/admin/upstream-channels/:id":                {},
 	"PUT /api/v1/admin/upstream-channel-bindings":               {},
-	"POST /api/v1/admin/settings/ip-audit/release":              {},
 	"PUT /api/v1/admin/settings/ip-risk":                        {},
 	"POST /api/v1/admin/settings/ip-risk/anonymous-unban":       {},
 	"POST /api/v1/admin/accounts/:id/export-session":            {},
@@ -179,16 +194,10 @@ var auditBodyOmittedRoutes = map[string]struct{}{
 	"POST /api/v1/user/passkeys/register/finish":                {},
 	"POST /api/v1/admin/accounts/import/codex-session":          {},
 	"PUT /api/v1/admin/accounts/:id/ollama-cloud-usage/session": {},
-	"PUT /api/v1/admin/prompt-audit/config":                     {},
-	"POST /api/v1/admin/prompt-audit/endpoints/probe":           {},
-	"DELETE /api/v1/admin/prompt-audit/events/:id":              {},
-	"POST /api/v1/admin/prompt-audit/events/batch-delete":       {},
-	"POST /api/v1/admin/prompt-audit/events/delete-preview":     {},
-	"POST /api/v1/admin/prompt-audit/events/delete-by-filter":   {},
 }
 
 // NewAuditLogMiddleware 创建审计中间件。
-// 记录范围：变更类请求（POST/PUT/PATCH/DELETE）+ 白名单内的敏感 GET 读取。
+// 记录范围：变更类请求（POST/PUT/PATCH/DELETE）+ 白名单内的敏感 GET 读取 + MCP OAuth 的全部读取。
 // 挂载位置：admin / user / admin-payment 组挂在各自认证中间件之后（只审计已认证请求，
 // 未过认证的 401/403 不入库）；auth 组（登录/注册/刷新）无前置认证，天然记录失败尝试。
 func NewAuditLogMiddleware(auditService *service.AuditLogService) AuditLogMiddleware {
@@ -207,6 +216,10 @@ func NewAuditLogMiddleware(auditService *service.AuditLogService) AuditLogMiddle
 			if v, ok := auditSensitiveReads[routeKey]; ok {
 				record = true
 				action = v
+			} else if c.GetString("auth_method") == service.AuditAuthMethodMCPOAuth {
+				// Machine credentials can read user data in bulk; every MCP tool
+				// call is attributable to its grant via audit extra fields.
+				record = true
 			}
 		}
 		if !record {

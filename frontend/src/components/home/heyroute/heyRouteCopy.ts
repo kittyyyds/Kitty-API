@@ -10,6 +10,7 @@ const zhCopy = {
     switchLanguage: '切换语言',
     switchTheme: '切换主题',
     primary: '首页导航',
+    skipToContent: '跳到正文',
     sections: [
       { id: 'hr-hero', label: '首页' },
       { id: 'hr-models', label: '模型生态' },
@@ -56,6 +57,7 @@ const zhCopy = {
     unavailable: '进入模型广场查看',
     loading: '正在同步公开价格',
     retry: '重新读取',
+    modelCount: '{count} 个模型',
     note: '倍率与可用模型以模型广场实时数据为准。',
     fallbacks: [
       { model: 'gpt-5.6-sol', provider: 'OpenAI', iconModel: 'gpt-5.6' },
@@ -236,7 +238,7 @@ const enCopy: typeof zhCopy = {
   nav: {
     home: 'Home', models: 'Models', docs: 'Docs', login: 'Sign in', dashboard: 'Dashboard',
     menu: 'Open navigation', closeMenu: 'Close navigation', switchLanguage: 'Switch language',
-    switchTheme: 'Switch theme', primary: 'Primary navigation',
+    switchTheme: 'Switch theme', primary: 'Primary navigation', skipToContent: 'Skip to content',
     sections: [
       { id: 'hr-hero', label: 'Home' }, { id: 'hr-models', label: 'Ecosystem' },
       { id: 'hr-performance', label: 'Service' }, { id: 'hr-pricing', label: 'Pricing' },
@@ -269,6 +271,7 @@ const enCopy: typeof zhCopy = {
     prompt: 'Need every model and the exact billing rules?', action: 'View all model pricing', model: 'Representative model',
     kittyRate: 'Kitty奇妙屋 minimum', group: 'Published group', interface: 'Interface', inputOutput: 'Text model rate multiplier',
     live: 'Live', unavailable: 'View in model catalog', loading: 'Syncing public pricing', retry: 'Try again',
+    modelCount: '{count} models',
     note: 'Current multipliers and model availability are shown in the model catalog.',
     fallbacks: [
       { model: 'gpt-5.6-sol', provider: 'OpenAI', iconModel: 'gpt-5.6' },
@@ -420,4 +423,23 @@ export type HeyRouteCopy = typeof zhCopy
 export const heyRouteCopyByLanguage = {
   zh: zhCopy,
   en: enCopy,
+}
+
+const DEFAULT_SITE_NAME = 'Kitty奇妙屋'
+
+function replaceSiteName<T>(value: T, siteName: string): T {
+  if (typeof value === 'string') return value.split(DEFAULT_SITE_NAME).join(siteName) as T
+  if (Array.isArray(value)) return value.map((item) => replaceSiteName(item, siteName)) as T
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, replaceSiteName(item, siteName)]),
+    ) as T
+  }
+  return value
+}
+
+/** The copy names the default brand; return it with the operator's configured site name. */
+export function withSiteName(copy: HeyRouteCopy, siteName: string): HeyRouteCopy {
+  const name = siteName.trim()
+  return !name || name === DEFAULT_SITE_NAME ? copy : replaceSiteName(copy, name)
 }

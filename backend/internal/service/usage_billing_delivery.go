@@ -51,7 +51,7 @@ func (s *GatewayService) DurableUsageBillingEnabled() bool {
 }
 
 func (s *OpenAIGatewayService) DurableUsageBillingEnabled() bool {
-	if s == nil || s.regionalMetering != nil {
+	if s == nil {
 		return false
 	}
 	_, ok := s.usageBillingRepo.(DurableUsageBillingRepository)
@@ -98,7 +98,15 @@ func applyDurableUsageBilling(ctx context.Context, repo DurableUsageBillingRepos
 		return false, err
 	}
 	key := UsageBillingEventKey{RequestID: cmd.RequestID, APIKeyID: cmd.APIKeyID}
-	recovered, err := repo.ApplyStagedUsageBilling(ctx, key)
+	var recovered *UsageBillingRecovery
+	var err error
+	if lane, ok := repo.(interface {
+		ApplyStagedUsageBillingForUser(context.Context, UsageBillingEventKey, int64) (*UsageBillingRecovery, error)
+	}); ok {
+		recovered, err = lane.ApplyStagedUsageBillingForUser(ctx, key, cmd.UserID)
+	} else {
+		recovered, err = repo.ApplyStagedUsageBilling(ctx, key)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -118,8 +126,8 @@ func applyDurableUsageBilling(ctx context.Context, repo DurableUsageBillingRepos
 		deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
 	}
 	if recovered != nil && recovered.Result.Applied && !p.SimpleModeKeyRateLimitOnly {
-		go notifyBalanceLow(p, deps, &recovered.Result)
-		go notifyAccountQuota(p, deps, &recovered.Result)
+		go notifyBalanceLow(context.WithoutCancel(ctx), p, deps, &recovered.Result)
+		go notifyAccountQuota(context.WithoutCancel(ctx), p, deps, &recovered.Result)
 	}
 	return recovered != nil && recovered.Result.Applied, nil
 }

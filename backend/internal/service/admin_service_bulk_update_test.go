@@ -5,7 +5,6 @@ package service
 import (
 	"context"
 	"errors"
-	"maps"
 	"net/http"
 	"reflect"
 	"testing"
@@ -19,7 +18,6 @@ type accountRepoStubForBulkUpdate struct {
 	accountRepoStub
 	bulkUpdateErr       error
 	bulkUpdateIDs       []int64
-	bulkUpdateExtra     map[string]any
 	bulkUpdateCalls     int
 	lastBulkUpdate      AccountBulkUpdate
 	bindGroupErrByID    map[int64]error
@@ -57,7 +55,6 @@ type accountRepoStubForBulkUpdate struct {
 func (s *accountRepoStubForBulkUpdate) BulkUpdate(_ context.Context, ids []int64, updates AccountBulkUpdate) (int64, error) {
 	s.bulkUpdateCalls++
 	s.bulkUpdateIDs = append([]int64{}, ids...)
-	s.bulkUpdateExtra = maps.Clone(updates.Extra)
 	s.lastBulkUpdate = updates
 	if s.bulkUpdateErr != nil {
 		return 0, s.bulkUpdateErr
@@ -277,43 +274,6 @@ func TestAdminService_BulkUpdateAccounts_MixedChannelPreCheckBlocksOnExistingCon
 	require.Contains(t, err.Error(), "mixed channel")
 	// No BindGroups should have been called since the check runs before any write.
 	require.Empty(t, repo.bindGroupsCalls)
-}
-
-func TestAdminServiceBulkUpdateAccounts_RejectsUnscopedGroupUpdates(t *testing.T) {
-	for _, filters := range []*BulkUpdateAccountFilters{
-		{},
-		{Platform: " ", Type: "\t", Status: " ", Group: " ", Search: " ", PrivacyMode: "\n"},
-	} {
-		repo := &accountRepoStubForBulkUpdate{listData: []Account{{ID: 7}, {ID: 11}, {ID: 99}}}
-		svc := &adminServiceImpl{accountRepo: repo}
-		groupIDs := []int64{24, 15, 11}
-		result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
-			Filters: filters, GroupIDs: &groupIDs,
-		})
-		require.Nil(t, result)
-		requireApplicationErrorReason(t, err, "BULK_UPDATE_SCOPE_REQUIRED")
-		require.False(t, repo.listCalled, "empty filters must fail before resolving the whole inventory")
-		require.Zero(t, repo.bulkUpdateCalls)
-		require.Empty(t, repo.bindGroupsCalls)
-	}
-}
-
-func TestAdminServiceBulkUpdateAccounts_ExplicitOAuthIDsDoNotExpandToFilters(t *testing.T) {
-	repo := &accountRepoStubForBulkUpdate{listData: []Account{{ID: 7}, {ID: 11}, {ID: 99}}}
-	svc := &adminServiceImpl{
-		accountRepo: repo,
-		groupRepo:   &groupRepoStubForAdmin{getByID: &Group{ID: 10, Name: "target"}},
-	}
-	groupIDs := []int64{10}
-	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
-		AccountIDs: []int64{7, 11}, Filters: &BulkUpdateAccountFilters{},
-		GroupIDs: &groupIDs, SkipMixedChannelCheck: true,
-	})
-	require.NoError(t, err)
-	require.Equal(t, []int64{7, 11}, result.SuccessIDs)
-	require.Equal(t, []int64{7, 11}, repo.bindGroupsCalls)
-	require.False(t, repo.listCalled)
-	require.NotContains(t, repo.bindGroupsByAccount, int64(99))
 }
 
 func TestAdminServiceBulkUpdateAccounts_ResolvesIDsFromFilters(t *testing.T) {
@@ -634,49 +594,4 @@ func TestAdminServiceBulkUpdateAccounts_ValidatesFilterResolvedOpenAITargets(t *
 	requireApplicationErrorReason(t, err, "OPENAI_BULK_TARGET_INVALID")
 	require.Equal(t, []int64{7}, repo.getByIDsIDs)
 	require.Zero(t, repo.bulkUpdateCalls)
-}
-
-func TestAdminServiceBulkUpdateAccountsNormalizesGrokMediaCompatibility(t *testing.T) {
-	repo := &accountRepoStubForBulkUpdate{
-		getByIDsAccounts: []*Account{{ID: 1, Platform: PlatformGrok}, {ID: 2, Platform: PlatformGrok}},
-	}
-	svc := &adminServiceImpl{accountRepo: repo}
-
-	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
-		AccountIDs: []int64{1, 2},
-		Extra:      map[string]any{GrokMediaCompatibilityExtraKey: "openai-compatible"},
-	})
-	require.NoError(t, err)
-	require.Equal(t, 2, result.Success)
-	require.Equal(t, GrokMediaCompatibilityOpenAI, repo.bulkUpdateExtra[GrokMediaCompatibilityExtraKey])
-}
-
-func TestAdminServiceBulkUpdateAccountsRejectsMixedGrokMediaCompatibilityTargets(t *testing.T) {
-	repo := &accountRepoStubForBulkUpdate{
-		getByIDsAccounts: []*Account{{ID: 1, Platform: PlatformGrok}, {ID: 2, Platform: PlatformOpenAI}},
-	}
-	svc := &adminServiceImpl{accountRepo: repo}
-
-	_, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
-		AccountIDs: []int64{1, 2},
-		Extra:      map[string]any{GrokMediaCompatibilityExtraKey: GrokMediaCompatibilityOpenAI},
-	})
-	require.Error(t, err)
-	require.Equal(t, "GROK_MEDIA_COMPATIBILITY_INVALID_TARGET", infraerrors.Reason(err))
-	require.Empty(t, repo.bulkUpdateIDs)
-}
-
-func TestAdminServiceBulkUpdateAccountsRejectsInvalidGrokMediaCompatibility(t *testing.T) {
-	repo := &accountRepoStubForBulkUpdate{
-		getByIDsAccounts: []*Account{{ID: 1, Platform: PlatformGrok}},
-	}
-	svc := &adminServiceImpl{accountRepo: repo}
-
-	_, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
-		AccountIDs: []int64{1},
-		Extra:      map[string]any{GrokMediaCompatibilityExtraKey: "native-ish"},
-	})
-	require.Error(t, err)
-	require.Equal(t, "GROK_MEDIA_COMPATIBILITY_INVALID", infraerrors.Reason(err))
-	require.Empty(t, repo.bulkUpdateIDs)
 }

@@ -42,7 +42,7 @@ func TestParseSSEUsage_MessageStart(t *testing.T) {
 	require.Equal(t, 100, usage.InputTokens)
 	require.Equal(t, 50, usage.CacheCreationInputTokens)
 	require.Equal(t, 200, usage.CacheReadInputTokens)
-	require.Equal(t, 0, usage.OutputTokens, "缺失 output_tokens 时应保留零值")
+	require.Equal(t, 0, usage.OutputTokens, "message_start 不应设置 output_tokens")
 }
 
 func TestParseSSEUsage_MessageDelta(t *testing.T) {
@@ -237,7 +237,8 @@ func TestHandleStreamingResponse_StreamReadErrorBeforeOutput_TriggersFailover(t 
 		Body:       &streamReadCloser{err: io.ErrUnexpectedEOF},
 	}
 
-	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
+	ctx := withStrictFailoverFailures(context.Background())
+	result, err := svc.handleStreamingResponse(ctx, resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
 
 	require.Error(t, err)
 	require.Nil(t, result, "失败移交场景下不应返回 streamingResult")
@@ -258,6 +259,8 @@ func TestHandleStreamingResponse_StreamReadErrorBeforeOutput_TriggersFailover(t 
 
 	// 客户端应收不到任何 stream_read_error 事件，由 handler 层根据 failover 结果再决定
 	require.NotContains(t, rec.Body.String(), "stream_read_error")
+	RecordStrictFailoverFailure(ctx, 1, failoverErr)
+	require.Equal(t, "upstream_stream_read_failure", strictFailureReason(ctx, 1))
 }
 
 // 上游已经发送过事件（c.Writer 已写过字节）后再发生读错误：
@@ -531,13 +534,4 @@ func TestHandleStreamingResponse_SSEErrorEvent_NonJSONDataLine(t *testing.T) {
 		_ = ExtractUpstreamErrorMessage([]byte(sseErr.RawData))
 	})
 	require.Equal(t, "", ExtractUpstreamErrorMessage([]byte(sseErr.RawData)))
-}
-
-func TestParseSSEUsage_StartOutputIsCumulativeNotAddedTwice(t *testing.T) {
-	s := &GatewayService{}
-	usage := &ClaudeUsage{}
-	s.parseSSEUsage(`{"type":"message_start","message":{"usage":{"input_tokens":11,"output_tokens":2}}}`, usage)
-	require.Equal(t, 2, usage.OutputTokens)
-	s.parseSSEUsage(`{"type":"message_delta","usage":{"output_tokens":7}}`, usage)
-	require.Equal(t, 7, usage.OutputTokens)
 }

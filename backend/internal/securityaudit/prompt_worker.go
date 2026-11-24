@@ -3,11 +3,14 @@ package securityaudit
 import (
 	"context"
 	"errors"
-	"github.com/Wei-Shaw/sub2api/internal/managedinstance"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// workerIdlePoll is the fallback claim interval. Local enqueues also wake workers
+// directly; polling still picks up retries that come due and jobs enqueued by other replicas.
+const workerIdlePoll = 500 * time.Millisecond
 
 type WorkerRuntime struct {
 	active           atomic.Int64
@@ -28,6 +31,7 @@ type Runner struct {
 	metrics Metrics
 	clock   Clock
 	runtime WorkerRuntime
+	wake    []chan struct{}
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -35,7 +39,27 @@ type Runner struct {
 }
 
 func NewRunner(config ConfigStore, repo JobRepository, payload PayloadStore, scanner PromptScanner, metrics Metrics) *Runner {
-	return &Runner{config: config, repo: repo, payload: payload, scanner: scanner, metrics: metrics, clock: realClock{}}
+	wake := make([]chan struct{}, MaxWorkerCount)
+	for i := range wake {
+		// Pre-filled so each worker drains jobs left over from a previous run at start.
+		wake[i] = make(chan struct{}, 1)
+		wake[i] <- struct{}{}
+	}
+	return &Runner{config: config, repo: repo, payload: payload, scanner: scanner, metrics: metrics, clock: realClock{}, wake: wake}
+}
+
+// Notify wakes every worker to claim queued jobs. It never blocks; a worker that
+// already has a pending wake-up keeps just one.
+func (r *Runner) Notify() {
+	if r == nil {
+		return
+	}
+	for _, ch := range r.wake {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (r *Runner) Start(ctx context.Context) error {
@@ -86,38 +110,36 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 
 func (r *Runner) worker(ctx context.Context, workerID int) {
 	defer r.wg.Done()
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(workerIdlePoll)
 	defer ticker.Stop()
+	var wake <-chan struct{}
+	if workerID < len(r.wake) {
+		wake = r.wake[workerID]
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.runtime.heartbeatNS.Store(r.clock.Now().UnixNano())
-			cfg, ok := r.config.Active()
-			if !ok || !cfg.RiskControlEnabled || !cfg.Enabled || workerID >= cfg.WorkerCount {
-				continue
+		case <-wake:
+		}
+		r.runtime.heartbeatNS.Store(r.clock.Now().UnixNano())
+		cfg, ok := r.config.Active()
+		if !ok || !cfg.RiskControlEnabled || !cfg.Enabled || workerID >= cfg.WorkerCount {
+			continue
+		}
+		for {
+			job, claimed, err := r.repo.ClaimNextJob(ctx, r.clock.Now())
+			if err != nil {
+				r.setLastError("claim_job_failed", err.Error())
+				break
 			}
-			for {
-				jobCtx, managedDone, managedAllowed := managedinstance.Begin(ctx)
-				if !managedAllowed {
-					break
-				}
-				job, claimed, err := r.repo.ClaimNextJob(jobCtx, r.clock.Now())
-				if err != nil {
-					r.setLastError("claim_job_failed", err.Error())
-					managedDone()
-					break
-				}
-				if !claimed {
-					managedDone()
-					break
-				}
-				r.runtime.active.Add(1)
-				r.processSafely(jobCtx, workerID, cfg, job)
-				r.runtime.active.Add(-1)
-				managedDone()
+			if !claimed {
+				break
 			}
+			r.runtime.active.Add(1)
+			r.processSafely(ctx, workerID, cfg, job)
+			r.runtime.active.Add(-1)
 		}
 	}
 }
@@ -274,18 +296,14 @@ func (r *Runner) reclaimer(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			jobCtx, done, allowed := managedinstance.Begin(ctx)
-			if !allowed {
-				continue
-			}
 			now := r.clock.Now()
-			count, err := r.repo.ReclaimStale(jobCtx, now.Add(-2*time.Minute), now.Add(-90*time.Second), 100)
-			done()
+			count, err := r.repo.ReclaimStale(ctx, now.Add(-2*time.Minute), now.Add(-90*time.Second), 100)
 			if err != nil {
 				r.setLastError("reclaim_failed", err.Error())
 				continue
 			}
 			if count > 0 {
+				r.Notify()
 				LogWarn(EventProcessingReclaimed, map[string]any{"reclaimed_total": count, "status": "reclaimed"})
 			}
 		}

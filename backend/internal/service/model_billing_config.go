@@ -223,7 +223,7 @@ func (s *SettingService) modelBillingConfigForUsage(ctx context.Context) ModelBi
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	raw, err := s.settingRepo.GetValue(ctx, SettingKeyOAuthAutoConfig)
+	raw, err := s.settingRepo.GetValue(ctx, "smart_ops_oauth_auto_config")
 	cfg := struct {
 		ModelBilling ModelBillingConfig `json:"model_billing"`
 	}{DefaultModelBillingConfig()}

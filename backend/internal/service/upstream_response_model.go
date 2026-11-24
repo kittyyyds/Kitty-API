@@ -1,9 +1,7 @@
 package service
 
 import (
-	"bytes"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -12,8 +10,6 @@ import (
 const (
 	upstreamResponseModelObserverContextKey = "upstream_response_model_observer"
 	upstreamResponseModelMaxLength          = 200
-	upstreamResponseModelRedacted           = "[redacted]"
-	upstreamResponseModelSecretPrefixMin    = 16
 )
 
 // upstreamResponseModelObserver tracks one forwarding attempt (or one WS turn).
@@ -27,14 +23,11 @@ const (
 //
 // The same observer also records the service tier the upstream reports having
 // used (OpenAI service_tier, Anthropic usage.speed). The observed tier stays
-// separate from the final outbound request tier until usage recording resolves
-// the billable tier for the selected credential protocol.
+// separate for diagnostics; billing always follows the final outbound request.
 type upstreamResponseModelObserver struct {
-	astraCompleted bool
-	astraHasText   bool
-	first          string
-	terminal       string
-	conflict       bool
+	first    string
+	terminal string
+	conflict bool
 
 	// firstTier holds the first non-terminal tier declaration; it is discarded
 	// when later non-terminal declarations disagree. terminalTier comes from a
@@ -74,79 +67,7 @@ func normalizeObservedUpstreamResponseModel(model string) string {
 	return model
 }
 
-// redactUpstreamResponseModelSecrets returns the value that is safe to persist
-// or log. Billing and mismatch checks must continue to use the original
-// response model before calling this helper.
-//
-// The observer bounds model declarations to 200 runes. Include the identically
-// bounded form of each secret so a long value echoed as response.model cannot
-// leak its first 200 runes after observation truncation.
-func redactUpstreamResponseModelSecrets(account *Account, responseModel string) string {
-	responseModel = strings.TrimSpace(responseModel)
-	if responseModel == "" || account == nil {
-		return responseModel
-	}
-	for _, key := range SensitiveCredentialKeys {
-		if upstreamResponseModelContainsCredential(responseModel, account.GetCredential(key)) {
-			return upstreamResponseModelRedacted
-		}
-	}
-	for _, value := range account.GetHeaderOverrides() {
-		if upstreamResponseModelContainsCredential(responseModel, value) {
-			return upstreamResponseModelRedacted
-		}
-	}
-	return responseModel
-}
-
-func upstreamResponseModelContainsCredential(responseModel, credential string) bool {
-	credential = strings.TrimSpace(credential)
-	if credential == "" {
-		return false
-	}
-	if strings.Contains(responseModel, credential) {
-		return true
-	}
-	bounded := normalizeObservedUpstreamResponseModel(credential)
-	if bounded != credential && strings.Contains(responseModel, bounded) {
-		return true
-	}
-	if strings.HasPrefix(strings.ToLower(credential), "bearer ") {
-		token := strings.TrimSpace(credential[len("bearer "):])
-		return token != "" && upstreamResponseModelContainsCredential(responseModel, token)
-	}
-
-	// If an upstream prefixes an echoed long credential (for example
-	// "relay:"+secret), the observer's 200-rune bound leaves only a suffix that
-	// matches the beginning of the secret. Redact any meaningful such prefix;
-	// shorter coincidences are ignored to preserve useful model names.
-	modelRunes := []rune(responseModel)
-	credentialRunes := []rune(credential)
-	if len(credentialRunes) <= len(modelRunes) {
-		return false
-	}
-	for start := 0; start+upstreamResponseModelSecretPrefixMin <= len(modelRunes); start++ {
-		fragment := modelRunes[start:]
-		if len(fragment) > len(credentialRunes) {
-			continue
-		}
-		if string(fragment) == string(credentialRunes[:len(fragment)]) {
-			return true
-		}
-	}
-	return false
-}
-
 func (o *upstreamResponseModelObserver) ObserveOpenAI(payload []byte, eventType string) {
-	switch eventType {
-	case "response.output_text.delta":
-		o.astraHasText = o.astraHasText || strings.TrimSpace(gjson.GetBytes(payload, "delta").String()) != ""
-	case "response.completed", "response.done":
-		r := gjson.ParseBytes(payload).Get("response")
-		o.astraCompleted = codexAstraCompleted(r) || (o.astraHasText && r.Get("model").String() == "gpt-6-astra" && r.Get("status").String() == "completed" && !r.Get("error").IsObject())
-	case "response.failed", "response.incomplete", "error":
-		o.astraCompleted = false
-	}
 	model := firstValidTrimmedGJSONString(payload, "response.model", "model")
 	terminal := isUpstreamResponseModelTerminalEvent(eventType)
 	o.Observe(model, terminal)
@@ -287,36 +208,6 @@ func observedUpstreamResponseModel(c *gin.Context) string {
 	return upstreamResponseModelObserverFromContext(c).Model()
 }
 
-// observeAnthropicUpstreamResponseModel records the model declared by a raw
-// Anthropic response body or SSE event. Protocol converters must call this on
-// the upstream payload before they rewrite the client-facing model.
-func observeAnthropicUpstreamResponseModel(c *gin.Context, payload []byte) {
-	if c == nil || len(bytes.TrimSpace(payload)) == 0 {
-		return
-	}
-	observer := upstreamResponseModelObserverFromContext(c)
-	if observer == nil {
-		observer = beginUpstreamResponseModelObservation(c)
-	}
-	observer.ObserveAnthropic(payload)
-}
-
-func applyObservedUpstreamResponseModel(c *gin.Context, result *OpenAIForwardResult) {
-	if result == nil {
-		return
-	}
-	result.UpstreamResponseModel = observedUpstreamResponseModel(c)
-	result.UpstreamResponseModelConflict = observedUpstreamResponseModelConflict(c)
-}
-
-func applyObservedGatewayResponseModel(c *gin.Context, result *ForwardResult) {
-	if result == nil {
-		return
-	}
-	result.UpstreamResponseModel = observedUpstreamResponseModel(c)
-	result.UpstreamResponseModelConflict = observedUpstreamResponseModelConflict(c)
-}
-
 func observedUpstreamResponseModelConflict(c *gin.Context) bool {
 	return upstreamResponseModelObserverFromContext(c).Conflict()
 }
@@ -327,10 +218,8 @@ func observedUpstreamResponseServiceTier(c *gin.Context) string {
 
 // resolvedOpenAIUpstreamServiceTierFromObserver preserves the final outbound
 // request tier. The observed response tier remains separate on
-// OpenAIForwardResult.UpstreamResponseServiceTier and is reconciled once, at
-// usage time, where the account protocol is available. In particular, the
-// private ChatGPT Codex backend commonly reports default even for effective
-// Fast turns, while public API response tiers remain authoritative.
+// OpenAIForwardResult.UpstreamResponseServiceTier for diagnostics. All tiers
+// are billed from the outbound request, regardless of a different response tier.
 func resolvedOpenAIUpstreamServiceTierFromObserver(_ *upstreamResponseModelObserver, outboundBodyTier *string) *string {
 	return outboundBodyTier
 }
@@ -393,57 +282,12 @@ func upstreamModelsMatchForAudit(sentModel, responseModel string) bool {
 	if strings.EqualFold(sentModel, responseModel) {
 		return true
 	}
-	if openAIModelSnapshotMatches(sentModel, responseModel) {
-		return true
-	}
 
 	// xAI reports the runtime build ID for these supported public aliases.
 	// Canonicalize only for mismatch auditing; keep the raw response model for
 	// observability and for the separate response-model billing safeguards.
 	sentGrokModel := canonicalGrokBuildRuntimeModel(sentModel)
 	return sentGrokModel != "" && sentGrokModel == canonicalGrokBuildRuntimeModel(responseModel)
-}
-
-func openAIModelSnapshotMatches(sentModel, responseModel string) bool {
-	sentModel = strings.ToLower(strings.TrimSpace(sentModel))
-	responseModel = strings.ToLower(strings.TrimSpace(responseModel))
-	aliases := []string{sentModel}
-	if base, ok := strings.CutSuffix(sentModel, "-latest"); ok {
-		aliases = append(aliases, base)
-	}
-	for _, alias := range aliases {
-		if !isOpenAIModelFamily(alias) {
-			continue
-		}
-		if responseModel == alias || isOpenAIModelSnapshotSuffix(strings.TrimPrefix(responseModel, alias+"-"), strings.HasPrefix(responseModel, alias+"-")) {
-			return true
-		}
-	}
-	return false
-}
-
-func isOpenAIModelFamily(model string) bool {
-	return strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "codex-") ||
-		strings.HasPrefix(model, "o1") || strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4")
-}
-
-func isOpenAIModelSnapshotSuffix(suffix string, hasPrefix bool) bool {
-	if !hasPrefix {
-		return false
-	}
-	if len(suffix) == len("2006-01-02") {
-		_, err := time.Parse("2006-01-02", suffix)
-		return err == nil
-	}
-	if len(suffix) == len("20060102") {
-		_, err := time.Parse("20060102", suffix)
-		return err == nil
-	}
-	if len(suffix) == len("0102") {
-		_, err := time.Parse("0102", suffix)
-		return err == nil
-	}
-	return false
 }
 
 func canonicalGrokBuildRuntimeModel(model string) string {
@@ -466,3 +310,63 @@ func upstreamSentModel(requestedModel, upstreamModel string) string {
 	}
 	return sentModel
 }
+
+const upstreamResponseModelRedacted = "[redacted]"
+const upstreamResponseModelSecretPrefixMin = 16
+
+func redactUpstreamResponseModelSecrets(account *Account, responseModel string) string {
+	responseModel = strings.TrimSpace(responseModel)
+	if responseModel == "" || account == nil {
+		return responseModel
+	}
+	for _, key := range SensitiveCredentialKeys {
+		if upstreamResponseModelContainsCredential(responseModel, account.GetCredential(key)) {
+			return upstreamResponseModelRedacted
+		}
+	}
+	for _, value := range account.GetHeaderOverrides() {
+		if upstreamResponseModelContainsCredential(responseModel, value) {
+			return upstreamResponseModelRedacted
+		}
+	}
+	return responseModel
+}
+
+func upstreamResponseModelContainsCredential(responseModel, credential string) bool {
+	credential = strings.TrimSpace(credential)
+	if credential == "" {
+		return false
+	}
+	if strings.Contains(responseModel, credential) {
+		return true
+	}
+	bounded := normalizeObservedUpstreamResponseModel(credential)
+	if bounded != credential && strings.Contains(responseModel, bounded) {
+		return true
+	}
+	if strings.HasPrefix(strings.ToLower(credential), "bearer ") {
+		token := strings.TrimSpace(credential[len("bearer "):])
+		return token != "" && upstreamResponseModelContainsCredential(responseModel, token)
+	}
+
+	// If an upstream prefixes an echoed long credential (for example
+	// "relay:"+secret), the observer's 200-rune bound leaves only a suffix that
+	// matches the beginning of the secret. Redact any meaningful such prefix;
+	// shorter coincidences are ignored to preserve useful model names.
+	modelRunes := []rune(responseModel)
+	credentialRunes := []rune(credential)
+	if len(credentialRunes) <= len(modelRunes) {
+		return false
+	}
+	for start := 0; start+upstreamResponseModelSecretPrefixMin <= len(modelRunes); start++ {
+		fragment := modelRunes[start:]
+		if len(fragment) > len(credentialRunes) {
+			continue
+		}
+		if string(fragment) == string(credentialRunes[:len(fragment)]) {
+			return true
+		}
+	}
+	return false
+}
+

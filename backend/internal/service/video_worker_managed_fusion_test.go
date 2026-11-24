@@ -76,3 +76,9 @@ func TestFusionVideoScanDrainsBeforeLeadershipRelease(t *testing.T) {
 	require.False(t, scan.cancelled, "normal drain must not cancel settlement")
 	require.Zero(t, instance.Snapshot().BackgroundActive)
 }
+
+type fusionLease struct{}
+
+func (fusionLease) Acquire(context.Context, string, time.Duration) (bool, error) { return true, nil }
+func (fusionLease) Renew(context.Context, string, time.Duration) (bool, error)   { return true, nil }
+func (fusionLease) Release(context.Context, string) error                        { return nil }

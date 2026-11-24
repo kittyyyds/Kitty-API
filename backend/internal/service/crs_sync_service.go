@@ -20,7 +20,6 @@ import (
 )
 
 type CRSSyncService struct {
-	autoConfigure      func(context.Context, *CreateAccountInput) error
 	accountRepo        AccountRepository
 	proxyRepo          ProxyRepository
 	oauthService       *OAuthService
@@ -391,7 +390,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 				Status:      status,
 				Schedulable: src.Schedulable,
 			}
-			if err := s.createSyncedAccount(ctx, account); err != nil {
+			if err := s.accountRepo.Create(ctx, account); err != nil {
 				item.Action = "failed"
 				item.Error = "create failed: " + err.Error()
 				result.Failed++
@@ -527,7 +526,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 				Status:      status,
 				Schedulable: src.Schedulable,
 			}
-			if err := s.createSyncedAccount(ctx, account); err != nil {
+			if err := s.accountRepo.Create(ctx, account); err != nil {
 				item.Action = "failed"
 				item.Error = "create failed: " + err.Error()
 				result.Failed++
@@ -682,7 +681,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 				Status:      status,
 				Schedulable: src.Schedulable,
 			}
-			if err := s.createSyncedAccount(ctx, account); err != nil {
+			if err := s.accountRepo.Create(ctx, account); err != nil {
 				item.Action = "failed"
 				item.Error = "create failed: " + err.Error()
 				result.Failed++
@@ -833,7 +832,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 				Status:      status,
 				Schedulable: src.Schedulable,
 			}
-			if err := s.createSyncedAccount(ctx, account); err != nil {
+			if err := s.accountRepo.Create(ctx, account); err != nil {
 				item.Action = "failed"
 				item.Error = "create failed: " + err.Error()
 				result.Failed++
@@ -963,7 +962,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 				Status:      mapCRSStatus(src.IsActive, src.Status),
 				Schedulable: src.Schedulable,
 			}
-			if err := s.createSyncedAccount(ctx, account); err != nil {
+			if err := s.accountRepo.Create(ctx, account); err != nil {
 				item.Action = "failed"
 				item.Error = "create failed: " + err.Error()
 				result.Failed++
@@ -1093,7 +1092,7 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 				Status:      mapCRSStatus(src.IsActive, src.Status),
 				Schedulable: src.Schedulable,
 			}
-			if err := s.createSyncedAccount(ctx, account); err != nil {
+			if err := s.accountRepo.Create(ctx, account); err != nil {
 				item.Action = "failed"
 				item.Error = "create failed: " + err.Error()
 				result.Failed++
@@ -1446,6 +1445,10 @@ func (s *CRSSyncService) refreshOAuthToken(ctx context.Context, account *Account
 			}
 		}
 	case PlatformOpenAI:
+		if isStoredOpenAIManagedOAuth(account) {
+			s.refreshStoredOpenAIAccount(ctx, account)
+			return nil // the coordinator already persisted with exact-state CAS
+		}
 		if s.openaiOAuthService == nil {
 			return nil
 		}
@@ -1588,29 +1591,18 @@ func (s *CRSSyncService) PreviewFromCRS(ctx context.Context, input SyncFromCRSIn
 	return result, nil
 }
 
-func (s *CRSSyncService) createSyncedAccount(ctx context.Context, a *Account) error {
-	var groups []int64
-	if s.autoConfigure != nil {
-		input := &CreateAccountInput{Platform: a.Platform, Type: a.Type, Priority: a.Priority, Concurrency: a.Concurrency, LoadFactor: a.LoadFactor, Extra: a.Extra, Credentials: a.Credentials}
-		if err := s.autoConfigure(ctx, input); err != nil {
-			return err
-		}
-		a.InitialQualityPlan = input.InitialQualityPlan
-		a.Priority = input.Priority
-		a.Concurrency = input.Concurrency
-		a.LoadFactor = input.LoadFactor
-		a.Extra = input.Extra
-		a.Credentials = input.Credentials
-		groups = input.GroupIDs
+func (s *CRSSyncService) refreshStoredOpenAIAccount(ctx context.Context, account *Account) {
+	if s.openaiOAuthService == nil {
+		return
 	}
-	if err := s.accountRepo.Create(ctx, a); err != nil {
-		return err
+	if isStoredOpenAIManagedOAuth(account) {
+		_, _ = s.openaiOAuthService.RefreshStoredAccount(ctx, account)
+		return
 	}
-	if len(groups) > 0 {
-		if err := s.accountRepo.BindGroups(ctx, a.ID, groups); err != nil {
-			return err
+	if refreshed := s.refreshOAuthToken(ctx, account); refreshed != nil {
+		previous := snapshotOAuthRefreshAccount(account)
+		if err := persistAccountCredentials(ctx, s.accountRepo, account, refreshed); err == nil {
+			s.openaiOAuthService.AuthCredentialsPersisted(ctx, previous)
 		}
 	}
-	recordAutoConfigInitial(ctx, s.accountRepo, a, groups)
-	return nil
 }

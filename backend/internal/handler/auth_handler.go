@@ -185,6 +185,11 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	// 密码超过 bcrypt 72 字节上限时，在消耗一次性人机验证票据之前直接拒绝。
+	if err := service.ValidatePasswordMaxLength(req.Password); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 
 	// 验证当前启用的验证码（邮箱验证码注册场景避免重复校验一次性票据）
 	proof := captchaProof(req.TurnstileToken, req.TencentCaptchaTicket, req.TencentCaptchaRandstr)
@@ -323,7 +328,7 @@ func (h *AuthHandler) Login2FA(c *gin.Context) {
 		slog.Debug("login_2fa_session_invalid",
 			"temp_token_prefix", tokenPrefix,
 			"error", err)
-		response.BadRequest(c, "Invalid or expired 2FA session")
+		response.ErrorFrom(c, service.ErrTotpLoginSessionExpired)
 		return
 	}
 

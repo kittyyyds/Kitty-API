@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -55,23 +54,24 @@ type AdminUser struct {
 }
 
 type APIKey struct {
+	ID              int64      `json:"id"`
+	UserID          int64      `json:"user_id"`
+	Key             string     `json:"key"`
+	Name            string     `json:"name"`
+	GroupID         *int64     `json:"group_id"`
+	FallbackGroupID *int64     `json:"fallback_group_id"`
+	Status          string     `json:"status"`
+	IPWhitelist     []string   `json:"ip_whitelist"`
+	IPBlacklist     []string   `json:"ip_blacklist"`
+	LastUsedAt      *time.Time `json:"last_used_at"`
+	LastUsedIP      *string    `json:"last_used_ip"`
+	Quota           float64    `json:"quota"`      // Quota limit in USD (0 = unlimited)
+	QuotaUsed       float64    `json:"quota_used"` // Used quota amount in USD
+	ExpiresAt       *time.Time `json:"expires_at"` // Expiration time (nil = never expires)
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 	KeyDisplay  string     `json:"key_display,omitempty"`
-	ID          int64      `json:"id"`
-	UserID      int64      `json:"user_id"`
-	Key         string     `json:"key"`
-	Name        string     `json:"name"`
 	GroupIDs    []int64    `json:"group_ids"`
-	GroupID     *int64     `json:"group_id"`
-	Status      string     `json:"status"`
-	IPWhitelist []string   `json:"ip_whitelist"`
-	IPBlacklist []string   `json:"ip_blacklist"`
-	LastUsedAt  *time.Time `json:"last_used_at"`
-	LastUsedIP  *string    `json:"last_used_ip"`
-	Quota       float64    `json:"quota"`      // Quota limit in USD (0 = unlimited)
-	QuotaUsed   float64    `json:"quota_used"` // Used quota amount in USD
-	ExpiresAt   *time.Time `json:"expires_at"` // Expiration time (nil = never expires)
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
 	// CurrentConcurrency is the real-time active request count for this API key.
 	CurrentConcurrency int `json:"current_concurrency"`
 
@@ -90,8 +90,9 @@ type APIKey struct {
 	Reset1dAt        *time.Time `json:"reset_1d_at,omitempty"`
 	Reset7dAt        *time.Time `json:"reset_7d_at,omitempty"`
 
-	User  *User  `json:"user,omitempty"`
-	Group *Group `json:"group,omitempty"`
+	User          *User  `json:"user,omitempty"`
+	Group         *Group `json:"group,omitempty"`
+	FallbackGroup *Group `json:"fallback_group,omitempty"`
 }
 
 type Group struct {
@@ -165,7 +166,9 @@ type Group struct {
 
 	// RPMLimit 分组级每分钟请求数上限（0 = 不限制），设置后覆盖用户级 rpm_limit。
 	RPMLimit int `json:"rpm_limit"`
-	// MaxReasoningEffort Anthropic/OpenAI 请求的推理强度上限，空字符串表示不限制。
+	// 分组内每个用户的并发上限（0 = 不限制）。
+	UserConcurrencyLimit int `json:"user_concurrency_limit"`
+	// MaxReasoningEffort OpenAI/Codex 请求的推理强度上限，空字符串表示不限制。
 	MaxReasoningEffort string `json:"max_reasoning_effort"`
 	// MaxReasoningEffortOverLimit 超过上限时的访问控制：downgrade（默认）或 deny。
 	MaxReasoningEffortOverLimit string `json:"max_reasoning_effort_over_limit"`
@@ -178,9 +181,11 @@ type Group struct {
 // AdminGroup 是管理员接口使用的 group DTO（包含敏感/内部字段）。
 // 注意：普通用户接口不得返回 model_routing/account_count/account_groups 等内部信息。
 type AdminGroup struct {
+	FallbackGroupIDOnUnavailable *int64 `json:"fallback_group_id_on_unavailable"`
 	Group
 	// ForceOpenAIFast 是管理端请求策略，用户侧分组 DTO 无需暴露。
-	ForceOpenAIFast bool `json:"force_openai_fast"`
+	ForceOpenAIFast        bool   `json:"force_openai_fast"`
+	ForceOpenAIServiceTier string `json:"force_openai_service_tier"`
 	// FreeOpenAIFast 是管理端计费策略，用户侧分组 DTO 无需暴露。
 	FreeOpenAIFast bool `json:"free_openai_fast"`
 	// StreamOnly 是管理端请求策略（只接受流式的对话生成请求），用户侧分组 DTO 无需暴露。
@@ -209,6 +214,7 @@ type AdminGroup struct {
 	ModelAllowlist              service.GroupModelAllowlist              `json:"model_allowlist"`
 	// 固定账号获取 Codex Model Manifest 配置（仅 openai 平台使用）。
 	CodexModelsManifestConfig domain.GroupCodexModelsManifestConfig `json:"codex_models_manifest_config"`
+	StrictFailover            domain.StrictFailoverConfig           `json:"strict_failover"`
 
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes    []string       `json:"supported_model_scopes"`
@@ -222,17 +228,25 @@ type AdminGroup struct {
 }
 
 type Account struct {
-	ID       int64   `json:"id"`
-	Name     string  `json:"name"`
-	Notes    *string `json:"notes"`
-	Platform string  `json:"platform"`
-	Type     string  `json:"type"`
+	// RetiredReason explains why an account can never be scheduled (retired
+	// Excel OAuth credentials); empty for ordinary accounts.
+	RetiredReason           string                           `json:"retired_reason,omitempty"`
+	ID                      int64                            `json:"id"`
+	Name                    string                           `json:"name"`
+	Notes                   *string                          `json:"notes"`
+	Platform                string                           `json:"platform"`
+	Type                    string                           `json:"type"`
 	// Credentials 经 RedactCredentials 处理后只含非敏感子键；敏感 token / api_key / 私钥
 	// 的存在性通过 CredentialsStatus（has_<key>）暴露，原始值不返回前端。
 	Credentials             map[string]any                 `json:"credentials"`
 	CredentialsStatus       map[string]bool                `json:"credentials_status,omitempty"`
 	Extra                   map[string]any                 `json:"extra"`
 	OllamaCloudUsage        *service.OllamaCloudUsageState `json:"ollama_cloud_usage,omitempty"`
+	OpenCodeGoUsage         *service.OpenCodeGoUsageState  `json:"opencode_go_usage,omitempty"`
+	// OpenAITiboRoutes is the Tibo probe state (verdict + sparkline) of an
+	// OpenAI account; omitted when Tibo probing does not apply or is off.
+	OpenAITiboRoutes        []service.OpenAITiboRouteStatus `json:"openai_tibo_routes,omitempty"`
+	ProxyIDs                []int64                        `json:"proxy_ids,omitempty"`
 	ProxyID                 *int64                         `json:"proxy_id"`
 	ProxyFallbackOriginID   *int64                         `json:"proxy_fallback_origin_id"`
 	ProxyFallbackOriginName *string                        `json:"proxy_fallback_origin_name,omitempty"`
@@ -240,6 +254,8 @@ type Account struct {
 	LoadFactor              *int                           `json:"load_factor,omitempty"`
 	Priority                int                            `json:"priority"`
 	RateMultiplier          float64                        `json:"rate_multiplier"`
+	SharedTotalCallCount    int64                          `json:"shared_total_call_count,omitempty"`
+	SharedListingStatus     string                         `json:"shared_listing_status,omitempty"`
 	GroupRateMultiplier     float64                        `json:"group_rate_multiplier"`
 	Status                  string                         `json:"status"`
 	ErrorMessage            string                         `json:"error_message"`
@@ -248,7 +264,6 @@ type Account struct {
 	AutoPauseOnExpired      bool                           `json:"auto_pause_on_expired"`
 	CreatedAt               time.Time                      `json:"created_at"`
 	UpdatedAt               time.Time                      `json:"updated_at"`
-	OpenCodeGoUsage         *service.OpenCodeGoUsageState  `json:"opencode_go_usage,omitempty"`
 
 	Schedulable bool `json:"schedulable"`
 
@@ -352,18 +367,23 @@ type Account struct {
 // repeated account_groups and groups object graphs. Fetch /admin/accounts/:id
 // for the complete Account DTO when editing or inspecting an account.
 type AccountListItem struct {
-	ID       int64   `json:"id"`
-	Name     string  `json:"name"`
-	Notes    *string `json:"notes"`
-	Platform string  `json:"platform"`
-	Type     string  `json:"type"`
+	// RetiredReason explains why an account can never be scheduled (retired
+	// Excel OAuth credentials); empty for ordinary accounts.
+	RetiredReason           string                           `json:"retired_reason,omitempty"`
+	ID                      int64                            `json:"id"`
+	Name                    string                           `json:"name"`
+	Notes                   *string                          `json:"notes"`
+	Platform                string                           `json:"platform"`
+	Type                    string                           `json:"type"`
 
 	Credentials       map[string]any                 `json:"credentials,omitempty"`
 	CredentialsStatus map[string]bool                `json:"credentials_status,omitempty"`
 	Extra             map[string]any                 `json:"extra,omitempty"`
 	OllamaCloudUsage  *service.OllamaCloudUsageState `json:"ollama_cloud_usage,omitempty"`
 	OpenCodeGoUsage   *service.OpenCodeGoUsageState  `json:"opencode_go_usage,omitempty"`
+	OpenAITiboRoutes  []service.OpenAITiboRouteStatus `json:"openai_tibo_routes,omitempty"`
 
+	ProxyIDs                []int64    `json:"proxy_ids,omitempty"`
 	ProxyID                 *int64     `json:"proxy_id"`
 	ProxyFallbackOriginID   *int64     `json:"proxy_fallback_origin_id"`
 	ProxyFallbackOriginName *string    `json:"proxy_fallback_origin_name,omitempty"`
@@ -457,12 +477,12 @@ type AccountGroup struct {
 }
 
 type Proxy struct {
+	MihomoNodeID string    `json:"mihomo_node_id,omitempty"`
 	ID           int64     `json:"id"`
 	Name         string    `json:"name"`
 	Protocol     string    `json:"protocol"`
 	Host         string    `json:"host"`
 	Port         int       `json:"port"`
-	MihomoNodeID string    `json:"mihomo_node_id,omitempty"`
 	Username     string    `json:"username"`
 	Password     string    `json:"-"`
 	Status       string    `json:"status"`
@@ -612,13 +632,12 @@ type BatchUpdateRedeemCodesRequest struct {
 
 // UsageLog 是普通用户接口使用的 usage log DTO（不包含管理员字段）。
 type UsageLog struct {
-	ContentTiming *requesttiming.ContentObservation `json:"content_timing,omitempty"`
-	ID            int64                             `json:"id"`
-	UserID        int64                             `json:"user_id"`
-	APIKeyID      int64                             `json:"api_key_id"`
-	AccountID     int64                             `json:"account_id"`
-	RequestID     string                            `json:"request_id"`
-	Model         string                            `json:"model"`
+	ID        int64  `json:"id"`
+	UserID    int64  `json:"user_id"`
+	APIKeyID  int64  `json:"api_key_id"`
+	AccountID int64  `json:"account_id"`
+	RequestID string `json:"request_id"`
+	Model     string `json:"model"`
 	// ServiceTier records the OpenAI service tier used for billing, e.g. "priority" / "flex".
 	ServiceTier *string `json:"service_tier,omitempty"`
 	// ReasoningEffort is the client-requested effort (mapping-hidden, like Model).
@@ -638,8 +657,10 @@ type UsageLog struct {
 	CacheCreationTokens int `json:"cache_creation_tokens"`
 	CacheReadTokens     int `json:"cache_read_tokens"`
 
-	CacheCreation5mTokens int `json:"cache_creation_5m_tokens"`
-	CacheCreation1hTokens int `json:"cache_creation_1h_tokens"`
+	CacheCreation5mTokens  int `json:"cache_creation_5m_tokens"`
+	CacheCreation1hTokens  int `json:"cache_creation_1h_tokens"`
+	CacheCreation30mTokens int `json:"cache_creation_30m_tokens"`
+	CacheCreation12hTokens int `json:"cache_creation_12h_tokens"`
 
 	InputCost                 float64 `json:"input_cost"`
 	OutputCost                float64 `json:"output_cost"`
@@ -661,8 +682,7 @@ type UsageLog struct {
 	FirstTokenMs       *int `json:"first_token_ms"`
 	// QueueWaitMs is pre-forward elapsed time, not client E2E. Legacy timers
 	// can overlap it; QueueTiming carries explicit measured server/forward scopes.
-	QueueWaitMs *int                 `json:"queue_wait_ms"`
-	QueueTiming *service.QueueTiming `json:"queue_timing"`
+	QueueWaitMs *int `json:"queue_wait_ms"`
 
 	// 图片生成字段
 	ImageCount         int            `json:"image_count"`

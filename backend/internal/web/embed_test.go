@@ -5,15 +5,17 @@ package web
 import (
 	"bytes"
 	"context"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/gin-gonic/gin"
@@ -114,19 +116,28 @@ func TestInjectSiteTitle(t *testing.T) {
 		assert.Contains(t, string(result), `<div id="app"></div>`)
 		assert.Contains(t, string(result), "<title>TestSite - AI API Gateway</title>")
 	})
+
+	t.Run("keeps_og_title_on_the_site_name", func(t *testing.T) {
+		html := []byte(`<html><head><title>Kitty - AI API Gateway</title><meta property="og:title" content="Kitty - AI API Gateway" /><meta property="og:type" content="website" /></head></html>`)
+		settingsJSON := []byte(`{"site_name":"A&B \"Lab\""}`)
+
+		result := injectSiteTitle(html, settingsJSON)
+
+		assert.Contains(t, string(result), `<meta property="og:title" content="A&amp;B &#34;Lab&#34; - AI API Gateway" />`)
+		assert.Contains(t, string(result), `<meta property="og:type" content="website" />`)
+		assert.NotContains(t, string(result), "Kitty")
+	})
 }
 
 func TestInjectSiteFavicon(t *testing.T) {
 	t.Run("replaces_favicon_with_site_logo", func(t *testing.T) {
-		html := []byte(`<html><head><link rel="icon" type="image/png" href="/logo.png" /><link rel="apple-touch-icon" href="/apple-touch-icon.png" /></head></html>`)
+		html := []byte(`<html><head><link rel="icon" type="image/png" href="/logo.png" /></head></html>`)
 		settingsJSON := []byte(`{"site_logo":"https://example.com/custom-logo.png"}`)
 
 		result := injectSiteFavicon(html, settingsJSON)
 
 		assert.Contains(t, string(result), `<link rel="icon" href="https://example.com/custom-logo.png" />`)
-		assert.Contains(t, string(result), `<link rel="apple-touch-icon" href="https://example.com/custom-logo.png" />`)
 		assert.NotContains(t, string(result), `/logo.png`)
-		assert.NotContains(t, string(result), `/apple-touch-icon.png`)
 	})
 
 	t.Run("supports_relative_and_data_image_urls", func(t *testing.T) {
@@ -356,7 +367,7 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		assert.True(t, strings.HasSuffix(etag, `"`))
 	})
 
-	t.Run("returns_304_for_matching_etag_without_nonce", func(t *testing.T) {
+	t.Run("returns_304_for_matching_etag", func(t *testing.T) {
 		provider := &mockSettingsProvider{
 			settings: map[string]string{"test": "value"},
 		}
@@ -366,6 +377,10 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 
 		// Use a real router for proper 304 handling
 		router := gin.New()
+		router.Use(func(c *gin.Context) {
+			c.Set(middleware.CSPNonceKey, "test-nonce")
+			c.Next()
+		})
 		router.Use(server.Middleware())
 
 		// First request to populate cache and get ETag
@@ -383,35 +398,6 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 
 		assert.Equal(t, http.StatusNotModified, w2.Code)
 		assert.Empty(t, w2.Body.String())
-	})
-
-	t.Run("matching_etag_still_returns_html_with_current_nonce", func(t *testing.T) {
-		provider := &mockSettingsProvider{settings: map[string]string{"test": "value"}}
-		server, err := NewFrontendServer(provider)
-		require.NoError(t, err)
-		router := gin.New()
-		nonce := "first-page-nonce"
-		router.Use(func(c *gin.Context) {
-			c.Set(middleware.CSPNonceKey, nonce)
-			c.Next()
-		})
-		router.Use(server.Middleware())
-		w1 := httptest.NewRecorder()
-		router.ServeHTTP(w1, httptest.NewRequest(http.MethodGet, "/", nil))
-		require.Equal(t, http.StatusOK, w1.Code)
-		require.Contains(t, w1.Body.String(), `nonce="first-page-nonce"`)
-		etag := w1.Header().Get("ETag")
-		require.NotEmpty(t, etag)
-
-		nonce = "current-page-nonce"
-		w2 := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.Header.Set("If-None-Match", etag)
-		router.ServeHTTP(w2, req)
-		assert.Equal(t, http.StatusOK, w2.Code)
-		assert.Contains(t, w2.Body.String(), `nonce="current-page-nonce"`)
-		assert.NotContains(t, w2.Body.String(), `nonce="first-page-nonce"`)
-		assert.Equal(t, 1, provider.called)
 	})
 
 	t.Run("sets_cache_control_header", func(t *testing.T) {
@@ -454,45 +440,6 @@ func TestFrontendServer_ServeIndexHTML(t *testing.T) {
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Contains(t, w.Header().Get("Content-Type"), "text/html")
 	})
-}
-
-func TestFrontendServer_RefreshExternalSettingsAfterCacheExpiry(t *testing.T) {
-	for _, enabled := range []bool{true, false} {
-		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
-			provider := &mockSettingsProvider{settings: map[string]bool{"plugin_management_enabled": !enabled}}
-			server, err := NewFrontendServer(provider)
-			require.NoError(t, err)
-			request := func(etag string) *httptest.ResponseRecorder {
-				w := httptest.NewRecorder()
-				c, _ := gin.CreateTestContext(w)
-				c.Request = httptest.NewRequest(http.MethodGet, "/admin/plugins", nil)
-				c.Request.Header.Set("If-None-Match", etag)
-				c.Set(middleware.CSPNonceKey, "nonce123")
-				server.serveIndexHTML(c)
-				c.Writer.WriteHeaderNow()
-				return w
-			}
-			first := request("")
-			require.Equal(t, http.StatusOK, first.Code)
-			oldETag := first.Header().Get("ETag")
-			require.NotEmpty(t, oldETag)
-			// Simulate a settings change in another process, with no local callback.
-			provider.settings = map[string]bool{"plugin_management_enabled": enabled}
-			require.Equal(t, http.StatusNotModified, request(oldETag).Code)
-			require.Equal(t, 1, provider.called)
-			server.cache.mu.Lock()
-			server.cache.expiresAt = time.Now().Add(-time.Second)
-			server.cache.mu.Unlock()
-			refreshed := request(oldETag)
-			require.Equal(t, http.StatusOK, refreshed.Code, "expired ETag must not preserve stale settings")
-			require.Equal(t, 2, provider.called)
-			require.Contains(t, refreshed.Body.String(), `"plugin_management_enabled":`+strconv.FormatBool(enabled))
-			require.NotEqual(t, oldETag, refreshed.Header().Get("ETag"))
-			require.Equal(t, "no-cache", refreshed.Header().Get("Cache-Control"))
-			require.Equal(t, http.StatusNotModified, request(refreshed.Header().Get("ETag")).Code)
-			require.Equal(t, 2, provider.called)
-		})
-	}
 }
 
 func TestFrontendServer_InvalidateCache(t *testing.T) {
@@ -578,51 +525,6 @@ func TestOverrideFilesNeverReceiveImmutableCacheHeaders(t *testing.T) {
 }
 
 func TestFrontendServer_Middleware(t *testing.T) {
-	t.Run("serves_heyroute_assets_before_images_api_bypass", func(t *testing.T) {
-		provider := &mockSettingsProvider{
-			settings: map[string]string{"test": "value"},
-		}
-
-		server, err := NewFrontendServer(provider)
-		require.NoError(t, err)
-
-		router := gin.New()
-		router.Use(server.Middleware())
-
-		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/images/heyroute/community/qq-qr.png", nil)
-		router.ServeHTTP(w, req)
-
-		assert.Equal(t, http.StatusOK, w.Code)
-		assert.Contains(t, w.Header().Get("Content-Type"), "image/png")
-		assert.NotEmpty(t, w.Body.Bytes())
-	})
-
-	t.Run("keeps_image_api_routes_bypassed", func(t *testing.T) {
-		provider := &mockSettingsProvider{
-			settings: map[string]string{"test": "value"},
-		}
-
-		server, err := NewFrontendServer(provider)
-		require.NoError(t, err)
-
-		router := gin.New()
-		router.Use(server.Middleware())
-		nextCalled := false
-		router.POST("/images/generations", func(c *gin.Context) {
-			nextCalled = true
-			c.String(http.StatusOK, "image API")
-		})
-
-		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/images/generations", strings.NewReader(`{"model":"gpt-image-1"}`))
-		router.ServeHTTP(w, req)
-
-		assert.True(t, nextCalled)
-		assert.Equal(t, http.StatusOK, w.Code)
-		assert.Equal(t, "image API", w.Body.String())
-	})
-
 	t.Run("skips_api_routes", func(t *testing.T) {
 		provider := &mockSettingsProvider{
 			settings: map[string]string{"test": "value"},
@@ -634,7 +536,6 @@ func TestFrontendServer_Middleware(t *testing.T) {
 		apiPaths := []string{
 			"/api/v1/users",
 			"/models",
-			"/models/gpt-5.5",
 			"/v1/models",
 			"/v1beta/chat",
 			"/backend-api/codex/responses",
@@ -642,24 +543,14 @@ func TestFrontendServer_Middleware(t *testing.T) {
 			"/antigravity/test",
 			"/setup/init",
 			"/health",
+			"/.well-known/oauth-protected-resource",
+			"/.well-known/oauth-protected-resource/api/v1/mcp",
+			"/.well-known/oauth-authorization-server",
 			"/responses",
 			"/responses/compact",
 			"/chat/completions",
-			"/messages/count_tokens",
-			"/embeddings",
-			"/contents/generations/tasks",
-			"/contents/generations/tasks/task-123",
-			"/v3/contents/generations/tasks",
-			"/v3/contents/generations/tasks/task-123",
-			"/tts",
-			"/stt",
-			"/custom-voices",
-			"/custom-voices/voice-123",
-			"/custom-voices/voice-123/audio",
-			"/realtime",
-			"/web_search",
-			"/x_search",
 			"/models/gpt-5.5",
+			"/v3/contents/generations/tasks/task-123",
 		}
 
 		for _, path := range apiPaths {
@@ -810,6 +701,9 @@ func TestFrontendServer_Middleware(t *testing.T) {
 
 func TestEmbeddedFrontendBypassesBareVideoAPIRoutes(t *testing.T) {
 	for _, path := range []string{
+		"/canvas-api/v1/models",
+		"/canvas-api/v1/images/generations",
+		"/media/video-references/reference-id",
 		"/videos/generations",
 		"/videos/edits",
 		"/videos/extensions",
@@ -817,6 +711,52 @@ func TestEmbeddedFrontendBypassesBareVideoAPIRoutes(t *testing.T) {
 	} {
 		require.True(t, shouldBypassEmbeddedFrontend(path), "path=%s", path)
 	}
+}
+
+func TestHomepageImagesAndImageAPIsUseDifferentHandlers(t *testing.T) {
+	server, err := NewFrontendServer(&mockSettingsProvider{settings: map[string]string{}})
+	require.NoError(t, err)
+	for name, handler := range map[string]gin.HandlerFunc{
+		"settings": server.Middleware(),
+		"legacy":   ServeEmbeddedFrontend(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			router := gin.New()
+			router.Use(handler)
+			router.POST("/images/generations", func(c *gin.Context) { c.Status(http.StatusUnauthorized) })
+			for path, contentType := range map[string]string{
+				"/images/heyroute/integrations/codex.png":       "image/png",
+				"/images/heyroute/integrations/claude-code.svg": "image/svg+xml",
+			} {
+				response := httptest.NewRecorder()
+				router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+				require.Equal(t, http.StatusOK, response.Code, path)
+				require.Contains(t, response.Header().Get("Content-Type"), contentType, path)
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/images/generations", nil))
+			require.Equal(t, http.StatusUnauthorized, response.Code)
+		})
+	}
+}
+
+func TestEmbeddedRasterImagesDecode(t *testing.T) {
+	err := fs.WalkDir(frontendFS, "dist", func(path string, entry fs.DirEntry, walkErr error) error {
+		require.NoError(t, walkErr)
+		if entry.IsDir() {
+			return nil
+		}
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".png", ".jpg", ".jpeg", ".gif":
+			data, err := frontendFS.ReadFile(path)
+			require.NoError(t, err)
+			decoded, _, err := image.Decode(bytes.NewReader(data))
+			require.NoError(t, err, path)
+			require.False(t, decoded.Bounds().Empty(), path)
+		}
+		return nil
+	})
+	require.NoError(t, err)
 }
 
 func TestEmbeddedFrontendBypassesBareAPIAliases(t *testing.T) {
@@ -954,6 +894,9 @@ func TestServeEmbeddedFrontend(t *testing.T) {
 			"/antigravity/test",
 			"/setup/init",
 			"/health",
+			"/.well-known/oauth-protected-resource",
+			"/.well-known/oauth-protected-resource/api/v1/mcp",
+			"/.well-known/oauth-authorization-server",
 			"/responses",
 			"/responses/compact",
 			"/chat/completions",

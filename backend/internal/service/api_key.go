@@ -28,17 +28,18 @@ func IsWindowExpired(windowStart *time.Time, duration time.Duration) bool {
 }
 
 type APIKey struct {
-	ID          int64
-	UserID      int64
-	Key         string
+	ID              int64
+	UserID          int64
+	Key             string
+	Name            string
+	GroupID         *int64
+	FallbackGroupID *int64
+	Status          string
+	IPWhitelist     []string
+	IPBlacklist     []string
 	KeyHash     string // Historical hash-only credentials, never returned by DTOs.
 	KeyPrefix   string
-	Name        string
 	GroupIDs    []int64 // Configured groups; GroupID is the selected group for a request.
-	GroupID     *int64
-	Status      string
-	IPWhitelist []string
-	IPBlacklist []string
 	// 预编译的 IP 规则，用于认证热路径避免重复 ParseIP/ParseCIDR。
 	CompiledIPWhitelist *ip.CompiledIPRules `json:"-"`
 	CompiledIPBlacklist *ip.CompiledIPRules `json:"-"`
@@ -48,6 +49,7 @@ type APIKey struct {
 	UpdatedAt           time.Time
 	User                *User
 	Group               *Group
+	FallbackGroup       *Group
 	CurrentConcurrency  int
 	ConcurrencyLimit    int // 0 = no additional limit
 

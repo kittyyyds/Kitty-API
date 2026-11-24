@@ -20,6 +20,8 @@ const (
 	AuditAuthMethodJWT         = "jwt"
 	AuditAuthMethodAdminAPIKey = "admin_api_key"
 	AuditAuthMethodPasskey     = "passkey"
+	// AuditAuthMethodMCPOAuth 标记管理 MCP 的 OAuth 访问令牌（机器凭证）。
+	AuditAuthMethodMCPOAuth = "mcp_oauth"
 
 	// auditRequestBodyMaxBytes 请求体脱敏后入库的最大长度（字节），超出截断。
 	auditRequestBodyMaxBytes = 16 * 1024
@@ -128,10 +130,6 @@ var auditBodySensitiveExactKeys = func() map[string]struct{} {
 		"code", "codes", "pin", "cvv",
 		"authorization", "cookie", "x-api-key",
 		"key",
-		// Values of arbitrary custom headers can be credentials even when the
-		// header name itself contains no sensitive keyword.
-		"header_overrides",
-		"preview_token",
 		// 字符串值内嵌完整凭证的字段：
 		// proxy_key 为 protocol|host|port|username|password 拼接，
 		// custom_key 为用户自设的平台 API Key 明文，

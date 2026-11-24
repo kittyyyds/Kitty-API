@@ -62,6 +62,9 @@ func NewEasyPay(instanceID string, config map[string]string) (*EasyPay, error) {
 	for k, v := range config {
 		cfg[k] = v
 	}
+	if code := strings.TrimSpace(cfg["refundSuccessCode"]); code != "" && code != "0" && code != "1" {
+		return nil, fmt.Errorf("easypay refundSuccessCode must be 0 or 1")
+	}
 	cfg["apiBase"] = normalizeEasyPayAPIBase(cfg["apiBase"])
 	return &EasyPay{
 		instanceID: instanceID,
@@ -633,6 +636,10 @@ func parseEasyPayAmount(value string) (float64, error) {
 }
 
 func (e *EasyPay) Refund(ctx context.Context, req payment.RefundRequest) (*payment.RefundResponse, error) {
+	successCode := easypayCodeSuccess
+	if strings.TrimSpace(e.config["refundSuccessCode"]) == "0" {
+		successCode = 0
+	}
 	attempts := e.refundAttempts(req)
 	if len(attempts) == 0 {
 		return nil, fmt.Errorf("easypay refund missing order identifier")
@@ -643,7 +650,7 @@ func (e *EasyPay) Refund(ctx context.Context, req payment.RefundRequest) (*payme
 		if err != nil {
 			return nil, fmt.Errorf("easypay refund request: %w", err)
 		}
-		if err := parseEasyPayRefundResponse(status, body); err != nil {
+		if err := parseEasyPayRefundResponse(status, body, successCode); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -700,7 +707,7 @@ func isEasyPayRefundOrderNotFound(err error) bool {
 		strings.Contains(lower, "not exist")
 }
 
-func parseEasyPayRefundResponse(status int, body []byte) error {
+func parseEasyPayRefundResponse(status int, body []byte, configuredSuccessCode ...int) error {
 	summary := summarizeEasyPayResponse(body)
 	if status < http.StatusOK || status >= http.StatusMultipleChoices {
 		return fmt.Errorf("easypay refund HTTP %d: %s", status, summary)
@@ -724,7 +731,7 @@ func parseEasyPayRefundResponse(status int, body []byte) error {
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return fmt.Errorf("easypay refund non-JSON response (HTTP %d): %s", status, summary)
 	}
-	if !easyPayResponseCodeIsSuccess(resp.Code) {
+	if !easyPayResponseCodeIsSuccess(resp.Code, configuredSuccessCode...) {
 		msg := strings.TrimSpace(resp.Msg)
 		if msg == "" {
 			msg = summary
@@ -734,13 +741,17 @@ func parseEasyPayRefundResponse(status int, body []byte) error {
 	return nil
 }
 
-func easyPayResponseCodeIsSuccess(code any) bool {
+func easyPayResponseCodeIsSuccess(code any, configuredSuccessCode ...int) bool {
+	successCode := easypayCodeSuccess
+	if len(configuredSuccessCode) > 0 {
+		successCode = configuredSuccessCode[0]
+	}
 	switch v := code.(type) {
 	case float64:
-		return int(v) == easypayCodeSuccess
+		return v == float64(successCode)
 	case string:
 		n, err := strconv.Atoi(strings.TrimSpace(v))
-		return err == nil && n == easypayCodeSuccess
+		return err == nil && n == successCode
 	default:
 		return false
 	}

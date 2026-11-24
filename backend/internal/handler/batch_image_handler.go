@@ -42,6 +42,7 @@ func (h *BatchImageHandler) Submit(c *gin.Context) {
 	if !h.checkSecurityAuditBeforeSubmit(c, &req) {
 		return
 	}
+
 	if sessionID := service.ExtractClientSessionID(c); sessionID != "" {
 		req.SessionID = &sessionID
 	}
@@ -51,44 +52,6 @@ func (h *BatchImageHandler) Submit(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, got)
-}
-
-func (h *BatchImageHandler) checkSecurityAuditBeforeSubmit(c *gin.Context, req *service.BatchImageSubmitRequest) bool {
-	if h == nil || h.openAI == nil || req == nil {
-		return true
-	}
-	apiKey, ok := middleware.GetAPIKeyFromContext(c)
-	if !ok || apiKey == nil {
-		batchImageError(c, infraerrors.New(http.StatusUnauthorized, "API_KEY_REQUIRED", "API key is required"))
-		return false
-	}
-	subject, ok := middleware.GetAuthSubjectFromContext(c)
-	if !ok {
-		batchImageError(c, infraerrors.New(http.StatusInternalServerError, "USER_CONTEXT_REQUIRED", "User context not found"))
-		return false
-	}
-	items := make([]map[string]string, 0, len(req.Items))
-	for _, item := range req.Items {
-		if prompt := strings.TrimSpace(item.Prompt); prompt != "" {
-			items = append(items, map[string]string{"prompt": prompt})
-		}
-	}
-	if len(items) == 0 {
-		return true
-	}
-	body, err := json.Marshal(map[string]any{"request": map[string]any{"items": items}})
-	if err != nil {
-		batchImageError(c, infraerrors.New(http.StatusBadRequest, "INVALID_BATCH_PROMPT", "batch prompts are invalid"))
-		return false
-	}
-	reqLog := requestLogger(c, "handler.batch_image.security_audit",
-		zap.Int64("user_id", subject.UserID), zap.Int64("api_key_id", apiKey.ID), zap.String("model", req.Model))
-	decision := h.openAI.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, req.Model, body)
-	if decision != nil && !decision.AllowNextStage {
-		h.openAI.openAISecurityAuditError(c, decision)
-		return false
-	}
-	return true
 }
 
 func (h *BatchImageHandler) Get(c *gin.Context) {
@@ -300,9 +263,11 @@ func batchImageOwnerFromContext(c *gin.Context) (service.BatchImageOwner, bool) 
 		return service.BatchImageOwner{}, false
 	}
 	return service.BatchImageOwner{
-		UserID:   apiKey.UserID,
-		APIKeyID: apiKey.ID,
-		GroupID:  apiKey.GroupID,
+		UserID:          apiKey.UserID,
+		APIKeyID:        apiKey.ID,
+		GroupID:         apiKey.GroupID,
+		FallbackGroupID: apiKey.FallbackGroupID,
+		FallbackGroup:   apiKey.FallbackGroup,
 	}, true
 }
 
@@ -325,6 +290,9 @@ func batchImageError(c *gin.Context, err error) {
 		code = "BATCH_IMAGE_NOT_FOUND"
 		message = "batch image job not found"
 	}
+	if errors.Is(err, service.ErrBatchImageProviderSubmitFailed) || errors.Is(err, service.ErrBatchImageItemFailed) {
+		message = service.UpstreamErrorClientMessage(c.Request.Context(), message)
+	}
 	c.JSON(status, gin.H{
 		"error": gin.H{
 			"type":    "invalid_request_error",
@@ -332,4 +300,42 @@ func batchImageError(c *gin.Context, err error) {
 			"message": message,
 		},
 	})
+}
+
+func (h *BatchImageHandler) checkSecurityAuditBeforeSubmit(c *gin.Context, req *service.BatchImageSubmitRequest) bool {
+	if h == nil || h.openAI == nil || req == nil {
+		return true
+	}
+	apiKey, ok := middleware.GetAPIKeyFromContext(c)
+	if !ok || apiKey == nil {
+		batchImageError(c, infraerrors.New(http.StatusUnauthorized, "API_KEY_REQUIRED", "API key is required"))
+		return false
+	}
+	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	if !ok {
+		batchImageError(c, infraerrors.New(http.StatusInternalServerError, "USER_CONTEXT_REQUIRED", "User context not found"))
+		return false
+	}
+	items := make([]map[string]string, 0, len(req.Items))
+	for _, item := range req.Items {
+		if prompt := strings.TrimSpace(item.Prompt); prompt != "" {
+			items = append(items, map[string]string{"prompt": prompt})
+		}
+	}
+	if len(items) == 0 {
+		return true
+	}
+	body, err := json.Marshal(map[string]any{"request": map[string]any{"items": items}})
+	if err != nil {
+		batchImageError(c, infraerrors.New(http.StatusBadRequest, "INVALID_BATCH_PROMPT", "batch prompts are invalid"))
+		return false
+	}
+	reqLog := requestLogger(c, "handler.batch_image.security_audit",
+		zap.Int64("user_id", subject.UserID), zap.Int64("api_key_id", apiKey.ID), zap.String("model", req.Model))
+	decision := h.openAI.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, req.Model, body)
+	if decision != nil && !decision.AllowNextStage {
+		h.openAI.openAISecurityAuditError(c, decision)
+		return false
+	}
+	return true
 }

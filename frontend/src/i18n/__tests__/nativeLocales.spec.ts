@@ -21,7 +21,6 @@ describe('native customer-console locales', () => {
 
   it('does not leave Chinese UI copy in the custom Vue panels', () => {
     const panels = [
-      '../../features/app-center/components/media/FreeMediaStudioPanel.vue',
       '../../components/customer-console/billing/BillingEstimator.vue',
       '../../views/user/native/BillingRulesPanel.vue',
       '../../views/user/native/DocumentationPanel.vue',

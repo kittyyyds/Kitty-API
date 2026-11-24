@@ -57,7 +57,7 @@ describe('native customer dashboard skin contract', () => {
   it('keeps Kitty branding and responsive grids while sharing tokens with portals', () => {
     expect(theme).toContain('--kc-bg: #f2f1ec')
     expect(theme).toContain('--kc-accent: #c45100')
-    expect(theme).toContain('--kc-panel: #202b3b')
+    expect(theme).toContain('--kc-panel: #20221f')
     expect(theme).toContain('html.kitty-console-theme')
     expect(theme).toContain('.dashboard-charts-grid')
     expect(theme).toContain('repeat(2, minmax(0, 1fr))')

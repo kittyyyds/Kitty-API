@@ -6,7 +6,7 @@
  * request/error/token counts in user-facing surfaces.
  */
 
-import type { HealthScoreBand, HealthState, MonitorHealth } from '@/api/channelMonitorV2'
+import type { HealthScoreBand, HealthState, MonitorHealth, MonitorMetric } from '@/api/channelMonitorV2'
 import { formatCompactNumber } from '@/utils/format'
 import { platformLabel } from '@/utils/platformColors'
 
@@ -81,6 +81,12 @@ export function formatMonitorTokensPerSecond(tpm: number | null | undefined): st
   return formatMonitorThroughput(tokensPerSecondFromTpm(tpm))
 }
 
+/** Measured generation speed; do not substitute aggregate throughput for unknown samples. */
+export function formatMonitorOutputTPS(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value < 0) return '—'
+  return formatMonitorThroughput(value)
+}
+
 
 export function formatMonitorPercent(value: number, locale = monitorIntlLocale()): string {
   return `${new Intl.NumberFormat(locale, {
@@ -135,8 +141,15 @@ export function formatMonitorSuccessRate(successRequests: number, requestCount: 
   return formatMonitorPercent(successRequests / requestCount)
 }
 
-export function formatMonitorSuccessRateFromError(errorRate: number): string {
+export function formatMonitorSuccessRateFromError(errorRate: number, state?: HealthState): string {
+  if (state === 'unknown') return '-'
   return formatMonitorPercent(1 - (errorRate || 0))
+}
+
+/** Unknown request health means no traffic or fewer than the configured minimum samples. */
+export function formatMonitorErrorRate(errorRate: number, state?: HealthState): string {
+  if (state === 'unknown') return '-'
+  return formatMonitorPercent(errorRate)
 }
 
 /**
@@ -246,4 +259,20 @@ export function formatLatencyKpiSecondary(
 /** Fallback when i18n key is missing; prefer `channelMonitorV2.errorCategories.*`. */
 export function monitorErrorCategoryLabel(category: string): string {
   return category
+}
+
+/** Availability survives public counter redaction; zero remains a measured miss. */
+export function monitorCacheRate(metric: Pick<MonitorMetric, 'has_cache_samples' | 'cache_rate' | 'cache_rate_denominator'>): number | null {
+  const available = metric.has_cache_samples ?? (metric.cache_rate_denominator > 0)
+  return available && Number.isFinite(metric.cache_rate) ? metric.cache_rate : null
+}
+
+export function formatMonitorCacheRate(metric: Pick<MonitorMetric, 'has_cache_samples' | 'cache_rate' | 'cache_rate_denominator'>): string {
+  const rate = monitorCacheRate(metric)
+  return rate == null ? '-' : formatMonitorPercent(rate)
+}
+
+/** Per-request output generation speed; unavailable evidence stays unknown. */
+export function formatMonitorOutputTps(value: number | null | undefined): string {
+  return value == null || !Number.isFinite(value) || value < 0 ? '—' : `${Number(value.toFixed(1))} token/s`
 }

@@ -207,9 +207,9 @@ func monitorV3Answer(prompt string) string {
 	return strconv.Itoa(a + b)
 }
 
-type monitorV3AccountRun func(context.Context, int64, string, *PelicanTestConfig) (*ScheduledTestResult, error)
+type monitorV3AccountRun func(context.Context, int64, string, *MonitorProbeConfig) (*ScheduledTestResult, error)
 
-func monitorV3ProberFixture(router *groupTestRouterFake, run monitorV3AccountRun) (*ChannelMonitorV3Prober, *monitorV3RepoFake, *PelicanGroupTestService) {
+func monitorV3ProberFixture(router *groupTestRouterFake, run monitorV3AccountRun) (*ChannelMonitorV3Prober, *monitorV3RepoFake, *MonitorGroupProbeService) {
 	repo := &monitorV3RepoFake{config: monitorV3Config()}
 	repo.config.IdleProbe = ChannelMonitorV3IdleProbe{Enabled: true, Groups: []ChannelMonitorV3IdleProbeGroup{{GroupID: 4, Model: "gpt-probe", ReasoningEffort: "low"}}}
 	repo.components = []ChannelMonitorV3Component{
@@ -232,9 +232,9 @@ func monitorV3Claims(repo *monitorV3RepoFake) []string {
 }
 
 func TestChannelMonitorV3ProberProbesQuietSlotsOnce(t *testing.T) {
-	asked := []*PelicanTestConfig{}
+	asked := []*MonitorProbeConfig{}
 	router := &groupTestRouterFake{steps: []routeStep{{account: account(77, "scheduler choice")}}}
-	p, repo, _ := monitorV3ProberFixture(router, func(_ context.Context, id int64, model string, cfg *PelicanTestConfig) (*ScheduledTestResult, error) {
+	p, repo, _ := monitorV3ProberFixture(router, func(_ context.Context, id int64, model string, cfg *MonitorProbeConfig) (*ScheduledTestResult, error) {
 		require.Equal(t, int64(77), id)
 		require.Equal(t, "gpt-probe", model)
 		asked = append(asked, cfg)
@@ -261,43 +261,43 @@ func TestChannelMonitorV3ProberProbesQuietSlotsOnce(t *testing.T) {
 }
 
 func TestChannelMonitorV3ProberGates(t *testing.T) {
-	for name, mutate := range map[string]func(*ChannelMonitorV3Prober, *monitorV3RepoFake, *PelicanGroupTestService){
-		"not the last minute": func(p *ChannelMonitorV3Prober, _ *monitorV3RepoFake, _ *PelicanGroupTestService) {
+	for name, mutate := range map[string]func(*ChannelMonitorV3Prober, *monitorV3RepoFake, *MonitorGroupProbeService){
+		"not the last minute": func(p *ChannelMonitorV3Prober, _ *monitorV3RepoFake, _ *MonitorGroupProbeService) {
 			p.now = func() time.Time { return monitorV3ProbeTick.Add(-2 * time.Minute) }
 		},
-		"enough real traffic": func(_ *ChannelMonitorV3Prober, r *monitorV3RepoFake, _ *PelicanGroupTestService) {
+		"enough real traffic": func(_ *ChannelMonitorV3Prober, r *monitorV3RepoFake, _ *MonitorGroupProbeService) {
 			r.successCounts = []ChannelMonitorV3Fact{{GroupID: 4, Model: "gpt-5.5", Success: 1}}
 		},
-		"switched off": func(_ *ChannelMonitorV3Prober, r *monitorV3RepoFake, _ *PelicanGroupTestService) {
+		"switched off": func(_ *ChannelMonitorV3Prober, r *monitorV3RepoFake, _ *MonitorGroupProbeService) {
 			r.config.IdleProbe.Enabled = false
 		},
-		"group unchecked": func(_ *ChannelMonitorV3Prober, r *monitorV3RepoFake, _ *PelicanGroupTestService) {
+		"group unchecked": func(_ *ChannelMonitorV3Prober, r *monitorV3RepoFake, _ *MonitorGroupProbeService) {
 			r.config.IdleProbe.Groups[0].GroupID = 5
 		},
-		"no model to ask": func(_ *ChannelMonitorV3Prober, r *monitorV3RepoFake, _ *PelicanGroupTestService) {
+		"no model to ask": func(_ *ChannelMonitorV3Prober, r *monitorV3RepoFake, _ *MonitorGroupProbeService) {
 			r.config.IdleProbe.Groups[0].Model = ""
 		},
-		"site shows v2": func(p *ChannelMonitorV3Prober, _ *monitorV3RepoFake, _ *PelicanGroupTestService) {
+		"site shows v2": func(p *ChannelMonitorV3Prober, _ *monitorV3RepoFake, _ *MonitorGroupProbeService) {
 			p.settings = channelMonitorV2RuntimeStub{rt: ChannelMonitorRuntime{Enabled: true, Mode: ChannelMonitorModeV2}}
 		},
-		"monitor off": func(p *ChannelMonitorV3Prober, _ *monitorV3RepoFake, _ *PelicanGroupTestService) {
+		"monitor off": func(p *ChannelMonitorV3Prober, _ *monitorV3RepoFake, _ *MonitorGroupProbeService) {
 			p.settings = channelMonitorV2RuntimeStub{rt: ChannelMonitorRuntime{Enabled: false, Mode: ChannelMonitorModeV3}}
 		},
-		"component off": func(_ *ChannelMonitorV3Prober, r *monitorV3RepoFake, _ *PelicanGroupTestService) {
+		"component off": func(_ *ChannelMonitorV3Prober, r *monitorV3RepoFake, _ *MonitorGroupProbeService) {
 			r.components[0].Enabled = false
 		},
-		"group disabled": func(_ *ChannelMonitorV3Prober, r *monitorV3RepoFake, _ *PelicanGroupTestService) {
+		"group disabled": func(_ *ChannelMonitorV3Prober, r *monitorV3RepoFake, _ *MonitorGroupProbeService) {
 			r.components[0].GroupStatus = "disabled"
 		},
-		"group deleted": func(_ *ChannelMonitorV3Prober, r *monitorV3RepoFake, _ *PelicanGroupTestService) {
+		"group deleted": func(_ *ChannelMonitorV3Prober, r *monitorV3RepoFake, _ *MonitorGroupProbeService) {
 			r.components[0].GroupDeleted = true
 		},
-		"group turned off since listing": func(_ *ChannelMonitorV3Prober, _ *monitorV3RepoFake, g *PelicanGroupTestService) {
+		"group turned off since listing": func(_ *ChannelMonitorV3Prober, _ *monitorV3RepoFake, g *MonitorGroupProbeService) {
 			g.groups = groupTestGroupsFake{4: {ID: 4, Status: "disabled"}}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			p, repo, groups := monitorV3ProberFixture(&groupTestRouterFake{steps: []routeStep{{account: account(77, "a")}}}, func(context.Context, int64, string, *PelicanTestConfig) (*ScheduledTestResult, error) {
+			p, repo, groups := monitorV3ProberFixture(&groupTestRouterFake{steps: []routeStep{{account: account(77, "a")}}}, func(context.Context, int64, string, *MonitorProbeConfig) (*ScheduledTestResult, error) {
 				t.Fatal("no probe expected")
 				return nil, nil
 			})
@@ -312,7 +312,7 @@ func TestChannelMonitorV3ProberGates(t *testing.T) {
 func TestChannelMonitorV3ProberCountsOnlyTheComponentModel(t *testing.T) {
 	probed := 0
 	p, repo, _ := monitorV3ProberFixture(&groupTestRouterFake{steps: []routeStep{{account: account(77, "a")}, {account: account(78, "b")}}},
-		func(_ context.Context, _ int64, model string, cfg *PelicanTestConfig) (*ScheduledTestResult, error) {
+		func(_ context.Context, _ int64, model string, cfg *MonitorProbeConfig) (*ScheduledTestResult, error) {
 			require.Equal(t, "gpt-a", model, "a component narrowed to a model probes that model")
 			probed++
 			return &ScheduledTestResult{Status: "success", ResponseText: monitorV3Answer(cfg.Prompt)}, nil
@@ -332,23 +332,23 @@ func TestChannelMonitorV3ProberVerdicts(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		steps    []routeStep
-		reply    func(cfg *PelicanTestConfig) *ScheduledTestResult
+		reply    func(cfg *MonitorProbeConfig) *ScheduledTestResult
 		category string
 	}{
-		{"wrong answer", []routeStep{{account: account(77, "a")}}, func(cfg *PelicanTestConfig) *ScheduledTestResult {
+		{"wrong answer", []routeStep{{account: account(77, "a")}}, func(cfg *MonitorProbeConfig) *ScheduledTestResult {
 			wrong, _ := strconv.Atoi(monitorV3Answer(cfg.Prompt))
 			return &ScheduledTestResult{Status: "success", ResponseText: strconv.Itoa(wrong + 1)}
 		}, ChannelMonitorV3ProbeWrongAnswer},
-		{"upstream 5xx", []routeStep{{account: account(77, "a")}}, func(*PelicanTestConfig) *ScheduledTestResult {
+		{"upstream 5xx", []routeStep{{account: account(77, "a")}}, func(*MonitorProbeConfig) *ScheduledTestResult {
 			return &ScheduledTestResult{Status: "failed", ResponseText: "", ErrorMessage: "API returned 503: upstream unavailable"}
 		}, "upstream_5xx"},
-		{"expired upstream login", []routeStep{{account: account(77, "a")}}, func(*PelicanTestConfig) *ScheduledTestResult {
+		{"expired upstream login", []routeStep{{account: account(77, "a")}}, func(*MonitorProbeConfig) *ScheduledTestResult {
 			return &ScheduledTestResult{Status: "failed", ErrorMessage: "API returned 401: token expired"}
 		}, "authentication"},
 		{"no account", nil, nil, "account_pool_unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p, repo, _ := monitorV3ProberFixture(&groupTestRouterFake{steps: tc.steps}, func(_ context.Context, _ int64, _ string, cfg *PelicanTestConfig) (*ScheduledTestResult, error) {
+			p, repo, _ := monitorV3ProberFixture(&groupTestRouterFake{steps: tc.steps}, func(_ context.Context, _ int64, _ string, cfg *MonitorProbeConfig) (*ScheduledTestResult, error) {
 				return tc.reply(cfg), nil
 			})
 			p.RunDue(context.Background(), monitorV3ProbeTick)
@@ -362,7 +362,7 @@ func TestChannelMonitorV3ProberVerdicts(t *testing.T) {
 
 func TestChannelMonitorV3ProberAbandonsProbesOnShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	p, repo, _ := monitorV3ProberFixture(&groupTestRouterFake{steps: []routeStep{{account: account(77, "a")}}}, func(context.Context, int64, string, *PelicanTestConfig) (*ScheduledTestResult, error) {
+	p, repo, _ := monitorV3ProberFixture(&groupTestRouterFake{steps: []routeStep{{account: account(77, "a")}}}, func(context.Context, int64, string, *MonitorProbeConfig) (*ScheduledTestResult, error) {
 		cancel()
 		return &ScheduledTestResult{Status: "failed", ErrorMessage: "context canceled"}, nil
 	})
@@ -398,11 +398,4 @@ func TestChannelMonitorV3ProbeCategories(t *testing.T) {
 	}
 	require.True(t, channelMonitorV3ProbeIgnored("not_found"))
 	require.False(t, channelMonitorV3ProbeIgnored("authentication"))
-}
-
-func TestPelicanProbeKindAsksOnlyTheChallenge(t *testing.T) {
-	cfg := &PelicanTestConfig{QuestionKind: ChannelMonitorV3ProbeQuestionKind, Prompt: "Q: 1 + 2 = ?\nA:"}
-	require.Equal(t, "Q: 1 + 2 = ?\nA:", intelligenceTestPrompt(cfg), "no HTML or integer contract is appended")
-	require.Empty(t, intelligenceTestOutputError(cfg, "3"), "the answer is not required to be HTML")
-	require.Equal(t, pelicanErrEmptyOutput, intelligenceTestOutputError(cfg, " "))
 }

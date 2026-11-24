@@ -2,7 +2,8 @@
 set -euo pipefail
 : "${RELEASE_VERSION:?}" "${RELEASE_SHA:?}" "${GITHUB_REPOSITORY:?}" "${RUNNER_TEMP:?}"
 owner=${GITHUB_REPOSITORY%%/*}
-registries=("ghcr.io/${owner,,}/sub2api")
+owner_lower=$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]')
+registries=("ghcr.io/$owner_lower/sub2api")
 if [[ ${SIMPLE_RELEASE:-false} != true && ${DOCKERHUB_USERNAME:-skip} != skip ]]; then
   registries+=("${DOCKERHUB_USERNAME}/sub2api")
 fi
@@ -16,14 +17,13 @@ for arch in "${arches[@]}"; do
   for registry in "${registries[@]}"; do
     args+=(--tag "$registry:$RELEASE_VERSION-$arch")
     if [[ ${SIMPLE_RELEASE:-false} == true ]]; then
-      args+=(--tag "$registry:$RELEASE_VERSION")
-      if [[ $RELEASE_VERSION != *-* ]]; then args+=(--tag "$registry:latest"); fi
+      args+=(--tag "$registry:$RELEASE_VERSION" --tag "$registry:latest")
     fi
   done
   if [[ ${DRY_RUN:-false} == true ]]; then
     args+=(--output "type=oci,dest=$RUNNER_TEMP/sub2api-$arch.oci.tar")
   else
-    args+=(--push)
+    args+=(--push --metadata-file "$RUNNER_TEMP/image-$arch.json")
   fi
   docker buildx build "${args[@]}" ".release-context/$arch"
 done
@@ -31,11 +31,9 @@ if [[ ${DRY_RUN:-false} != true && ${SIMPLE_RELEASE:-false} != true ]]; then
   major=${RELEASE_VERSION%%.*}
   minor=${RELEASE_VERSION#*.}; minor=${minor%%.*}
   for registry in "${registries[@]}"; do
-    tags=(--tag "$registry:$RELEASE_VERSION")
-    if [[ $RELEASE_VERSION != *-* ]]; then
-      tags+=(--tag "$registry:latest" --tag "$registry:$major.$minor" --tag "$registry:$major")
-    fi
-    docker buildx imagetools create "${tags[@]}" \
+    docker buildx imagetools create \
+      --tag "$registry:$RELEASE_VERSION" --tag "$registry:latest" \
+      --tag "$registry:$major.$minor" --tag "$registry:$major" \
       "$registry:$RELEASE_VERSION-amd64" "$registry:$RELEASE_VERSION-arm64"
   done
 fi

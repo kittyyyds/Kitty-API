@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -248,6 +249,17 @@ func (h *ConcurrencyHelper) TryAcquireUserSlot(ctx context.Context, userID int64
 	return result.ReleaseFunc, true, nil
 }
 
+func (h *ConcurrencyHelper) TryAcquireUserSlotForGroup(ctx context.Context, userID int64, userMax int, groupID int64, groupMax int) (func(), bool, error) {
+	result, err := h.concurrencyService.AcquireUserGroupSlot(ctx, userID, groupID, userMax, groupMax)
+	if err != nil {
+		return nil, false, err
+	}
+	if !result.Acquired {
+		return nil, false, nil
+	}
+	return result.ReleaseFunc, true, nil
+}
+
 // AcquireLiveUserSlot is the owned user reservation used by Live creation. The
 // returned RequestID is the exact ordinary member that the Live transfer moves
 // into the joint lease; the ReleaseFunc still owns it until that transfer.
@@ -261,26 +273,21 @@ func (h *ConcurrencyHelper) AcquireLiveUserSlot(ctx context.Context, userID int6
 	return h.concurrencyService.AcquireUserSlot(ctx, userID, maxConcurrency)
 }
 
-func (h *ConcurrencyHelper) TryAcquireUserSlotForAPIKey(ctx context.Context, userID int64, maxConcurrency int, apiKeyID int64, keyLimit int) (func(), bool, error) {
-	// Key admission (including its bounded queue wait) happens before any user
-	// slot so a waiting request does not hold user capacity.
-	keyRelease, err := h.withAPIKeySlot(ctx, apiKeyID, keyLimit, nil)
+func (h *ConcurrencyHelper) TryAcquireUserSlotForAPIKey(ctx context.Context, userID int64, maxConcurrency int, apiKeyID int64) (func(), bool, error) {
+	keyLimit, _, err := h.concurrencyService.RevalidateAPIKeyQueueTurn(ctx)
 	if err != nil {
 		return nil, false, err
 	}
-	releaseFunc, acquired, err := h.TryAcquireUserSlot(ctx, userID, maxConcurrency)
+	release, err := h.withAPIKeySlot(ctx, apiKeyID, keyLimit, nil)
 	if err != nil {
-		keyRelease()
 		return nil, false, err
 	}
-	if !acquired {
-		keyRelease()
-		return nil, false, nil
+	userRelease, acquired, err := h.TryAcquireUserSlot(ctx, userID, maxConcurrency)
+	if err != nil || !acquired {
+		release()
+		return nil, acquired, err
 	}
-	return wrapReleaseOnDone(ctx, sync.OnceFunc(func() {
-		releaseFunc()
-		keyRelease()
-	})), true, nil
+	return sync.OnceFunc(func() { userRelease(); release() }), true, nil
 }
 
 // WS acquisition still observes cancellation. Once acquired, tracking belongs
@@ -306,6 +313,16 @@ func (h *ConcurrencyHelper) TryAcquireWSUserSlotForAPIKey(ctx context.Context, u
 	}), true, nil
 }
 
+func (h *ConcurrencyHelper) TryAcquireUserSlotForAPIKeyWithGroup(ctx context.Context, userID int64, userMax int, apiKeyID, groupID int64, groupMax int) (func(), bool, error) {
+	keyLimit, _, err := h.concurrencyService.RevalidateAPIKeyQueueTurn(ctx)
+	if err != nil { return nil, false, err }
+	keyRelease, err := h.withAPIKeySlot(ctx, apiKeyID, keyLimit, nil)
+	if err != nil { return nil, false, err }
+	userRelease, acquired, err := h.TryAcquireUserSlotForGroup(ctx, userID, userMax, groupID, groupMax)
+	if err != nil || !acquired { keyRelease(); return nil, acquired, err }
+	return sync.OnceFunc(func() { if userRelease != nil { userRelease() }; keyRelease() }), true, nil
+}
+
 // AcquireOpenAIWSIngressLease bounds the whole client WebSocket lifecycle,
 // independently from per-turn user and account slots.
 func (h *ConcurrencyHelper) AcquireOpenAIWSIngressLease(ctx context.Context, apiKeyID int64, maxConnections int) (*service.OpenAIWSIngressLease, bool, error) {
@@ -317,8 +334,8 @@ func (h *ConcurrencyHelper) AcquireOpenAIWSIngressLease(ctx context.Context, api
 
 // TryAcquireAccountSlot 尝试立即获取账号并发槽位。
 // 返回值: (releaseFunc, acquired, error)
-func (h *ConcurrencyHelper) TryAcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (func(), bool, error) {
-	result, err := h.concurrencyService.AcquireAccountSlot(ctx, accountID, maxConcurrency)
+func (h *ConcurrencyHelper) TryAcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, accounts ...**service.Account) (func(), bool, error) {
+	result, err := h.acquireAccountRoute(ctx, accountID, maxConcurrency, accounts...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -331,11 +348,36 @@ func (h *ConcurrencyHelper) TryAcquireAccountSlot(ctx context.Context, accountID
 // AcquireUserSlotWithWait acquires a user concurrency slot, waiting if necessary.
 // For streaming requests, sends ping events during the wait.
 // streamStarted is updated if streaming response has begun.
-func (h *ConcurrencyHelper) AcquireUserSlotWithWait(c *gin.Context, userID int64, maxConcurrency int, apiKeyID int64, keyLimit int, isStream bool, streamStarted *bool) (func(), error) {
-	return h.acquireUserSlotWithWaitTimeout(c, userID, maxConcurrency, apiKeyID, keyLimit, maxConcurrencyWait, isStream, streamStarted)
+func (h *ConcurrencyHelper) AcquireUserSlotWithWait(c *gin.Context, userID int64, maxConcurrency int, isStream bool, streamStarted *bool) (func(), error) {
+	groupID, groupMax := groupConcurrencyFromContext(c)
+	return h.acquireUserSlotWithWaitTimeoutForGroup(c, userID, maxConcurrency, groupID, groupMax, maxConcurrencyWait, isStream, streamStarted)
 }
 
-func (h *ConcurrencyHelper) acquireUserSlotWithWaitTimeout(c *gin.Context, userID int64, maxConcurrency int, apiKeyID int64, keyLimit int, timeout time.Duration, isStream bool, streamStarted *bool) (func(), error) {
+func (h *ConcurrencyHelper) acquireUserSlotWithWaitTimeout(c *gin.Context, userID int64, maxConcurrency int, timeout time.Duration, isStream bool, streamStarted *bool) (func(), error) {
+	return h.acquireUserSlotWithWaitTimeoutForGroup(c, userID, maxConcurrency, 0, 0, timeout, isStream, streamStarted)
+}
+
+func groupConcurrencyFromContext(c *gin.Context) (int64, int) {
+	if c == nil {
+		return 0, 0
+	}
+	// API-key middleware stores the complete group snapshot in the gin
+	// context. JWT-authenticated users have no API-key group and keep the old
+	// user-only behavior.
+	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
+	if !ok || apiKey == nil || apiKey.Group == nil || apiKey.Group.ID <= 0 || apiKey.Group.UserConcurrencyLimit <= 0 {
+		return 0, 0
+	}
+	return apiKey.Group.ID, apiKey.Group.UserConcurrencyLimit
+}
+
+func (h *ConcurrencyHelper) acquireUserSlotWithWaitTimeoutForGroup(c *gin.Context, userID int64, maxConcurrency int, groupID int64, groupMax int, timeout time.Duration, isStream bool, streamStarted *bool) (func(), error) {
+	var apiKeyID int64
+	var keyLimit int
+	if key, ok := middleware2.GetAPIKeyFromContext(c); ok && key != nil {
+		apiKeyID, keyLimit = key.ID, key.ConcurrencyLimit
+	}
+
 	ctx := c.Request.Context()
 	// Reserve key capacity before any user queue can emit an SSE heartbeat.
 	keyRelease, err := h.withAPIKeySlot(ctx, apiKeyID, keyLimit, nil)
@@ -359,7 +401,7 @@ func (h *ConcurrencyHelper) acquireUserSlotWithWaitTimeout(c *gin.Context, userI
 	}
 
 	// Try to acquire immediately
-	releaseFunc, acquired, err := h.TryAcquireUserSlot(ctx, userID, maxConcurrency)
+	releaseFunc, acquired, err := h.TryAcquireUserSlotForGroup(ctx, userID, maxConcurrency, groupID, groupMax)
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +410,11 @@ func (h *ConcurrencyHelper) acquireUserSlotWithWaitTimeout(c *gin.Context, userI
 		return combine(releaseFunc), nil
 	}
 
-	queueLimit := service.CalculateMaxWait(maxConcurrency) - maxConcurrency
+	waitLimit := maxConcurrency
+	if groupMax > 0 && (waitLimit <= 0 || groupMax < waitLimit) {
+		waitLimit = groupMax
+	}
+	queueLimit := service.CalculateMaxWait(waitLimit) - waitLimit
 	if queueLimit < 1 {
 		queueLimit = 1
 	}
@@ -382,7 +428,10 @@ func (h *ConcurrencyHelper) acquireUserSlotWithWaitTimeout(c *gin.Context, userI
 	defer h.DecrementWaitCount(ctx, userID)
 
 	// Need to wait - handle streaming ping if needed
-	releaseFunc, err = h.waitForSlotWithPingTimeout(c, "user", userID, maxConcurrency, timeout, isStream, streamStarted, false)
+	releaseFunc, err = h.waitForSlotWithPingTimeoutUsing(c, "user", maxConcurrency, timeout, isStream, streamStarted, false,
+		func(waitCtx context.Context) (*service.AcquireResult, error) {
+			return h.concurrencyService.AcquireUserGroupSlot(waitCtx, userID, groupID, maxConcurrency, groupMax)
+		})
 	if err != nil {
 		return nil, err
 	}
@@ -511,24 +560,60 @@ func (h *ConcurrencyHelper) waitForSlotWithPing(c *gin.Context, slotType string,
 }
 
 // waitForSlotWithPingTimeout waits for a concurrency slot with a custom timeout.
-func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType string, id int64, maxConcurrency int, timeout time.Duration, isStream bool, streamStarted *bool, tryImmediate bool) (func(), error) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
-	defer cancel()
+func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType string, id int64, maxConcurrency int, timeout time.Duration, isStream bool, streamStarted *bool, tryImmediate bool, accounts ...**service.Account) (func(), error) {
+	return h.waitForSlotWithPingTimeoutUsing(c, slotType, maxConcurrency, timeout, isStream, streamStarted, tryImmediate,
+		func(ctx context.Context) (*service.AcquireResult, error) {
+			if slotType == "user" {
+				return h.concurrencyService.AcquireUserSlot(ctx, id, maxConcurrency)
+			}
+			return h.acquireAccountRoute(ctx, id, maxConcurrency, accounts...)
+		})
+}
 
-	acquireSlot := func() (*service.AcquireResult, error) {
-		if slotType == "user" {
-			return h.concurrencyService.AcquireUserSlot(ctx, id, maxConcurrency)
+func (h *ConcurrencyHelper) waitForSlotWithPingTimeoutUsing(c *gin.Context, slotType string, maxConcurrency int, timeout time.Duration, isStream bool, streamStarted *bool, tryImmediate bool, acquireSlot func(context.Context) (*service.AcquireResult, error)) (func(), error) {
+	release, _, err := h.waitForSlotWithQueueAlternative(c, slotType, timeout, isStream, streamStarted, tryImmediate, acquireSlot, nil)
+	return release, err
+}
+
+const maxOpenAIQueueAlternativeProbes = 6
+
+func (h *ConcurrencyHelper) waitForSlotWithQueueAlternative(
+	c *gin.Context, slotType string, timeout time.Duration, isStream bool, streamStarted *bool, tryImmediate bool,
+	acquireSlot func(context.Context) (*service.AcquireResult, error),
+	tryAlternative func(context.Context) *service.AccountSelectionResult,
+) (func(), *service.AccountSelectionResult, error) {
+	parent := c.Request.Context()
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	canWait := func() bool { return ctx.Err() == nil && time.Now().Before(deadline) }
+	waitError := func() error {
+		if err := parent.Err(); err != nil {
+			return err
 		}
-		return h.concurrencyService.AcquireAccountSlot(ctx, id, maxConcurrency)
+		return &ConcurrencyError{SlotType: slotType, IsTimeout: true}
+	}
+	tryAcquire := func() (*service.AcquireResult, error) {
+		if tryAlternative != nil && !canWait() {
+			return nil, waitError()
+		}
+		result, err := acquireSlot(ctx)
+		if tryAlternative != nil && !canWait() {
+			if result != nil && result.ReleaseFunc != nil {
+				result.ReleaseFunc()
+			}
+			return nil, waitError()
+		}
+		return result, err
 	}
 
 	if tryImmediate {
-		result, err := acquireSlot()
+		result, err := tryAcquire()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if result.Acquired {
-			return result.ReleaseFunc, nil
+			return result.ReleaseFunc, nil, nil
 		}
 	}
 
@@ -540,7 +625,7 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 		var ok bool
 		flusher, ok = c.Writer.(http.Flusher)
 		if !ok {
-			return nil, fmt.Errorf("streaming not supported")
+			return nil, nil, fmt.Errorf("streaming not supported")
 		}
 	}
 
@@ -556,15 +641,43 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 	timer := time.NewTimer(backoff)
 	defer timer.Stop()
 
+	var probeTimer *time.Timer
+	var probeCh <-chan time.Time
+	var probeInterval time.Duration
+	probes := 0
+	if tryAlternative != nil {
+		step := time.Until(deadline) / maxOpenAIQueueAlternativeProbes
+		probeInterval = max(time.Second, step)
+		probeTimer = time.NewTimer(min(time.Second, step))
+		defer probeTimer.Stop()
+		probeCh = probeTimer.C
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
-			if parentErr := c.Request.Context().Err(); parentErr != nil {
-				return nil, parentErr
+			return nil, nil, waitError()
+
+		case <-probeCh:
+			if !canWait() {
+				return nil, nil, waitError()
 			}
-			return nil, &ConcurrencyError{
-				SlotType:  slotType,
-				IsTimeout: true,
+			probeCtx, stopProbe := context.WithTimeout(ctx, time.Second)
+			alternative := tryAlternative(probeCtx)
+			probeDeadline, _ := probeCtx.Deadline()
+			inTime := probeCtx.Err() == nil && time.Now().Before(probeDeadline)
+			stopProbe()
+			if alternative != nil {
+				if inTime && alternative.Acquired && alternative.Account != nil && alternative.ReleaseFunc != nil {
+					return alternative.ReleaseFunc, alternative, nil
+				}
+				if alternative.ReleaseFunc != nil {
+					alternative.ReleaseFunc()
+				}
+			}
+			probes++
+			if probes < maxOpenAIQueueAlternativeProbes {
+				probeTimer.Reset(probeInterval)
 			}
 
 		case <-pingCh:
@@ -578,20 +691,20 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 			}
 			written, err := fmt.Fprint(c.Writer, string(h.pingFormat))
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			recordGatewayStreamHeartbeat(c, written)
 			flusher.Flush()
 
 		case <-timer.C:
 			// Try to acquire slot
-			result, err := acquireSlot()
+			result, err := tryAcquire()
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 
 			if result.Acquired {
-				return result.ReleaseFunc, nil
+				return result.ReleaseFunc, nil, nil
 			}
 			backoff = nextBackoff(backoff)
 			timer.Reset(backoff)
@@ -600,8 +713,8 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 }
 
 // AcquireAccountSlotWithWaitTimeout acquires an account slot with a custom timeout (keeps SSE ping).
-func (h *ConcurrencyHelper) AcquireAccountSlotWithWaitTimeout(c *gin.Context, accountID int64, maxConcurrency int, timeout time.Duration, isStream bool, streamStarted *bool) (func(), error) {
-	return h.waitForSlotWithPingTimeout(c, "account", accountID, maxConcurrency, timeout, isStream, streamStarted, true)
+func (h *ConcurrencyHelper) AcquireAccountSlotWithWaitTimeout(c *gin.Context, accountID int64, maxConcurrency int, timeout time.Duration, isStream bool, streamStarted *bool, accounts ...**service.Account) (func(), error) {
+	return h.waitForSlotWithPingTimeout(c, "account", accountID, maxConcurrency, timeout, isStream, streamStarted, true, accounts...)
 }
 
 // nextBackoff 计算下一次退避时间
@@ -625,4 +738,11 @@ func nextBackoff(current time.Duration) time.Duration {
 		return maxBackoff
 	}
 	return jittered
+}
+
+func (h *ConcurrencyHelper) acquireAccountRoute(ctx context.Context, id int64, limit int, accounts ...**service.Account) (*service.AcquireResult, error) {
+	if len(accounts) > 0 {
+		return h.concurrencyService.AcquireAccountRoute(ctx, accounts[0], limit)
+	}
+	return h.concurrencyService.AcquireAccountSlot(ctx, id, limit)
 }

@@ -108,13 +108,14 @@ func TestOpenAIHandleErrorResponse_ContextWindow502KeepsMessageWithoutFailover(t
 	require.Error(t, err)
 	var failoverErr *UpstreamFailoverError
 	require.False(t, errors.As(err, &failoverErr))
-	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
 	errField, ok := payload["error"].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, "upstream_error", errField["type"])
+	assert.Equal(t, "invalid_request_error", errField["type"])
+	assert.Equal(t, "context_length_exceeded", errField["code"])
 	assert.Equal(t, "Your input exceeds the context window of this model. Please adjust your input and try again.", errField["message"])
 }
 
@@ -331,6 +332,33 @@ func TestHandleErrorResponse_PassthroughRuleSetsCommitted(t *testing.T) {
 	errField, ok := payload["error"].(map[string]any)
 	require.True(t, ok, "payload[\"error\"] should be map[string]any")
 	assert.Equal(t, "参数错误", errField["message"])
+}
+
+func TestHandleRetryExhaustedError_BillingReturnsUncommittedFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	upstreamBody := []byte(`{"error":{"code":"insufficient_balance","message":"Provider balance is exhausted"}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(bytes.NewReader(upstreamBody)),
+		Header:     http.Header{"X-Request-Id": []string{"req_billing"}},
+	}
+	account := &Account{ID: 201, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}
+
+	_, err := (&GatewayService{}).handleRetryExhaustedError(context.Background(), resp, c, account)
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	assert.True(t, failoverErr.IsUpstreamBillingExhausted())
+	assert.True(t, failoverErr.ShouldRetryNextAccount())
+	assert.Equal(t, http.StatusBadGateway, failoverErr.ClientStatusCode)
+	assert.Equal(t, UpstreamBillingExhaustedClientMessage, failoverErr.ClientMessage)
+	assert.Equal(t, upstreamBody, failoverErr.ResponseBody)
+	assert.False(t, IsResponseCommitted(c), "billing failover must remain eligible for another account")
+	assert.Empty(t, rec.Body.String(), "the upstream balance message must not be written before failover is exhausted")
 }
 
 func TestOpenAIHandleErrorResponse_SetsResponseCommitted(t *testing.T) {

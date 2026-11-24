@@ -57,7 +57,9 @@ apiClient.interceptors.request.use(
       if (!config.params) {
         config.params = {}
       }
-      config.params.timezone = getUserTimezone()
+      if (config.params.timezone == null || config.params.timezone === '') {
+        config.params.timezone = getUserTimezone()
+      }
     }
 
     if (config.headers) {
@@ -78,6 +80,13 @@ apiClient.interceptors.request.use(
 )
 
 // ==================== Response Interceptor ====================
+
+// Retry-After 只接受整数秒；跨域部署未暴露该头或为 HTTP-date 形式时返回 undefined。
+const parseRetryAfterSeconds = (headers: unknown): number | undefined => {
+  const raw = (headers as Record<string, unknown> | undefined)?.['retry-after']
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw.trim())) return undefined
+  return Number(raw.trim())
+}
 
 apiClient.interceptors.response.use(
   (response: AxiosResponse) => {
@@ -242,6 +251,21 @@ apiClient.interceptors.response.use(
               ? authHeader.length > 0
               : !!authHeader
 
+        // Signed-out flows answer 401 for their own reasons: a wrong password while binding an
+        // OAuth account, an expired pending sign-up, or a model catalog that requires login.
+        // The visitor has no session to lose, so the page shows the error instead of jumping to /login.
+        const isSignedOutFlow = url.includes('/auth/oauth/') || url.includes('/model-plaza')
+        if (isSignedOutFlow && !hasToken && !sentAuth) {
+          return Promise.reject({
+            status,
+            code: apiData.code,
+            reason: apiData.reason,
+            error: apiData.error,
+            message: localizeClientErrorMessage(apiData.message || apiData.detail || error.message, { code: apiData.code, status }),
+            metadata: apiData.metadata,
+          })
+        }
+
         localStorage.removeItem('auth_token')
         localStorage.removeItem('refresh_token')
         localStorage.removeItem('auth_user')
@@ -263,6 +287,7 @@ apiClient.interceptors.response.use(
         error: apiData.error,
         message: localizeClientErrorMessage(apiData.message || apiData.detail || error.message, { code: apiData.code, status }),
         metadata: apiData.metadata,
+        retry_after_seconds: parseRetryAfterSeconds(error.response.headers),
       })
     }
 

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/authguard"
-	"github.com/Wei-Shaw/sub2api/internal/serverless"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -30,7 +29,7 @@ type Store interface {
 type Manager struct {
 	store             Store
 	redis             *redis.Client
-	geo               serverless.CountryResolver
+	geo               CountryResolver
 	emergencyDisabled bool
 	saveMu            sync.Mutex
 	mu                sync.Mutex
@@ -46,7 +45,7 @@ type Manager struct {
 	done              chan struct{}
 }
 
-func New(store Store, client *redis.Client, geo serverless.CountryResolver, emergencyDisabled bool) *Manager {
+func New(store Store, client *redis.Client, geo CountryResolver, emergencyDisabled bool) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{ctx: ctx, cancel: cancel, done: make(chan struct{}), store: store, redis: client, geo: geo, emergencyDisabled: emergencyDisabled,
 		cached: compile(DefaultConfig())}

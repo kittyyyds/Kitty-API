@@ -9,6 +9,7 @@ export default {
  bind: '关联账号', unbind: '解除关联', selectAccounts: '选择主站账号', search: '搜索名称或 ID', reassign: '将所选账号从原钱包转入此钱包',
  purchase: '新增采购记录', kind: '记录类型', topup: '充值采购', refund: '采购退款', opening: '期初采购', cash: '实际支付金额', cashCurrency: '支付币种', fxRate: '1 支付币种折合采购成本币种',
  credits: '到账基础额度', bonus: '赠送额度', occurredAt: '发生时间', reference: '订单号或账单依据', note: '记录说明', creditCost: '累计采购加权参考单价', void: '作废', voided: '已作废',
+ cacheWrite12hPrice: '12h 缓存写入 / 百万 Token', cacheWrite12hFallback: '留空沿用普通缓存写入价格',
  addRule: '新增成本规则', model: '上游模型', method: '计价方式', multiplier: '成本倍率', inputPrice: '输入 / 百万 Token', outputPrice: '输出 / 百万 Token', cacheReadPrice: '缓存读取 / 百万 Token', cacheWritePrice: '缓存写入 / 百万 Token', unitPrice: '单价', fxToUsd: '1 成本币种折合 USD',
  methods: { standard_multiplier: '请求标准计价 × 成本倍率', account_credits: '账号统计额度 × 采购参考单价', tokens: 'Token 成本价卡', image: '按张', video_second: '按秒', video_item: '按条视频', request: '按次' },
  started: '生效时间', stopRule: '停止使用', allModels: '所有模型 (*)', sync: '同步余额', synced: '余额已更新', saved: '已保存', failed: '操作失败，请刷新后核对配置或连接状态',

@@ -60,6 +60,7 @@ export interface GrokSSOToOAuthRequest {
   name?: string
   notes?: string | null
   proxy_id?: number | null
+  proxy_ids?: number[]
   group_ids?: number[]
   credentials?: Record<string, unknown>
   extra?: Record<string, unknown>
@@ -67,6 +68,7 @@ export interface GrokSSOToOAuthRequest {
   load_factor?: number
   priority?: number
   rate_multiplier?: number
+  group_rate_multiplier?: number
   expires_at?: number | null
   auto_pause_on_expired?: boolean
 }

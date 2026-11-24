@@ -97,7 +97,8 @@ func TestRecordCyberPolicyEvent_WritesLogWhenEnabled(t *testing.T) {
 	repo := &contentModerationTestRepo{}
 	svc := NewContentModerationService(
 		&contentModerationTestSettingRepo{values: map[string]string{
-			SettingKeyRiskControlEnabled: "true",
+			SettingKeyRiskControlEnabled:      "true",
+			SettingKeyContentModerationConfig: `{"all_groups":true,"cyber_policy_exclude_from_ban_count":false,"auto_ban_enabled":true}`,
 		}},
 		repo,
 		nil,
@@ -191,7 +192,7 @@ func TestRecordCyberPolicyEvent_RespectsContentModerationScope(t *testing.T) {
 		},
 		{
 			name:       "included group and model",
-			config:     `{"enabled":false,"mode":"off","sample_rate":0,"all_groups":false,"group_ids":[7],"model_filter":{"type":"include","models":["gpt-5"]},"ban_threshold":1}`,
+			config:     `{"enabled":false,"mode":"off","sample_rate":0,"all_groups":false,"group_ids":[7],"model_filter":{"type":"include","models":["gpt-5"]},"cyber_policy_exclude_from_ban_count":false,"auto_ban_enabled":true,"ban_threshold":1}`,
 			groupID:    &groupID,
 			model:      "gpt-5",
 			wantCalls:  []bool{false},
@@ -310,7 +311,8 @@ func TestRecordCyberPolicyEvent_CreateLogBeforeEmail(t *testing.T) {
 	repo := &cyberOrderingTestRepo{}
 	svc := NewContentModerationService(
 		&contentModerationTestSettingRepo{values: map[string]string{
-			SettingKeyRiskControlEnabled: "true",
+			SettingKeyRiskControlEnabled:      "true",
+			SettingKeyContentModerationConfig: `{"all_groups":true}`,
 		}},
 		repo,
 		nil,
@@ -421,7 +423,7 @@ func TestRecordCyberPolicyEvent_ExcludeFromBanCount_SkipsBanJudgment(t *testing.
 	svc := NewContentModerationService(
 		&contentModerationTestSettingRepo{values: map[string]string{
 			SettingKeyRiskControlEnabled:      "true",
-			SettingKeyContentModerationConfig: `{"cyber_policy_exclude_from_ban_count":true}`,
+			SettingKeyContentModerationConfig: `{"all_groups":true,"cyber_policy_exclude_from_ban_count":true}`,
 		}},
 		repo, nil, nil, nil, nil, nil, nil,
 	)
@@ -444,11 +446,14 @@ func TestRecordCyberPolicyEvent_ExcludeFromBanCount_SkipsBanJudgment(t *testing.
 	require.False(t, logs[0].AutoBanned)
 }
 
-func TestRecordCyberPolicyEvent_DefaultCountsTowardBan(t *testing.T) {
+// Kitty ships with cyber_policy refusals excluded from ban counting; this test pins
+// the counting path for an administrator who opts back in.
+func TestRecordCyberPolicyEvent_OptInCountsTowardBan(t *testing.T) {
 	repo := &banCountArgsTestRepo{}
 	svc := NewContentModerationService(
 		&contentModerationTestSettingRepo{values: map[string]string{
-			SettingKeyRiskControlEnabled: "true",
+			SettingKeyRiskControlEnabled:      "true",
+			SettingKeyContentModerationConfig: `{"all_groups":true,"cyber_policy_exclude_from_ban_count":false,"auto_ban_enabled":true}`,
 		}},
 		repo, nil, nil, nil, nil, nil, nil,
 	)
@@ -467,11 +472,4 @@ func TestRecordCyberPolicyEvent_DefaultCountsTowardBan(t *testing.T) {
 	logs := repo.snapshotLogs()
 	require.Len(t, logs, 1)
 	require.GreaterOrEqual(t, logs[0].ViolationCount, 1, "默认路径行为不变（现状回归）")
-}
-
-func (r *cyberOrderingTestRepo) UpdateLogOverturned(ctx context.Context, id int64) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.calls = append(r.calls, "update_overturned")
-	return nil
 }

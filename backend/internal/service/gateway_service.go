@@ -79,7 +79,7 @@ const (
 )
 
 // ForceCacheBillingContextKey 强制缓存计费上下文键
-// 用于粘性会话切换时，将 input_tokens 转为 cache_read_input_tokens 计费
+// 用于 OAuth / Setup Token 账号粘性切换补偿；不适用于按量上游的用量或响应。
 type forceCacheBillingKeyType struct{}
 
 // accountWithLoad 账号与负载信息的组合，用于负载感知调度
@@ -447,12 +447,7 @@ var allowedHeaders = map[string]bool{
 	"content-type":                              true,
 	"accept-encoding":                           true,
 	"x-claude-code-session-id":                  true,
-	// Claude Code 2.1.139+ 在子 agent 请求上带这两个头（主线程不带）。按会话串行的
-	// 上游（如另一个 Claude Code 中转）靠它们把子 agent 拆成独立会话并行执行；
-	// 丢掉后所有子 agent 都会排在主会话后面。
-	"x-claude-code-agent-id":        true,
-	"x-claude-code-parent-agent-id": true,
-	"x-client-request-id":           true,
+	"x-client-request-id":                       true,
 }
 
 // ErrStickySessionNotFound is returned by GatewayCache.GetSessionAccountID
@@ -463,6 +458,19 @@ var ErrStickySessionNotFound = errors.New("sticky session not found")
 // ErrReasoningContentNotFound is returned by GatewayCache.GetReasoningContent
 // when no cached reasoning content exists for the reasoning item ID.
 var ErrReasoningContentNotFound = errors.New("reasoning content not found")
+
+// SessionAccountBindingSwap advances affinity only while the binding observed
+// by the selection is still current. A missing/expired binding can be rebuilt.
+type SessionAccountBindingSwap struct {
+	SessionHash       string
+	LegacySessionHash string
+	ExpectedAccountID int64
+	AccountID         int64
+	TTL               time.Duration
+	LegacyTTL         time.Duration
+	ReadLegacy        bool
+	WriteLegacy       bool
+}
 
 // GatewayCache 定义网关服务的缓存操作接口。
 // 提供粘性会话（Sticky Session）的存储、查询、刷新和删除功能。
@@ -555,26 +563,6 @@ func prefetchedStickyAccountIDFromContext(ctx context.Context, groupID *int64) i
 	return 0
 }
 
-// shouldClearStickySession 检查账号是否处于不可调度状态，需要清理粘性会话绑定。
-// 委托 IsSchedulable() 判断账号级可调度性（状态、配额、过载、限流等），
-// 额外检查模型级限流。
-//
-// shouldClearStickySession checks if an account is in an unschedulable state
-// and the sticky session binding should be cleared.
-// Delegates to IsSchedulable() for account-level checks, plus model-level rate limiting.
-func shouldClearStickySession(account *Account, requestedModel string) bool {
-	if account == nil {
-		return false
-	}
-	if !account.IsSchedulable() {
-		return true
-	}
-	if remaining := account.GetRateLimitRemainingTimeWithContext(context.Background(), requestedModel); remaining > 0 {
-		return true
-	}
-	return false
-}
-
 type AccountWaitPlan struct {
 	AccountID      int64
 	MaxConcurrency int
@@ -586,17 +574,27 @@ type AccountSelectionResult struct {
 	Account     *Account
 	Acquired    bool
 	ReleaseFunc func()
-	// AccountRequestID is the exact Redis member acquired for Acquired results.
-	// Live transfer moves it into the Live lease instead of double counting.
-	AccountRequestID string
-	WaitPlan         *AccountWaitPlan // nil means no wait allowed
+	WaitPlan    *AccountWaitPlan // nil means no wait allowed
+	// TryAcquireQueueAlternative returns an admitted account from the same pool,
+	// without publishing a session binding or joining a second queue.
+	TryAcquireQueueAlternative func(context.Context) *AccountSelectionResult
+	// PreserveStickyBinding retains explicit task ownership and custom quality
+	// or budget holds; ordinary capacity escapes migrate after slot admission.
+	PreserveStickyBinding bool
+	// RoutedGroupID identifies the account pool used by fallback. Only
+	// UsedAPIKeyFallback changes the billing group; UsedGroupFallback does not.
+	RoutedGroupID      int64
+	UsedAPIKeyFallback bool
+	UsedGroupFallback  bool
 	// stickySessionHit 标记账号来自会话粘性绑定命中，供非高级调度路径回填决策标签。
 	stickySessionHit bool
+	// stickyBindingSnapshot survives slot waits so an older admission cannot
+	// overwrite affinity advanced by a newer selection.
+	stickyBindingSnapshot *openAIStickyBindingSnapshot
 	// profitGate 携带本次选号真实生效的利润门（无门为 nil）。门安装在调度栈的
 	// 局部 ctx 上，handler 必须经 ContextWithSelectionProfitGate 重放后才能在
 	// 调度栈之外做抢槽后终检与准入后粘性绑定。
-	priorityRequest *OpenAIAccountScheduleRequest
-	profitGate      *openAIProfitControlGate
+	profitGate *openAIProfitControlGate
 }
 
 // ProfitGateActive 报告本次选号是否处于利润门之下。
@@ -606,13 +604,14 @@ func (r *AccountSelectionResult) ProfitGateActive() bool {
 
 // ClaudeUsage 表示Claude API返回的usage信息
 type ClaudeUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-	CacheCreation5mTokens    int // 5分钟缓存创建token（来自嵌套 cache_creation 对象）
-	CacheCreation1hTokens    int // 1小时缓存创建token（来自嵌套 cache_creation 对象）
-	ImageOutputTokens        int `json:"image_output_tokens,omitempty"`
+	CacheUsageReported       bool `json:"-"`
+	InputTokens              int  `json:"input_tokens"`
+	OutputTokens             int  `json:"output_tokens"`
+	CacheCreationInputTokens int  `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int  `json:"cache_read_input_tokens"`
+	CacheCreation5mTokens    int  // 5分钟缓存创建token（来自嵌套 cache_creation 对象）
+	CacheCreation1hTokens    int  // 1小时缓存创建token（来自嵌套 cache_creation 对象）
+	ImageOutputTokens        int  `json:"image_output_tokens,omitempty"`
 }
 
 // ForwardResult 转发结果
@@ -622,11 +621,11 @@ type AudioUsage struct {
 }
 
 type ForwardResult struct {
-	RequestID string
+	UsageAudit *UsageAudit
+	RequestID  string
 	// UpstreamHeaders 是直接上游的响应头，用于按账户配置解析上游请求标识。
 	UpstreamHeaders http.Header
 	Usage           ClaudeUsage
-	UsageAudit      *UsageAudit
 	Model           string
 	// UpstreamModel is the actual upstream model after mapping.
 	// Prefer empty when it is identical to Model; persistence normalizes equal values away as no-op mappings.
@@ -645,10 +644,9 @@ type ForwardResult struct {
 	ReasoningEffort             *string
 	// RequestedReasoningEffort is the client-requested effort before mapping.
 	RequestedReasoningEffort *string
-	// ServiceTier records the tier requested by the client. OpenAI uses
-	// service_tier; Anthropic speed=fast is normalized to "fast". Usage recording
-	// lowers it to UpstreamResponseServiceTier when the upstream reports a
-	// cheaper tier (see ResolveBillingServiceTier).
+	// ServiceTier records the final outbound request tier used for billing.
+	// OpenAI uses service_tier; Anthropic speed=fast is normalized to "fast".
+	// UpstreamResponseServiceTier is diagnostic and never changes this tier.
 	ServiceTier *string
 
 	// 图片生成计费字段（图片生成模型使用）
@@ -705,6 +703,8 @@ type GatewayFailureReason string
 // trigger account failover. Additive metadata keeps existing composite literals
 // source-compatible and preserves their legacy retry-next-account behavior.
 type UpstreamFailoverError struct {
+	strictFailoverReason     string // Explicit typed upstream event; never inferred from a synthetic status.
+	ObservedUpstreamStatus   int    // Actual upstream HTTP status; zero for locally synthesized failures.
 	StatusCode               int
 	ResponseBody             []byte        // 上游响应体，用于错误透传规则匹配
 	ResponseHeaders          http.Header   // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
@@ -714,12 +714,10 @@ type UpstreamFailoverError struct {
 	SameAccountRetryDeadline time.Time     // 同账号重试截止时间；零值表示仅受 retryLimit 限制
 	SameAccountRetryMax      int           // 可选的错误级同账号重试上限，低于 handler 默认预算时优先采用
 	RequestScopedTransient   bool          // 故障因素与账号无关（如上游按客户端身份/模型容量降载）：可同账号重试，但不得据此对账号做临时封禁
+	ConfiguredRetryUnsafe    bool          // 已有上游用量时，不追加管理员配置的重试；官方故障转移决策保持独立
+	ConfiguredRetry          bool          // 管理员规则命中的流式错误，后续 WS turn 必须携带当前请求重放数据
 	SafeToFailoverAfterWrite bool          // 仅写出 SSE 注释等非语义字节时，仍可在同一客户端流中切换账号
-	// HeaderTimeoutSubmitted marks a failover caused by an OpenAI response-header
-	// timeout after the request was written. The upstream may have billed the
-	// attempt; Kitty absorbs that unknown cost instead of surcharging customers.
-	HeaderTimeoutSubmitted   bool
-	BoundUpstreamPassthrough bool // 绑定显式缓存的请求在上游网关账号上收到的 429 / 5xx：反映持有缓存的上游账号状态，原样回写不走错误映射
+	BoundUpstreamPassthrough bool          // 绑定显式缓存的请求在上游网关账号上收到的 429 / 5xx：反映持有缓存的上游账号状态，原样回写不走错误映射
 	Stage                    GatewayFailureStage
 	Scope                    GatewayFailureScope
 	Reason                   GatewayFailureReason
@@ -747,7 +745,7 @@ func (e *UpstreamFailoverError) IsCredentialFailure() bool {
 // credential failures from being misattributed to the selected account. Legacy
 // and inference failures retain their existing scheduler-health behavior.
 func (e *UpstreamFailoverError) ShouldReportAccountScheduleFailure() bool {
-	if e == nil || e.Reason == GrokUnknownForbiddenReason {
+	if e == nil {
 		return false
 	}
 	return !e.IsCredentialFailure() || e.Scope == GatewayFailureScopeAccount
@@ -1377,9 +1375,7 @@ func (s *GatewayService) DoGrokNativeResponsesJSON(ctx context.Context, account 
 		proxyURL = account.Proxy.URL()
 	}
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-	s.rateLimitService.observeQualityResponse(upstreamReq.Context(), account, resp, err)
 	if err != nil {
-
 		return nil, &UpstreamFailoverError{StatusCode: http.StatusBadGateway, Reason: GatewayFailureReason("grok_search_transport")}
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -1396,7 +1392,8 @@ func (s *GatewayService) DoGrokNativeResponsesJSON(ctx context.Context, account 
 			msg = msg[:200]
 		}
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusPaymentRequired || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBytes}
+			return nil, &UpstreamFailoverError{ObservedUpstreamStatus: resp.StatusCode,
+				StatusCode: resp.StatusCode, ResponseBody: respBytes}
 		}
 		return nil, fmt.Errorf("grok upstream %d: %s", resp.StatusCode, msg)
 	}
@@ -1459,41 +1456,41 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 	hasAnyMapping := false
 
 	for _, acc := range accounts {
+		if acc.IsOpenAIPassthroughModelFilterEnabled() && len(acc.GetModelMapping()) != 0 {
+			// A restrictive wildcard is a rule, never a callable model ID. An
+			// empty result remains authoritative rather than enabling defaults.
+			hasAnyMapping = true
+			for model := range acc.GetModelMapping() {
+				if !strings.Contains(model, "*") && acc.IsModelAllowedInGroup(groupID, model) {
+					modelSet[model] = struct{}{}
+				}
+			}
+			for _, model := range openai.DefaultModelIDs() {
+				if acc.IsModelSupported(model) && acc.IsModelAllowedInGroup(groupID, model) {
+					modelSet[model] = struct{}{}
+				}
+			}
+			continue
+		}
 		// Passthrough routing accepts models independently of model_mapping, so a
 		// stale mapping on a passthrough account must not narrow the public list.
 		// Treat it like an unmapped account: skip its mapping here and let
 		// supplementUnmappedOpenAIModels contribute the default set. Mappings on
 		// the ordinary accounts in the same group still count.
-		mapping := acc.GetModelMapping()
-		if platform == PlatformOpenAI && acc.IsOpenAIPassthroughEnabled() {
-			mapping = nil
+		if platform == PlatformOpenAI && acc.IsOpenAIPassthroughEnabled() && !acc.IsOpenAIPassthroughModelFilterEnabled() {
+			continue
 		}
+
+		mapping := acc.GetModelMapping()
 		for model := range mapping {
-			if acc.Platform == PlatformGrok && xai.IsMediaCompatibilityAlias(model) {
-				continue
-			}
 			// Accounts pulled in through mixed scheduling only contribute the
 			// models that belong to the listing platform (e.g. an antigravity
 			// account's claude-* mappings must not surface on a gemini group).
 			if platform != "" && acc.Platform != platform && !mixedListingModelAllowed(platform, model) {
 				continue
 			}
-			// 账号在本分组里被限制了可用模型时，只公布允许的那部分。
-			if !acc.IsModelAllowedInGroup(groupID, model) {
-				continue
-			}
 			modelSet[model] = struct{}{}
 			hasAnyMapping = true
-		}
-		// 没有映射的账号默认支持全部模型；在本分组被限制时改为公布限制清单里的具体模型名。
-		if len(mapping) == 0 {
-			for _, model := range groupAllowedConcreteModels(&acc, groupID) {
-				if platform != "" && acc.Platform != platform && !mixedListingModelAllowed(platform, model) {
-					continue
-				}
-				modelSet[model] = struct{}{}
-				hasAnyMapping = true
-			}
 		}
 	}
 
@@ -1592,11 +1589,18 @@ func explicitModelMappingClaims(account Account, model string) bool {
 }
 
 // GetCompositeRouteModels returns public IDs from enabled exact composite routes.
-func (s *GatewayService) GetCompositeRouteModels(ctx context.Context, groupID *int64, endpoint string) ([]string, error) {
+func (s *GatewayService) GetCompositeRouteModels(ctx context.Context, groupID *int64, endpoint string, includeSystemOne bool) ([]string, error) {
 	if s == nil || s.compositeResolver == nil || groupID == nil {
 		return nil, nil
 	}
-	return s.compositeResolver.ListExactPublicModels(ctx, *groupID, endpoint)
+	return s.compositeResolver.ListExactPublicModels(ctx, *groupID, endpoint, includeSystemOne)
+}
+
+func (s *GatewayService) FilterCompositeCodexModels(ctx context.Context, groupID int64, models []string) ([]string, error) {
+	if s == nil || s.compositeResolver == nil {
+		return models, nil
+	}
+	return s.compositeResolver.FilterCodexModels(ctx, groupID, models)
 }
 
 // GetSchedulablePlatforms returns the concrete platforms that currently have

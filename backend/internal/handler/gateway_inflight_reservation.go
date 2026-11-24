@@ -71,21 +71,32 @@ func reserveInflightBalanceCtx(
 	subscription *service.UserSubscription,
 	req service.InflightEstimateRequest,
 ) (context.Context, func(), error) {
-	if provider, ok := estimator.(interface {
-		RegionalFundsReadiness() *service.RegionalMetering
-	}); ok {
-		if funds := provider.RegionalFundsReadiness(); funds != nil {
-			return ctx, inflightNoop, funds.Check(ctx)
-		}
+	ctx = service.WithInflightReservation(ctx, nil)
+	current, done, err := reserveInflightBalanceOnce(ctx, billing, estimator, apiKey, subscription, req)
+	if err != nil {
+		return current, done, err
 	}
+	service.RegisterAPIKeyFallbackReservation(current, func(fallbackCtx context.Context, target *service.APIKey, sub *service.UserSubscription) error {
+		// No upstream work started yet: the primary reservation can be returned
+		// before pricing and reserving the target, avoiding double reservation.
+		done()
+		nextCtx, nextDone, reserveErr := reserveInflightBalanceOnce(service.WithInflightReservation(fallbackCtx, nil), billing, estimator, target, sub, req)
+		done = nextDone
+		if reserveErr != nil {
+			return reserveErr
+		}
+		service.SetAPIKeyFallbackReservation(fallbackCtx, service.InflightReservationFromContext(nextCtx))
+		return nil
+	})
+	return current, func() { done() }, nil
+}
+
+func reserveInflightBalanceOnce(ctx context.Context, billing *service.BillingCacheService, estimator inflightReservationEstimator, apiKey *service.APIKey, subscription *service.UserSubscription, req service.InflightEstimateRequest) (context.Context, func(), error) {
 	if billing == nil || estimator == nil || apiKey == nil || apiKey.User == nil || !billing.InflightReservationEnabled() {
 		return ctx, inflightNoop, nil
 	}
 	if apiKey.Group != nil && apiKey.Group.IsSubscriptionType() && subscription != nil {
 		return ctx, inflightNoop, nil
-	}
-	if req.Kind == service.InflightEstimateVideo && apiKey.Group != nil && apiKey.Group.Platform == service.PlatformVideo {
-		return ctx, inflightNoop, nil // BeginVideoTask owns the durable reservation.
 	}
 	estimate, priced := estimator.EstimateInflightReservation(ctx, apiKey, req)
 	if !priced && billing.InflightReservationFailClosedOnUnpriced() {

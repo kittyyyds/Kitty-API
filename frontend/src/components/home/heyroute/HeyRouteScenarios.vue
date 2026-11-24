@@ -24,7 +24,6 @@ const models = ['gpt-5.6', 'claude-sonnet', 'grok-4.5']
           v-for="(item, index) in copy.items"
           :key="item.kicker"
           :class="`scenario-${index + 1}`"
-          data-hr-tilt="4"
         >
           <div class="hr-scenario-topline">
             <div class="hr-scenario-icon"><ModelIcon :model="models[index]" size="54px" /></div>

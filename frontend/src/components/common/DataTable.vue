@@ -1,5 +1,5 @@
 <template>
-  <div v-if="showCards" :class="layout === 'cards' ? 'grid grid-cols-1 items-start gap-4 overflow-y-auto p-1 lg:grid-cols-2 2xl:grid-cols-3' : 'space-y-3'" data-testid="data-table-cards">
+  <div v-if="showCards" :class="layout === 'cards' ? 'grid grid-cols-1 items-start gap-4 overflow-y-auto p-1 lg:grid-cols-2 2xl:grid-cols-3' : mobileCardGrid ? 'grid min-w-0 grid-cols-1 items-start gap-3 sm:grid-cols-2' : 'space-y-3'" data-testid="data-table-cards">
     <template v-if="loading">
       <div v-for="i in 5" :key="i" class="rounded-lg border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900">
         <div class="space-y-3">
@@ -76,13 +76,14 @@
       <div
         v-for="(row, index) in sortedData"
         :key="resolveRowKey(row, index)"
-        class="rounded-lg border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900"
-        :class="{
+        class="min-w-0"
+        :class="[ $slots['mobile-card'] ? 'data-mobile-card' : 'rounded-lg border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900', {
           'cursor-pointer': clickableRows,
           'border-primary-300 bg-primary-50/40 dark:border-primary-700 dark:bg-primary-900/10': selectable && isRowSelected(row, index)
-        }"
+        }]"
         @click="clickableRows && emit('rowClick', row)"
       >
+        <slot name="mobile-card" :row="row" :index="index" :columns="columns" :render-cell="(key: string) => renderMobileCell(row, key)">
         <div class="space-y-3">
           <div v-if="selectable" class="flex justify-end">
             <input
@@ -114,6 +115,7 @@
             <slot name="cell-actions" :row="row" :value="row['actions']" :expanded="actionsExpanded"></slot>
           </div>
         </div>
+        </slot>
       </div>
     </template>
   </div>
@@ -151,14 +153,16 @@
             scope="col"
             :aria-sort="column.sortable ? getColumnAriaSort(column.key) : undefined"
             :class="[
-              'sticky-header-cell py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-dark-400',
+              'sticky-header-cell relative py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-dark-400',
               getAdaptivePaddingClass(),
               { 'cursor-pointer hover:bg-gray-100 dark:hover:bg-dark-700': column.sortable },
               getStickyColumnClass(column, index),
               column.class
             ]"
+            :style="columnWidths[column.key] ? { width: `${columnWidths[column.key]}px`, minWidth: `${columnWidths[column.key]}px` } : undefined"
             @click="column.sortable && handleSort(column.key)"
           >
+            <span v-if="resizableColumns" class="absolute inset-y-0 right-0 z-10 w-2 cursor-col-resize" @click.stop @mousedown.prevent="startColumnResize($event, column.key)" />
             <div :class="['flex items-center space-x-1', getHeaderContentAlignmentClass(column)]">
               <slot
                 :name="`header-${column.key}`"
@@ -268,6 +272,7 @@
                 getStickyColumnClass(column, colIndex),
                 column.class
               ]"
+              :style="columnWidths[column.key] ? { width: `${columnWidths[column.key]}px`, minWidth: `${columnWidths[column.key]}px` } : undefined"
             >
               <slot :name="`cell-${column.key}`"
                     :row="item.row"
@@ -291,13 +296,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch, nextTick, useSlots } from 'vue'
 import { useVirtualizer, observeElementRect as observeElementRectDefault } from '@tanstack/vue-virtual'
 import { useI18n } from 'vue-i18n'
 import type { Column } from './types'
 import Icon from '@/components/icons/Icon.vue'
 
 const { t } = useI18n()
+const slots = useSlots()
 
 const desktopViewportQuery = '(min-width: 768px)'
 const isDesktopViewport = ref(
@@ -459,6 +465,8 @@ onUnmounted(() => {
 
 interface Props {
   layout?: 'responsive' | 'cards'
+  /** Optional two-column mobile layout. Desktop table and other callers are unchanged. */
+  mobileCardGrid?: boolean
   columns: Column[]
   data: any[]
   loading?: boolean
@@ -498,12 +506,15 @@ interface Props {
   selectable?: boolean
   /** Selected row keys. Keys outside the current data page are preserved. */
   selectedKeys?: Array<string | number>
+  /** Enable desktop column resizing. */
+  resizableColumns?: boolean
   /** Accessible label for a row selection checkbox. */
   selectionLabel?: string | ((row: any) => string)
 }
 
 const props = withDefaults(defineProps<Props>(), {
   layout: 'responsive',
+  mobileCardGrid: false,
   loading: false,
   stickyFirstColumn: true,
   stickyActionsColumn: true,
@@ -512,11 +523,40 @@ const props = withDefaults(defineProps<Props>(), {
   serverSideSort: false,
   selectable: false,
   selectedKeys: () => []
+  ,resizableColumns: false
 })
 
 const sortKey = ref<string>('')
 const sortOrder = ref<'asc' | 'desc'>('asc')
 const actionsExpanded = ref(false)
+const columnWidths = ref<Record<string, number>>({})
+let resizing: { key: string; startX: number; startWidth: number } | null = null
+const startColumnResize = (event: MouseEvent, key: string) => {
+  const th = (event.currentTarget as HTMLElement).parentElement
+  if (!th) return
+  resizing = { key, startX: event.clientX, startWidth: th.getBoundingClientRect().width }
+  window.addEventListener('mousemove', onColumnResize)
+  window.addEventListener('mouseup', stopColumnResize, { once: true })
+}
+const onColumnResize = (event: MouseEvent) => {
+  if (!resizing) return
+  columnWidths.value[resizing.key] = Math.max(72, Math.round(resizing.startWidth + event.clientX - resizing.startX))
+}
+const stopColumnResize = () => {
+  resizing = null
+  window.removeEventListener('mousemove', onColumnResize)
+}
+
+// Let a dedicated mobile layout reuse the exact cells and handlers from the table.
+// Only visible columns can be rendered; a hidden field never bypasses the user's layout.
+const renderMobileCell = (row: any, key: string) => {
+  const column = props.columns.find(item => item.key === key)
+  if (!column) return null
+  const slot = slots[`cell-${key}`]
+  return slot
+    ? slot({ row, value: row[key], expanded: actionsExpanded.value })
+    : column.formatter ? column.formatter(row[key], row) : String(row[key] ?? '')
+}
 
 type PersistedSortState = {
   key: string

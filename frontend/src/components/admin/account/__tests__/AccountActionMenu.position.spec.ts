@@ -119,6 +119,31 @@ describe('AccountActionMenu viewport positioning', () => {
     expect(getTop()).toBe(296)
   })
 
+  it.each([
+    { status: 'quality_paused' },
+    { extra: { active_test_model_holds: { 'model-a': 'failed quality check' } } },
+    { extra: { active_pass_rate_holds: { 'model-a': 'low pass rate' } } },
+    { extra: { active_test_all_models_paused: true } }
+  ])('offers recovery for quality protection even without runtime errors: %j', async (state) => {
+    const wrapper = await mountMenu()
+    const protectedAccount = { ...account, rate_limit_reset_at: null, ...state } as Account
+    await wrapper.setProps({ account: protectedAccount })
+    const recover = Array.from(getMenu().querySelectorAll('button'))
+      .find(button => button.textContent?.includes('admin.accounts.recoverState'))!
+    expect(recover).toBeDefined()
+    recover.click()
+    expect(wrapper.emitted('recover-state')).toEqual([[protectedAccount]])
+  })
+
+  it('hides recovery when quality projections contain no holds', async () => {
+    const wrapper = await mountMenu()
+    await wrapper.setProps({ account: {
+      ...account, rate_limit_reset_at: null,
+      extra: { active_test_model_holds: {}, active_pass_rate_holds: { 'model-a': false, 'model-b': { blocked: false } }, active_test_all_models_paused: false }
+    } as unknown as Account })
+    expect(getMenu().textContent).not.toContain('admin.accounts.recoverState')
+  })
+
   it('repositions and updates size limits after a viewport resize', async () => {
     await mountMenu()
     setViewport(320, 240)
@@ -148,20 +173,5 @@ describe('AccountActionMenu viewport positioning', () => {
     backdrop.click()
 
     expect(wrapper.emitted('close')).toHaveLength(2)
-  })
-
-  it('keeps the original actions and opens the dedicated Pelican test', async () => {
-    const wrapper = await mountMenu(new DOMRect(500, 100, 32, 24))
-    const buttons = Array.from(getMenu().querySelectorAll('button'))
-    expect(buttons.map(button => button.textContent?.trim())).toEqual(expect.arrayContaining([
-      'admin.accounts.testConnection',
-      'admin.accounts.viewStats',
-      'admin.scheduledTests.schedule',
-      'admin.accounts.pelicanTest.menu'
-    ]))
-
-    buttons.find(button => button.textContent?.includes('admin.accounts.pelicanTest.menu'))!.click()
-    expect(wrapper.emitted('iq-test')).toEqual([[account]])
-    expect(wrapper.emitted('close')).toHaveLength(1)
   })
 })

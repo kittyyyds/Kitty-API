@@ -48,7 +48,12 @@ func TestGrowthAutomaticGrantsRebindingAndProgress(t *testing.T) {
 	text, err := s.growthTasks(ctx, c, j)
 	require.NoError(t, err)
 	require.Contains(t, text, "已自动发放")
-	require.Contains(t, text, "0/30 天")
+	require.Contains(t, text, "累计签到", "legacy scalar growth tasks stay in the growth section until explicitly migrated")
+	require.NotContains(t, text, "连签")
+	loaded, err := s.CheckinConfig(ctx)
+	require.NoError(t, err)
+	require.Empty(t, loaded.Milestones, "reading an old rule must not implicitly convert it into a milestone")
+	require.Equal(t, 4, loaded.Growth.Checkin30Chances)
 	text, err = s.growthTasks(ctx, c, j)
 	require.NoError(t, err)
 	require.Contains(t, text, "0/1 次")
@@ -88,7 +93,7 @@ func TestGrowthAutomaticGrantsRebindingAndProgress(t *testing.T) {
 	}
 	text, err = s.growthTasks(ctx, c, j)
 	require.NoError(t, err)
-	require.Contains(t, text, "4 次")
+	require.Contains(t, text, "累计签到")
 	var total int
 	require.NoError(t, db.QueryRow(`SELECT SUM(chances) FROM qq_bot_lottery_chance_grants WHERE user_id=$1`, uid).Scan(&total))
 	require.Equal(t, 9, total)

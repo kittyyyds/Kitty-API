@@ -15,7 +15,7 @@ import (
 
 // ProvideConcurrencyCache 创建并发控制缓存，从配置读取 TTL 参数
 // 性能优化：TTL 可配置，支持长时间运行的 LLM 请求场景
-func ProvideConcurrencyCache(rdb *redis.Client, cfg *config.Config, db *sql.DB) (service.ConcurrencyCache, error) {
+func ProvideConcurrencyCache(rdb *redis.Client, cfg *config.Config) service.ConcurrencyCache {
 	waitTTLSeconds := int(cfg.Gateway.Scheduling.StickySessionWaitTimeout.Seconds())
 	if cfg.Gateway.Scheduling.FallbackWaitTimeout > cfg.Gateway.Scheduling.StickySessionWaitTimeout {
 		waitTTLSeconds = int(cfg.Gateway.Scheduling.FallbackWaitTimeout.Seconds())
@@ -23,11 +23,7 @@ func ProvideConcurrencyCache(rdb *redis.Client, cfg *config.Config, db *sql.DB) 
 	if waitTTLSeconds <= 0 {
 		waitTTLSeconds = cfg.Gateway.ConcurrencySlotTTLMinutes * 60
 	}
-	base := NewConcurrencyCache(rdb, cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds)
-	if cfg.Runtime.RegionalConcurrencyFile == "" {
-		return base, nil
-	}
-	return provideRegionalConcurrencyCache(base, rdb, db, cfg)
+	return NewConcurrencyCacheWithAPIKeyTTL(rdb, cfg.Gateway.ConcurrencySlotTTLMinutes, waitTTLSeconds, cfg.Gateway.APIKeySlotTTLSeconds)
 }
 
 // ProvideGitHubReleaseClient 创建 GitHub Release 客户端
@@ -69,34 +65,31 @@ func ProvideSchedulerCache(rdb *redis.Client, cfg *config.Config) service.Schedu
 
 // ProviderSet is the Wire provider set for all repositories
 var ProviderSet = wire.NewSet(
+	NewContentModerationRepository,
+	NewContentModerationHashCache,
+	NewOpenAIIPv6Repository,
+	NewAccountPerformanceRepository,
 	NewRetainedMediaRepository,
-	ProvideRegionalMetering,
-	NewRegionalSchedulerAuthority,
-	NewRegionalAuthAuthority,
 	NewUserRepository,
+	NewMCPOAuthRepository,
 	NewAPIKeyRepository,
 	NewGroupRepository,
 	NewAdminGroupRepository,
 	NewCompositeModelRouteRepository,
 	NewAccountRepository,
-	NewAdminAccountRepository,
-	NewAccountOpsRepository,
-	NewAccountTokenGuardRepository,
 	NewOpenAIOAuthReauthRepository,
-	NewOpenAISessionExportRepository,
-	NewAccountTokenGuardV2Repository,
+	NewOpenAICredentialEncryptor,
+	NewAdminAccountRepository,
 	NewScheduledTestPlanRepository,   // 定时测试计划仓储
 	NewScheduledTestResultRepository, // 定时测试结果仓储
-	NewQualityRuleTemplateRepository, // 质量运维分组规则仓储
-	NewPelicanShowcaseRepository,     // 鹈鹕测智用户展示快照仓储
-	NewPelicanGroupTestRepository,    // 鹈鹕测智分组测试计划与结果仓储
+	NewScheduledTestDefinitionRepository,
+	NewQualityOperationsRepository,
 	NewProxyRepository,
 	NewRedeemCodeRepository,
 	NewPromoCodeRepository,
 	NewAnnouncementRepository,
 	NewAnnouncementReadRepository,
 	NewUsageLogRepository,
-	NewApplicationCenterRepository,
 	NewUsageBillingRepository,
 	NewRechargeBonusRepository,
 	NewBatchImageRepository,
@@ -105,8 +98,6 @@ var ProviderSet = wire.NewSet(
 	NewUsageCleanupRepository,
 	NewDashboardAggregationRepository,
 	NewSettingRepository,
-	NewSecurityPolicyRepository,
-	NewSecurityPolicySessionStore,
 	NewScopedAdminKeyRepository,
 	NewOpsRepository,
 	NewAuditLogRepository,
@@ -119,6 +110,7 @@ var ProviderSet = wire.NewSet(
 	NewErrorPassthroughRepository,
 	NewTLSFingerprintProfileRepository,
 	NewPluginRepository,
+	NewOpenAIVMRepository,
 	NewPluginKVStore,
 	NewChannelRepository,
 	NewChannelMonitorRepository,
@@ -126,7 +118,6 @@ var ProviderSet = wire.NewSet(
 	NewChannelMonitorV3Repository,
 	NewSupportTicketRepository,
 	NewChannelMonitorRequestTemplateRepository,
-	NewContentModerationRepository,
 	NewAffiliateRepository,
 	NewUserPlatformQuotaRepository,     // T14: user × platform quota
 	NewUserPlatformQuotaServiceAdapter, // T14: adapter → service.UserPlatformQuotaRepository
@@ -163,12 +154,10 @@ var ProviderSet = wire.NewSet(
 	NewErrorPassthroughCache,
 	NewTLSFingerprintProfileCache,
 	NewChannelCache,
-	NewContentModerationHashCache,
 
 	// Encryptors
 	NewAESEncryptor,
 	NewNewAPIAuthorizationRepository,
-	NewOpenAICredentialEncryptor,
 
 	// Backup infrastructure
 	NewPgDumper,

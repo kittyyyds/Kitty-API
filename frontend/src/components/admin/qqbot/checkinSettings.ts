@@ -5,6 +5,9 @@ export async function loadCheckinConfig(): Promise<QQCheckinConfig> {
   const config = await qqbotAPI.checkinConfig()
   return {
     ...config,
+    coupon_template_id: config.coupon_template_id ?? 0,
+    coupon_quantity: config.coupon_quantity ?? 0,
+    milestones: (config.milestones ?? []).map(milestone => ({ ...milestone, kind: milestone.kind || 'checkin_total', reward: normalizeGrowthReward(milestone.reward) })),
     reward_distribution: { ...(config.reward_distribution ?? { lower_half_bps: 7000, next_quarter_bps: 2000, upper_quarter_bps: 1000 }) },
     recharge_window_days: config.recharge_window_days || 30,
     streak_days: config.streak_days || 7,
@@ -19,7 +22,7 @@ export async function loadCheckinConfig(): Promise<QQCheckinConfig> {
         { id: 'binding', name: '完成账号绑定', kind: 'binding', target: 1, chances: config.growth?.binding_chances ?? 0, enabled: (config.growth?.binding_chances ?? 0) > 0 },
         { id: 'first_usage', name: '首次成功 API 调用', kind: 'usage_count', target: 1, chances: config.growth?.first_usage_chances ?? 0, enabled: (config.growth?.first_usage_chances ?? 0) > 0 },
         { id: 'checkin_30', name: '累计签到 30 天', kind: 'checkin_total', target: 30, chances: config.growth?.checkin_30_chances ?? 0, enabled: (config.growth?.checkin_30_chances ?? 0) > 0 }
-      ]).map(task => ({ ...task, reward: normalizeGrowthReward('reward' in task ? task.reward : undefined, task.chances) }))
+      ]).map(task => ({ ...task, ...(!('period' in task) || !task.period ? { period: 'once' as const } : {}), reward: normalizeGrowthReward('reward' in task ? task.reward : undefined, task.chances) }))
     }
   }
 }
@@ -39,6 +42,8 @@ function saveConfigPatch(version: string | undefined, section: string, patch: Pa
 export function saveCheckinSettings(config: QQCheckinConfig): Promise<QQCheckinConfig> {
   return saveConfigPatch(config._sections?.checkin || config._version, 'checkin', {
     enabled: config.enabled,
+    coupon_template_id: config.coupon_template_id ?? 0,
+    coupon_quantity: config.coupon_quantity ?? 0,
     min_amount: config.min_amount,
     max_amount: config.max_amount,
     ...(config.reward_distribution ? { reward_distribution: { ...config.reward_distribution } } : {}),
@@ -47,7 +52,8 @@ export function saveCheckinSettings(config: QQCheckinConfig): Promise<QQCheckinC
     recharge_window_days: config.recharge_window_days,
     streak_days: config.streak_days,
     streak_chances: config.streak_reward.type === 'chances' ? config.streak_reward.quantity : 0,
-    streak_reward: { ...config.streak_reward }
+    streak_reward: { ...config.streak_reward },
+    milestones: (config.milestones ?? []).map(milestone => ({ ...milestone, reward: { ...milestone.reward } }))
   })
 }
 

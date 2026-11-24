@@ -235,6 +235,7 @@
 </template>
 
 <script setup lang="ts">
+import { sanitizeRedirectPath } from '@/utils/authRedirect'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -376,15 +377,6 @@ function readLegacyFragmentLogin(params: URLSearchParams): OAuthTokenResponse | 
     completion.token_type = tokenType
   }
   return completion
-}
-
-function sanitizeRedirectPath(path: string | null | undefined): string {
-  if (!path) return '/dashboard'
-  if (!path.startsWith('/')) return '/dashboard'
-  if (path.startsWith('//')) return '/dashboard'
-  if (path.includes('://')) return '/dashboard'
-  if (path.includes('\n') || path.includes('\r')) return '/dashboard'
-  return path
 }
 
 function currentAdoptionDecision(): OAuthAdoptionDecision {

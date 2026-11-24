@@ -246,17 +246,6 @@ func (s *adminServiceImpl) CheckProxyExists(ctx context.Context, host string, po
 	return s.proxyRepo.ExistsByHostPortAuth(ctx, host, port, username, password)
 }
 
-// CheckProxyExistsWithProtocol is an optional protocol-aware variant used by
-// batch import. Keep CheckProxyExists unchanged for older service consumers.
-func (s *adminServiceImpl) CheckProxyExistsWithProtocol(ctx context.Context, protocol, host string, port int, username, password string) (bool, error) {
-	if checker, ok := s.proxyRepo.(interface {
-		ExistsByProtocolHostPortAuth(context.Context, string, string, int, string, string) (bool, error)
-	}); ok {
-		return checker.ExistsByProtocolHostPortAuth(ctx, protocol, host, port, username, password)
-	}
-	return s.proxyRepo.ExistsByHostPortAuth(ctx, host, port, username, password)
-}
-
 func (s *adminServiceImpl) TestProxy(ctx context.Context, id int64) (*ProxyTestResult, error) {
 	proxy, err := s.proxyRepo.GetByID(ctx, id)
 	if err != nil {
@@ -289,7 +278,6 @@ func (s *adminServiceImpl) testProxyURL(ctx context.Context, proxyURL string) *P
 		Region:      exitInfo.Region,
 		Country:     exitInfo.Country,
 		CountryCode: exitInfo.CountryCode,
-		Timezone:    exitInfo.Timezone,
 	}
 }
 

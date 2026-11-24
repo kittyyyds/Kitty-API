@@ -181,3 +181,25 @@ func TestBillingPreviewRejectsInvalidOrUnavailableSelections(t *testing.T) {
 	})
 	require.ErrorIs(t, err, ErrBillingPreviewSelectionDenied)
 }
+
+func TestBillingPreviewOpenAICacheWriteLifetimes(t *testing.T) {
+	group := billingPreviewGroup()
+	group.Platform = PlatformOpenAI
+	group.ModelPricing = []ChannelModelPricing{{Platform: PlatformOpenAI, Models: []string{"gpt-6-luna"}, BillingMode: BillingModeToken,
+		InputPrice: billingPreviewFloat(1e-6), OutputPrice: billingPreviewFloat(2e-6), CacheWritePrice: billingPreviewFloat(2e-6), CacheWrite12hPrice: billingPreviewFloat(4e-6)}}
+	plaza := []PlazaGroup{{ID: group.ID, Platform: PlatformOpenAI, Models: []PlazaModel{{Name: "gpt-6-luna", Platform: PlatformOpenAI}}}}
+	svc := newBillingPreviewTestService([]Group{group}, nil, plaza)
+	input := BillingPreviewInput{GroupID: group.ID, Model: "gpt-6-luna", ModelPlatform: PlatformOpenAI,
+		CacheCreationTokens: 3000, CacheCreation30mTokens: 1000, CacheCreation12hTokens: 2000}
+	result, err := svc.Preview(context.Background(), 7, input)
+	require.NoError(t, err)
+	require.InDelta(t, 0.010, result.StandardCost, 1e-12)
+	require.InDelta(t, 0.007, result.ActualCost, 1e-12)
+	input.CacheCreation12hTokens = -1
+	_, err = svc.Preview(context.Background(), 7, input)
+	require.ErrorIs(t, err, ErrBillingPreviewInvalidInput)
+	input.CacheCreation12hTokens = 0
+	input.CacheCreation30mTokens = MaxBillingPreviewTokens + 1
+	_, err = svc.Preview(context.Background(), 7, input)
+	require.ErrorIs(t, err, ErrBillingPreviewInvalidInput)
+}

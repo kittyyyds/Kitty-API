@@ -63,11 +63,6 @@ func SetupRouter(
 	// 解析模式按请求快照：兼容开关开启时信任原始转发头，关闭时使用 server.trusted_proxies。
 	r.Use(middleware2.SessionBindingContext(cfg))
 	r.Use(middleware2.Logger())
-	var connectionRecorder middleware2.ConnectionTraceRecorder
-	if handlers.Admin != nil && handlers.Admin.Usage != nil {
-		connectionRecorder = handlers.Admin.Usage
-	}
-	r.Use(middleware2.RequestTiming(connectionRecorder))
 	r.Use(middleware2.CORS(cfg.CORS))
 	r.Use(middleware2.SecurityHeaders(cfg.Security.CSP, func() []string {
 		if p := cachedFrameOrigins.Load(); p != nil {
@@ -76,6 +71,19 @@ func SetupRouter(
 		return nil
 	}))
 	r.Use(middleware2.ServerTiming(cfg.Server.EnableServerTiming))
+	var connectionRecorder middleware2.ConnectionTraceRecorder
+	var trafficRecorder middleware2.TrafficRecorder
+	if handlers.Admin != nil && handlers.Admin.Usage != nil {
+		connectionRecorder = handlers.Admin.Usage
+		trafficRecorder = handlers.Admin.Usage
+	}
+	r.Use(middleware2.RequestTiming(connectionRecorder))
+	r.Use(middleware2.UserTraffic(trafficRecorder))
+	mainlandWebBlock, err := middleware2.NewMainlandWebBlock(cfg.Security.MainlandWebBlock, settingService.IsMainlandWebBlockEnabled)
+	if err != nil {
+		log.Panicf("Failed to initialize mainland web restriction: %v", err)
+	}
+	r.Use(mainlandWebBlock)
 	// Run before embedded HTML and business handlers. Verified serverless IPs
 	// have already been attached by SessionBindingContext.
 	if settingService.IPRisk != nil {
@@ -129,17 +137,7 @@ func registerRoutes(
 	// 通用路由（健康检查、状态等）
 	routes.RegisterCommonRoutes(r)
 	if cfg.Runtime.Role == config.RuntimeRoleGateway {
-		if cfg.Runtime.RegionalSchedulerFile != "" || cfg.Runtime.RegionalAuthFile != "" {
-			if cfg.Runtime.RegionalAuthFile != "" {
-				r.Use(middleware2.RegionalAPIKeyAuth(apiKeyService, cfg))
-			}
-			// Local auth preview still cannot spend or schedule: account ownership and
-			// quota leases are not implemented. Never enter primary-backed middleware.
-			// Health routes above remain available.
-			r.Use(func(c *gin.Context) {
-				c.AbortWithStatusJSON(503, gin.H{"error": "regional gateway admission is not enabled"})
-			})
-		}
+
 		// Global settings, payments, and internal worker/admin APIs stay on the
 		// primary. Request replicas only expose authenticated gateway routes.
 		routes.RegisterGatewayRoutes(r, h, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg)
@@ -148,9 +146,14 @@ func registerRoutes(
 
 	// API v1
 	v1 := r.Group("/api/v1")
-
-	// 面板 API 限流器：认证接口按用户 ID、公开接口按安全客户端 IP，
-	// 防止高频刷管理面接口打爆数据库（阈值可在系统设置中调整）。
+	if h.Admin != nil && h.Admin.OpenAIReauth != nil {
+		worker := v1.Group("/internal/openai-reauth")
+		worker.POST("/runtime-settings", h.Admin.OpenAIReauth.RuntimeSettings)
+		worker.POST("/claim", h.Admin.OpenAIReauth.Claim)
+		worker.POST("/:task_id/progress", h.Admin.OpenAIReauth.Progress)
+		worker.POST("/:task_id/credentials", h.Admin.OpenAIReauth.Credentials)
+		worker.POST("/:task_id/fail", h.Admin.OpenAIReauth.Fail)
+	}
 	if h.QQBot != nil {
 		v1.POST("/qqbot/webhook", h.QQBot.Webhook)
 		limits := middleware.NewRateLimiter(redisClient)
@@ -166,17 +169,21 @@ func registerRoutes(
 		transfer.POST("/confirm", h.QQBot.ConfirmTransfer)
 	}
 
+	// 面板 API 限流器：认证接口按用户 ID、公开接口按安全客户端 IP，
+	// 防止高频刷管理面接口打爆数据库（阈值可在系统设置中调整）。
 	panelRateLimiter := middleware2.NewPanelRateLimiter(redisClient, settingService)
 
 	// 注册各模块路由
 	routes.RegisterAuthRoutes(v1, h, jwtAuth, auditLog, redisClient, settingService, panelRateLimiter)
-	routes.RegisterUserRoutes(v1, h, jwtAuth, auditLog, settingService, panelRateLimiter)
+	routes.RegisterUserRoutes(v1, h, jwtAuth, auditLog, settingService, panelRateLimiter, middleware2.PanelAPIKeyAuth(apiKeyService, subscriptionService, cfg))
 	routes.RegisterModelPlazaRoutes(v1, h, optionalJWTAuth, settingService, panelRateLimiter)
 	routes.RegisterAdminRoutes(v1, h, adminAuth, auditLog, stepUpAuth, settingService, panelRateLimiter, userService)
+	routes.RegisterMCPRoutes(v1, h, auditLog, stepUpAuth, settingService, panelRateLimiter, cfg.CORS.AllowedOrigins, redisClient)
+	routes.RegisterMCPOAuthRoutes(r, v1, h, redisClient)
 	routes.RegisterGatewayRoutes(r, h, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg)
+	routes.RegisterAPIKeyTestRoutes(r, h, jwtAuth, middleware2.PanelAPIKeyAuth(apiKeyService, subscriptionService, cfg), settingService, opsService, compositeResolver, panelRateLimiter)
 	routes.RegisterCanvasRoutes(r, v1, jwtAuth, apiKeyService, userService, settingService, panelRateLimiter)
 	routes.RegisterPaymentRoutes(v1, h.Payment, h.PaymentWebhook, h.Admin.Payment, jwtAuth, adminAuth, auditLog, settingService, panelRateLimiter, redisClient)
-	routes.RegisterPublicPelicanShowcaseRoutes(v1, h, apiKeyAuth, panelRateLimiter)
 
 	handler.RegisterPageRoutes(v1, cfg.Pricing.DataDir, gin.HandlerFunc(jwtAuth), gin.HandlerFunc(adminAuth), settingService)
 }

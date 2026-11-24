@@ -108,3 +108,12 @@ describe('useOpenAIOAuth.exchangeAuthCode', () => {
     )
   })
 })
+
+describe('OpenAI OAuth client selection', () => {
+  it('always requests the Codex client', async () => {
+    vi.mocked(adminAPI.accounts.generateAuthUrl).mockResolvedValue({ auth_url: 'https://auth.example/authorize', session_id: 'session', state: 'state' } as any)
+    const oauth = useOpenAIOAuth()
+    await oauth.generateAuthUrl(7)
+    expect(adminAPI.accounts.generateAuthUrl).toHaveBeenLastCalledWith('/admin/openai/generate-auth-url', { proxy_id: 7 })
+  })
+})

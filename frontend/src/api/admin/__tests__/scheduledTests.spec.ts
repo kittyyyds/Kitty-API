@@ -1,40 +1,85 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '../../client'
-import { listPelicanHistory } from '../scheduledTests'
-import { createQualityPreset, listQualityPresets, updateQualityPreset } from '../accountQuality'
+import { create, deletePlan, listByAccount, listResults, update } from '../scheduledTests'
+import type { CreateScheduledTestPlanRequest, ScheduledTestPlan, UpdateScheduledTestPlanRequest } from '@/types'
 
-vi.mock('../../client', () => ({ apiClient: { get: vi.fn(), post: vi.fn(), put: vi.fn() } }))
+vi.mock('../../client', () => ({
+  apiClient: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() }
+}))
+
+const plan: ScheduledTestPlan = {
+  id: 17,
+  account_id: 42,
+  model_id: 'test-model',
+  cron_expression: '*/30 * * * *',
+  enabled: false,
+  max_results: 50,
+  auto_recover: false,
+  last_run_at: null,
+  next_run_at: null,
+  created_at: '',
+  updated_at: ''
+}
 
 beforeEach(() => {
-  vi.mocked(apiClient.get).mockReset().mockResolvedValue({ data: { items: [], next_cursor: 0 } })
-  vi.mocked(apiClient.post).mockReset(); vi.mocked(apiClient.put).mockReset()
+  vi.resetAllMocks()
 })
 
-describe('reusable quality templates API', () => {
-  it('persists and reloads configuration through the pure preset endpoint, never the distributing group-rule endpoint', async () => {
-    const body = { name: 'Saved rule', model_id: 'test-model', cron_expression: '*/30 * * * *', enabled: true, max_results: 100,
-      pelican_config: { question_kind: 'candy' as const, prompt: 'What is 3 times 7?', reasoning_effort: 'high', parallel_count: 1,
-        quality: { action: 'observe_only' as const, expected_answer: '21', remove_group_ids: [], auto_restore: false } } }
-    const persisted = { ...body, id: 17, created_at: '', updated_at: '' }
-    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: persisted })
-    vi.mocked(apiClient.get).mockResolvedValueOnce({ data: [persisted] })
-    expect(await createQualityPreset(body)).toEqual(persisted)
-    expect(await listQualityPresets()).toEqual([persisted])
-    expect(apiClient.post).toHaveBeenCalledTimes(1)
-    expect(apiClient.post).toHaveBeenCalledWith('/admin/account-quality-presets', body)
-    expect(apiClient.get).toHaveBeenCalledTimes(1)
-    expect(apiClient.get).toHaveBeenCalledWith('/admin/account-quality-presets')
-    vi.mocked(apiClient.put).mockResolvedValueOnce({ data: persisted })
-    expect(await updateQualityPreset(17, body)).toEqual(persisted)
-    expect(apiClient.put).toHaveBeenCalledWith('/admin/account-quality-presets/17', body)
+describe('scheduled account connectivity tests API', () => {
+  it('lists only the requested account and accepts an empty result', async () => {
+    vi.mocked(apiClient.get).mockResolvedValueOnce({ data: [plan] }).mockResolvedValueOnce({ data: null })
+
+    expect(await listByAccount(42)).toEqual([plan])
+    expect(apiClient.get).toHaveBeenNthCalledWith(1, '/admin/accounts/42/scheduled-test-plans')
+    expect(await listByAccount(99)).toEqual([])
+    expect(apiClient.get).toHaveBeenNthCalledWith(2, '/admin/accounts/99/scheduled-test-plans')
   })
-})
 
-describe('Pelican history API', () => {
-  it('asks for one account only when the records window names it', async () => {
-    await listPelicanHistory(0, 42)
-    expect(apiClient.get).toHaveBeenLastCalledWith('/admin/pelican-test-results', { params: { before_id: 0, account_id: 42 } })
-    await listPelicanHistory(9)
-    expect(apiClient.get).toHaveBeenLastCalledWith('/admin/pelican-test-results', { params: { before_id: 9 } })
+  it('creates a plan without enabling tests or auto recovery implicitly', async () => {
+    const body: CreateScheduledTestPlanRequest = {
+      account_id: plan.account_id,
+      model_id: plan.model_id,
+      cron_expression: plan.cron_expression,
+      enabled: false,
+      max_results: plan.max_results,
+      auto_recover: false
+    }
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: plan })
+
+    expect(await create(body)).toEqual(plan)
+    expect(apiClient.post).toHaveBeenCalledTimes(1)
+    expect(apiClient.post).toHaveBeenCalledWith('/admin/scheduled-test-plans', body)
+    expect(body).toMatchObject({ account_id: 42, enabled: false, auto_recover: false })
+  })
+
+  it('preserves explicit false values and sends only the requested plan patch', async () => {
+    const patch: UpdateScheduledTestPlanRequest = { enabled: false, auto_recover: false }
+    vi.mocked(apiClient.put).mockResolvedValueOnce({ data: plan })
+
+    expect(await update(17, patch)).toEqual(plan)
+    expect(apiClient.put).toHaveBeenCalledTimes(1)
+    expect(apiClient.put).toHaveBeenCalledWith('/admin/scheduled-test-plans/17', patch)
+    expect(patch).toEqual({ enabled: false, auto_recover: false })
+    expect(apiClient.post).not.toHaveBeenCalled()
+    expect(apiClient.delete).not.toHaveBeenCalled()
+  })
+
+  it('scopes history to one plan and retains the optional result limit', async () => {
+    vi.mocked(apiClient.get).mockResolvedValueOnce({ data: [] }).mockResolvedValueOnce({ data: null })
+
+    expect(await listResults(17, 10)).toEqual([])
+    expect(apiClient.get).toHaveBeenNthCalledWith(1, '/admin/scheduled-test-plans/17/results', { params: { limit: 10 } })
+    expect(await listResults(18)).toEqual([])
+    expect(apiClient.get).toHaveBeenNthCalledWith(2, '/admin/scheduled-test-plans/18/results', { params: undefined })
+  })
+
+  it('deletes only the selected plan', async () => {
+    vi.mocked(apiClient.delete).mockResolvedValueOnce({ data: null })
+
+    await deletePlan(17)
+    expect(apiClient.delete).toHaveBeenCalledTimes(1)
+    expect(apiClient.delete).toHaveBeenCalledWith('/admin/scheduled-test-plans/17')
+    expect(apiClient.post).not.toHaveBeenCalled()
+    expect(apiClient.put).not.toHaveBeenCalled()
   })
 })

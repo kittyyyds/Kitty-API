@@ -55,6 +55,22 @@ describe('QQ activity records', () => {
     w.unmount()
   })
 
+  it.each(['zh', 'en'] as const)('%s displays chance-only lottery rewards on desktop and mobile', async locale => {
+    api.activityRecords.mockResolvedValue(page([{ ...invitation, id: 'draw-1', inviter: undefined, status: 'credited', amount: 0, chances: 2, prize_name: 'Try again', remaining: 3 }]))
+    const { wrapper: w, t } = await setup(locale, '?tab=lottery')
+    expect(w.text().split(t('qqbot.chanceReward', { count: 2 }))).toHaveLength(3)
+    expect(w.text()).toContain('Try again')
+    w.unmount()
+  })
+
+  it.each(['checkin', 'invite', 'lottery'])('shows coupon rewards in %s records on both layouts', async kind => {
+    api.activityRecords.mockResolvedValue(page([{ ...invitation, status: 'credited', coupon_quantity: 2, coupon_template_id: 5 }]))
+    const { wrapper: w, t } = await setup('zh', '?tab=' + kind)
+    expect(w.get('article').text()).toContain(t('coupon.awardedQuantity', { count: 2 }))
+    expect(w.get('tbody tr').text()).toContain(t('coupon.awardedQuantity', { count: 2 }))
+    w.unmount()
+  })
+
   it('keeps the original credited account visible after rebinding and formats amounts to two decimals', async () => {
     api.activityRecords.mockResolvedValue(page([{ ...invitation, status: 'rewarded', amount: 1.23456789,
       reward_user_id: 6, reward_email: 'original@example.com', rewarded_at: '2026-10-15T08:02:00Z' }]))

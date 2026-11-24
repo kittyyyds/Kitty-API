@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/gemini"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -71,8 +70,8 @@ func GroupStreamOnly() gin.HandlerFunc {
 				return
 			}
 		case streamOnlyGeminiRoutes[route]:
-			_, action, parsed := gemini.ParseModelAction(strings.TrimPrefix(c.Param("modelAction"), "/"))
-			if parsed && action == gemini.ActionGenerateContent {
+			action := strings.TrimPrefix(c.Param("modelAction"), "/")
+			if strings.HasSuffix(action, ":generateContent") {
 				rejectNonStreamRequest(c, route)
 				return
 			}

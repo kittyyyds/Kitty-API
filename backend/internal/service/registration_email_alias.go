@@ -139,6 +139,10 @@ func IsRegistrationEmailAlias(email string) bool {
 }
 
 func (s *AuthService) validateRegistrationEmailAlias(ctx context.Context, email string) error {
+	// Blacklist decisions precede alias rules and all registration side effects.
+	if s.settingService != nil && s.settingService.IsRegistrationEmailBlacklisted(ctx, email) {
+		return ErrEmailBlocked
+	}
 	if s == nil {
 		return ErrServiceUnavailable
 	}

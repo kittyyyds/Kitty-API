@@ -24,10 +24,7 @@ func (s *GatewayService) ProbeAPIKeyGroup(ctx context.Context, group *Group, mod
 		model = decision.UpstreamModel
 		ctx = WithCompositeRouteDecision(ctx, decision)
 	}
-	if kind == "token" {
-		ctx, _ = WithGatewayTokenRequestPricing(ctx)
-		ctx = s.withGatewayProfitControlGate(ctx, &group.ID)
-	}
+
 	if s.checkChannelPricingRestriction(ctx, &group.ID, model) {
 		return APIKeyGroupAvailability{}, nil
 	}
@@ -40,10 +37,10 @@ func (s *GatewayService) ProbeAPIKeyGroup(ctx context.Context, group *Group, mod
 	eligible := make([]AccountWithConcurrency, 0, len(accounts))
 	for i := range accounts {
 		account := &accounts[i]
-		if !s.isAccountSchedulableForSelection(account) || !s.isGatewayAccountProfitEligible(ctx, account) ||
+		if !account.IsSchedulable() ||
 			(group.RequirePrivacySet && !account.IsPrivacySet()) ||
 			(model != "" && !s.isModelSupportedByAccountInGroup(ctx, account, &group.ID, model)) ||
-			!s.isAccountSchedulableForModelSelection(ctx, account, model) ||
+
 			!s.isAccountSchedulableForQuota(account) ||
 			!s.isAccountSchedulableForWindowCost(ctx, account, false) ||
 			!s.isAccountSchedulableForRPM(ctx, account, false) ||

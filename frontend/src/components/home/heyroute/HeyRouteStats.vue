@@ -102,12 +102,9 @@ onBeforeUnmount(() => {
           :key="stat.label"
           class="hr-stat-card"
           :class="[`tone-${stat.tone}`, { 'is-uptime': index === 0 }]"
-          data-hr-tilt="3"
         >
-          <div
-            class="hr-stat-value"
-            :aria-label="`${stat.value.toFixed(stat.decimals)}${stat.suffix}`"
-          >
+          <div class="hr-stat-value">
+            <span class="sr-only">{{ `${stat.value.toFixed(stat.decimals)}${stat.suffix}` }}</span>
             <strong aria-hidden="true">{{ displayedValues[index] }}</strong><span aria-hidden="true">{{ stat.suffix }}</span>
           </div>
           <div>
@@ -169,6 +166,7 @@ onBeforeUnmount(() => {
 
 .hr-stat-card {
   position: relative;
+  container-type: inline-size;
   display: flex;
   min-height: 360px;
   flex-direction: column;
@@ -193,9 +191,16 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
+/*
+ * Numbers must never be clipped by the card's overflow: hidden. The min() caps each size by the
+ * card's content width (100cqi): Montserrat 680 tabular digits are 0.7em, so "98.4" is 2.36em and
+ * "99.998" 3.76em; the suffix ("ms" / "%" at 25px plus 7px padding) needs at most 48px / 30px.
+ * Browsers without container units ignore the min() line and keep the rem size.
+ */
 .hr-stat-value strong {
   display: inline-block;
   font-size: 5.35rem;
+  font-size: min(5.35rem, calc((100cqi - 48px) / 2.36));
   font-variant-numeric: tabular-nums lining-nums;
   font-weight: 680;
   letter-spacing: 0;
@@ -204,9 +209,10 @@ onBeforeUnmount(() => {
 
 .hr-stat-card.is-uptime .hr-stat-value strong {
   font-size: 4.35rem;
+  font-size: min(4.35rem, calc((100cqi - 30px) / 3.76));
 }
 
-.hr-stat-value span {
+.hr-stat-value span:not(.sr-only) {
   margin-left: auto;
   padding-left: 7px;
   color: rgba(23, 27, 26, 0.56);
@@ -249,6 +255,12 @@ onBeforeUnmount(() => {
   color: rgba(231, 234, 250, 0.62);
 }
 
+@media (max-width: 1399px) {
+  .hr-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 900px) {
   .hr-stats header {
     justify-items: start;
@@ -273,10 +285,12 @@ onBeforeUnmount(() => {
 
   .hr-stat-value strong {
     font-size: 4.8rem;
+    font-size: min(4.8rem, calc((100cqi - 48px) / 2.36));
   }
 
   .hr-stat-card.is-uptime .hr-stat-value strong {
     font-size: 4.25rem;
+    font-size: min(4.25rem, calc((100cqi - 30px) / 3.76));
   }
 }
 </style>

@@ -79,13 +79,14 @@ func TestPrepareVerifiesDigestBeforeExecutingAndReusesCache(t *testing.T) {
 				digest = strings.Repeat("0", 64)
 			}
 			requests := 0
-			m := New(root, "1.2.3", "http://127.0.0.1:4040", strings.Repeat("x", 64))
+			m := New(root, PinnedVersion, "http://127.0.0.1:4040", strings.Repeat("x", 64))
+			m.expectedDigest = hex.EncodeToString(sum[:])
 			m.client = &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
 				requests++
 				require.NotContains(t, req.URL.String(), m.token)
 				body := data
 				if strings.Contains(req.URL.Path, "/releases/tags/") {
-					body, _ = json.Marshal(map[string]any{"assets": []map[string]string{{"name": "sub2api-reauth_1.2.3_linux_" + runtime.GOARCH + ".tar.gz", "digest": "sha256:" + digest}}})
+					body, _ = json.Marshal(map[string]any{"assets": []map[string]string{{"name": "sub2api-reauth_" + PinnedVersion + "_linux_" + runtime.GOARCH + ".tar.gz", "digest": "sha256:" + digest}}})
 				}
 				return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(body)), Header: http.Header{}}, nil
 			})}
@@ -107,7 +108,7 @@ func TestStopCancelsPreparationAndCannotRestart(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux runtime preparation")
 	}
-	m := New(t.TempDir(), "1.2.3", "http://127.0.0.1:4040", strings.Repeat("x", 64))
+	m := New(t.TempDir(), PinnedVersion, "http://127.0.0.1:4040", strings.Repeat("x", 64))
 	entered := make(chan struct{})
 	m.client = &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
 		close(entered)
@@ -131,14 +132,14 @@ func TestManagedProcessGetsOnlyWorkerEnvironmentAndStops(t *testing.T) {
 		t.Skip("Linux process supervision")
 	}
 	root := t.TempDir()
-	dir := filepath.Join(root, "1.2.3-linux-"+runtime.GOARCH)
+	dir := filepath.Join(root, PinnedVersion+"-linux-"+runtime.GOARCH)
 	require.NoError(t, os.MkdirAll(dir, 0700))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "ready"), []byte("cached"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ready"), []byte(pinnedDigest(PinnedVersion, runtime.GOARCH)), 0600))
 	script := "#!/bin/sh\nprintf '%s' \"$OPENAI_REAUTH_WORKER_TOKEN\" > worker-token\nprintf '%s' \"$DATABASE_PASSWORD\" > unrelated-secret\nprintf '%s' \"$OPENAI_REAUTH_CONCURRENCY\" > concurrency\nexec /bin/sleep 60\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "python"), []byte(script), 0700))
 	t.Setenv("OPENAI_REAUTH_CONCURRENCY", "4")
 	t.Setenv("DATABASE_PASSWORD", "must-not-inherit")
-	m := New(root, "1.2.3", "http://127.0.0.1:4040", "synthetic-worker-token")
+	m := New(root, PinnedVersion, "http://127.0.0.1:4040", "synthetic-worker-token")
 	m.Ensure()
 	defer m.Stop()
 	// Child output can precede the parent's running status update after Start.
@@ -161,4 +162,17 @@ func TestManagedProcessGetsOnlyWorkerEnvironmentAndStops(t *testing.T) {
 	require.Equal(t, "4", string(got))
 	m.Stop()
 	require.Equal(t, "stopped", m.Status().State)
+}
+
+func TestRuntimeRequiresPinnedReleaseAndCacheDigest(t *testing.T) {
+	m := New(t.TempDir(), "custom-unverified", "http://127.0.0.1:4040", "synthetic-token")
+	_, err := m.prepare(context.Background())
+	require.ErrorContains(t, err, "not pinned")
+	root := t.TempDir()
+	dir := filepath.Join(root, PinnedVersion+"-linux-"+runtime.GOARCH)
+	require.NoError(t, os.MkdirAll(dir, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ready"), []byte("changed-digest"), 0600))
+	m = New(root, PinnedVersion, "http://127.0.0.1:4040", "synthetic-token")
+	_, err = m.prepare(context.Background())
+	require.ErrorContains(t, err, "checksum marker")
 }

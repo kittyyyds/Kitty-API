@@ -45,6 +45,9 @@ func supplementUnmappedOpenAIModels(accounts []Account, groupID *int64, models [
 			continue
 		}
 		for _, model := range catalog {
+			if account.IsOpenAIPassthroughModelFilterEnabled() && !account.IsModelSupported(model) {
+				continue
+			}
 			if _, found := seen[model]; !found && account.IsModelAllowedInGroup(groupID, model) {
 				seen[model] = struct{}{}
 				defaults = append(defaults, model)

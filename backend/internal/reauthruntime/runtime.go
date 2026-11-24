@@ -1,4 +1,4 @@
-// Package reauthruntime installs and supervises the release-matched login
+// Package reauthruntime installs and supervises the pinned, verified login
 // runtime. Account credentials remain in the authenticated worker protocol.
 package reauthruntime
 
@@ -14,12 +14,29 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 )
+
+// PinnedVersion follows the worker protocol supported by this custom integration,
+// not the application release tag. Both platform archives are pinned against drift.
+const PinnedVersion = "2.19.4"
+
+func pinnedDigest(version, arch string) string {
+	if version != PinnedVersion {
+		return ""
+	}
+	switch arch {
+	case "amd64":
+		return "7101876fe3aec0b61c7b13c6f1e77ec099c96c828096c1e37c05df560c6c7fb8"
+	case "arm64":
+		return "ad6ec3ec42c9994cf18c133c56f5a0858b004b20ac7a1e58ba70bdc92c999b21"
+	default:
+		return ""
+	}
+}
 
 const maxArchive = 256 << 20
 const maxExtracted = 768 << 20
@@ -35,20 +52,21 @@ type Manager struct {
 	mu                            sync.Mutex
 	status                        Status
 	root, version, baseURL, token string
+	expectedDigest                string
 	ctx                           context.Context
 	cancel                        context.CancelFunc
 	done                          chan struct{}
 	started                       bool
 	retryAt                       time.Time
 	client                        *http.Client
-	loginSlots                    chan struct{}
 }
 
 func New(root, version, baseURL, token string) *Manager {
 	root, _ = filepath.Abs(root)
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{root: root, version: strings.TrimPrefix(version, "v"), baseURL: baseURL, token: token,
-		ctx: ctx, cancel: cancel, loginSlots: make(chan struct{}, 2), client: &http.Client{Timeout: 5 * time.Minute},
+		expectedDigest: pinnedDigest(strings.TrimPrefix(version, "v"), runtime.GOARCH),
+		ctx:            ctx, cancel: cancel, client: &http.Client{Timeout: 5 * time.Minute},
 		status: Status{Mode: "managed", State: "idle"}}
 }
 
@@ -76,7 +94,7 @@ func (m *Manager) Ensure() {
 		m.status.Reason = "unsupported_platform"
 		return
 	}
-	if !regexp.MustCompile(`^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$`).MatchString(m.version) {
+	if len(m.expectedDigest) != 64 {
 		m.status.State = "unavailable"
 		m.status.Reason = "release_required"
 		return
@@ -116,7 +134,6 @@ func (m *Manager) run() {
 	cmd := exec.CommandContext(m.ctx, filepath.Join(dir, "python"), filepath.Join(dir, "worker.py"))
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C.UTF-8", "PYTHONDONTWRITEBYTECODE=1", "PYTHONUNBUFFERED=1",
 		"SUB2API_BASE_URL=" + m.baseURL, "OPENAI_REAUTH_WORKER_TOKEN=" + m.token,
-		"OPENAI_TOTP_JOURNAL_DIR=" + filepath.Join(m.root, "totp-recovery"),
 		"OPENAI_REAUTH_WORKER_ID=managed-" + randomID(), "TOSUB2_ROOT=" + filepath.Join(dir, "tosub2"),
 		"TOSUB2_PYTHON=" + filepath.Join(dir, "python"), "NODE_EXECUTABLE=" + filepath.Join(dir, "node")}
 	// The managed child has a minimal environment. Explicitly pass the bounded
@@ -146,8 +163,15 @@ func randomID() string { return fmt.Sprintf("%d-%d", os.Getpid(), time.Now().Uni
 
 func (m *Manager) prepare(ctx context.Context) (string, error) {
 	dir := filepath.Join(m.root, m.version+"-linux-"+runtime.GOARCH)
-	if info, err := os.Stat(filepath.Join(dir, "ready")); err == nil && info.Mode().IsRegular() {
-		return dir, nil
+	if len(m.expectedDigest) != 64 {
+		return "", errors.New("runtime version is not pinned")
+	}
+	if info, err := os.Lstat(filepath.Join(dir, "ready")); err == nil && info.Mode().IsRegular() {
+		ready, readErr := os.ReadFile(filepath.Join(dir, "ready"))
+		if readErr == nil && string(ready) == m.expectedDigest {
+			return dir, nil
+		}
+		return "", errors.New("cached runtime checksum marker mismatch")
 	}
 	if err := os.MkdirAll(m.root, 0700); err != nil {
 		return "", err
@@ -181,6 +205,9 @@ func (m *Manager) prepare(ctx context.Context) (string, error) {
 	if _, err := hex.DecodeString(digest); err != nil {
 		return "", errors.New("invalid runtime digest")
 	}
+	if digest != m.expectedDigest {
+		return "", errors.New("release runtime checksum changed")
+	}
 	archive, err := m.get(ctx, "https://github.com/ranxi2001/sub2api/releases/download/v"+m.version+"/"+name, maxArchive)
 	if err != nil {
 		return "", err
@@ -210,7 +237,8 @@ func (m *Manager) prepare(ctx context.Context) (string, error) {
 	}
 	if err := os.Rename(tmp, dir); err != nil {
 		// Another instance sharing the data directory can finish first.
-		if _, otherErr := os.Stat(filepath.Join(dir, "ready")); otherErr != nil {
+		ready, otherErr := os.ReadFile(filepath.Join(dir, "ready"))
+		if otherErr != nil || string(ready) != m.expectedDigest {
 			return "", err
 		}
 	}

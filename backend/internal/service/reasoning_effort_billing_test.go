@@ -203,8 +203,8 @@ func TestReasoningEffortBillingNoResolverPreservesCatalogPolicies(t *testing.T) 
 					ServiceTier: serviceTier, LongContextBillingEnabled: &applyLongContext, ReasoningEffort: "max",
 				})
 				require.NoError(t, err)
-				want.modelBillingMultiplier = 1 // Identity marker, no additional charge.
-				require.Equal(t, want, got)
+				want.modelBillingMultiplier = 1
+                require.Equal(t, want, got)
 			}
 		}
 	}

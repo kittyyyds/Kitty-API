@@ -61,11 +61,12 @@ func TestAntigravityBuildGeminiTestRequestWithPrompt_ImageModel(t *testing.T) {
 	require.Equal(t, "a cute cat", parts[0].(map[string]any)["text"])
 }
 
-func TestExtractContentFromSSEResponse_ExtractsTextAndInlineImages(t *testing.T) {
+func TestExtractAntigravityTestContent_ExtractsCompletedTextAndInlineImages(t *testing.T) {
 	t.Parallel()
 
-	sse := "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Here is your image\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"iVBORw0KGgo=\"}}]}}]}}\n\n"
-	text, images := extractContentFromSSEResponse([]byte(sse))
+	sse := "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Here is your image\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"iVBORw0KGgo=\"}}]},\"finishReason\":\"STOP\"}]}}\n\n"
+	text, images, err := extractAntigravityTestContent([]byte(sse))
+	require.NoError(t, err)
 	require.Equal(t, "Here is your image", text)
 	require.Len(t, images, 1)
 	require.Equal(t, "image/png", images[0].MimeType)
@@ -79,4 +80,40 @@ func TestAntigravityShouldUseGeminiTestBuilder_UsesMappedModel(t *testing.T) {
 	require.True(t, shouldUseAntigravityGeminiTestRequest("gemini-3.1-pro", "gemini-pro-agent"))
 	require.False(t, shouldUseAntigravityGeminiTestRequest("gemini-alias", "claude-sonnet-4-6"))
 	require.False(t, shouldUseAntigravityGeminiTestRequest("claude-sonnet-4-6", "claude-sonnet-4-6"))
+}
+
+// Every other platform's connection test sends the admin's prompt (default "hi") and lets the
+// model answer. The Antigravity text test sent "." with maxOutputTokens 1, ignoring the prompt,
+// so thinking models (gemini-4-argon, gemini-3.8-flash) spent that token thinking and the test
+// showed "sent: hi" with an empty response.
+func TestAntigravityBuildGeminiTestRequest_UsesPromptAndRoomToAnswer(t *testing.T) {
+	t.Parallel()
+
+	svc := &AntigravityGatewayService{}
+	for _, tc := range []struct{ prompt, want string }{{"hello there", "hello there"}, {"", "hi"}, {"   ", "hi"}} {
+		raw, err := svc.buildGeminiTestRequestWithPrompt("proj-123", "gemini-4-argon-high", tc.prompt)
+		require.NoError(t, err)
+		var v1Req map[string]any
+		require.NoError(t, json.Unmarshal(raw, &v1Req))
+		inner := v1Req["request"].(map[string]any)
+		parts := inner["contents"].([]any)[0].(map[string]any)["parts"].([]any)
+		require.Equal(t, tc.want, parts[0].(map[string]any)["text"], "prompt %q", tc.prompt)
+		genCfg := inner["generationConfig"].(map[string]any)
+		require.EqualValues(t, antigravityTestMaxOutputTokens, genCfg["maxOutputTokens"])
+		require.GreaterOrEqual(t, antigravityTestMaxOutputTokens, 128, "a thinking model needs room to answer")
+	}
+}
+
+func TestAntigravityBuildClaudeTestRequest_UsesPromptAndRoomToAnswer(t *testing.T) {
+	t.Parallel()
+
+	svc := &AntigravityGatewayService{}
+	raw, err := svc.buildClaudeTestRequest("proj-123", "claude-sonnet-4-6", "hello there")
+	require.NoError(t, err)
+	require.Contains(t, string(raw), "hello there")
+	require.NotContains(t, string(raw), `"text":"."`)
+
+	raw, err = svc.buildClaudeTestRequest("proj-123", "claude-sonnet-4-6", "")
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"hi"`)
 }

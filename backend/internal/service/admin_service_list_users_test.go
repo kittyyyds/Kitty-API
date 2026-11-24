@@ -113,22 +113,6 @@ func (s *userGroupRateRepoStubForListUsers) ClearGroupRPMOverrides(_ context.Con
 	panic("unexpected ClearGroupRPMOverrides call")
 }
 
-func (s *userGroupRateRepoStubForListUsers) GetDeniedModelsByUserAndGroup(_ context.Context, _, _ int64) ([]string, error) {
-	panic("unexpected GetDeniedModelsByUserAndGroup call")
-}
-
-func (s *userGroupRateRepoStubForListUsers) GetDeniedModelsByUserID(_ context.Context, _ int64) (map[int64][]string, error) {
-	panic("unexpected GetDeniedModelsByUserID call")
-}
-
-func (s *userGroupRateRepoStubForListUsers) SyncGroupDeniedModels(_ context.Context, _ int64, _ []GroupUserDeniedModelsInput) error {
-	panic("unexpected SyncGroupDeniedModels call")
-}
-
-func (s *userGroupRateRepoStubForListUsers) ClearGroupDeniedModels(_ context.Context, _ int64) error {
-	panic("unexpected ClearGroupDeniedModels call")
-}
-
 func (s *userGroupRateRepoStubForListUsers) DeleteByGroupID(_ context.Context, _ int64) error {
 	panic("unexpected DeleteByGroupID call")
 }
@@ -198,4 +182,17 @@ func TestAdminService_ListUsers_PopulatesLastUsedAt(t *testing.T) {
 	require.Len(t, users, 1)
 	require.NotNil(t, users[0].LastUsedAt)
 	require.WithinDuration(t, lastUsed, *users[0].LastUsedAt, time.Second)
+}
+
+func (s *userGroupRateRepoStubForListUsers) GetDeniedModelsByUserAndGroup(_ context.Context, _, _ int64) ([]string, error) {
+    return nil, nil
+}
+func (s *userGroupRateRepoStubForListUsers) GetDeniedModelsByUserID(_ context.Context, _ int64) (map[int64][]string, error) {
+    return nil, nil
+}
+func (s *userGroupRateRepoStubForListUsers) SyncGroupDeniedModels(_ context.Context, _ int64, _ []GroupUserDeniedModelsInput) error {
+    return nil
+}
+func (s *userGroupRateRepoStubForListUsers) ClearGroupDeniedModels(_ context.Context, _ int64) error {
+    return nil
 }

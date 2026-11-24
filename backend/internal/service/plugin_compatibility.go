@@ -22,9 +22,9 @@ func EvaluatePluginCompatibility(manifest PluginManifest, host PluginHostInfo) P
 		TransportAPI:       manifest.Requires.TransportAPI,
 		UIBridge:           manifest.Requires.UIBridge,
 	}
-	if manifest.ID == "local.oai-basispoints" || manifest.ID == "local.kitty.oai-basispoints" {
+	if pluginManifestRetired(manifest) {
 		result.Status = "incompatible"
-		result.Message = "此站点已移除 Excel/BPS 功能"
+		result.Message = pluginRetiredCapabilityMessage
 		return result
 	}
 	if manifest.Requires.PluginProtocol != pluginv1.ProtocolVersion ||
@@ -34,11 +34,11 @@ func EvaluatePluginCompatibility(manifest PluginManifest, host PluginHostInfo) P
 		result.Message = "插件协议版本与当前 Sub2API 不兼容"
 		return result
 	}
-	if (host.Version == "2.9.9-kitty.3" || host.Version == "2.9.9-kitty.4" || host.Version == "2.9.9-kitty.5" || host.Version == "2.9.9-kitty.6" || host.Version == "2.18.1-kitty.1" || host.Version == "2.19.0-kitty.1" || host.Version == "2.19.0-kitty.2" || host.Version == "2.19.0-kitty.3" || host.Version == "2.19.0-kitty.4" || host.Version == "2.19.0-kitty.5" || host.Version == "2.19.0-kitty.6" || host.Version == "2.19.0-kitty.7" || host.Version == "2.19.0-kitty.8" || host.Version == "2.19.0-kitty.9" || host.Version == "2.19.0-kitty.10" || host.Version == "2.19.0-kitty.11" || host.Version == "2.19.0-kitty.12" || host.Version == "2.19.0-kitty.13" || host.Version == "2.19.0-kitty.14" || host.Version == "2.19.0-kitty.15" || host.Version == "2.19.0-kitty.16" || host.Version == "2.19.0-kitty.17") && isPinnedGatewayPrompt(manifest) {
+	if host.Version == "0.2.21-custom.1-kitty.15" && isPinnedGatewayPrompt(manifest) {
 		result.Compatible = true
 		result.Tested = true
 		result.Status = "compatible"
-		result.Message = "当前 Kitty 版本已适配并验证此固定签名发布包"
+		result.Message = "此固定签名分组提示词发布包已适配当前 Kitty Custom 版本"
 		return result
 	}
 	if !matchesSemverRange(host.Version, manifest.Requires.Sub2API) {

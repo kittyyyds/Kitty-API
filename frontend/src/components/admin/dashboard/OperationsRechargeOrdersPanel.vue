@@ -38,6 +38,16 @@
       </div>
     </div>
 
+    <div class="border-b border-gray-100 px-4 py-3 dark:border-dark-700 sm:px-5" data-testid="recharge-summary" :aria-busy="summaryLoading">
+      <div class="flex flex-wrap items-baseline justify-between gap-2 text-sm">
+        <span class="font-medium text-gray-900 dark:text-white">{{ t('admin.operations.recharge.summaryTitle') }}</span>
+        <span v-if="summaryLoading" class="text-gray-500">{{ t('admin.operations.loading') }}</span>
+        <span v-else-if="summaryError" class="text-red-600"><button type="button" class="hover:underline" @click="$emit('retry-summary')">{{ t('admin.operations.recharge.summaryFailed') }}</button></span>
+        <span v-else class="font-semibold tabular-nums text-gray-900 dark:text-white">{{ summary ? formatMoney(summary.amount) : '—' }} · {{ t('admin.operations.recharge.summaryCount', { count: summary?.count ?? 0 }) }}</span>
+      </div>
+      <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.operations.recharge.summaryHint') }}</p>
+    </div>
+
     <div class="hidden border-b border-gray-100 bg-gray-50/80 px-4 py-2.5 text-[11px] font-medium text-gray-500 dark:border-dark-700 dark:bg-dark-800/40 dark:text-gray-400 sm:grid sm:grid-cols-[minmax(0,1.5fr)_minmax(0,.9fr)_minmax(0,.8fr)_minmax(0,.85fr)_minmax(0,1fr)] sm:gap-3 sm:px-5">
       <span>{{ t('admin.operations.recharge.email') }}</span><span>{{ t('admin.operations.recharge.amount') }}</span><span>{{ t('admin.operations.recharge.status') }}</span><span>{{ t('admin.operations.recharge.channel') }}</span><span class="text-right">{{ t('admin.operations.recharge.time') }}</span>
     </div>
@@ -76,12 +86,16 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import type { SimpleUser } from '@/api/admin/usage'
-import type { RechargeChannel, RechargeOrder, RechargeStatus } from '@/views/admin/operationsRechargeTypes'
+import type { RechargeChannel, RechargeOrder, RechargeStatus, RechargeSummary } from '@/views/admin/operationsRechargeTypes'
 import { formatMoney } from '@/views/admin/operationsUtils'
 import Icon from '@/components/icons/Icon.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 
-defineProps<{
+const props = defineProps<{
+  summary?: RechargeSummary | null
+  summaryLoading?: boolean
+  summaryError?: boolean
+  timeZone?: string
   orders: RechargeOrder[]
   loading: boolean
   error: boolean
@@ -106,6 +120,7 @@ defineEmits<{
   'select-days': [value: 1 | 7 | 30]
   'select-page': [value: number]
   retry: []
+  'retry-summary': []
 }>()
 
 const { t, locale } = useI18n()
@@ -128,6 +143,6 @@ const channels = [
 
 function formatTime(value: string): string {
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? '—' : new Intl.DateTimeFormat(locale?.value || undefined, { dateStyle: 'short', timeStyle: 'short' }).format(date)
+  return Number.isNaN(date.getTime()) ? '—' : new Intl.DateTimeFormat(locale?.value || undefined, { dateStyle: 'short', timeStyle: 'short', timeZone: props.timeZone }).format(date)
 }
 </script>

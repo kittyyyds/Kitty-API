@@ -5,7 +5,7 @@ import MonitorStatusCards from '../MonitorStatusCards.vue'
 import type { MonitorCoverage, MonitorMatrixRow } from '@/api/channelMonitorV2'
 
 vi.mock('vue-i18n', async (importOriginal) => ({ ...await importOriginal<typeof import('vue-i18n')>(), useI18n: () => ({ t: (key: string, values?: Record<string, unknown>) => key + (values ? ' ' + Object.values(values).join(' ') : ''), locale: ref('zh-CN') }) }))
-it('orders platform sections by the configured display order', () => {
+it('orders platform filters and the combined card grid by the configured display order', () => {
   const row = (platform: string) => ({
     platform, group_id: 1, group_name: platform,
     metrics: { has_samples: false, request_count: 0, cache_rate: 0, error_rate: 0, ttft: { p50_ms: null } },
@@ -15,7 +15,9 @@ it('orders platform sections by the configured display order', () => {
     props: { items: [row('openai'), row('deepseek'), row('kimi')], platformOrder: ['kimi', 'deepseek', 'openai'], countdown: 1, loading: false, now: Date.now() },
     global: { stubs: { ProviderIcon: true } },
   })
-  expect(wrapper.findAll('[data-platform]').map((section) => section.attributes('data-platform'))).toEqual(['kimi', 'deepseek', 'openai'])
+  expect(wrapper.findAll('[data-platform]').map((button) => button.attributes('data-platform'))).toEqual(['all', 'kimi', 'deepseek', 'openai'])
+  expect(wrapper.findAll('[data-testid="monitor-card-grid"]')).toHaveLength(1)
+  expect(wrapper.findAll('[data-testid="monitor-group-card"] h3').map(card => card.text())).toEqual(['kimi', 'deepseek', 'openai'])
   wrapper.unmount()
 })
 
@@ -71,26 +73,21 @@ function hoverFixture() {
 }
 const tooltip = () => document.querySelector<HTMLElement>('[role="tooltip"]')
 
-it('shows each original bucket on hover, with rates and P50 but no absolute volume', async () => {
+it('shows the hovered bucket, with rates and P50 but no absolute volume', async () => {
   const { wrapper } = hoverFixture()
-  const bar = wrapper.findAll('[data-testid="traffic-history-bar"]')[1]
+  const [first, bar] = wrapper.findAll('[data-testid="traffic-history-bar"]')
+  await first.trigger('mouseenter')
+  let samples = tooltip()!.querySelectorAll('[data-testid="monitor-card-tooltip-sample"]')
+  expect(samples).toHaveLength(1)
+  expect(samples[0].textContent).toContain('100.0% 88.1% 8.0s')
   await bar.trigger('mouseenter')
   expect(tooltip()?.textContent).toContain('Demo group')
-  const samples = tooltip()!.querySelectorAll('[data-testid="monitor-card-tooltip-sample"]')
-  expect(samples).toHaveLength(2)
-  expect(samples[0].textContent).toContain('100.0% 88.1% 8.0s')
-  expect(samples[1].textContent).toContain('75.0% 50.0% -')
+  samples = tooltip()!.querySelectorAll('[data-testid="monitor-card-tooltip-sample"]')
+  expect(samples).toHaveLength(1)
+  expect(samples[0].textContent).toContain('75.0% 50.0% -')
   expect(tooltip()?.textContent).not.toMatch(/request_count|token_count|RPM|TPM/)
   expect(bar.attributes('aria-describedby')).toBe(tooltip()?.id)
   expect(bar.attributes('title')).toBeUndefined()
-})
-
-it('shows empty history without inventing availability or latency', async () => {
-  const { wrapper } = hoverFixture()
-  await wrapper.find('[data-testid="traffic-history-bar"]').trigger('mouseenter')
-  expect(tooltip()?.textContent).toContain('channelMonitorV2.matrix.noTraffic')
-  expect(tooltip()?.textContent).not.toContain('100.0%')
-  expect(tooltip()?.querySelectorAll('[data-testid="monitor-card-tooltip-sample"]')).toHaveLength(0)
 })
 
 it('supports keyboard focus, Escape, touch-style clicks and outside dismissal', async () => {
@@ -178,27 +175,23 @@ it('shows the not-configured intelligence state when the group has no candy chec
   expect(wrapper.text()).not.toContain('channelMonitorV2.candy.waiting')
 })
 
-it('follows the admin timeline mode and does not offer a visitor toggle', async () => {
+it('draws only sampled buckets, never empty time slots, and offers no mode toggle', async () => {
   const { wrapper } = hoverFixture()
   expect(wrapper.find('[data-testid="card-timeline-mode"]').exists()).toBe(false)
-  expect(wrapper.findAll('[data-testid="traffic-history-bar"]')).toHaveLength(18)
-  expect(wrapper.text()).toContain('channelMonitorV2.cards.windows 18')
-  await wrapper.setProps({ timelineMode: 'samples' })
   const bars = wrapper.findAll('[data-testid="traffic-history-bar"]')
   expect(bars).toHaveLength(2)
   expect(wrapper.text()).toContain('channelMonitorV2.cards.sampledWindows 2 18')
+  expect(wrapper.text()).not.toContain('channelMonitorV2.cards.windows')
   await bars[0].trigger('mouseenter')
   expect(tooltip()?.textContent).toContain('channelMonitorV2.cards.sampleDetails')
   expect(tooltip()?.textContent).not.toContain('channelMonitorV2.matrix.noTraffic')
-  await wrapper.setProps({ timelineMode: 'windows' })
-  expect(wrapper.findAll('[data-testid="traffic-history-bar"]')).toHaveLength(18)
 })
 
 it('does not render recent samples below the minimum sample count', async () => {
   const { wrapper, row } = hoverFixture()
   const enough = { ...row.metrics, request_count: 50, has_samples: true }
   const quiet = { ...row.metrics, request_count: 3, has_samples: true }
-  await wrapper.setProps({ timelineMode: 'samples', items: [{ ...row, sample_buckets: [
+  await wrapper.setProps({ items: [{ ...row, sample_buckets: [
     { bucket_start: '2026-09-20T00:00:00Z', metrics: quiet, health: { overall: 'unknown', minimum_sample: 50 } },
     { bucket_start: '2026-09-20T00:05:00Z', metrics: enough, health: { overall: 'healthy', minimum_sample: 50 } },
   ] }] })
@@ -210,10 +203,10 @@ it('does not render recent samples below the minimum sample count', async () => 
 it('shows recent samples from outside the selected range and does not fall back when that history is empty', async () => {
   const { wrapper, row } = hoverFixture()
   const outside = { bucket_start: '2026-09-20T00:00:00Z', metrics: row.metrics, health: { overall: 'critical' } }
-  await wrapper.setProps({ timelineMode: 'samples', items: [{ ...row, sample_buckets: [outside] }] })
+  await wrapper.setProps({ items: [{ ...row, sample_buckets: [outside] }] })
   expect(wrapper.findAll('[data-testid="traffic-history-bar"]')).toHaveLength(1)
   expect(wrapper.text()).toContain('channelMonitorV2.cards.sampledWindows 1 18')
-  await wrapper.setProps({ timelineMode: 'samples', items: [{ ...row, sample_buckets: [] }] })
+  await wrapper.setProps({ items: [{ ...row, sample_buckets: [] }] })
   expect(wrapper.find('[data-testid="card-timeline-empty"]').exists()).toBe(true)
   expect(wrapper.findAll('[data-testid="traffic-history-bar"]')).toHaveLength(0)
 })

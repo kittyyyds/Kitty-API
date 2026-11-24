@@ -73,6 +73,9 @@ func buildSeedanceURL(base string, endpoint GrokMediaEndpoint, taskID string) (s
 // ForwardSeedance preserves the Ark protocol, including multimodal content and
 // future fields. Only model is rewritten using the account's configured mapping.
 func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Context, account *Account, endpoint GrokMediaEndpoint, taskID string, body []byte) (*OpenAIForwardResult, error) {
+	if err := CheckUpstreamModeration(ctx, c, account); err != nil {
+		return nil, err
+	}
 	if !account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilitySeedance) || !endpoint.IsSeedance() {
 		return nil, fmt.Errorf("seedance requires an OpenAI API key account with a custom base URL")
 	}
@@ -129,8 +132,55 @@ func (s *OpenAIGatewayService) ForwardSeedance(ctx context.Context, c *gin.Conte
 	if err != nil {
 		return nil, err
 	}
+	if billing := ClassifyUpstreamBillingError(resp.StatusCode, responseBody); billing.Matched {
+		upstreamMsg := strings.TrimSpace(billing.Message)
+		if upstreamMsg == "" {
+			upstreamMsg = strings.TrimSpace(extractUpstreamErrorMessage(responseBody))
+		}
+		if upstreamMsg == "" {
+			upstreamMsg = "Upstream billing unavailable"
+		}
+		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, "")
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: resp.StatusCode,
+			Kind:               "http_error",
+			Message:            upstreamMsg,
+		})
+		if s.rateLimitService != nil {
+			s.rateLimitService.HandleUpstreamError(ctx, account, upstreamBillingStatusCode(resp.StatusCode, responseBody), resp.Header, responseBody, upstreamModel)
+		}
+		MarkResponseCommitted(c)
+		// A failed asynchronous task is still a successful status lookup. Keep
+		// its native ID/status envelope, replacing the entire provider error so
+		// clients cannot see the operator's balance or billing details.
+		if endpoint == SeedanceEndpointStatus && resp.StatusCode < 300 {
+			safeError := gin.H{
+				"code":    "upstream_error",
+				"message": UpstreamBillingExhaustedClientMessage,
+			}
+			body, sanitizeErr := sjson.SetBytes(responseBody, "error", safeError)
+			if sanitizeErr == nil && gjson.GetBytes(body, "response.error").Exists() {
+				body, sanitizeErr = sjson.SetBytes(body, "response.error", safeError)
+			}
+			if sanitizeErr == nil {
+				writeOpenAIPassthroughErrorHeaders(c.Writer.Header(), resp.Header)
+				c.Data(resp.StatusCode, "application/json", body)
+				return nil, fmt.Errorf("seedance task failed: upstream billing unavailable")
+			}
+		}
+		writeOpenAIPassthroughErrorEnvelope(c, http.StatusBadGateway, resp.Header, UpstreamBillingExhaustedClientMessage)
+		// Do not return UpstreamFailoverError: an asynchronous create may have
+		// been accepted, so a second account or configured retry can duplicate it.
+		return nil, fmt.Errorf("seedance upstream status %d: billing unavailable", resp.StatusCode)
+	}
 	// Do not retry ambiguous asynchronous creates: the upstream may already have
-	// accepted a billable job. Preserve native error codes and response bodies.
+	// accepted a billable job. Preserve non-billing native errors.
 	if resp.StatusCode >= 300 {
 		writeGrokMediaResponse(c, resp, responseBody, s.responseHeaderFilter)
 		return nil, fmt.Errorf("seedance upstream status %d", resp.StatusCode)

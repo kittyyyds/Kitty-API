@@ -121,6 +121,7 @@
       </div>
 
       <OAuthAuthorizationFlow
+        :key="reauthSession"
         ref="oauthFlowRef"
         :add-method="addMethod"
         :auth-url="currentAuthUrl"
@@ -133,6 +134,10 @@
         :show-refresh-token-option="isOpenAI || isAntigravity || isGrok"
         :show-sso-option="isGrok"
         :show-email-password-option="false"
+        :show-openai-password-option="canOpenAIPasswordReauth"
+        :reauthorize="true"
+        :reauthorize-account-id="account.id"
+        :proxy-id="account.proxy_id ?? null"
         :allow-multiple="false"
         :method-label="t('admin.accounts.inputMethod')"
         :platform="isOpenAI ? 'openai' : isGemini ? 'gemini' : isAntigravity ? 'antigravity' : isGrok ? 'grok' : 'anthropic'"
@@ -142,6 +147,7 @@
         @cookie-auth="handleCookieAuth"
         @validate-refresh-token="handleValidateRefreshToken"
         @import-sso="handleGrokImportSSO"
+        @openai-password-authorized="handleOpenAIPasswordAuthorized"
       />
 
     </div>
@@ -190,7 +196,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
@@ -204,6 +210,7 @@ import { useGeminiOAuth } from '@/composables/useGeminiOAuth'
 import { useAntigravityOAuth } from '@/composables/useAntigravityOAuth'
 import { useGrokOAuth } from '@/composables/useGrokOAuth'
 import type { Account } from '@/types'
+import { openaiPasswordLogin, type PasswordLoginResult } from '@/api/admin/openaiPasswordLogin'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import OAuthAuthorizationFlow from '@/components/account/OAuthAuthorizationFlow.vue'
@@ -242,6 +249,7 @@ const grokOAuth = useGrokOAuth()
 
 // Refs
 const oauthFlowRef = ref<OAuthFlowExposed | null>(null)
+const reauthSession = ref(0)
 
 // State
 const addMethod = ref<AddMethod>('oauth')
@@ -249,6 +257,10 @@ const geminiOAuthType = ref<'code_assist' | 'google_one' | 'ai_studio'>('code_as
 
 // Computed - check platform
 const isOpenAI = computed(() => props.account?.platform === 'openai')
+const canOpenAIPasswordReauth = computed(() =>
+  isOpenAI.value && props.account?.type === 'oauth' &&
+  props.account.parent_account_id == null && props.account.extra?.openai_vm_managed !== true
+)
 const isOpenAILike = computed(() => isOpenAI.value)
 const isGemini = computed(() => props.account?.platform === 'gemini')
 const isAnthropic = computed(() => props.account?.platform === 'anthropic')
@@ -303,7 +315,7 @@ const currentError = computed(() => {
 // Computed — footer "complete auth" only for code-exchange flows, not SSO/password/RT.
 const isManualInputMethod = computed(() => {
   const method = oauthFlowRef.value?.inputMethod
-  if (method === 'sso_cookie' || method === 'email_password' || method === 'refresh_token') {
+  if (method === 'sso_cookie' || method === 'email_password' || method === 'openai_password' || method === 'refresh_token') {
     return false
   }
   // OpenAI/Gemini/Antigravity/Grok use manual code paste by default (no cookie auth)
@@ -323,33 +335,6 @@ const canExchangeCode = computed(() => {
   return authCode.trim() && sessionId && !loading
 })
 
-// Watchers
-watch(
-  () => props.show,
-  (newVal) => {
-    if (newVal && props.account) {
-      // Initialize addMethod based on current account type (Claude only)
-      if (
-        isAnthropic.value &&
-        (props.account.type === 'oauth' || props.account.type === 'setup-token')
-      ) {
-        addMethod.value = props.account.type as AddMethod
-      }
-      if (isGemini.value) {
-        const creds = (props.account.credentials || {}) as Record<string, unknown>
-        geminiOAuthType.value =
-          creds.oauth_type === 'google_one'
-            ? 'google_one'
-            : creds.oauth_type === 'ai_studio'
-              ? 'ai_studio'
-              : 'code_assist'
-      }
-    } else {
-      resetState()
-    }
-  }
-)
-
 // Methods
 const resetState = () => {
   addMethod.value = 'oauth'
@@ -363,7 +348,66 @@ const resetState = () => {
 }
 
 const handleClose = () => {
+  reauthSession.value++
   emit('close')
+}
+
+// Each account/proxy/open cycle owns its login task and pending save result.
+// A late response must not close a newly opened dialog or update its state.
+watch(
+  [() => props.show, () => props.account?.id, () => props.account?.proxy_id],
+  ([show]) => {
+    reauthSession.value++
+    resetState()
+    if (!show || !props.account) return
+    if (isAnthropic.value && (props.account.type === 'oauth' || props.account.type === 'setup-token')) {
+      addMethod.value = props.account.type as AddMethod
+    }
+    if (isGemini.value) {
+      const creds = (props.account.credentials || {}) as Record<string, unknown>
+      geminiOAuthType.value = creds.oauth_type === 'google_one'
+        ? 'google_one' : creds.oauth_type === 'ai_studio' ? 'ai_studio' : 'code_assist'
+    }
+  },
+  { immediate: true }
+)
+onBeforeUnmount(() => { reauthSession.value++ })
+
+const handleOpenAIPasswordAuthorized = async (result: PasswordLoginResult) => {
+  const account = props.account
+  if (!props.show || !account || !canOpenAIPasswordReauth.value || openaiOAuth.loading.value) return
+  const session = reauthSession.value
+  const isCurrent = () => props.show && reauthSession.value === session && props.account?.id === account.id
+  openaiOAuth.error.value = ''
+  if ((result.proxy_id ?? null) !== (account.proxy_id ?? null)) {
+    openaiOAuth.error.value = t('admin.accounts.oauth.openai.passwordLogin.reauthProxyChanged')
+    appStore.showError(openaiOAuth.error.value)
+    return
+  }
+  openaiOAuth.loading.value = true
+  try {
+    const updatedAccount = await adminAPI.accounts.applyOAuthCredentials(account.id, {
+      type: 'oauth',
+      credentials: openaiOAuth.buildCredentials(result.token_info),
+      extra: openaiOAuth.buildExtraInfo(result.token_info)
+    })
+    if (result.remember_job_id) {
+      try { await openaiPasswordLogin.remember(account.id, result.remember_job_id) }
+      catch { if (isCurrent()) appStore.showWarning(t('admin.accounts.oauth.openai.passwordLogin.rememberFailed')) }
+    }
+    if (result.remember_failed && isCurrent()) appStore.showWarning(t('admin.accounts.oauth.openai.passwordLogin.rememberFailed'))
+    if (!isCurrent()) return
+    appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
+    emit('reauthorized', updatedAccount)
+    handleClose()
+  } catch (error: any) {
+    if (!isCurrent()) return
+    openaiOAuth.error.value = error.response?.data?.detail || error.response?.data?.message ||
+      error.message || t('admin.accounts.oauth.authFailed')
+    appStore.showError(openaiOAuth.error.value)
+  } finally {
+    if (isCurrent()) openaiOAuth.loading.value = false
+  }
 }
 
 const handleGenerateUrl = async () => {

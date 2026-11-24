@@ -183,9 +183,9 @@ func testPluginManifest(files map[string][]byte) PluginManifest {
 			UIBridge:                  pluginv1.UIBridgeVersion,
 		},
 		Capabilities: []PluginCapability{{
-			ID:          PluginCapabilityOpenAIOAuthOutbound,
-			Platform:    PlatformOpenAI,
-			AccountType: AccountTypeOAuth,
+			ID:          PluginCapabilityGatewayTransform,
+			Platform:    "gateway",
+			AccountType: "any",
 		}},
 		Runtimes: map[string]PluginRuntime{
 			PluginManifest{}.RuntimeKey(): {Path: "bin/plugin"},

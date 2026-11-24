@@ -18,6 +18,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type scopedResponseHierarchyUsers struct{ service.UserRepository }
+
+func (*scopedResponseHierarchyUsers) GetByID(_ context.Context, id int64) (*service.User, error) {
+	if id == 9 {
+		return &service.User{ID: 9, Role: service.RoleAdmin, Status: service.StatusActive}, nil
+	}
+	if id == 7 {
+		return &service.User{ID: 7, Role: service.RoleUser, Status: service.StatusActive}, nil
+	}
+	return nil, service.ErrUserNotFound
+}
+
+func (*scopedResponseHierarchyUsers) GetUserAvatar(context.Context, int64) (*service.UserAvatar, error) {
+	return nil, nil
+}
+
 type scopedUserResponses struct {
 	service.AdminService
 	filters service.UserListFilters
@@ -75,7 +91,7 @@ func TestScopedAdminUserResponsesRequireIndependentPermissions(t *testing.T) {
 			RegisterAdminRoutes(r.Group("/api/v1"), &handler.Handlers{Admin: &handler.AdminHandlers{
 				Account: &adminhandler.AccountHandler{}, User: adminhandler.NewUserHandler(stub, nil, nil, nil, nil, nil, nil),
 				Setting: adminhandler.NewSettingHandler(settings, nil, nil, nil, nil, nil, nil),
-			}}, auth, middleware.AuditLogMiddleware(func(c *gin.Context) { c.Next() }), middleware.StepUpAuthMiddleware(func(c *gin.Context) { c.Next() }), nil, nil, nil)
+			}}, auth, middleware.AuditLogMiddleware(func(c *gin.Context) { c.Next() }), middleware.StepUpAuthMiddleware(func(c *gin.Context) { c.Next() }), nil, nil, service.NewUserService(&scopedResponseHierarchyUsers{}, nil, nil, nil))
 			paths := []string{"/users", "/users?include_subscriptions=true", "/users/7", "/users/7?include_deleted=true"}
 			balanceWrite := tc.name == "仅余额写入"
 			if balanceWrite {

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -197,10 +198,14 @@ func TestRejectIfCyberSessionBlocked_FailOpen(t *testing.T) {
 }
 
 func newCyberIdentityAdmissionTestHandler(settings map[string]string) *OpenAIGatewayHandler {
+	return newCyberIdentityAdmissionTestHandlerWithCache(settings, nil)
+}
+
+func newCyberIdentityAdmissionTestHandlerWithCache(settings map[string]string, cache service.GatewayCache) *OpenAIGatewayHandler {
 	settingSvc := service.NewSettingService(&contentModerationHandlerSettingRepo{values: settings}, nil)
 	cfg := &config.Config{}
 	gatewaySvc := service.NewOpenAIGatewayService(
-		nil, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil,
+		nil, nil, nil, nil, nil, nil, cache, cfg, nil, nil,
 		service.NewBillingService(cfg, nil), nil, nil, nil, &service.DeferredService{},
 		nil, nil, nil, nil, nil, settingSvc, nil,
 	)
@@ -416,4 +421,75 @@ func TestBuildCyberPolicyOpsErrorEntryIncludesIdentityMetadataWithoutRawID(t *te
 	require.Contains(t, entry.ErrorMessage, "session_identity_source=connection")
 	require.Contains(t, entry.ErrorMessage, "session_identity_inherited=true")
 	require.NotContains(t, entry.ErrorMessage, "private-thread-value")
+}
+
+type contentModerationHandlerSettingRepo struct {
+	values map[string]string
+}
+
+func (r *contentModerationHandlerSettingRepo) Get(ctx context.Context, key string) (*service.Setting, error) {
+	if value, ok := r.values[key]; ok {
+		return &service.Setting{Key: key, Value: value}, nil
+	}
+	return nil, service.ErrSettingNotFound
+}
+
+func (r *contentModerationHandlerSettingRepo) GetValue(ctx context.Context, key string) (string, error) {
+	if value, ok := r.values[key]; ok {
+		return value, nil
+	}
+	return "", service.ErrSettingNotFound
+}
+
+func (r *contentModerationHandlerSettingRepo) Set(ctx context.Context, key, value string) error {
+	if r.values == nil {
+		r.values = map[string]string{}
+	}
+	r.values[key] = value
+	return nil
+}
+
+func (r *contentModerationHandlerSettingRepo) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, key := range keys {
+		if value, ok := r.values[key]; ok {
+			out[key] = value
+		}
+	}
+	return out, nil
+}
+
+func (r *contentModerationHandlerSettingRepo) SetMultiple(ctx context.Context, settings map[string]string) error {
+	if r.values == nil {
+		r.values = map[string]string{}
+	}
+	for key, value := range settings {
+		r.values[key] = value
+	}
+	return nil
+}
+
+func (r *contentModerationHandlerSettingRepo) GetAll(ctx context.Context) (map[string]string, error) {
+	out := make(map[string]string, len(r.values))
+	for key, value := range r.values {
+		out[key] = value
+	}
+	return out, nil
+}
+
+func (r *contentModerationHandlerSettingRepo) Delete(ctx context.Context, key string) error {
+	delete(r.values, key)
+	return nil
+}
+
+// Kitty ships with the cyber session block switch off. An upstream cyber_policy
+// refusal must then never block a WebSocket connection or a later request.
+func TestRejectIfCyberSessionBlocked_DisabledNeverRejects(t *testing.T) {
+	h := newCyberIdentityAdmissionTestHandler(map[string]string{})
+	c := newTestGinContext()
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	key := &service.APIKey{ID: 7}
+	for _, format := range []cyberSessionBlockFormat{cyberBlockFormatResponses, cyberBlockFormatChat, cyberBlockFormatAnthropic} {
+		require.False(t, h.rejectIfCyberSessionBlocked(c, key, []byte(`{"prompt_cache_key":"s1"}`), "gpt-5", format))
+	}
 }

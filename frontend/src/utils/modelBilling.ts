@@ -21,13 +21,13 @@ export function normalizeModelBillingConfig(c?: ModelBillingConfig): ModelBillin
   return c?.schema_version === 2 ? c : defaultModelBillingConfig()
 }
 export function modelBillingConfigError(config: ModelBillingConfig): string | null {
-  if (config.schema_version !== 2 || config.rules.length > 100 || (config.enabled && !config.rules.length)) return 'autoConfig.modelBilling.invalid'
+  if (config.schema_version !== 2 || config.rules.length > 100 || (config.enabled && !config.rules.length)) return 'billingRules.modelBilling.invalid'
   const seen = new Set<string>()
   for (const rule of config.rules) {
     const model = rule.model.trim().toLowerCase(), key = rule.group_id + ':' + model
     if (!Number.isSafeInteger(rule.group_id) || rule.group_id <= 0 || !/^[a-z0-9_./:-]+\*?$/.test(model) || model.length > 200 || seen.has(key) ||
       !Number.isFinite(rule.multiplier) || rule.multiplier < 1 || rule.multiplier > 1000 ||
-      !['always', 'context'].includes(rule.mode) || (rule.mode === 'context' && (!Number.isSafeInteger(rule.threshold_tokens) || rule.threshold_tokens < 1 || rule.threshold_tokens > 100000000))) return 'autoConfig.modelBilling.invalid'
+      !['always', 'context'].includes(rule.mode) || (rule.mode === 'context' && (!Number.isSafeInteger(rule.threshold_tokens) || rule.threshold_tokens < 1 || rule.threshold_tokens > 100000000))) return 'billingRules.modelBilling.invalid'
     seen.add(key)
   }
   return null

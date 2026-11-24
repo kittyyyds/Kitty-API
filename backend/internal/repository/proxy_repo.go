@@ -42,14 +42,14 @@ func (r *proxyRepository) Create(ctx context.Context, proxyIn *service.Proxy) er
 		SetStatus(proxyIn.Status).
 		SetFallbackMode(proxyIn.FallbackMode).
 		SetExpiryWarnDays(proxyIn.ExpiryWarnDays)
-	if proxyIn.MihomoNodeID != "" {
-		builder.SetMihomoNodeID(proxyIn.MihomoNodeID)
-	}
 	if proxyIn.Username != "" {
 		builder.SetUsername(proxyIn.Username)
 	}
 	if proxyIn.Password != "" {
 		builder.SetPassword(proxyIn.Password)
+	}
+	if proxyIn.MihomoNodeID != "" {
+		builder.SetMihomoNodeID(proxyIn.MihomoNodeID)
 	}
 	if proxyIn.ExpiresAt != nil {
 		builder.SetExpiresAt(*proxyIn.ExpiresAt)
@@ -71,17 +71,6 @@ func (r *proxyRepository) GetByID(ctx context.Context, id int64) (*service.Proxy
 		if dbent.IsNotFound(err) {
 			return nil, service.ErrProxyNotFound
 		}
-		return nil, err
-	}
-	return proxyEntityToService(m), nil
-}
-
-func (r *proxyRepository) GetByMihomoNodeID(ctx context.Context, name string) (*service.Proxy, error) {
-	m, err := r.client.Proxy.Query().Where(proxy.MihomoNodeIDEQ(name)).Only(ctx)
-	if dbent.IsNotFound(err) {
-		return nil, nil
-	}
-	if err != nil {
 		return nil, err
 	}
 	return proxyEntityToService(m), nil
@@ -488,31 +477,10 @@ func (r *proxyRepository) ExistsByHostPortAuth(ctx context.Context, host string,
 	return count > 0, err
 }
 
-// ExistsByProtocolHostPortAuth includes the transport protocol in proxy
-// identity. This keeps HTTP and SOCKS proxies at the same endpoint distinct.
-func (r *proxyRepository) ExistsByProtocolHostPortAuth(ctx context.Context, protocolName, host string, port int, username, password string) (bool, error) {
-	q := r.client.Proxy.Query().
-		Where(proxy.ProtocolEQ(protocolName), proxy.HostEQ(host), proxy.PortEQ(port))
-
-	if username == "" {
-		q = q.Where(proxy.Or(proxy.UsernameIsNil(), proxy.UsernameEQ("")))
-	} else {
-		q = q.Where(proxy.UsernameEQ(username))
-	}
-	if password == "" {
-		q = q.Where(proxy.Or(proxy.PasswordIsNil(), proxy.PasswordEQ("")))
-	} else {
-		q = q.Where(proxy.PasswordEQ(password))
-	}
-
-	count, err := q.Count(ctx)
-	return count > 0, err
-}
-
 // CountAccountsByProxyID returns the number of accounts using a specific proxy
 func (r *proxyRepository) CountAccountsByProxyID(ctx context.Context, proxyID int64) (int64, error) {
 	var count int64
-	if err := scanSingleRow(ctx, r.sql, "SELECT COUNT(*) FROM accounts WHERE proxy_id = $1 AND deleted_at IS NULL", []any{proxyID}, &count); err != nil {
+	if err := scanSingleRow(ctx, r.sql, "SELECT COUNT(*) FROM accounts WHERE (proxy_id = $1 OR id IN (SELECT account_id FROM account_proxies WHERE proxy_id = $1)) AND deleted_at IS NULL", []any{proxyID}, &count); err != nil {
 		return 0, err
 	}
 	return count, nil
@@ -522,7 +490,7 @@ func (r *proxyRepository) ListAccountSummariesByProxyID(ctx context.Context, pro
 	rows, err := r.sql.QueryContext(ctx, `
 		SELECT id, name, platform, type, notes
 		FROM accounts
-		WHERE proxy_id = $1 AND deleted_at IS NULL
+		WHERE (proxy_id = $1 OR id IN (SELECT account_id FROM account_proxies WHERE proxy_id = $1)) AND deleted_at IS NULL
 		ORDER BY id DESC
 	`, proxyID)
 	if err != nil {
@@ -562,7 +530,7 @@ func (r *proxyRepository) ListAccountSummariesByProxyID(ctx context.Context, pro
 
 // GetAccountCountsForProxies returns a map of proxy ID to account count for all proxies
 func (r *proxyRepository) GetAccountCountsForProxies(ctx context.Context) (counts map[int64]int64, err error) {
-	rows, err := r.sql.QueryContext(ctx, "SELECT proxy_id, COUNT(*) AS count FROM accounts WHERE proxy_id IS NOT NULL AND deleted_at IS NULL GROUP BY proxy_id")
+	rows, err := r.sql.QueryContext(ctx, "SELECT proxy_id, COUNT(*) AS count FROM (SELECT id, proxy_id FROM accounts WHERE proxy_id IS NOT NULL AND deleted_at IS NULL UNION SELECT a.id, ap.proxy_id FROM accounts a JOIN account_proxies ap ON ap.account_id=a.id WHERE a.deleted_at IS NULL) bindings GROUP BY proxy_id")
 	if err != nil {
 		return nil, err
 	}
@@ -629,7 +597,6 @@ func proxyEntityToService(m *dbent.Proxy) *service.Proxy {
 		Protocol:       m.Protocol,
 		Host:           m.Host,
 		Port:           m.Port,
-		MihomoNodeID:   valueOrEmpty(m.MihomoNodeID),
 		Status:         m.Status,
 		CreatedAt:      m.CreatedAt,
 		UpdatedAt:      m.UpdatedAt,
@@ -643,6 +610,9 @@ func proxyEntityToService(m *dbent.Proxy) *service.Proxy {
 	}
 	if m.Password != nil {
 		out.Password = *m.Password
+	}
+	if m.MihomoNodeID != nil {
+		out.MihomoNodeID = *m.MihomoNodeID
 	}
 	return out
 }
@@ -807,7 +777,7 @@ func (r *proxyRepository) sweepOneExpiredProxyOnExec(ctx context.Context, exec s
 					ELSE extra
 				END,
 				updated_at=NOW()
-			WHERE proxy_id=$1 AND deleted_at IS NULL
+			WHERE proxy_id=$1 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM account_proxies ap WHERE ap.account_id=accounts.id)
 			RETURNING id`, proxyID)
 	} else {
 		rows, err = exec.QueryContext(ctx, `
@@ -818,7 +788,7 @@ func (r *proxyRepository) sweepOneExpiredProxyOnExec(ctx context.Context, exec s
 					ELSE extra
 				END,
 				updated_at=NOW()
-			WHERE proxy_id=$1 AND deleted_at IS NULL
+			WHERE proxy_id=$1 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM account_proxies ap WHERE ap.account_id=accounts.id)
 			RETURNING id`, proxyID, *target)
 	}
 	if err != nil {

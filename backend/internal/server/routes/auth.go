@@ -272,11 +272,14 @@ func RegisterAuthRoutes(
 	settings.Use(panelRateLimiter.PublicIP())
 	{
 		settings.GET("/public", h.Setting.GetPublicSettings)
+		settings.GET("/guide", h.Setting.GetPublicGuide)
 		if h.QQBot != nil {
 			settings.GET("/community", h.QQBot.CommunityGuide)
 		}
 		settings.GET("/email-unsubscribe", h.Setting.UnsubscribeNotificationEmail)
 	}
+
+	v1.GET("/guide/assets/:id", panelRateLimiter.PublicIP(), h.Setting.GetGuideAsset)
 
 	// 需要认证的当前用户信息
 	authenticated := v1.Group("")

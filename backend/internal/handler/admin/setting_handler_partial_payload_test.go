@@ -3,7 +3,9 @@
 package admin
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -11,9 +13,35 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestUpstreamErrorRetrySettingsRoundTripAndPartialUpdate(t *testing.T) {
+	h, repo := newStepUpSwitchTestHandler(t, map[string]string{})
+	value := service.UpstreamErrorRetrySettings{Enabled: true, MaxRetries: 4, DelayMS: 500, Errors: "503\n currently overloaded "}
+	rec := doUpdateSettings(t, h, map[string]any{"upstream_error_retry": value}, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var stored service.UpstreamErrorRetrySettings
+	require.NoError(t, json.Unmarshal([]byte(repo.values[service.SettingKeyUpstreamErrorRetry]), &stored))
+	require.Equal(t, "503\ncurrently overloaded", stored.Errors)
+	require.True(t, stored.Enabled)
+	var envelope struct {
+		Data struct {
+			Retry service.UpstreamErrorRetrySettings `json:"upstream_error_retry"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &envelope))
+	require.Equal(t, stored, envelope.Data.Retry)
+	raw := repo.values[service.SettingKeyUpstreamErrorRetry]
+	rec = doUpdateSettings(t, h, map[string]any{"site_name": "Changed"}, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, raw, repo.values[service.SettingKeyUpstreamErrorRetry])
+	value.MaxRetries = 999
+	rec = doUpdateSettings(t, h, map[string]any{"upstream_error_retry": value}, nil)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	require.Equal(t, raw, repo.values[service.SettingKeyUpstreamErrorRetry])
+}
+
 // Saving settings is a whole-document PUT. A client that sends only the field it
 // cares about must not reset everything else: a payload as small as
-// `{"risk_control_enabled":true}` used to clear site_name, after which
+// `{"support_ticket_enabled":true}` used to clear site_name, after which
 // getStringOrDefault rendered the empty value as the built-in default and the
 // login page silently changed name.
 
@@ -26,10 +54,10 @@ func TestUpdateSettingsPartialPayloadKeepsUnsentKeys(t *testing.T) {
 		service.SettingKeyTurnstileEnabled: "true",
 	})
 
-	rec := doUpdateSettings(t, h, map[string]any{"risk_control_enabled": true}, nil)
+	rec := doUpdateSettings(t, h, map[string]any{"support_ticket_enabled": true}, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	require.Equal(t, "true", repo.values[service.SettingKeyRiskControlEnabled],
+	require.Equal(t, "true", repo.values[service.SettingKeySupportTicketEnabled],
 		"the field the caller actually sent must be written")
 
 	require.Equal(t, "Example Gateway", repo.values[service.SettingKeySiteName])
@@ -158,7 +186,7 @@ func TestUpdateSettingsPartialPayloadKeepsTencentCaptchaRegion(t *testing.T) {
 		service.SettingKeyTencentCaptchaRegion: service.TencentCaptchaRegionINTL,
 	})
 
-	rec := doUpdateSettings(t, h, map[string]any{"risk_control_enabled": true}, nil)
+	rec := doUpdateSettings(t, h, map[string]any{"support_ticket_enabled": true}, nil)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, service.TencentCaptchaRegionINTL,
@@ -220,4 +248,29 @@ func TestUpdateSettingsSubscriptionEnabledIsWritableAndKeptWhenOmitted(t *testin
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "false", repo.values[service.SettingKeySubscriptionEnabled],
 		"a payload without subscription_enabled must not flip the stored value back to true")
+}
+
+func TestUpstreamErrorMessageSettingsRoundTripAndPartialUpdate(t *testing.T) {
+	h, repo := newStepUpSwitchTestHandler(t, map[string]string{})
+	rec := doUpdateSettings(t, h, map[string]any{"upstream_error_message": "  服务暂时不可用，请重试。  "}, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, "服务暂时不可用，请重试。", repo.values[service.SettingKeyUpstreamErrorMessage])
+	var envelope struct {
+		Data struct {
+			Message string `json:"upstream_error_message"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &envelope))
+	require.Equal(t, "服务暂时不可用，请重试。", envelope.Data.Message)
+	rec = doUpdateSettings(t, h, map[string]any{"site_name": "Changed"}, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, "服务暂时不可用，请重试。", repo.values[service.SettingKeyUpstreamErrorMessage])
+	rec = doUpdateSettings(t, h, map[string]any{"upstream_error_message": strings.Repeat("错", 501)}, nil)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	require.Equal(t, "服务暂时不可用，请重试。", repo.values[service.SettingKeyUpstreamErrorMessage])
+	rec = doUpdateSettings(t, h, map[string]any{"upstream_error_message": "  "}, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Empty(t, repo.values[service.SettingKeyUpstreamErrorMessage])
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &envelope))
+	require.Empty(t, envelope.Data.Message)
 }

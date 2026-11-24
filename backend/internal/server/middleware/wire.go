@@ -1,8 +1,6 @@
 package middleware
 
 import (
-	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/wire"
 )
@@ -24,11 +22,7 @@ var ProviderSet = wire.NewSet(
 	NewJWTAuthMiddleware,
 	NewOptionalJWTAuthMiddleware,
 	NewAdminAuthMiddleware,
-	ProvideAPIKeyAuthMiddleware,
+	NewAPIKeyAuthMiddleware,
 	NewAuditLogMiddleware,
 	NewStepUpAuthMiddleware,
 )
-
-func ProvideAPIKeyAuthMiddleware(apiKeys *service.APIKeyService, subscriptions *service.SubscriptionService, cfg *config.Config) APIKeyAuthMiddleware {
-	return NewAPIKeyAuthMiddleware(apiKeys, subscriptions, cfg)
-}

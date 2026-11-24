@@ -34,6 +34,8 @@ export interface LatencyMetric {
 }
 
 export interface MonitorMetric {
+  has_cache_samples?: boolean
+  tps_samples?: number
   has_samples?: boolean
   success_requests: number
   error_requests: number
@@ -41,6 +43,9 @@ export interface MonitorMetric {
   token_count: number
   rpm: number
   tpm: number
+  /** Output tokens / measured post-first-token generation seconds. Null means unknown. */
+  output_tps?: number | null
+  output_tps_samples?: number
   error_rate: number
   cache_rate: number
   cache_rate_numerator: number
@@ -106,8 +111,6 @@ export interface MonitorConfig {
   version: number
   enabled: boolean
   refresh_interval_seconds: 60 | 300
-  /** Operator choice for card bars. Omitted values use time windows. */
-  card_timeline_mode?: 'windows' | 'samples'
   platforms: Array<{ platform: string; enabled: boolean; models: string[] }>
   group_ids: number[]
   /** Operator display order inside each platform. Empty means name, then id. */
@@ -167,6 +170,8 @@ export interface MonitorMatrixBucket {
 }
 
 export interface MonitorMatrixRow {
+  has_traffic?: boolean
+  recent_requests?: MonitorRecentRequest[]
   group_rate_multiplier?: number
   /** First enabled probe, kept for older payloads. */
   candy?: MonitorCandyHistory
@@ -282,13 +287,24 @@ export async function getSnapshot(filter: MonitorFilter, admin = false, signal?:
   const { data } = await apiClient.get<MonitorSnapshot>(`${base(admin)}/snapshot`, requestConfig(filter, signal))
   return data
 }
-export async function getMatrix(filter: MonitorFilter, groupBy: MonitorMatrixGroupBy, admin = false, signal?: AbortSignal, options?: { recentSamples?: boolean }) {
+export async function getMatrix(filter: MonitorFilter, groupBy: MonitorMatrixGroupBy, admin = false, signal?: AbortSignal, options?: { recentSamples?: boolean } | boolean) {
   const { data } = await apiClient.get<MonitorMatrixResponse>(`${base(admin)}/matrix`, requestConfig(filter, signal, {
     group_by: groupBy,
-    recent_samples: options?.recentSamples ? 1 : undefined,
+    recent_samples: typeof options === 'object' && options.recentSamples ? 1 : undefined,
+    include_recent_requests: options === true ? true : undefined,
   }))
   return data
 }
+/** Keep server-computed totals and model metrics separate: rates and percentiles cannot be averaged. */
+export async function getCardMatrices(filter: MonitorFilter, groupBy: MonitorMatrixGroupBy, admin = false, signal?: AbortSignal) {
+  const modelGroupBy = groupBy === 'platform_group' ? 'platform_group_model' : groupBy === 'platform' ? 'platform_model' : null
+  const [matrix, modelMatrix] = await Promise.all([
+    getMatrix(filter, groupBy, admin, signal, true),
+    modelGroupBy ? getMatrix(filter, modelGroupBy, admin, signal, true) : Promise.resolve(null),
+  ])
+  return { matrix, modelMatrix }
+}
+
 export async function getModels(filter: MonitorFilter, admin = false, signal?: AbortSignal) {
   const { data } = await apiClient.get<{ coverage: MonitorCoverage; items: MonitorModelRow[] }>(`${base(admin)}/models`, requestConfig(filter, signal))
   return data
@@ -308,4 +324,24 @@ export async function getConfig() {
 export async function updateConfig(config: MonitorConfig) {
   const { data } = await apiClient.put<MonitorConfig>('/admin/channel-monitor-v2/config', config)
   return data
+}
+
+export interface MonitorRecentRequest {
+  occurred_at: string
+  model: string
+  status: 'success' | 'slow' | 'error' | 'ignored'
+  ttft_ms?: number
+  output_tps?: number | null
+  duration_ms?: number
+  cache_rate?: number
+  /** Error categories and diagnostics are administrator-only. */
+  error_category?: string
+  /** Present only in administrator responses. */
+  error?: {
+    log_id: number
+    error_type?: string
+    status_code?: number
+    upstream_status_code?: number
+    message?: string
+  }
 }

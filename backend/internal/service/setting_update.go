@@ -38,6 +38,11 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 // UpdateSettingsOmitting persists system settings, leaving the keys in omitted
 // at their stored value.
 func (s *SettingService) UpdateSettingsOmitting(ctx context.Context, settings *SystemSettings, omitted OmittedSettingKeys) error {
+	if _, skipped := omitted[SettingKeyMainlandWebBlockEnabled]; !skipped {
+		if err := s.ValidateMainlandWebBlockEnabled(settings.MainlandWebBlockEnabled); err != nil {
+			return err
+		}
+	}
 	updates, err := s.buildSystemSettingsUpdates(ctx, settings)
 	if err != nil {
 		return err
@@ -46,6 +51,12 @@ func (s *SettingService) UpdateSettingsOmitting(ctx context.Context, settings *S
 
 	if err := s.settingRepo.SetMultiple(ctx, updates); err != nil {
 		return err
+	}
+	if _, skipped := omitted[SettingKeyMainlandWebBlockEnabled]; !skipped {
+		s.publishMainlandWebBlockEnabled(settings.MainlandWebBlockEnabled)
+	}
+	if _, skipped := omitted[SettingKeyUpstreamErrorMessage]; !skipped {
+		s.publishUpstreamErrorMessage(settings.UpstreamErrorMessage)
 	}
 	s.refreshCachedSettingsAfterWrite(ctx, settings, omitted)
 	return nil
@@ -60,6 +71,11 @@ func (s *SettingService) UpdateSettingsWithAuthSourceDefaults(ctx context.Contex
 // auth-source defaults in a single write, leaving the keys in omitted at their
 // stored value.
 func (s *SettingService) UpdateSettingsWithAuthSourceDefaultsOmitting(ctx context.Context, settings *SystemSettings, authDefaults *AuthSourceDefaultSettings, omitted OmittedSettingKeys) error {
+	if _, skipped := omitted[SettingKeyMainlandWebBlockEnabled]; !skipped {
+		if err := s.ValidateMainlandWebBlockEnabled(settings.MainlandWebBlockEnabled); err != nil {
+			return err
+		}
+	}
 	updates, err := s.buildSystemSettingsUpdates(ctx, settings)
 	if err != nil {
 		return err
@@ -76,6 +92,12 @@ func (s *SettingService) UpdateSettingsWithAuthSourceDefaultsOmitting(ctx contex
 
 	if err := s.settingRepo.SetMultiple(ctx, updates); err != nil {
 		return err
+	}
+	if _, skipped := omitted[SettingKeyMainlandWebBlockEnabled]; !skipped {
+		s.publishMainlandWebBlockEnabled(settings.MainlandWebBlockEnabled)
+	}
+	if _, skipped := omitted[SettingKeyUpstreamErrorMessage]; !skipped {
+		s.publishUpstreamErrorMessage(settings.UpstreamErrorMessage)
 	}
 	s.refreshCachedSettingsAfterWrite(ctx, settings, omitted)
 	return nil
@@ -99,10 +121,6 @@ func (s *SettingService) refreshCachedSettingsAfterWrite(ctx context.Context, se
 }
 
 func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, settings *SystemSettings) (map[string]string, error) {
-	captureConfig := settings.requestCaptureConfig()
-	if err := captureConfig.Validate(); err != nil {
-		return nil, infraerrors.BadRequest("INVALID_REQUEST_CAPTURE_SETTINGS", err.Error())
-	}
 	if err := s.validateDefaultSubscriptionGroups(ctx, settings.DefaultSubscriptions); err != nil {
 		return nil, err
 	}
@@ -183,6 +201,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyInvitationCodeEnabled] = strconv.FormatBool(settings.InvitationCodeEnabled)
 	updates[SettingKeyTotpEnabled] = strconv.FormatBool(settings.TotpEnabled)
 	updates[SettingKeyPasskeyEnabled] = strconv.FormatBool(settings.PasskeyEnabled)
+	updates[SettingKeyMainlandWebBlockEnabled] = strconv.FormatBool(settings.MainlandWebBlockEnabled)
 	updates[SettingKeySessionBindingEnabled] = strconv.FormatBool(settings.SessionBindingEnabled)
 	updates[SettingKeyStepUpEnabled] = strconv.FormatBool(settings.StepUpEnabled)
 	updates[SettingKeyAuditLogRetentionDays] = strconv.Itoa(settings.AuditLogRetentionDays)
@@ -419,6 +438,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	}
 
 	// Channel monitor feature switch
+	updates[SettingKeyChannelQualityPublicEnabled] = strconv.FormatBool(settings.ChannelQualityPublicEnabled)
 	updates[SettingKeyChannelMonitorEnabled] = strconv.FormatBool(settings.ChannelMonitorEnabled)
 	updates[SettingKeyChannelMonitorMode] = normalizeChannelMonitorMode(settings.ChannelMonitorMode)
 	if v := clampChannelMonitorInterval(settings.ChannelMonitorDefaultIntervalSeconds); v > 0 {
@@ -427,15 +447,6 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyChannelMonitorHideThroughput] = strconv.FormatBool(settings.ChannelMonitorHideThroughput)
 	updates[SettingKeyChannelMonitorShowQuota] = strconv.FormatBool(settings.ChannelMonitorShowQuota)
 	updates[SettingKeyChannelMonitorHideUserRanking] = strconv.FormatBool(settings.ChannelMonitorHideUserRanking)
-	updates[SettingKeyPrismBrowserEnabled] = strconv.FormatBool(settings.PrismBrowserEnabled)
-	baseURL := strings.TrimSpace(settings.PrismBrowserBaseURL)
-	if baseURL == "" {
-		baseURL = "http://127.0.0.1:8319/v1"
-	}
-	updates[SettingKeyPrismBrowserBaseURL] = baseURL
-	if strings.TrimSpace(settings.PrismBrowserAPIKey) != "" {
-		updates[SettingKeyPrismBrowserAPIKey] = strings.TrimSpace(settings.PrismBrowserAPIKey)
-	}
 
 	// Grok model mapping policy
 	if v := strings.TrimSpace(settings.GrokDefaultTextModel); v != "" {
@@ -449,15 +460,6 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	// Available channels feature switch
 	updates[SettingKeyAvailableChannelsEnabled] = strconv.FormatBool(settings.AvailableChannelsEnabled)
-
-	// Pelican showcase switch + gallery limits
-	updates[SettingKeyPelicanShowcaseEnabled] = strconv.FormatBool(settings.PelicanShowcaseEnabled)
-	showcase, showcaseErr := NormalizePelicanShowcaseConfig(settings.PelicanShowcase)
-	if showcaseErr != nil {
-		return nil, infraerrors.BadRequest("INVALID_PELICAN_SHOWCASE", showcaseErr.Error())
-	}
-	showcaseJSON, _ := json.Marshal(showcase)
-	updates[SettingKeyPelicanShowcaseConfig] = string(showcaseJSON)
 
 	// Subscription feature switch
 	updates[SettingKeySubscriptionEnabled] = strconv.FormatBool(settings.SubscriptionEnabled)
@@ -506,6 +508,19 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyBackendModeEnabled] = strconv.FormatBool(settings.BackendModeEnabled)
 
 	// Gateway forwarding behavior
+	upstreamErrorMessage, err := normalizeUpstreamErrorMessage(settings.UpstreamErrorMessage)
+	if err != nil {
+		return nil, err
+	}
+	settings.UpstreamErrorMessage = upstreamErrorMessage
+	updates[SettingKeyUpstreamErrorMessage] = upstreamErrorMessage
+	if settings.UpstreamErrorRetry != nil {
+		value, err := marshalUpstreamErrorRetrySettings(settings.UpstreamErrorRetry)
+		if err != nil {
+			return nil, err
+		}
+		updates[SettingKeyUpstreamErrorRetry] = value
+	}
 	mode := normalizeOpenAITTFTMode(settings.OpenAITTFTMode)
 	if strings.TrimSpace(settings.OpenAITTFTMode) != "" && strings.ToLower(strings.TrimSpace(settings.OpenAITTFTMode)) != OpenAITTFTModeSemantic && strings.ToLower(strings.TrimSpace(settings.OpenAITTFTMode)) != OpenAITTFTModeVisible {
 		return nil, fmt.Errorf("%s must be one of: %s/%s", SettingKeyOpenAITTFTMode, OpenAITTFTModeSemantic, OpenAITTFTModeVisible)
@@ -602,9 +617,6 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyUsageShowCacheRate] = strconv.FormatBool(settings.UsageShowCacheRate)
 	updates[SettingKeyUsageShowCacheRateToUsers] = strconv.FormatBool(settings.UsageShowCacheRateToUsers)
 	updates[SettingKeyUsageShowUpstreamResponseModelToUsers] = strconv.FormatBool(settings.UsageShowUpstreamResponseModelToUsers)
-	updates[SettingKeyRequestCaptureEnabled] = strconv.FormatBool(captureConfig.Enabled)
-	updates[SettingKeyRequestCaptureQuotaMiB] = strconv.FormatInt(captureConfig.QuotaMiB, 10)
-	updates[SettingKeyRequestCaptureRetentionDays] = strconv.Itoa(captureConfig.RetentionDays)
 
 	return updates, nil
 }
@@ -750,6 +762,9 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 		return
 	}
 
+	s.publishUpstreamErrorRetrySettings(settings.UpstreamErrorRetry)
+	s.publishUpstreamErrorMessage(settings.UpstreamErrorMessage)
+
 	// 先使 inflight singleflight 失效，再刷新缓存，缩小旧值覆盖新值的竞态窗口
 	versionBoundsSF.Forget("version_bounds")
 	versionBoundsCache.Store(&cachedVersionBounds{
@@ -797,8 +812,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	// 版本号缓存只做失效，不在此重算：生效值还取决于自动同步写入的 synced 键，
 	// 这里没有它的最新值，重算会把同步结果覆盖成陈旧值。
 	s.InvalidateOpenAICodexClientVersionCache()
-	s.InvalidateOpenAIRequestTimezoneEnabledCache()
-	s.InvalidateOpenAIRequestTimezoneAutoCache()
+
 	s.InvalidateClaudeCodeClientVersionCache()
 	openAIAdvancedSchedulerSettingSF.Forget(openAIAdvancedSchedulerSettingKey)
 	openAIAdvancedSchedulerSettingCache.Store(&cachedOpenAIAdvancedSchedulerSetting{
@@ -861,9 +875,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	allowlistedUsers, _ := ParseCyberPolicyUserAllowlist(settings.CyberPolicyUserAllowlist)
 	s.cyberSessionBlockRuntimeCache.Store(&cachedCyberSessionBlockRuntime{allowlistedUsers: allowlistedUsers})
 	s.cyberSessionBlockRuntimeMu.Unlock()
-	if s.requestCapture != nil {
-		s.requestCapture.ApplyConfig(settings.requestCaptureConfig())
-	}
+
 	if s.onUpdate != nil {
 		s.onUpdate() // Invalidate cache after settings update
 	}

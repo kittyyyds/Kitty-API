@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"github.com/Wei-Shaw/sub2api/internal/requestcapture"
 	"log"
 	"net/http"
 	"sync"
@@ -14,12 +13,13 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/mihomo"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/qqbot"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
-	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	"github.com/Wei-Shaw/sub2api/internal/server"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/google/wire"
@@ -27,9 +27,12 @@ import (
 )
 
 type Application struct {
-	Lifecycle     *server.Lifecycle
-	Server        *http.Server
-	PromptAudit   *securityaudit.PromptService
+	PromptAudit *securityaudit.PromptService
+
+	Server           *http.Server
+	Lifecycle        *server.Lifecycle
+	MediaIntegration *server.MediaIntegration
+
 	PluginManager *service.PluginManager
 	Cleanup       func()
 }
@@ -42,13 +45,16 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		// Business layer ProviderSets
 		repository.ProviderSet,
 		service.ProviderSet,
-		securityaudit.ProviderSet,
+
 		payment.ProviderSet,
 		middleware.ProviderSet,
 		handler.ProviderSet,
 
 		// Server layer ProviderSet
 		server.ProviderSet,
+
+		// Content moderation, prompt audit and penalties (ranxi v2.21.6 port)
+		securityaudit.ProviderSet,
 
 		// Privacy client factory for OpenAI training opt-out
 		providePrivacyClientFactory,
@@ -61,7 +67,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		provideCleanup,
 
 		// Application struct
-		wire.Struct(new(Application), "Server", "PromptAudit", "PluginManager", "Lifecycle", "Cleanup"),
+		wire.Struct(new(Application), "Server", "Lifecycle", "MediaIntegration", "PluginManager", "Cleanup", "PromptAudit"),
 	)
 	return nil, nil
 }
@@ -85,10 +91,12 @@ func providePluginHostInfo(buildInfo handler.BuildInfo) service.PluginHostInfo {
 }
 
 func provideCleanup(
+	gptDirect *service.GPTDirectService,
 	qqBot *qqbot.Service,
 	retainedMedia *service.RetainedMediaService,
-	cfg *config.Config,
-	requestCaptures *requestcapture.Manager,
+	concurrencyService *service.ConcurrencyService,
+	rechargeBonusExpiry *service.RechargeBonusExpiryService,
+	channelMonitorV3Prober *service.ChannelMonitorV3Prober,
 	entClient *ent.Client,
 	rdb *redis.Client,
 	opsMetricsCollector *service.OpsMetricsCollector,
@@ -100,7 +108,6 @@ func provideCleanup(
 	opsService *service.OpsService,
 	opsIngressReject *service.OpsIngressRejectAggregator,
 	apiKeyService *service.APIKeyService,
-	concurrencyService *service.ConcurrencyService,
 	authCacheInvalidationWorker *service.AuthCacheInvalidationWorker,
 	schedulerSnapshot *service.SchedulerSnapshotService,
 	tokenRefresh *service.TokenRefreshService,
@@ -119,46 +126,40 @@ func provideCleanup(
 	emailQueue *service.EmailQueueService,
 	billingCache *service.BillingCacheService,
 	usageRecordWorkerPool *service.UsageRecordWorkerPool,
+	balanceNotify *service.BalanceNotifyService,
+	digestSessions *service.DigestSessionStore,
 	subscriptionService *service.SubscriptionService,
 	oauth *service.OAuthService,
 	openaiOAuth *service.OpenAIOAuthService,
+	openaiReauth *service.OpenAIOAuthReauthService,
+	accountTests *service.AccountTestService,
 	geminiOAuth *service.GeminiOAuthService,
 	antigravityOAuth *service.AntigravityOAuthService,
 	grokOAuth *service.GrokOAuthService,
 	openAIGateway *service.OpenAIGatewayService,
 	scheduledTestRunner *service.ScheduledTestRunnerService,
-	accountOps *service.AccountOpsService,
-	accountTokenGuard *service.AccountTokenGuardService,
-	accountTokenGuardV2 *service.AccountTokenGuardV2Service,
+	accountPerformance *service.AccountPerformanceService,
 	backupSvc *service.BackupService,
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
-	rechargeBonusExpiry *service.RechargeBonusExpiryService,
 	channelMonitorRunner *service.ChannelMonitorRunner,
 	channelMonitorV2Aggregator *service.ChannelMonitorV2Aggregator,
-	channelMonitorV3Prober *service.ChannelMonitorV3Prober,
+	channelMonitorV2CandyRunner *service.ChannelMonitorV2CandyRunner,
 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
 	ollamaCloudUsage *service.OllamaCloudUsageService,
 	opencodeGoUsage *service.OpenCodeGoUsageService,
+	promptAudit *securityaudit.PromptService,
+	cyberModeration *service.ContentModerationService,
 	auditLog *service.AuditLogService,
 	openAIAutoReset *service.OpenAIQuotaAutoResetService,
-	promptAudit *securityaudit.PromptService,
+	openAIVMManaged *service.OpenAIVMManagedService,
+	openAIVMBatch *service.OpenAIVMBatchService,
+
 	pluginManager *service.PluginManager,
-	cyberModeration *service.ContentModerationService,
 ) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-
-		if openAIGateway != nil {
-			stopCtx, stopCancel := context.WithTimeout(ctx, 5*time.Second)
-			err := stopRegionalFunds(stopCtx, openAIGateway.RegionalFundsReadiness())
-			stopCancel()
-			if err != nil {
-				log.Printf("[Cleanup] Funds join failed; dependencies retained: %v", err)
-				return
-			}
-		}
 
 		type cleanupStep struct {
 			name string
@@ -167,7 +168,7 @@ func provideCleanup(
 
 		// 应用层清理步骤可并行执行，基础设施资源（Redis/Ent）最后按顺序关闭。
 		parallelSteps := []cleanupStep{
-			{"QQBotService", func() error {
+			{"QQBot", func() error {
 				if qqBot != nil {
 					qqBot.Stop()
 				}
@@ -179,9 +180,33 @@ func provideCleanup(
 				}
 				return nil
 			}},
-			{"AccountTokenGuardService", func() error {
-				if accountTokenGuard != nil {
-					accountTokenGuard.Stop()
+			{"concurrencyService", func() error {
+				if concurrencyService != nil {
+					concurrencyService.StopAPIKeyQueue()
+				}
+				return nil
+			}},
+			{"rechargeBonusExpiry", func() error {
+				if rechargeBonusExpiry != nil {
+					rechargeBonusExpiry.Stop()
+				}
+				return nil
+			}},
+			{"channelMonitorV3Prober", func() error {
+				if channelMonitorV3Prober != nil {
+					channelMonitorV3Prober.Stop()
+				}
+				return nil
+			}},
+			{"DigestSessionStore", func() error {
+				if digestSessions != nil {
+					digestSessions.Close()
+				}
+				return nil
+			}},
+			{"BalanceNotifyService", func() error {
+				if balanceNotify != nil {
+					balanceNotify.Stop()
 				}
 				return nil
 			}},
@@ -221,37 +246,23 @@ func provideCleanup(
 				}
 				return nil
 			}},
-			{"APIKeyQueueWaiters", func() error {
-				if concurrencyService != nil {
-					concurrencyService.StopAPIKeyQueue()
-				}
-				return nil
-			}},
-			{"CyberEvidence", func() error {
-				if cyberModeration != nil && cyberModeration.CyberEvidence() != nil {
-					cyberModeration.CyberEvidence().Close()
-				}
-				return nil
-			}},
-			{"PromptAuditService", func() error {
-				if promptAudit != nil {
-					return promptAudit.Shutdown(ctx)
-				}
-				return nil
-			}},
-			{"RechargeBonusExpiryService", func() error {
-				if rechargeBonusExpiry != nil {
-					rechargeBonusExpiry.Stop()
-				}
-				return nil
-			}},
+
 			{"OpsScheduledReportService", func() error {
 				if opsScheduledReport != nil {
 					opsScheduledReport.Stop()
 				}
 				return nil
 			}},
-			{"RequestCapture", func() error { requestCaptures.Close(); return nil }},
+			{"QQBotService", func() error {
+				if qqBot != nil {
+					qqBot.Stop()
+				}
+				return nil
+			}},
+			{"GPTDirectService", func() error {
+				gptDirect.Stop()
+				return nil
+			}},
 			{"OpsCleanupService", func() error {
 				if opsCleanup != nil {
 					opsCleanup.Stop()
@@ -350,7 +361,6 @@ func provideCleanup(
 				proxyExpiry.Stop()
 				return nil
 			}},
-
 			{"SubscriptionExpiryService", func() error {
 				subscriptionExpiry.Stop()
 				return nil
@@ -401,24 +411,21 @@ func provideCleanup(
 				}
 				return nil
 			}},
+			{"OpenAIReauth", func() error { openaiReauth.Stop(); return nil }},
+			{"OpenAIVMBatch", func() error { openAIVMBatch.Stop(); return nil }},
+			{"OpenAIVMManaged", func() error { openAIVMManaged.Stop(); return nil }},
+			{"MediaTasks", func() error { openAIGateway.StopVideoTaskWorker(); return nil }},
+			{"TiboProbeLoop", func() error { openAIGateway.StopOpenAITiboProbeLoop(); return nil }},
+			{"ManagedMihomo", func() error { mihomo.CloseAll(); return nil }},
 			{"OpenAIWSPool", func() error {
+				service.CloseGroupSmartWSPool()
 				if openAIGateway != nil {
 					openAIGateway.CloseOpenAIWSPool()
+					service.CloseGroupSmartWSPool()
 				}
 				return nil
 			}},
-			{"AccountOpsService", func() error {
-				if accountOps != nil {
-					accountOps.Stop()
-				}
-				return nil
-			}},
-			{"AccountTokenGuardV2Service", func() error {
-				if accountTokenGuardV2 != nil {
-					accountTokenGuardV2.Stop()
-				}
-				return nil
-			}},
+			{"AccountPerformanceService", func() error { accountPerformance.Stop(); return nil }},
 			{"ScheduledTestRunnerService", func() error {
 				if scheduledTestRunner != nil {
 					scheduledTestRunner.Stop()
@@ -443,9 +450,9 @@ func provideCleanup(
 				}
 				return nil
 			}},
-			{"ChannelMonitorV3Prober", func() error {
-				if channelMonitorV3Prober != nil {
-					channelMonitorV3Prober.Stop()
+			{"ChannelMonitorV2CandyRunner", func() error {
+				if channelMonitorV2CandyRunner != nil {
+					channelMonitorV2CandyRunner.Stop()
 				}
 				return nil
 			}},
@@ -482,6 +489,18 @@ func provideCleanup(
 		}
 
 		infraSteps := []cleanupStep{
+			{"CyberEvidence", func() error {
+				if cyberModeration != nil && cyberModeration.CyberEvidence() != nil {
+					cyberModeration.CyberEvidence().Close()
+				}
+				return nil
+			}},
+			{"PromptAuditService", func() error {
+				if promptAudit != nil {
+					return promptAudit.Shutdown(ctx)
+				}
+				return nil
+			}},
 			{"Redis", func() error {
 				if rdb == nil {
 					return nil

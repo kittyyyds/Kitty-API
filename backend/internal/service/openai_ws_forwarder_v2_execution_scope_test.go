@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -67,8 +68,6 @@ func TestOpenAIGatewayService_Forward_WSv2_TurnStateBoundToExecutionScope(t *tes
 	}
 	groupID := int64(9)
 	account := &Account{
-		GroupIDs: []int64{9},
-
 		ID:          456,
 		Name:        "openai-http-exec-scope",
 		Platform:    PlatformOpenAI,
@@ -127,11 +126,12 @@ func TestOpenAIGatewayService_Forward_WSv2_ExecutionScopeUsesOriginalIdentity(t 
 	completed := func(id string) []byte {
 		return []byte(`{"type":"response.completed","response":{"id":"` + id + `","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`)
 	}
-	captureConn := &openAIWSCaptureConn{events: [][]byte{completed("resp_a"), completed("resp_b"), completed("resp_c")}}
 	handshake := http.Header{}
 	handshake.Set(openAIWSTurnStateHeader, "turn-state-from-upstream")
 	pool := newOpenAIWSConnPool(cfg)
-	pool.setClientDialerForTest(&openAIWSCaptureDialer{conn: captureConn, handshake: handshake})
+	// Each downstream conversation is its own upstream thread (one socket per
+	// thread, like the official client), so every session dials afresh.
+	pool.setClientDialerForTest(&openAIWSFreshCaptureDialer{handshake: handshake, completed: completed})
 	defer pool.Close()
 
 	stateStore := NewOpenAIWSStateStore(nil)
@@ -147,8 +147,6 @@ func TestOpenAIGatewayService_Forward_WSv2_ExecutionScopeUsesOriginalIdentity(t 
 	groupID := int64(9)
 	const apiKeyID = int64(21)
 	account := &Account{
-		GroupIDs: []int64{9},
-
 		ID:          457,
 		Name:        "openai-oauth-fingerprint-full",
 		Platform:    PlatformOpenAI,
@@ -157,11 +155,11 @@ func TestOpenAIGatewayService_Forward_WSv2_ExecutionScopeUsesOriginalIdentity(t 
 		Schedulable: true,
 		Concurrency: 1,
 		Credentials: map[string]any{"access_token": "oauth-token-1"},
-		Extra: map[string]any{
+		Extra: astraHealthyTestExtra(map[string]any{
 			"responses_websockets_v2_enabled": true,
 			codexFingerprintModeExtraKey:      "full",
 			codexFingerprintSeedExtraKey:      "11111111-1111-4111-8111-aaaaaaaaaaaa",
-		},
+		}),
 	}
 
 	forward := func(sessionID, body string) (*gin.Context, []byte) {
@@ -202,4 +200,21 @@ func TestOpenAIGatewayService_Forward_WSv2_ExecutionScopeUsesOriginalIdentity(t 
 	require.Equal(t, "child-thread", threadC)
 	_, boundC := stateStore.GetSessionTurnState(groupID, scopeC)
 	require.True(t, boundC, "客户端自带线程标识时，键必须与按原始报文算出的一致，不受账号 namespace 改写影响")
+}
+
+// openAIWSFreshCaptureDialer returns a new single-response capture connection
+// per dial.
+type openAIWSFreshCaptureDialer struct {
+	mu        sync.Mutex
+	n         int
+	handshake http.Header
+	completed func(id string) []byte
+}
+
+func (d *openAIWSFreshCaptureDialer) Dial(_ context.Context, _ string, _ http.Header, _ string) (openAIWSClientConn, int, http.Header, error) {
+	d.mu.Lock()
+	d.n++
+	id := fmt.Sprintf("resp_fresh_%d", d.n)
+	d.mu.Unlock()
+	return &openAIWSCaptureConn{events: [][]byte{d.completed(id)}}, 0, cloneHeader(d.handshake), nil
 }

@@ -53,6 +53,54 @@ func (c *gatewayCache) SetSessionAccountID(ctx context.Context, groupID int64, s
 	return c.rdb.Set(ctx, key, accountID, ttl).Err()
 }
 
+var compareAndSwapSessionAccountScript = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if not current and ARGV[5] == '1' and #KEYS > 1 then
+  current = redis.call('GET', KEYS[2])
+end
+if current then
+  if not string.match(current, '^[1-9]%d*$') then
+    return redis.error_reply('invalid sticky account binding')
+  end
+  if current ~= ARGV[1] and current ~= ARGV[2] then
+    return 0
+  end
+end
+redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3])
+if #KEYS > 1 then
+  if ARGV[6] == '1' then
+    redis.call('SET', KEYS[2], ARGV[2], 'PX', ARGV[4])
+  else
+    redis.call('DEL', KEYS[2])
+  end
+end
+return 1
+`)
+
+// CompareAndSwapSessionAccountID advances both sticky hash formats atomically.
+// A stale waiter cannot replace a newer binding, and disabling legacy writes
+// removes the old fallback instead of allowing it to revive after primary TTL.
+func (c *gatewayCache) CompareAndSwapSessionAccountID(ctx context.Context, groupID int64, swap service.SessionAccountBindingSwap) (bool, error) {
+	if strings.TrimSpace(swap.SessionHash) == "" || swap.AccountID <= 0 || swap.ExpectedAccountID < 0 || swap.TTL.Milliseconds() <= 0 ||
+		(swap.WriteLegacy && swap.LegacySessionHash != "" && swap.LegacyTTL.Milliseconds() <= 0) {
+		return false, errors.New("invalid sticky account binding swap")
+	}
+	keys := []string{buildSessionKey(groupID, swap.SessionHash)}
+	if swap.LegacySessionHash != "" && swap.LegacySessionHash != swap.SessionHash {
+		keys = append(keys, buildSessionKey(groupID, swap.LegacySessionHash))
+	}
+	flag := func(enabled bool) string {
+		if enabled {
+			return "1"
+		}
+		return "0"
+	}
+	result, err := compareAndSwapSessionAccountScript.Run(ctx, c.rdb, keys,
+		swap.ExpectedAccountID, swap.AccountID, swap.TTL.Milliseconds(), swap.LegacyTTL.Milliseconds(),
+		flag(swap.ReadLegacy), flag(swap.WriteLegacy)).Int()
+	return result == 1, err
+}
+
 func (c *gatewayCache) RefreshSessionTTL(ctx context.Context, groupID int64, sessionHash string, ttl time.Duration) error {
 	key := buildSessionKey(groupID, sessionHash)
 	return c.rdb.Expire(ctx, key, ttl).Err()
@@ -314,8 +362,6 @@ func (c *gatewayCache) ReleaseGrokVideoBilled(ctx context.Context, key string) e
 	return c.rdb.Del(ctx, grokVideoBilledPrefix+key).Err()
 }
 
-// Compile-time assertion: gatewayCache must implement CyberSessionBlockStore.
-var _ service.CyberSessionBlockStore = (*gatewayCache)(nil)
 var _ service.LiveCallStore = (*gatewayCache)(nil)
 
 const reasoningContentPrefix = "reasoning_content:"
@@ -326,39 +372,8 @@ const reasoningContentDefaultTTL = 7 * 24 * time.Hour
 
 // SetReasoningContent 按 reasoning item id 缓存 reasoning 全文。
 // itemID 或 content 为空时直接返回 nil（无可缓存内容，属正常情况而非错误）。
-func (c *gatewayCache) SetReasoningContent(ctx context.Context, itemID string, content string, ttl time.Duration) error {
-	if c == nil || c.rdb == nil {
-		return errors.New("gateway cache unavailable")
-	}
-	itemID = strings.TrimSpace(itemID)
-	if itemID == "" || content == "" {
-		return nil
-	}
-	if ttl <= 0 {
-		ttl = reasoningContentDefaultTTL
-	}
-	return c.rdb.Set(ctx, reasoningContentPrefix+itemID, content, ttl).Err()
-}
-
-// GetReasoningContent 返回缓存的 reasoning 全文；未命中返回
-// service.ErrReasoningContentNotFound。
-func (c *gatewayCache) GetReasoningContent(ctx context.Context, itemID string) (string, error) {
-	if c == nil || c.rdb == nil {
-		return "", errors.New("gateway cache unavailable")
-	}
-	itemID = strings.TrimSpace(itemID)
-	if itemID == "" {
-		return "", service.ErrReasoningContentNotFound
-	}
-	val, err := c.rdb.Get(ctx, reasoningContentPrefix+itemID).Result()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return "", service.ErrReasoningContentNotFound
-		}
-		return "", err
-	}
-	return val, nil
-}
+// Compile-time assertion: gatewayCache must implement CyberSessionBlockStore.
+var _ service.CyberSessionBlockStore = (*gatewayCache)(nil)
 
 const (
 	cyberSessionBlockPrefix         = "cyber_session_block:"
@@ -439,6 +454,39 @@ func (c *gatewayCache) FindCyberSessionBlocked(ctx context.Context, keys []strin
 	}
 	return "", nil
 }
+func (c *gatewayCache) SetReasoningContent(ctx context.Context, itemID string, content string, ttl time.Duration) error {
+	if c == nil || c.rdb == nil {
+		return errors.New("gateway cache unavailable")
+	}
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" || content == "" {
+		return nil
+	}
+	if ttl <= 0 {
+		ttl = reasoningContentDefaultTTL
+	}
+	return c.rdb.Set(ctx, reasoningContentPrefix+itemID, content, ttl).Err()
+}
+
+// GetReasoningContent 返回缓存的 reasoning 全文；未命中返回
+// service.ErrReasoningContentNotFound。
+func (c *gatewayCache) GetReasoningContent(ctx context.Context, itemID string) (string, error) {
+	if c == nil || c.rdb == nil {
+		return "", errors.New("gateway cache unavailable")
+	}
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return "", service.ErrReasoningContentNotFound
+	}
+	val, err := c.rdb.Get(ctx, reasoningContentPrefix+itemID).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return "", service.ErrReasoningContentNotFound
+		}
+		return "", err
+	}
+	return val, nil
+}
 
 var claimLiveControllerScript = redis.NewScript(`
 	local key = KEYS[1]
@@ -496,22 +544,23 @@ func (c *gatewayCache) SaveLiveCall(ctx context.Context, record *service.LiveCal
 		return fmt.Errorf("invalid live call record")
 	}
 	values := map[string]any{
-		"call_id":          record.CallID,
-		"account_id":       record.AccountID,
-		"api_key_id":       record.APIKeyID,
-		"user_id":          record.UserID,
-		"group_id":         record.GroupID,
-		"subscription_id":  record.SubscriptionID,
-		"lease_id":         record.LeaseID,
-		"model":            record.Model,
-		"created_at":       record.CreatedAt.UnixMilli(),
-		"expires_at":       record.ExpiresAt.UnixMilli(),
-		"controller":       record.Controller,
-		"controller_owner": record.ControllerOwner,
-		"user_agent":       record.UserAgent,
-		"ip_address":       record.IPAddress,
-		"inbound_endpoint": record.InboundEndpoint,
-		"attestation":      record.AttestationCiphertext,
+		"call_id":                 record.CallID,
+		"account_id":              record.AccountID,
+		"api_key_id":              record.APIKeyID,
+		"user_id":                 record.UserID,
+		"group_id":                record.GroupID,
+		"group_concurrency_limit": record.GroupConcurrencyLimit,
+		"subscription_id":         record.SubscriptionID,
+		"lease_id":                record.LeaseID,
+		"model":                   record.Model,
+		"created_at":              record.CreatedAt.UnixMilli(),
+		"expires_at":              record.ExpiresAt.UnixMilli(),
+		"controller":              record.Controller,
+		"controller_owner":        record.ControllerOwner,
+		"user_agent":              record.UserAgent,
+		"ip_address":              record.IPAddress,
+		"inbound_endpoint":        record.InboundEndpoint,
+		"attestation":             record.AttestationCiphertext,
 	}
 	key := liveCallKey(record.CallHash)
 	pipe := c.rdb.TxPipeline()
@@ -542,6 +591,7 @@ func (c *gatewayCache) GetLiveCall(ctx context.Context, callHash string) (*servi
 		APIKeyID:              parseInt("api_key_id"),
 		UserID:                parseInt("user_id"),
 		GroupID:               parseInt("group_id"),
+		GroupConcurrencyLimit: int(parseInt("group_concurrency_limit")),
 		SubscriptionID:        parseInt("subscription_id"),
 		LeaseID:               values["lease_id"],
 		Model:                 values["model"],

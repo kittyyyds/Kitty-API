@@ -2,11 +2,12 @@ package repository
 
 import (
 	"context"
+	"testing"
+	"time"
+
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
-	"testing"
-	"time"
 )
 
 func TestConnectionTraceRecognizedUserNameAndRejectionRead(t *testing.T) {

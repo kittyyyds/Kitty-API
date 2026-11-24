@@ -1,3 +1,4 @@
+import type { AccountPerformance, PerformanceConfig, PerformanceEvent } from '@/types/accountPerformance'
 /**
  * Admin Accounts API endpoints
  * Handles AI platform account management for administrators
@@ -55,6 +56,7 @@ export async function list(
     group?: string
     search?: string
     privacy_mode?: string
+        plan_type?: string
     lite?: string
     include_scheduler_score?: string
     sort_by?: string
@@ -81,6 +83,17 @@ export interface AccountListWithEtagResult {
   data: PaginatedResponse<AccountListItem> | null
 }
 
+export interface AccountPlatformCount {
+  platform: string
+  count: number
+}
+
+/** Global platform counts, independent of account-list pagination and filters. */
+export async function getPlatformCounts(options?: { signal?: AbortSignal }): Promise<AccountPlatformCount[]> {
+  const { data } = await apiClient.get<AccountPlatformCount[]>('/admin/accounts/platforms', options)
+  return data
+}
+
 export interface AccountUpstreamBillingRatesWithEtagResult {
   notModified: boolean
   etag: string | null
@@ -97,6 +110,7 @@ export async function getUpstreamBillingRatesWithEtag(
     group?: string
     search?: string
     privacy_mode?: string
+        plan_type?: string
     sort_by?: string
     sort_order?: 'asc' | 'desc'
   },
@@ -130,6 +144,7 @@ export async function listWithEtag(
     group?: string
     search?: string
     privacy_mode?: string
+        plan_type?: string
     lite?: string
     include_scheduler_score?: string
     sort_by?: string
@@ -602,6 +617,24 @@ export async function setSchedulable(id: number, schedulable: boolean): Promise<
 }
 
 /**
+ * 切换 OpenAI OAuth 账号"额度用尽后消耗点数"开关。开启时后端会解除当前限流。
+ * @param id - Account ID
+ * @param enabled - Whether the account may spend credits after its plan allowance is exhausted
+ * @returns Updated account
+ */
+export async function setOpenAIAutoResetCreditEnabled(id: number, enabled: boolean): Promise<Account> {
+  const { data } = await apiClient.post<Account>(`/admin/accounts/${id}/auto-reset-credit-enabled`, { enabled })
+  return data
+}
+
+export async function setOpenAICreditsEnabled(id: number, enabled: boolean): Promise<Account> {
+  const { data } = await apiClient.post<Account>(`/admin/accounts/${id}/openai-credits`, {
+    enabled
+  })
+  return data
+}
+
+/**
  * Get available models for an account
  * @param id - Account ID
  * @returns List of available models for this account
@@ -611,17 +644,6 @@ export async function getAvailableModels(id: number): Promise<ClaudeModel[]> {
   return data
 }
 
-export interface AccountTestReasoning {
-  supported_reasoning_levels: string[]
-  default_reasoning_level: string
-}
-
-export async function getModelReasoning(id: number, modelId: string): Promise<AccountTestReasoning> {
-  const { data } = await apiClient.get<AccountTestReasoning>(`/admin/accounts/${id}/models/reasoning`, {
-    params: { model_id: modelId }
-  })
-  return data
-}
 
 export interface SyncUpstreamModelsResult {
   models: string[]
@@ -654,8 +676,29 @@ export interface UpstreamModelMetadata {
  * @param id - Account ID
  * @returns List of model IDs returned by the upstream
  */
-export async function syncUpstreamModels(id: number): Promise<SyncUpstreamModelsResult> {
-  const { data } = await apiClient.post<SyncUpstreamModelsResult>(`/admin/accounts/${id}/models/sync-upstream`)
+export async function syncUpstreamModels(id: number, options?: { replace: boolean }): Promise<SyncUpstreamModelsResult> {
+  const { data } = await apiClient.post<SyncUpstreamModelsResult>(`/admin/accounts/${id}/models/sync-upstream`, undefined, {
+    params: options,
+    timeout: 180000
+  })
+  return data
+}
+
+export interface BatchSyncUpstreamModelsResult {
+  total: number
+  success: number
+  failed: number
+  success_ids: number[]
+  failed_ids: number[]
+  errors: Array<{ account_id: number; error: string }>
+  warnings?: Array<{ account_id: number; code: string; message: string }>
+}
+
+/** Replace each selected account's model mapping with its live upstream list. */
+export async function batchSyncUpstreamModels(accountIds: number[]): Promise<BatchSyncUpstreamModelsResult> {
+  const { data } = await apiClient.post<BatchSyncUpstreamModelsResult>('/admin/accounts/models/sync-upstream-batch', {
+    account_ids: accountIds
+  }, { timeout: 180000 })
   return data
 }
 
@@ -747,6 +790,7 @@ export async function exportData(options?: {
     status?: string
     group?: string
     privacy_mode?: string
+        plan_type?: string
     search?: string
     sort_by?: string
     sort_order?: 'asc' | 'desc'
@@ -1172,34 +1216,13 @@ export async function refreshOpenCodeGoUsage(id: number): Promise<OpenCodeGoUsag
   return data
 }
 
-export async function getOpenAIRequestTimezones(): Promise<{ default: string; timezones: string[] }> {
-  const { data } = await apiClient.get<{ default: string; timezones: string[] }>('/admin/accounts/openai-request-timezones')
-  return data
-}
-
-export interface ProxyTimezoneResult {
-  success: boolean
-  reason: string
-  timezone?: string
-  ip_address?: string
-  country?: string
-  city?: string
-  checked_at?: string
-  expires_at?: string
-  cached: boolean
-}
-
-export async function probeOpenAIProxyTimezone(proxyId: number, force = false): Promise<ProxyTimezoneResult> {
-  const { data } = await apiClient.post<ProxyTimezoneResult>(`/admin/accounts/openai-request-timezones/proxy/${proxyId}`, { force })
-  return data
-}
 
 export const accountsAPI = {
-  probeOpenAIProxyTimezone,
+ getPerformance, savePerformance, releasePerformance, getPerformanceEvents,
   getManagementCapabilities,
-  getOpenAIRequestTimezones,
   list,
   listWithEtag,
+  getPlatformCounts,
   getUpstreamBillingRatesWithEtag,
   getById,
   create,
@@ -1225,9 +1248,11 @@ export const accountsAPI = {
   getTempUnschedulableStatus,
   resetTempUnschedulable,
   setSchedulable,
+  setOpenAICreditsEnabled,
+  setOpenAIAutoResetCreditEnabled,
   getAvailableModels,
-  getModelReasoning,
   syncUpstreamModels,
+  batchSyncUpstreamModels,
   syncUpstreamModelsPreview,
   generateAuthUrl,
   exchangeCode,
@@ -1274,6 +1299,21 @@ export const accountsAPI = {
 }
 
 export default accountsAPI
+
+export async function getPerformance(accountIds: number[], signal?: AbortSignal): Promise<Record<number, AccountPerformance>> {
+ const {data}=await apiClient.post<Record<number, AccountPerformance>>('/admin/accounts/performance',{account_ids:accountIds},{signal})
+ return data
+}
+export async function savePerformance(id:number,config:PerformanceConfig,revision:number): Promise<void> {
+ await apiClient.put('/admin/accounts/'+id+'/performance',{config,revision})
+}
+export async function releasePerformance(id:number,revision:number,pauseGeneration:number): Promise<void> {
+ await apiClient.post('/admin/accounts/'+id+'/performance/release',{revision,pause_generation:pauseGeneration})
+}
+export async function getPerformanceEvents(id:number): Promise<PerformanceEvent[]> {
+ const {data}=await apiClient.get<PerformanceEvent[]>('/admin/accounts/'+id+'/performance/events')
+ return data
+}
 
 export async function getManagementCapabilities(): Promise<{ web_search_enabled: boolean; account_quota_notify_enabled: boolean; concurrency_upgrade_enabled?: boolean }> {
   const { data } = await apiClient.get('/admin/accounts/management-capabilities')
