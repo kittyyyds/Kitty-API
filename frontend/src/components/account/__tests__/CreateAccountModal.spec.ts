@@ -1,0 +1,1131 @@
+import { defineComponent } from 'vue'
+import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  BUILTIN_PLATFORM_CATALOG,
+  resetPlatformCatalog,
+  setPlatformCatalog,
+} from '@/constants/platformCatalog'
+
+const {
+  createAccountMock,
+  probeUpstreamBillingMock,
+  previewUpstreamGroup,
+  syncUpstreamModelsMock,
+  showWarningMock,
+  importCodexSessionMock,
+  createOpenAICodexPATMock,
+  generateAuthUrlMock,
+  exchangeCodeMock,
+  refreshOpenAITokenMock,
+  authIsSimpleMode,
+} = vi.hoisted(() => ({
+  createAccountMock: vi.fn(),
+  probeUpstreamBillingMock: vi.fn(),
+  previewUpstreamGroup: vi.fn(),
+  syncUpstreamModelsMock: vi.fn(),
+  showWarningMock: vi.fn(),
+  importCodexSessionMock: vi.fn(),
+  createOpenAICodexPATMock: vi.fn(),
+  generateAuthUrlMock: vi.fn(),
+  exchangeCodeMock: vi.fn(),
+  refreshOpenAITokenMock: vi.fn(),
+  authIsSimpleMode: { value: true },
+}))
+
+vi.mock('@/stores/app', () => ({
+  useAppStore: () => ({
+    showError: vi.fn(),
+    showSuccess: vi.fn(),
+    showWarning: showWarningMock,
+  }),
+}))
+
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: () => ({
+    get isSimpleMode() {
+      return authIsSimpleMode.value
+    },
+  }),
+}))
+
+vi.mock('@/api/admin', () => ({
+  adminAPI: {
+    accounts: {
+      create: createAccountMock,
+      probeUpstreamBilling: probeUpstreamBillingMock,
+      previewUpstreamGroup,
+      syncUpstreamModels: syncUpstreamModelsMock,
+      checkMixedChannelRisk: vi.fn().mockResolvedValue({ has_risk: false }),
+      importCodexSession: importCodexSessionMock,
+      createOpenAICodexPAT: createOpenAICodexPATMock,
+      generateAuthUrl: generateAuthUrlMock,
+      exchangeCode: exchangeCodeMock,
+      refreshOpenAIToken: refreshOpenAITokenMock,
+    },
+    settings: {
+      getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
+      getSettings: vi.fn().mockResolvedValue({}),
+    },
+    tlsFingerprintProfiles: {
+      list: vi.fn().mockResolvedValue([]),
+    },
+  },
+}))
+
+vi.mock('vue-i18n', async () => {
+  const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
+  return {
+    ...actual,
+    useI18n: () => ({ t: (key: string) => key }),
+  }
+})
+
+import CreateAccountModal from '../CreateAccountModal.vue'
+
+const BaseDialogStub = defineComponent({
+  name: 'BaseDialog',
+  props: { show: { type: Boolean, default: false } },
+  template: '<div v-if="show"><slot /><slot name="footer" /></div>',
+})
+
+const OAuthAuthorizationFlowStub = defineComponent({
+  name: 'OAuthAuthorizationFlow',
+  props: {
+    showManualOption: Boolean,
+    showCodexSessionImportOption: Boolean,
+    showAgentIdentityOption: Boolean,
+    showCodexPatOption: Boolean,
+    initialInputMethod: String,
+  },
+  data: () => ({ inputMethod: 'manual', authCode: 'authorization-code', oauthState: 'oauth-state' }),
+  emits: ['import-codex-session', 'import-codex-pat', 'generate-url', 'validate-refresh-token', 'validate-mobile-refresh-token'],
+  template: `
+    <div>
+      <button data-testid="import-codex-session" @click="$emit('import-codex-session', 'session-json')">session</button>
+      <button data-testid="import-codex-pat" @click="$emit('import-codex-pat', 'pat-token')">pat</button>
+    </div>
+  `,
+})
+
+const GroupSelectorStub = defineComponent({
+  name: 'GroupSelector',
+  props: {
+    modelValue: {
+      type: Array,
+      default: () => [],
+    },
+  },
+  emits: ['update:modelValue'],
+  template: `
+    <button
+      type="button"
+      data-testid="select-pricing-groups"
+      @click="$emit('update:modelValue', [1, 2])"
+    >
+      groups
+    </button>
+  `,
+})
+
+const ModelWhitelistSelectorStub = defineComponent({
+  name: 'ModelWhitelistSelector',
+  props: {
+    modelValue: {
+      type: Array,
+      default: () => [],
+    },
+    platform: String,
+    syncCredentials: Object,
+  },
+  emits: ['update:modelValue', 'upstream-synced'],
+  template: `<button
+    type="button"
+    data-testid="model-whitelist-selector"
+    @click="$emit('update:modelValue', ['public-glm']); $emit('upstream-synced')"
+  >models</button>`,
+})
+
+function mountModal(groups: any[] = []) {
+  return mount(CreateAccountModal, {
+    props: { show: true, proxies: [], groups },
+    global: {
+      stubs: {
+        BaseDialog: BaseDialogStub,
+        OAuthAuthorizationFlow: OAuthAuthorizationFlowStub,
+        ConfirmDialog: true,
+        Select: true,
+        Icon: true,
+        PlatformIcon: true,
+        ProxySelector: true,
+        ProxyAdBanner: true,
+        GroupSelector: GroupSelectorStub,
+        ModelWhitelistSelector: ModelWhitelistSelectorStub,
+        QuotaLimitCard: true,
+      },
+    },
+  })
+}
+
+async function selectButtonByText(wrapper: ReturnType<typeof mountModal>, text: string) {
+  const button = wrapper.findAll('button').find((candidate) => candidate.text().includes(text))
+  expect(button).toBeDefined()
+  await button?.trigger('click')
+}
+
+async function submitApiKeyAccount(
+  platform: 'openai' | 'anthropic',
+  enableLongContextBilling = false,
+  disableUpstreamBillingProbe = false
+) {
+  const wrapper = mountModal()
+  await selectButtonByText(wrapper, platform === 'openai' ? 'OpenAI' : 'admin.accounts.claudeConsole')
+  if (platform === 'openai') {
+    await selectButtonByText(wrapper, 'API Key')
+  }
+  await wrapper.get('form#create-account-form input[type="text"]').setValue(`${platform} account`)
+  await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+  if (enableLongContextBilling) {
+    await wrapper.get('[data-testid="openai-long-context-billing-toggle"]').trigger('click')
+  }
+  if (disableUpstreamBillingProbe) {
+    await wrapper.get('[data-testid="upstream-billing-auto-probe"]').trigger('click')
+  }
+  await wrapper.get('form#create-account-form').trigger('submit.prevent')
+  await flushPromises()
+  return wrapper
+}
+
+async function openCodexImportStep(toggleClicks = 0) {
+  const wrapper = mountModal()
+  await selectButtonByText(wrapper, 'OpenAI')
+  for (let click = 0; click < toggleClicks; click += 1) {
+    await wrapper.get('[data-testid="openai-long-context-billing-toggle"]').trigger('click')
+  }
+  await wrapper.get('form#create-account-form input[type="text"]').setValue('Codex import')
+  await wrapper.get('form#create-account-form').trigger('submit.prevent')
+  return wrapper
+}
+
+type OpenAICreateMethod = 'code' | 'refresh-token' | 'mobile-refresh-token' | 'session' | 'pat' | 'agent-identity'
+
+async function submitOpenAIOAuthMethod(wrapper: ReturnType<typeof mountModal>, method: OpenAICreateMethod) {
+  const flow = wrapper.getComponent(OAuthAuthorizationFlowStub)
+  if (method === 'code') {
+    flow.vm.$emit('generate-url')
+    await flushPromises()
+    await selectButtonByText(wrapper, 'admin.accounts.oauth.completeAuth')
+  } else if (method === 'refresh-token' || method === 'mobile-refresh-token') {
+    flow.vm.$emit(method === 'refresh-token' ? 'validate-refresh-token' : 'validate-mobile-refresh-token', 'refresh-token')
+  } else if (method === 'pat') {
+    flow.vm.$emit('import-codex-pat', 'pat-token')
+  } else {
+    if (method === 'agent-identity') flow.vm.inputMethod = 'agent_identity'
+    flow.vm.$emit('import-codex-session', method === 'agent-identity'
+      ? JSON.stringify({ auth_mode: 'agentIdentity', agent_identity: { agent_runtime_id: 'runtime' } })
+      : 'session-json')
+  }
+  await flushPromises()
+  const mock = method === 'pat' ? createOpenAICodexPATMock
+    : method === 'session' || method === 'agent-identity' ? importCodexSessionMock : createAccountMock
+  expect(mock).toHaveBeenCalledTimes(1)
+  return mock.mock.calls[0]?.[0]
+}
+
+describe('CreateAccountModal OpenAI long-context billing', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'openai', type: 'apikey' })
+    probeUpstreamBillingMock.mockReset().mockResolvedValue({})
+    syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
+    showWarningMock.mockReset()
+    importCodexSessionMock.mockReset().mockResolvedValue({
+      created: 1,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+      errors: [],
+      warnings: [],
+    })
+    createOpenAICodexPATMock.mockReset().mockResolvedValue({})
+    generateAuthUrlMock.mockReset().mockResolvedValue({
+      auth_url: 'https://auth.example/authorize?state=oauth-state',
+      session_id: 'oauth-session',
+    })
+    const tokenInfo = { access_token: 'access-token', refresh_token: 'refresh-token', email: 'test@example.com' }
+    exchangeCodeMock.mockReset().mockResolvedValue(tokenInfo)
+    refreshOpenAITokenMock.mockReset().mockResolvedValue(tokenInfo)
+  })
+
+  afterEach(() => vi.useRealTimers())
+
+  it.each<OpenAICreateMethod>(['code', 'refresh-token', 'mobile-refresh-token', 'session', 'pat', 'agent-identity'])(
+    'defaults %s OAuth creation to concurrency 10 and Hosted image bridge', async (method) => {
+      const wrapper = await openCodexImportStep()
+      const payload = await submitOpenAIOAuthMethod(wrapper, method)
+      expect(payload.concurrency).toBe(10)
+      expect(payload.extra.codex_image_generation_bridge).toBe(true)
+      expect(payload.extra).not.toHaveProperty('codex_image_generation_bridge_enabled')
+      expect(payload.extra).not.toHaveProperty('codex_image_generation_explicit_tool_policy')
+      wrapper.unmount()
+    },
+  )
+
+  it.each([
+    ['enabled', true, undefined],
+    ['disabled', false, undefined],
+    ['inherit', null, undefined],
+    ['block', undefined, 'strip'],
+  ])('preserves the explicit %s image policy and concurrency on OAuth import', async (mode, bridge, toolPolicy) => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await wrapper.get('[data-testid="create-account-concurrency"]').setValue(23)
+    await wrapper.get('[data-testid="create-codex-image-tool-mode"]').setValue(mode)
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Custom OAuth settings')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    const payload = await submitOpenAIOAuthMethod(wrapper, 'session')
+    expect(payload.concurrency).toBe(23)
+    if (mode === 'block') {
+      expect(payload.extra).not.toHaveProperty('codex_image_generation_bridge')
+    } else {
+      expect(payload.extra.codex_image_generation_bridge).toBe(bridge)
+    }
+    if (toolPolicy) {
+      expect(payload.extra.codex_image_generation_explicit_tool_policy).toBe(toolPolicy)
+    } else {
+      expect(payload.extra).not.toHaveProperty('codex_image_generation_explicit_tool_policy')
+    }
+    expect(payload.extra).not.toHaveProperty('codex_image_generation_bridge_enabled')
+    wrapper.unmount()
+  })
+
+  it('changes untouched defaults only for GPT OAuth and keeps explicit concurrency', async () => {
+    const wrapper = mountModal()
+    const concurrency = () => wrapper.get<HTMLInputElement>('[data-testid="create-account-concurrency"]')
+    expect(concurrency().element.value).toBe('10')
+    await selectButtonByText(wrapper, 'OpenAI')
+    expect(concurrency().element.value).toBe('10')
+    expect(wrapper.get<HTMLSelectElement>('[data-testid="create-codex-image-tool-mode"]').element.value).toBe('enabled')
+    await selectButtonByText(wrapper, 'API Key')
+    expect(concurrency().element.value).toBe('10')
+    expect(wrapper.find('[data-testid="create-codex-image-tool-mode"]').exists()).toBe(false)
+    await selectButtonByText(wrapper, 'Anthropic')
+    expect(concurrency().element.value).toBe('10')
+    await selectButtonByText(wrapper, 'Grok')
+    expect(concurrency().element.value).toBe('1')
+    await selectButtonByText(wrapper, 'OpenAI')
+    expect(concurrency().element.value).toBe('10')
+    await concurrency().setValue(17)
+    await selectButtonByText(wrapper, 'API Key')
+    expect(concurrency().element.value).toBe('17')
+    wrapper.unmount()
+  })
+
+  it('restores GPT OAuth defaults when reopening the create dialog', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await wrapper.get('[data-testid="create-account-concurrency"]').setValue(23)
+    await wrapper.get('[data-testid="create-codex-image-tool-mode"]').setValue('block')
+    await wrapper.setProps({ show: false })
+    await wrapper.setProps({ show: true })
+    await selectButtonByText(wrapper, 'OpenAI')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="create-account-concurrency"]').element.value).toBe('10')
+    expect(wrapper.get<HTMLSelectElement>('[data-testid="create-codex-image-tool-mode"]').element.value).toBe('enabled')
+    wrapper.unmount()
+  })
+
+  it.each(['openai', 'anthropic'] as const)('keeps %s API key creation defaults unchanged', async (platform) => {
+    const wrapper = await submitApiKeyAccount(platform)
+    const payload = createAccountMock.mock.calls[0]?.[0]
+    expect(payload.concurrency).toBe(10)
+    expect(payload.extra ?? {}).not.toHaveProperty('codex_image_generation_bridge')
+    expect(payload.extra ?? {}).not.toHaveProperty('codex_image_generation_explicit_tool_policy')
+    wrapper.unmount()
+  })
+
+  it('new OpenAI OAuth accounts hide policy copy and manual model controls', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    expect(wrapper.find('[data-testid="astra-oauth-model-policy"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('admin.accounts.openai.astraPolicyTitle')
+    expect(wrapper.find('[data-testid="model-whitelist-selector"]').exists()).toBe(false)
+    await selectButtonByText(wrapper, 'API Key')
+    expect(wrapper.find('[data-testid="astra-oauth-model-policy"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="model-whitelist-selector"]').exists()).toBe(true)
+  })
+
+  it('sets month and year expiry presets without submitting the account form', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-01-31T12:34:00'))
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('expiry account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    const input = wrapper.get<HTMLInputElement>('input[type="datetime-local"]')
+
+    for (const [label, expected] of [
+      ['payment.oneMonth', '2026-02-28T12:34'],
+      ['payment.oneYear', '2027-01-31T12:34'],
+    ]) {
+      const button = wrapper.findAll('button').find((candidate) => candidate.text() === label)!
+      expect(button.attributes('type')).toBe('button')
+      await button.trigger('click')
+      expect(input.element.value).toBe(expected)
+      expect(createAccountMock).not.toHaveBeenCalled()
+    }
+
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock.mock.calls[0]?.[0]?.expires_at).toBe(new Date('2027-01-31T12:34:00').getTime() / 1000)
+    wrapper.unmount()
+  })
+
+  it('allows a manually entered expiry to override a preset before account creation', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('custom expiry account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await selectButtonByText(wrapper, 'payment.oneMonth')
+    await wrapper.get('input[type="datetime-local"]').setValue('2030-04-15T09:20')
+
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock.mock.calls[0]?.[0]?.expires_at).toBe(new Date('2030-04-15T09:20:00').getTime() / 1000)
+    wrapper.unmount()
+  })
+
+  it('keeps the account opt-in when every selected group enables tier pricing', async () => {
+    authIsSimpleMode.value = false
+    const wrapper = mountModal([
+      { id: 1, long_context_pricing_enabled: true },
+      { id: 2, long_context_pricing_enabled: true },
+    ])
+
+    await selectButtonByText(wrapper, 'OpenAI')
+    await wrapper.get('[data-testid="select-pricing-groups"]').trigger('click')
+
+    const toggle = wrapper.get('[data-testid="openai-long-context-billing-toggle"]')
+    expect(toggle.attributes('aria-checked')).toBe('true')
+    expect(wrapper.find('[data-testid="create-openai-ws-mode"]').exists()).toBe(true)
+  })
+
+  it('keeps the account toggle when any selected group disables tier pricing', async () => {
+    authIsSimpleMode.value = false
+    const wrapper = mountModal([
+      { id: 1, long_context_pricing_enabled: true },
+      { id: 2, long_context_pricing_enabled: false },
+    ])
+
+    await selectButtonByText(wrapper, 'OpenAI')
+    await wrapper.get('[data-testid="select-pricing-groups"]').trigger('click')
+
+    expect(wrapper.find('[data-testid="openai-long-context-billing-toggle"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="create-openai-ws-mode"]').exists()).toBe(true)
+  })
+
+  it('sends true explicitly for normal OpenAI account creation by default', async () => {
+    await submitApiKeyAccount('openai')
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(true)
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra).not.toHaveProperty(
+      'openai_compatible_provider'
+    )
+  })
+
+  it.each([
+    {
+      provider: 'mimo',
+      baseUrl: 'https://api.xiaomimimo.com/v1',
+      modelMapping: { 'mimo-v2.5': 'mimo-v2.5' },
+      responsesMode: 'force_responses'
+    },
+    {
+      provider: 'zhipu_glm',
+      baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+      modelMapping: {
+        'glm-4.7-flash': 'glm-4.7-flash',
+        'glm-4.7-flashx': 'glm-4.7-flashx'
+      },
+      responsesMode: 'force_chat_completions'
+    },
+    {
+      provider: 'alibaba_qwen',
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      modelMapping: { 'qwen3.7-flash': 'qwen3.7-flash' },
+      responsesMode: 'force_responses'
+    }
+  ])('applies and submits the $provider provider preset', async ({
+    provider,
+    baseUrl,
+    modelMapping,
+    responsesMode
+  }) => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get(`[data-testid="openai-provider-preset-${provider}"]`).trigger('click')
+
+    const baseUrlInput = wrapper.get<HTMLInputElement>('[data-testid="api-key-base-url"]')
+    expect(baseUrlInput.element.value).toBe(baseUrl)
+    expect(baseUrlInput.element.disabled).toBe(true)
+    expect(wrapper.get('[data-testid="openai-provider-force-non-reasoning"]').exists()).toBe(true)
+
+    await wrapper.get('form#create-account-form input[type="text"]').setValue(`${provider} account`)
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    const payload = createAccountMock.mock.calls[0]?.[0]
+    expect(payload?.credentials?.base_url).toBe(baseUrl)
+    expect(payload?.credentials?.model_mapping).toEqual(modelMapping)
+    expect(payload?.credentials?.openai_capabilities).toEqual(['chat_completions'])
+    expect(payload?.extra?.openai_compatible_provider).toBe(provider)
+    expect(payload?.extra?.openai_responses_mode).toBe(responsesMode)
+  })
+
+  it('keeps provider-populated values editable when switching back to custom', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('[data-testid="openai-provider-preset-mimo"]').trigger('click')
+    await wrapper.get('[data-testid="openai-provider-preset-custom"]').trigger('click')
+
+    const baseUrlInput = wrapper.get<HTMLInputElement>('[data-testid="api-key-base-url"]')
+    expect(baseUrlInput.element.disabled).toBe(false)
+    expect(baseUrlInput.element.value).toBe('https://api.xiaomimimo.com/v1')
+    await baseUrlInput.setValue('https://relay.example/v1')
+
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('custom account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    const payload = createAccountMock.mock.calls[0]?.[0]
+    expect(payload?.credentials?.base_url).toBe('https://relay.example/v1')
+    expect(payload?.extra).not.toHaveProperty('openai_compatible_provider')
+  })
+
+  it('omits the upstream request id header from extra when left empty', async () => {
+    await submitApiKeyAccount('openai')
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra).not.toHaveProperty('upstream_request_id_header')
+  })
+
+  it('sends the trimmed upstream request id header in extra when filled', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('openai account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="upstream-request-id-header"]').setValue('  X-Oneapi-Request-Id  ')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.upstream_request_id_header).toBe('X-Oneapi-Request-Id')
+  })
+
+  it('omits images_url_to_b64_json from extra by default', async () => {
+    await submitApiKeyAccount('openai')
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra).not.toHaveProperty('images_url_to_b64_json')
+  })
+
+  it('sends images_url_to_b64_json in extra when the toggle is enabled', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('openai account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="openai-images-url-to-b64-json-toggle"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.images_url_to_b64_json).toBe(true)
+  })
+
+  it('omits image size tiers by default and sends restricted tiers when set', async () => {
+    await submitApiKeyAccount('openai')
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra).not.toHaveProperty('openai_image_size_tiers')
+
+    createAccountMock.mockClear()
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('openai account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="openai-image-size-tier-1K"]').setValue(false)
+    await wrapper.get('[data-testid="openai-image-size-tier-2K"]').setValue(false)
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.openai_image_size_tiers).toEqual(['4K'])
+  })
+
+  it('persists upstream model metadata after creating an account from preview', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('OpenCode account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="model-whitelist-selector"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledOnce()
+    expect(syncUpstreamModelsMock).toHaveBeenCalledWith(42)
+  })
+
+  it('includes the current concrete model mapping in preview credentials', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="model-whitelist-selector"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('syncCredentials')).toMatchObject({
+      model_mapping: { 'public-glm': 'public-glm' }
+    })
+  })
+
+  it('runs formal capability sync after creating an account with explicit mappings', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Mapped account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await selectButtonByText(wrapper, 'admin.accounts.modelMapping')
+    await selectButtonByText(wrapper, 'admin.accounts.addMapping')
+    await wrapper.get('input[placeholder="admin.accounts.requestModel"]').setValue('public-glm')
+    await wrapper.get('input[placeholder="admin.accounts.actualModel"]').setValue('glm-5.3')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials?.model_mapping).toEqual({
+      'public-glm': 'glm-5.3'
+    })
+    expect(syncUpstreamModelsMock).toHaveBeenCalledWith(42)
+  })
+
+  it('warns when post-create capability metadata remains incomplete', async () => {
+    syncUpstreamModelsMock.mockResolvedValue({
+      models: ['x-preview-f-free'],
+      warnings: [{ code: 'upstream_model_metadata_incomplete', message: 'metadata incomplete' }],
+    })
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('OpenCode account')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="model-whitelist-selector"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(showWarningMock).toHaveBeenCalledWith(
+      'admin.accounts.syncUpstreamModelsMetadataIncomplete'
+    )
+  })
+
+  // namespace 摊平是仅 OAuth 的兼容开关：API Key 走 chat completions 回退桥时由桥自行摊平
+  it('shows the Codex namespace flatten toggle only for OpenAI OAuth accounts', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+
+    expect(wrapper.find('[data-testid="create-openai-flatten-namespaces-toggle"]').exists()).toBe(
+      true
+    )
+
+    await selectButtonByText(wrapper, 'API Key')
+    expect(wrapper.find('[data-testid="create-openai-flatten-namespaces-toggle"]').exists()).toBe(
+      false
+    )
+  })
+
+  it('enables upstream billing probes by default for new OpenAI API key accounts', async () => {
+    await submitApiKeyAccount('openai')
+
+    expect(createAccountMock.mock.calls[0]?.[0]?.upstream_billing_probe_enabled).toBe(true)
+  })
+
+  it('waits for the initial upstream billing probe before refreshing the account list', async () => {
+    let resolveProbe: (() => void) | undefined
+    probeUpstreamBillingMock.mockImplementationOnce(
+      () => new Promise<void>((resolve) => {
+        resolveProbe = resolve
+      })
+    )
+
+    const wrapper = await submitApiKeyAccount('openai')
+
+    expect(probeUpstreamBillingMock).toHaveBeenCalledWith(42)
+    expect(wrapper.emitted('created')).toBeUndefined()
+
+    resolveProbe?.()
+    await flushPromises()
+
+    expect(wrapper.emitted('created')).toHaveLength(1)
+  })
+
+  it('sends an explicit disabled state when the create toggle is turned off', async () => {
+    await submitApiKeyAccount('openai', false, true)
+
+    expect(createAccountMock.mock.calls[0]?.[0]?.upstream_billing_probe_enabled).toBe(false)
+    expect(probeUpstreamBillingMock).not.toHaveBeenCalled()
+  })
+
+  it('submits OpenCode Zen default protocol rules with adaptive endpoints', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenCode')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('oc')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-opencode-zen')
+
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      account_mode: 'zen',
+      api_protocol: 'adaptive',
+      base_url: 'https://opencode.ai/zen/v1',
+      api_base_urls: {
+        chat_completions: 'https://opencode.ai/zen/v1',
+        anthropic: 'https://opencode.ai/zen',
+        responses: 'https://opencode.ai/zen/v1'
+      },
+      protocol_rules: [
+        { pattern: 'grok-*', protocol: 'responses' },
+        { pattern: 'gpt-*', protocol: 'responses' },
+        { pattern: 'muse-spark-*', protocol: 'responses' },
+        { pattern: 'claude-*', protocol: 'anthropic' },
+        { pattern: 'qwen3.8-max', protocol: 'chat_completions' },
+        { pattern: 'qwen*', protocol: 'anthropic' }
+      ]
+    })
+  })
+
+  it('submits OpenCode GO endpoints after switching account type', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenCode')
+    await selectButtonByText(wrapper, 'admin.accounts.opencodeGo.accountMode.go')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('oc-go')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-opencode-go')
+
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      account_mode: 'go',
+      api_protocol: 'adaptive',
+      base_url: 'https://opencode.ai/zen/go/v1',
+      api_base_urls: {
+        chat_completions: 'https://opencode.ai/zen/go/v1',
+        anthropic: 'https://opencode.ai/zen/go',
+        responses: 'https://opencode.ai/zen/go/v1'
+      },
+      protocol_rules: [
+        { pattern: 'grok-*', protocol: 'responses' },
+        { pattern: 'gpt-*', protocol: 'responses' },
+        { pattern: 'muse-spark-*', protocol: 'responses' },
+        { pattern: 'minimax-*', protocol: 'anthropic' },
+        { pattern: 'qwen*', protocol: 'anthropic' }
+      ]
+    })
+  })
+
+  describe('providers using the generic form', () => {
+    const serverOnlyProviders = {
+      platforms: [
+        ...BUILTIN_PLATFORM_CATALOG.platforms,
+        {
+          id: 'acme_router',
+          display_name: 'Acme Router',
+          gateway: 'openai',
+          cn_provider: false,
+          multi_protocol: {
+            default_mode: 'standard',
+            routing: 'by_model',
+            modes: [
+              {
+                mode: 'standard',
+                base_urls: {
+                  chat_completions: 'https://api.acme-router.example/provider/v1',
+                  anthropic: 'https://api.acme-router.example/provider',
+                },
+                protocol_rules: [{ pattern: 'claude-*', protocol: 'anthropic' }],
+              },
+              {
+                mode: 'team',
+                base_urls: {
+                  chat_completions: 'https://team.acme-router.example/provider/v1',
+                  anthropic: 'https://team.acme-router.example/provider',
+                },
+                protocol_rules: [{ pattern: 'sonnet-*', protocol: 'anthropic' }],
+              },
+            ],
+          },
+        },
+        {
+          id: 'acme_chat',
+          display_name: 'Acme Chat',
+          gateway: 'openai',
+          cn_provider: false,
+          multi_protocol: {
+            default_mode: 'pass',
+            routing: 'by_inbound',
+            modes: [{ mode: 'pass', base_urls: { chat_completions: 'https://api.acme-chat.example/v1' } }],
+          },
+        },
+      ],
+      composite_precedence: [...BUILTIN_PLATFORM_CATALOG.composite_precedence, 'acme_router', 'acme_chat'],
+    }
+
+    beforeEach(() => {
+      setPlatformCatalog(serverOnlyProviders)
+    })
+
+    afterEach(() => {
+      resetPlatformCatalog()
+    })
+
+    it('creates a by-model provider account from its profile defaults', async () => {
+      const wrapper = mountModal()
+      await wrapper.get('[data-testid="platform-button-acme_router"]').trigger('click')
+      await wrapper.get('form#create-account-form input[type="text"]').setValue('cc')
+      await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-cc')
+
+      await wrapper.get('form#create-account-form').trigger('submit.prevent')
+      await flushPromises()
+
+      expect(createAccountMock).toHaveBeenCalledTimes(1)
+      const payload = createAccountMock.mock.calls[0]?.[0]
+      expect(payload?.platform).toBe('acme_router')
+      expect(payload?.type).toBe('apikey')
+      expect(payload?.credentials).toMatchObject({
+        api_key: 'sk-cc',
+        account_mode: 'standard',
+        api_protocol: 'adaptive',
+        base_url: 'https://api.acme-router.example/provider/v1',
+        api_base_urls: {
+          chat_completions: 'https://api.acme-router.example/provider/v1',
+          anthropic: 'https://api.acme-router.example/provider',
+        },
+        protocol_rules: [{ pattern: 'claude-*', protocol: 'anthropic' }],
+      })
+      // 该供应商没有原生 Responses 端点，不下发 responses 基址。
+      expect(payload?.credentials?.api_base_urls).not.toHaveProperty('responses')
+      // 没有内置模型列表时不预填白名单，新账号不限制模型。
+      expect(payload?.credentials).not.toHaveProperty('model_mapping')
+    })
+
+    it('switches endpoints and default rules with the provider mode', async () => {
+      const wrapper = mountModal()
+      await wrapper.get('[data-testid="platform-button-acme_router"]').trigger('click')
+      await wrapper.get('[data-testid="generic-account-mode"]').findAll('button')[1].trigger('click')
+      await wrapper.get('form#create-account-form input[type="text"]').setValue('cc-team')
+      await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-cc')
+
+      await wrapper.get('form#create-account-form').trigger('submit.prevent')
+      await flushPromises()
+
+      expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+        account_mode: 'team',
+        base_url: 'https://team.acme-router.example/provider/v1',
+        api_base_urls: {
+          chat_completions: 'https://team.acme-router.example/provider/v1',
+          anthropic: 'https://team.acme-router.example/provider',
+        },
+        protocol_rules: [{ pattern: 'sonnet-*', protocol: 'anthropic' }],
+      })
+    })
+
+    it('creates a by-inbound provider account without protocol rules', async () => {
+      const wrapper = mountModal()
+      await wrapper.get('[data-testid="platform-button-acme_chat"]').trigger('click')
+      // 单一接入模式时不显示模式选择。
+      expect(wrapper.find('[data-testid="generic-account-mode"]').exists()).toBe(false)
+      await wrapper.get('form#create-account-form input[type="text"]').setValue('acme-chat')
+      await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-acme-chat')
+
+      await wrapper.get('form#create-account-form').trigger('submit.prevent')
+      await flushPromises()
+
+      const credentials = createAccountMock.mock.calls[0]?.[0]?.credentials
+      expect(credentials).toMatchObject({
+        account_mode: 'pass',
+        api_protocol: 'adaptive',
+        base_url: 'https://api.acme-chat.example/v1',
+        api_base_urls: { chat_completions: 'https://api.acme-chat.example/v1' },
+      })
+      expect(credentials).not.toHaveProperty('protocol_rules')
+    })
+
+    it('falls back to the Kimi default mode after a server-only provider', async () => {
+      const wrapper = mountModal()
+      await wrapper.get('[data-testid="platform-button-acme_router"]').trigger('click')
+      await selectButtonByText(wrapper, 'Kimi')
+      await wrapper.get('form#create-account-form input[type="text"]').setValue('kimi')
+      await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-kimi')
+
+      await wrapper.get('form#create-account-form').trigger('submit.prevent')
+      await flushPromises()
+
+      expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+        account_mode: 'payg',
+        base_url: 'https://api.moonshot.cn/v1',
+      })
+      expect(createAccountMock.mock.calls[0]?.[0]?.credentials).not.toHaveProperty('protocol_rules')
+    })
+  })
+
+  it('groups the aggregators on their own row below the CN providers', () => {
+    const wrapper = mountModal()
+    const labels = (testid: string) =>
+      wrapper.get(`[data-testid="${testid}"]`).findAll('button').map(button => button.text().trim())
+    expect(labels('platform-row-cn')).toEqual(['Kimi', 'Zhipu GLM', 'DeepSeek', 'MiniMax'])
+    expect(labels('platform-row-aggregators')).toEqual(['OpenCode', 'Command Code', 'Cline'])
+  })
+
+  it('creates a Cline account without an account type and with only the Chat Completions endpoint', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="platform-button-cline"]').trigger('click')
+    // 积分与 ClinePass 共用同一个 Key，按模型计费，不需要选择账号类型。
+    expect(wrapper.find('[data-testid="generic-account-mode"]').exists()).toBe(false)
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('cline')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-cline')
+
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    const payload = createAccountMock.mock.calls[0]?.[0]
+    expect(payload?.platform).toBe('cline')
+    expect(payload?.credentials).toMatchObject({
+      account_mode: 'payg',
+      api_protocol: 'adaptive',
+      base_url: 'https://api.cline.bot/api/v1',
+      api_base_urls: { chat_completions: 'https://api.cline.bot/api/v1' },
+    })
+    expect(payload?.credentials).not.toHaveProperty('protocol_rules')
+    expect(payload?.credentials?.api_base_urls).not.toHaveProperty('responses')
+    expect(payload?.credentials?.api_base_urls).not.toHaveProperty('anthropic')
+  })
+
+  it('submits adaptive Kimi protocol endpoints', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Kimi')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Kimi adaptive')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-kimi')
+
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      account_mode: 'payg',
+      api_protocol: 'adaptive',
+      base_url: 'https://api.moonshot.cn/v1',
+      api_base_urls: {
+        chat_completions: 'https://api.moonshot.cn/v1',
+        anthropic: 'https://api.moonshot.cn/anthropic',
+        responses: 'https://api.moonshot.cn/v1'
+      }
+    })
+  })
+
+  it('submits adaptive Kimi Coding Plan Responses endpoint', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Kimi')
+    await selectButtonByText(wrapper, 'admin.accounts.cnProviders.accountMode.coding')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Kimi coding')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-kimi-coding')
+
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      account_mode: 'coding',
+      api_protocol: 'adaptive',
+      base_url: 'https://api.kimi.com/coding/v1',
+      api_base_urls: {
+        chat_completions: 'https://api.kimi.com/coding/v1',
+        anthropic: 'https://api.kimi.com/coding',
+        responses: 'https://api.kimi.com/coding/v1'
+      }
+    })
+  })
+
+  it('submits adaptive MiniMax protocol endpoints', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'MiniMax')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('MiniMax adaptive')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-minimax')
+
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      account_mode: 'payg',
+      api_protocol: 'adaptive',
+      base_url: 'https://api.minimaxi.com/v1',
+      api_base_urls: {
+        chat_completions: 'https://api.minimaxi.com/v1',
+        anthropic: 'https://api.minimaxi.com/anthropic',
+        responses: 'https://api.minimaxi.com/v1'
+      }
+    })
+  })
+
+  it('uses the edited adaptive Chat endpoint when previewing upstream models', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Kimi')
+    await wrapper
+      .get('[data-testid="cn-adaptive-base-url-chat_completions"]')
+      .setValue('https://relay.example.com/v1')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-relay')
+
+    expect(wrapper.getComponent(ModelWhitelistSelectorStub).props('syncCredentials')).toMatchObject({
+      platform: 'kimi',
+      type: 'apikey',
+      base_url: 'https://relay.example.com/v1',
+      api_key: 'sk-relay'
+    })
+  })
+
+  it('exposes Agent Identity in the OpenAI authorization methods', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('OpenAI account')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+
+    const flow = wrapper.getComponent(OAuthAuthorizationFlowStub)
+    expect(flow.props('showManualOption')).toBe(true)
+    expect(flow.props('showCodexSessionImportOption')).toBe(true)
+    expect(flow.props('showAgentIdentityOption')).toBe(true)
+    expect(flow.props('showCodexPatOption')).toBe(true)
+    expect(flow.props('initialInputMethod')).toBe('manual')
+  })
+
+  it.each([
+    ['camelCase', { authMode: 'agentIdentity', agentIdentity: { agentRuntimeId: 'runtime' } }],
+    ['nested identity without auth_mode', { agent_identity: { agent_runtime_id: 'runtime' } }],
+  ])('accepts backend-compatible %s Agent Identity imports', async (_name, content) => {
+    const wrapper = await openCodexImportStep()
+    const flow = wrapper.getComponent(OAuthAuthorizationFlowStub)
+    flow.vm.inputMethod = 'agent_identity'
+
+    flow.vm.$emit('import-codex-session', JSON.stringify(content))
+    await flushPromises()
+
+    expect(importCodexSessionMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends false explicitly when OpenAI long-context billing is turned off', async () => {
+    await submitApiKeyAccount('openai', true)
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
+  })
+
+  it('omits the OpenAI setting for non-OpenAI account creation', async () => {
+    await submitApiKeyAccount('anthropic')
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBeUndefined()
+    // 上游倍率探测已放宽到全部 API-key 平台：非 OpenAI 平台与 OpenAI 一致，默认开启。
+    expect(createAccountMock.mock.calls[0]?.[0]?.upstream_billing_probe_enabled).toBe(true)
+  })
+
+  it('sends an explicit disabled state when the non-OpenAI create toggle is turned off', async () => {
+    await submitApiKeyAccount('anthropic', false, true)
+
+    expect(createAccountMock.mock.calls[0]?.[0]?.upstream_billing_probe_enabled).toBe(false)
+  })
+
+  it('leaves Codex session import billing ownership to the backend', async () => {
+    const wrapper = await openCodexImportStep()
+    await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
+    await flushPromises()
+
+    expect(importCodexSessionMock).toHaveBeenCalledTimes(1)
+    expect(importCodexSessionMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBeUndefined()
+  })
+
+  it('defaults new OpenAI OAuth accounts to the ctx_pool WS v2 mode', async () => {
+    const wrapper = await openCodexImportStep()
+    await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
+    await flushPromises()
+
+    const extra = importCodexSessionMock.mock.calls[0]?.[0]?.extra
+    expect(extra?.openai_oauth_responses_websockets_v2_mode).toBe('ctx_pool')
+    expect(extra?.openai_oauth_responses_websockets_v2_enabled).toBe(true)
+  })
+
+  it('keeps new OpenAI API key accounts on the off WS v2 mode', async () => {
+    await submitApiKeyAccount('openai')
+
+    const extra = createAccountMock.mock.calls[0]?.[0]?.extra
+    expect(extra?.openai_apikey_responses_websockets_v2_mode).toBe('off')
+    expect(extra?.openai_apikey_responses_websockets_v2_enabled).toBe(false)
+    expect(extra?.openai_oauth_responses_websockets_v2_mode).toBeUndefined()
+  })
+
+  it('leaves Codex PAT import billing ownership to the backend', async () => {
+    const wrapper = await openCodexImportStep()
+    await wrapper.get('[data-testid="import-codex-pat"]').trigger('click')
+    await flushPromises()
+
+    expect(createOpenAICodexPATMock).toHaveBeenCalledTimes(1)
+    expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBeUndefined()
+  })
+
+  it('sends explicit false for Codex session import after the toggle is turned off', async () => {
+    const wrapper = await openCodexImportStep(1)
+    await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
+    await flushPromises()
+
+    expect(importCodexSessionMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
+  })
+
+  it('sends explicit true for Codex session import after the toggle is changed back', async () => {
+    const wrapper = await openCodexImportStep(2)
+    await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
+    await flushPromises()
+
+    expect(importCodexSessionMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(true)
+  })
+
+  it('sends explicit false for Codex PAT import after the toggle is turned off', async () => {
+    const wrapper = await openCodexImportStep(1)
+    await wrapper.get('[data-testid="import-codex-pat"]').trigger('click')
+    await flushPromises()
+
+    expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
+  })
+
+  it('sends explicit true for Codex PAT import after the toggle is changed back', async () => {
+    const wrapper = await openCodexImportStep(2)
+    await wrapper.get('[data-testid="import-codex-pat"]').trigger('click')
+    await flushPromises()
+
+    expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(true)
+  })
+})
+
+describe('CreateAccountModal Vertex service account', () => {
+  it('keeps Anthropic Vertex accounts on Service Account JSON only', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'admin.accounts.vertexLabel')
+    expect(wrapper.find('[data-testid="vertex-auth-mode-apikey"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="vertex-api-key-input"]').exists()).toBe(false)
+  })
+})

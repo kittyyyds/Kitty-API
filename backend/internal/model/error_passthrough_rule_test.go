@@ -1,0 +1,22 @@
+package model
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestAllPlatformsIncludesEveryConcretePlatform(t *testing.T) {
+	require.ElementsMatch(t, []string{
+		"anthropic",
+		"openai",
+		"grok",
+		"kimi",
+		"zhipu",
+		"deepseek",
+		"minimax",
+		"opencode_go",
+		"command_code",
+		"cline",
+	}, AllPlatforms())
+}

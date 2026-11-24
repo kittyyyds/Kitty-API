@@ -1,0 +1,130 @@
+package routes
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
+	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+)
+
+func TestEveryGatewayPOSTRouteIsClassifiedForContentModerationCoverage(t *testing.T) {
+	routeSource, err := os.ReadFile("gateway.go")
+	require.NoError(t, err)
+	pattern := regexp.MustCompile(`(?:gateway|r|codexDirect)\.POST\("([^"]+)"`)
+	matches := pattern.FindAllStringSubmatch(string(routeSource), -1)
+	actual := map[string]struct{}{}
+	for _, match := range matches {
+		actual[match[1]] = struct{}{}
+	}
+
+	audited := map[string][]string{
+		"/messages":                 {"gateway_handler.go", "openai_gateway_handler.go"},
+		"/responses":                {"gateway_handler_responses.go", "openai_gateway_handler.go"},
+		"/responses/*subpath":       {"gateway_handler_responses.go", "openai_gateway_handler.go", "openai_gateway_count_tokens.go"},
+		"/chat/completions":         {"gateway_handler_chat_completions.go", "openai_chat_completions.go"},
+		"/embeddings":               {"openai_embeddings.go"},
+		"/alpha/search":             {"openai_alpha_search.go"},
+		"/live":                     {"openai_live.go"},
+		"/realtime/calls":           {"openai_live.go"},
+		"/images/generations":       {"openai_images.go", "grok_media.go"},
+		"/images/edits":             {"openai_images.go", "grok_media.go"},
+		"/images/generations/async": {"image_task_handler.go"},
+		"/images/edits/async":       {"image_task_handler.go"},
+		"/videos":                   {"grok_media.go"},
+		"/videos/generations":       {"grok_media.go"},
+		"/videos/edits":             {"grok_media.go"},
+		"/videos/extensions":        {"grok_media.go"},
+		"/tts":                      {"grok_audio.go"},
+		"/web_search":               {"gateway_web_search.go"},
+		"/x_search":                 {"gateway_web_search.go"},
+	}
+	excluded := map[string]string{
+		"/messages/count_tokens": "tokenization only; it does not execute a model request",
+		"/stt":                   "speech transcription is not a text-generation prompt",
+		"/custom-voices":         "voice profile management has no model prompt",
+	}
+
+	unclassified := make([]string, 0)
+	for route := range actual {
+		if _, ok := audited[route]; ok {
+			continue
+		}
+		if _, ok := excluded[route]; ok {
+			continue
+		}
+		unclassified = append(unclassified, route)
+	}
+	sort.Strings(unclassified)
+	require.Empty(t, unclassified, "new gateway POST routes must be audited or explicitly classified with a no-prompt reason")
+
+	for route, files := range audited {
+		_, exists := actual[route]
+		require.Truef(t, exists, "stale content-moderation route manifest entry %s", route)
+		for _, filename := range files {
+			source, readErr := os.ReadFile(filepath.Join("..", "..", "handler", filename))
+			require.NoError(t, readErr)
+			require.Containsf(t, string(source), "checkContentModeration", "%s route handler %s bypasses unified risk control", route, filename)
+		}
+	}
+
+	for route, reason := range excluded {
+		require.NotEmpty(t, strings.TrimSpace(reason))
+		_, exists := actual[route]
+		require.Truef(t, exists, "stale excluded route %s", route)
+	}
+}
+
+func TestResponsesWebSocketHasFirstAndSubsequentTurnContentModerationGates(t *testing.T) {
+	routeSource, err := os.ReadFile("gateway.go")
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, strings.Count(string(routeSource), `.GET("/responses"`), 2)
+	handlerSource, err := os.ReadFile(filepath.Join("..", "..", "handler", "openai_gateway_handler.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(handlerSource), `checkContentModerationStage`)
+	require.Contains(t, string(handlerSource), `"first_turn"`)
+	require.Contains(t, string(handlerSource), `"subsequent_turn"`)
+	wsStart := strings.Index(string(handlerSource), `func (h *OpenAIGatewayHandler) ResponsesWebSocket`)
+	require.NotEqual(t, -1, wsStart)
+	wsSource := string(handlerSource)[wsStart:]
+	require.Less(t,
+		strings.Index(wsSource, `"first_turn"`),
+		strings.Index(wsSource, `TryAcquireUserSlotForAPIKey`),
+		"the first response.create gate must precede per-request user/account slots",
+	)
+}
+
+func TestLegacyPromptAuditAdminAPIIsNotRegistered(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	handlers := &handler.Handlers{Admin: &handler.AdminHandlers{
+		ContentModeration: admin.NewContentModerationHandler((*service.ContentModerationService)(nil)),
+	}}
+	adminAuth := servermiddleware.AdminAuthMiddleware(func(c *gin.Context) { c.Next() })
+	auditLog := servermiddleware.AuditLogMiddleware(func(c *gin.Context) { c.Next() })
+	stepUp := servermiddleware.StepUpAuthMiddleware(func(c *gin.Context) { c.Next() })
+	RegisterAdminRoutes(router.Group("/api/v1"), handlers, adminAuth, auditLog, stepUp, nil, nil)
+
+	for _, path := range []string{
+		"/api/v1/admin/prompt-audit/config",
+		"/api/v1/admin/prompt-audit/runtime",
+		"/api/v1/admin/prompt-audit/events",
+	} {
+		t.Run(path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			router.ServeHTTP(recorder, request)
+			require.Equal(t, http.StatusNotFound, recorder.Code)
+		})
+	}
+}

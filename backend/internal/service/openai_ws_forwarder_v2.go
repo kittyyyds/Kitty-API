@@ -1,0 +1,1734 @@
+package service
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
+	"github.com/coder/websocket"
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+)
+
+func isOpenAIWSGracefulClose(err error) bool {
+	switch websocket.CloseStatus(err) {
+	case websocket.StatusNormalClosure, websocket.StatusGoingAway, websocket.StatusServiceRestart:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *OpenAIGatewayService) forwardOpenAIWSV2(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	reqBody map[string]any,
+	bodyRaw []byte,
+	clientPromptCacheKey string,
+	executionScope string,
+	token string,
+	decision OpenAIWSProtocolDecision,
+	isCodexCLI bool,
+	reqStream bool,
+	originalModel string,
+	mappedModel string,
+	startTime time.Time,
+	attempt int,
+	lastFailureReason string,
+	agentTaskRecoveryTried *bool,
+) (*OpenAIForwardResult, error) {
+	if s == nil || account == nil {
+		return nil, wrapOpenAIWSFallback("invalid_state", errors.New("service or account is nil"))
+	}
+	if err := s.validateOpenAIResponseAuthOwner(ctx, c, account, openAIWSPayloadString(reqBody, "previous_response_id")); err != nil {
+		writeOpenAIResponseAuthOwnerError(c, err)
+		return nil, err
+	}
+	defer s.watchOpenAICodexTurnStateCommit(c, account)()
+	responseModelObserver := &upstreamResponseModelObserver{}
+
+	wsURL, err := s.buildOpenAIResponsesWSURL(account)
+	if err != nil {
+		return nil, wrapOpenAIWSFallback("build_ws_url", err)
+	}
+	wsHost := "-"
+	wsPath := "-"
+	if parsed, parseErr := url.Parse(wsURL); parseErr == nil && parsed != nil {
+		if h := strings.TrimSpace(parsed.Host); h != "" {
+			wsHost = normalizeOpenAIWSLogValue(h)
+		}
+		if p := strings.TrimSpace(parsed.Path); p != "" {
+			wsPath = normalizeOpenAIWSLogValue(p)
+		}
+	}
+	logOpenAIWSModeDebug(
+		"dial_target account_id=%d account_type=%s ws_host=%s ws_path=%s",
+		account.ID,
+		account.Type,
+		wsHost,
+		wsPath,
+	)
+
+	if c != nil {
+		if _, exists := c.Get("openai_ws_auto_incremental_attempted"); !exists {
+			c.Set("openai_ws_auto_incremental_attempted", false)
+		}
+		c.Set("openai_ws_auto_incremental", false)
+		c.Set("openai_ws_auto_incremental_succeeded", false)
+		c.Set("openai_ws_auto_incremental_reason", "disabled")
+	}
+	payload := s.buildOpenAIWSCreatePayload(reqBody, account)
+	if account.IsOpenAIOAuthLike() {
+		// The HTTP Lite declaration is per request. Project it into this
+		// response.create frame after choosing the protocol for the mapped
+		// model and complete input. Failover still sees the original headers.
+		metadata, _ := payload["client_metadata"].(map[string]any)
+		liteHeader := ""
+		if c != nil {
+			liteHeader = c.GetHeader(responsesLiteHeader)
+		}
+		if openAIResponsesLiteForNormalization(account, openAIWSPayloadString(payload, "model"), liteHeader, bodyRaw) {
+			if metadata == nil {
+				metadata = make(map[string]any)
+				payload["client_metadata"] = metadata
+			}
+			metadata[responsesLiteWSMetadataKey] = "true"
+		} else {
+			delete(metadata, responsesLiteWSMetadataKey)
+		}
+		finalBody, marshalErr := marshalOpenAIUpstreamJSON(payload)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		if validationErr := validateOpenAIOAuthFinalRequest(c, account, openAIWSPayloadString(payload, "model"), "", finalBody); validationErr != nil {
+			writeOpenAIProtocolValidationError(c, validationErr, false)
+			return nil, validationErr
+		}
+	}
+	if c != nil && c.Request != nil && account.UsesOpenAICodexProtocol() {
+		traceHeaders := make(http.Header)
+		copyOpenAICodexTraceHeaders(traceHeaders, c.Request.Header, account)
+		if len(traceHeaders) > 0 {
+			metadata, _ := payload["client_metadata"].(map[string]any)
+			if metadata == nil {
+				metadata = make(map[string]any)
+				payload["client_metadata"] = metadata
+			}
+			for _, name := range []string{"traceparent", "tracestate"} {
+				key := "ws_request_header_" + name
+				if value := traceHeaders.Get(name); value != "" {
+					if _, exists := metadata[key]; !exists {
+						metadata[key] = value
+					}
+				}
+			}
+		}
+	}
+	strategyAttempt := attempt
+	if c != nil && c.GetBool("openai_ws_auto_incremental_replay") {
+		strategyAttempt = 1 // Restore the original include/encrypted-content contract.
+	}
+	payloadStrategy, removedKeys := applyOpenAIWSRetryPayloadStrategy(payload, strategyAttempt)
+	turnState := ""
+	turnMetadata := ""
+	if c != nil && c.Request != nil {
+		turnState = strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
+		turnMetadata = strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader))
+	}
+	clientMetadata, _ := payload["client_metadata"].(map[string]any)
+	if state, ok := clientMetadata[openAICodexTurnStateHeader].(string); ok &&
+		s.openAICodexTurnStateHasDifferentOwner(c, account, strings.TrimSpace(state)) {
+		delete(clientMetadata, openAICodexTurnStateHeader)
+	}
+	if s.openAICodexTurnStateHasDifferentOwner(c, account, turnState) {
+		turnState = ""
+	}
+	if !account.IsOpenAIOAuthLike() {
+		setOpenAIWSTurnMetadata(payload, turnMetadata)
+	} else if _, exists := clientMetadata[openAIWSTurnMetadataHeader]; !exists && turnMetadata != "" {
+		// The original HTTP header has not yet received account projection.
+		fallback := map[string]any{openAIWSTurnMetadataHeader: turnMetadata}
+		applyCodexAccountIdentityEmbeddedMetadata(fallback, codexAccountIdentitySource(c, account), getAPIKeyIDFromContext(c))
+		if tm, ok := fallback[openAIWSTurnMetadataHeader].(string); ok {
+			setOpenAIWSTurnMetadata(payload, tm)
+		}
+	}
+	applyStagedCodexFingerprintClientMetadata(c, account, payload)
+	if encoded, err := json.Marshal(payload); err == nil {
+		stageCodexConvergenceBodyIdentityRaw(c, codexAccountIdentitySource(c, account), encoded)
+	}
+	previousResponseID := openAIWSPayloadString(payload, "previous_response_id")
+	previousResponseIDKind := ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
+	promptCacheKey := strings.TrimSpace(clientPromptCacheKey)
+	if promptCacheKey == "" {
+		// Fingerprint convergence may inject a default key when the client did
+		// not send one; retain that fallback without replacing an explicit raw key.
+		promptCacheKey = openAIWSPayloadString(payload, "prompt_cache_key")
+	}
+	_, hasTools := payload["tools"]
+	debugEnabled := isOpenAIWSModeDebugEnabled()
+	payloadBytes := -1
+	resolvePayloadBytes := func() int {
+		if payloadBytes >= 0 {
+			return payloadBytes
+		}
+		payloadBytes = len(payloadAsJSONBytes(payload))
+		return payloadBytes
+	}
+	streamValue := "-"
+	if raw, ok := payload["stream"]; ok {
+		streamValue = normalizeOpenAIWSLogValue(strings.TrimSpace(fmt.Sprintf("%v", raw)))
+	}
+	payloadEventType := openAIWSPayloadString(payload, "type")
+	if payloadEventType == "" {
+		payloadEventType = "response.create"
+	}
+	if s.shouldEmitOpenAIWSPayloadSchema(attempt) {
+		logOpenAIWSModeInfo(
+			"[debug] payload_schema account_id=%d attempt=%d event=%s payload_keys=%s payload_bytes=%d payload_key_sizes=%s input_summary=%s stream=%s payload_strategy=%s removed_keys=%s has_previous_response_id=%v has_prompt_cache_key=%v has_tools=%v",
+			account.ID,
+			attempt,
+			payloadEventType,
+			normalizeOpenAIWSLogValue(strings.Join(sortedKeys(payload), ",")),
+			resolvePayloadBytes(),
+			normalizeOpenAIWSLogValue(summarizeOpenAIWSPayloadKeySizes(payload, openAIWSPayloadKeySizeTopN)),
+			normalizeOpenAIWSLogValue(summarizeOpenAIWSInput(payload["input"])),
+			streamValue,
+			normalizeOpenAIWSLogValue(payloadStrategy),
+			normalizeOpenAIWSLogValue(strings.Join(removedKeys, ",")),
+			previousResponseID != "",
+			promptCacheKey != "",
+			hasTools,
+		)
+	}
+
+	stateStore := s.getOpenAIWSStateStore()
+	groupID := getOpenAIGroupIDFromContext(c)
+	// 与 WS 接入路径共用执行作用域：codex 多智能体共用 session-id，turn state 与
+	// store=false 的连接绑定必须按线程隔离，同一线程在两条路径之间也才能共享状态。
+	// 作用域由 Forward 从改写前的原始请求算出后传入，reqBody 此时已带账号 namespace。
+	sessionHash := strings.TrimSpace(executionScope)
+	if sessionHash == "" {
+		sessionHash = openAIWSLocalStateScope(c, getAPIKeyIDFromContext(c))
+	}
+	if !account.IsOpenAIOAuthLike() && turnState == "" && stateStore != nil && sessionHash != "" {
+		if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
+			turnState = savedTurnState
+		}
+	}
+
+	// 增量上下文（官方 Codex CLI delta 协议）：会话内已有完整链快照且当前请求
+	// 是其严格前缀扩展时，仅发送尾部新增 items + previous_response_id 锚定。
+	// 客户端自己发送 previous_response_id 时按客户端的链走，不覆盖。
+	deltaEnabled := account.UsesOpenAICodexProtocol() && s.isOpenAIWSDeltaContextEnabled() && stateStore != nil && sessionHash != "" && previousResponseID == ""
+	deltaScope := fmt.Sprintf("%d:%d:%s", groupID, getAPIKeyIDFromContext(c), sessionHash)
+	deltaWindowID := openAIWSPayloadCodexWindowID(bodyRaw)
+	deltaFieldsFP := ""
+	var deltaLogicalItems []json.RawMessage
+	var deltaLogicalHashes []string
+	var deltaRecorder *openAIWSDeltaRecorder
+	deltaApplied := false
+	deltaSucceeded := false
+	if deltaEnabled {
+		deltaFieldsFP = openAIWSDeltaFieldsFingerprint(payload)
+		deltaLogicalItems = openAIWSDeltaWireItems(bodyRaw, payload["input"])
+		reason := "baseline_too_large"
+		if len(deltaLogicalItems) <= openAIWSDeltaChainMaxBaseline {
+			deltaLogicalHashes, reason = openAIWSDeltaInputSnapshot(deltaLogicalItems)
+		}
+		if reason != "" {
+			if c != nil {
+				c.Set("openai_ws_auto_incremental_reason", reason)
+			}
+			stateStore.DeleteSessionDeltaChain(groupID, sessionHash)
+			deltaEnabled = false
+		}
+	}
+	if deltaEnabled {
+		deltaRecorder = &openAIWSDeltaRecorder{}
+		defer func() {
+			deltaRecorder.mu.Lock()
+			overflow := deltaRecorder.overflow || len(deltaLogicalHashes)+len(deltaRecorder.itemsAddedHashes) > openAIWSDeltaChainMaxBaseline || len(deltaLogicalHashes)+len(deltaRecorder.output.items) > openAIWSDeltaChainMaxBaseline
+			deltaRecorder.mu.Unlock()
+			if overflow {
+				stateStore.DeleteSessionDeltaChain(groupID, sessionHash)
+			}
+		}()
+	}
+
+	preferredConnID := ""
+	if stateStore != nil && previousResponseID != "" {
+		if connID, ok := stateStore.GetResponseConn(previousResponseID); ok {
+			preferredConnID = connID
+		}
+	}
+	storeDisabled := s.isOpenAIWSStoreDisabledInRequest(reqBody, account)
+	if stateStore != nil && previousResponseID == "" && sessionHash != "" {
+		if connID, ok := stateStore.GetSessionConn(groupID, sessionHash); ok {
+			preferredConnID = connID
+		}
+	}
+	storeDisabledConnMode := s.openAIWSStoreDisabledConnMode()
+	forceNewConnByPolicy := shouldForceNewConnOnStoreDisabled(storeDisabledConnMode, lastFailureReason)
+	forceNewConn := forceNewConnByPolicy && storeDisabled && previousResponseID == "" && sessionHash != "" && preferredConnID == ""
+	cookieWS := s.openAICookieWSEnabledForModel(account, mappedModel)
+	if cookieWS {
+		payloadBytes := resolvePayloadBytes()
+		if tooLarge := s.cookieWSPayloadTooLargeError(payloadBytes); tooLarge != nil {
+			logOpenAIWSModeInfo(
+				"cookie_ws_payload_too_large account_id=%d model=%s payload_bytes=%d threshold_bytes=%d",
+				account.ID,
+				mappedModel,
+				payloadBytes,
+				tooLarge.ThresholdBytes,
+			)
+			return nil, tooLarge
+		}
+		reservationPreference := ""
+		if previousResponseID != "" {
+			reservationPreference = preferredConnID
+		}
+		// All slots busy until the deadline is "unavailable": Forward falls
+		// back to HTTP instead of failing the request.
+		slot, release, reserveErr := s.reserveOpenAICookieWSSlotWithin(ctx, account, mappedModel, reservationPreference, s.openAIWSAcquireTimeout())
+		if reserveErr != nil {
+			return nil, reserveErr
+		}
+		defer release()
+		ctx = context.WithValue(ctx, openAICookieWSSlotContextKey{}, slot)
+	}
+	wsHeaders, sessionResolution, buildHdrErr := s.buildOpenAIWSHeaders(
+		ctx,
+		c,
+		account,
+		token,
+		decision,
+		isCodexCLI,
+		turnState,
+		turnMetadata,
+		promptCacheKey,
+		openAIWSPayloadString(payload, "model"),
+		openAIWSPayloadString(payload, "service_tier"),
+	)
+	if buildHdrErr != nil {
+		return nil, fmt.Errorf("build ws headers: %w", buildHdrErr)
+	}
+	if err := normalizeCodexRequestMetadataMap(payload, wsHeaders, account); err != nil {
+		return nil, fmt.Errorf("normalize websocket metadata: %w", err)
+	}
+	planPrewarm := attempt == 1 && previousResponseID == "" &&
+		decision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 && s.shouldPrewarmOpenAIWS(c, account, payload) &&
+		s.openAIWSSessionPrewarmPending(resolveOpenAIWSSessionScope(c, account, bodyRaw))
+	var prewarmTrial *responsesStatelessCacheAttempt
+	if planPrewarm {
+		prewarmTrial = responsesStatelessCacheForAttempt(c, account, payload, executionScope, cookieWS)
+		if prewarmTrial != nil {
+			// This arm can already affect the new socket's handshake. Include
+			// failed dials and later fallbacks in intention-to-treat metrics.
+			c.Set(responsesStatelessCacheAssignmentKey, prewarmTrial.arm)
+		}
+	}
+	// normalizeCodexRequestMetadataMap 会按旧习惯把 session_id / x-codex-installation-id
+	// 重新写回头部（legacy compact 依赖它们，不能从源头删除），因此 WS 握手同样
+	// 必须在归一化之后重新执行终态线序收口，与 HTTP 路径同一规则。
+	if account.UsesOpenAICodexProtocol() && s.isOpenAIWSExactFidelityEnabled() {
+		// 精确保真：turn-state 挪进 client_metadata（真实客户端不在握手上发），
+		// 再补齐官方 turn-metadata/client_metadata 的行为字段全集。
+		relocateCodexWSTurnState(wsHeaders, payload)
+		// Use the full logical request for both projections. An inferred
+		// continuation can later reduce the wire input to an empty tail.
+		standardResponses := openAIResponsesMustUseStandard(account, openAIWSPayloadString(payload, "model"), bodyRaw)
+		applyCodexWireLaneMetadata(payload, wsHeaders, account, "turn", standardResponses)
+		// 官方 WS 连接为 prewarm 而建：握手头的 turn-metadata 是 prewarm 画像
+		// （request_kind=prewarm、turn_id 空、无 turn 专属键）。仅当本连接接下来
+		// 确实会发 prewarm 帧时才投影——新拨的连接 IsPrewarmed=false，必然走
+		// performOpenAIWSGeneratePrewarm 的同组门槛。
+		if planPrewarm && (prewarmTrial == nil || prewarmTrial.arm == "control_prewarm") {
+			shadow := map[string]any{
+				"model":     payload["model"],
+				"reasoning": payload["reasoning"],
+				"client_metadata": map[string]any{
+					openAIWSTurnMetadataHeader: func() any {
+						if cm, ok := payload["client_metadata"].(map[string]any); ok {
+							return cm[openAIWSTurnMetadataHeader]
+						}
+						return nil
+					}(),
+				},
+			}
+			applyCodexWireLaneMetadata(shadow, wsHeaders, account, "prewarm", standardResponses)
+		}
+		// 官方 ResponseCreateWsRequest 恒发 prompt_cache_key（client.rs
+		// prompt_cache_key_policy：SessionDerived——root 会话即握手 session-id）。
+		// 客户端没给时按握手 session-id 补齐，prewarm 帧同形。
+		if _, has := payload["prompt_cache_key"]; !has {
+			if sid := strings.TrimSpace(wsHeaders.Get("session-id")); sid != "" {
+				payload["prompt_cache_key"] = sid
+			}
+		}
+	}
+	if account.UsesOpenAICodexProtocol() {
+		projectCodexOutboundHeaders(wsHeaders, true)
+	}
+	if cookieWS {
+		delete(payload, "stream")
+		setOpenAICookieWSExecutionScope(wsHeaders, c, sessionHash)
+		applyOpenAICookieWSMetadataFromHeaders(wsHeaders, payload)
+		// A continuation may use the previous generation only on its own
+		// still-valid connection; the pool keeps this binding scope isolated.
+	}
+	proxyURL := resolveAccountProxyURL(account)
+	responseModelObserver.adoptOpenAICodexTicketWatch(c)
+	logOpenAIWSModeDebug(
+		"acquire_start account_id=%d account_type=%s transport=%s preferred_conn_id=%s has_previous_response_id=%v session_hash=%s has_turn_state=%v turn_state_len=%d has_turn_metadata=%v turn_metadata_len=%d store_disabled=%v store_disabled_conn_mode=%s retry_last_reason=%s force_new_conn=%v header_user_agent=%s header_openai_beta=%s header_originator=%s header_accept_language=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_prompt_cache_key=%v has_chatgpt_account_id=%v has_authorization=%v has_session_id=%v has_conversation_id=%v proxy_enabled=%v",
+		account.ID,
+		account.Type,
+		normalizeOpenAIWSLogValue(string(decision.Transport)),
+		truncateOpenAIWSLogValue(preferredConnID, openAIWSIDValueMaxLen),
+		previousResponseID != "",
+		truncateOpenAIWSLogValue(sessionHash, 12),
+		turnState != "",
+		len(turnState),
+		turnMetadata != "",
+		len(turnMetadata),
+		storeDisabled,
+		normalizeOpenAIWSLogValue(storeDisabledConnMode),
+		truncateOpenAIWSLogValue(lastFailureReason, openAIWSLogValueMaxLen),
+		forceNewConn,
+		openAIWSHeaderValueForLog(wsHeaders, "user-agent"),
+		openAIWSHeaderValueForLog(wsHeaders, "openai-beta"),
+		openAIWSHeaderValueForLog(wsHeaders, "originator"),
+		openAIWSHeaderValueForLog(wsHeaders, "accept-language"),
+		openAIWSHeaderValueForLog(wsHeaders, "session_id"),
+		openAIWSHeaderValueForLog(wsHeaders, "conversation_id"),
+		normalizeOpenAIWSLogValue(sessionResolution.SessionSource),
+		normalizeOpenAIWSLogValue(sessionResolution.ConversationSource),
+		promptCacheKey != "",
+		hasOpenAIWSHeader(wsHeaders, "chatgpt-account-id"),
+		hasOpenAIWSHeader(wsHeaders, "authorization"),
+		hasOpenAIWSHeader(wsHeaders, "session_id"),
+		hasOpenAIWSHeader(wsHeaders, "conversation_id"),
+		proxyURL != "",
+	)
+
+	acquireCtx, acquireCancel := context.WithTimeout(ctx, s.openAIWSAcquireTimeout())
+	defer acquireCancel()
+
+	acquireRequest := openAIWSAcquireRequest{
+		Account: account,
+		WSURL:   wsURL,
+		Headers: wsHeaders,
+		HeadersFactory: func(factoryCtx context.Context, headers http.Header) (http.Header, *Account, error) {
+			return s.refreshOpenAIWSAuthHeaders(factoryCtx, account, headers)
+		},
+		PreferredConnID:    preferredConnID,
+		ForcePreferredConn: cookieWS && previousResponseID != "" && preferredConnID != "",
+		ForceNewConn:       forceNewConn,
+		ProxyURL:           proxyURL,
+	}
+	// This entry is HTTP ingress before any frame has been sent. Prior
+	// attempts can only reach this fresh acquire after their replay guards
+	// allowed recovery; connection-bound continuation and native WS opt out.
+	eligibleHTTPFallback := !cookieWS && previousResponseID == "" && s.openAIWSSessionDisableEnabled() &&
+		ctx.Err() == nil && !IsResponseCommitted(c) && !openAIStreamClientOutputStarted(c, false) &&
+		(c == nil || c.Writer == nil || !c.Writer.Written()) && (&openAIResponseReplayGuard{}).CanReplay(c)
+	if c != nil {
+		acquireRequest.BeforeFreshDial = s.openAIWSEdgeDialHook(getAPIKeyFromContext(c), mappedModel, eligibleHTTPFallback)
+	}
+	lease, err := s.acquireOpenAIWSWithAuthRecovery(acquireCtx, s.getOpenAIWSConnPool(), &acquireRequest)
+	if err != nil {
+		var agentDialErr *openAIWSDialError
+		if s.isAgentIdentityAccount(ctx, account) && errors.As(err, &agentDialErr) && isAgentIdentityTaskInvalidWSDialError(agentDialErr) && agentTaskRecoveryTried != nil && !*agentTaskRecoveryTried {
+			*agentTaskRecoveryTried = true
+			if recoveryErr := s.recoverAgentIdentityTask(ctx, account, account.GetCredential("task_id")); recoveryErr != nil {
+				return nil, fmt.Errorf("agent identity task recovery failed: %w", recoveryErr)
+			}
+			return nil, &agentIdentityTaskRecoveredError{}
+		}
+		s.handleOpenAIWSDialTransientFailure(ctx, account, mappedModel, err)
+		recordOpenAIWSDialRejected(c, account, err)
+		dialStatus, dialClass, dialCloseStatus, dialCloseReason, dialRespServer, dialRespVia, dialRespCFRay, dialRespReqID := summarizeOpenAIWSDialError(err)
+		logOpenAIWSModeInfo(
+			"acquire_fail account_id=%d account_type=%s transport=%s reason=%s dial_status=%d dial_class=%s dial_close_status=%s dial_close_reason=%s dial_resp_server=%s dial_resp_via=%s dial_resp_cf_ray=%s dial_resp_x_request_id=%s cause=%s preferred_conn_id=%s force_new_conn=%v ws_host=%s ws_path=%s proxy_enabled=%v",
+			account.ID,
+			account.Type,
+			normalizeOpenAIWSLogValue(string(decision.Transport)),
+			normalizeOpenAIWSLogValue(classifyOpenAIWSAcquireError(err)),
+			dialStatus,
+			dialClass,
+			dialCloseStatus,
+			truncateOpenAIWSLogValue(dialCloseReason, openAIWSHeaderValueMaxLen),
+			dialRespServer,
+			dialRespVia,
+			dialRespCFRay,
+			dialRespReqID,
+			truncateOpenAIWSLogValue(err.Error(), openAIWSLogValueMaxLen),
+			truncateOpenAIWSLogValue(preferredConnID, openAIWSIDValueMaxLen),
+			forceNewConn,
+			wsHost,
+			wsPath,
+			proxyURL != "",
+		)
+		var dialErr *openAIWSDialError
+		if errors.As(err, &dialErr) && dialErr != nil && dialErr.StatusCode == http.StatusTooManyRequests {
+			s.handleOpenAIAccountUpstreamError(ctx, account, http.StatusTooManyRequests, dialErr.ResponseHeaders, dialErr.ResponseBody, mappedModel)
+			if _, ok := openAIQuotaSignal(account, dialErr.StatusCode, dialErr.ResponseBody); ok {
+				return nil, s.newOpenAIAccountFailoverError(account, dialErr.StatusCode, dialErr.ResponseHeaders, dialErr.ResponseBody, err.Error(), true, false)
+			}
+		}
+		return nil, wrapOpenAIWSFallback(classifyOpenAIWSAcquireError(err), err)
+	}
+	// cleanExit 标记正常终端事件退出，此时上游不会再发送帧，连接可安全归还复用。
+	// 所有异常路径（读写错误、error 事件等）已在各自分支中提前调用 MarkBroken，
+	// 因此 defer 中只需处理正常退出时不 MarkBroken 即可。
+	cleanExit := false
+	defer func() {
+		if !cleanExit {
+			lease.MarkBroken()
+		}
+		lease.Release()
+	}()
+	connID := strings.TrimSpace(lease.ConnID())
+	// The latest successful checkpoint on the leased socket, not a cached
+	// session response ID, decides continuation. Concurrent branches may have
+	// advanced this socket while this request waited for its lease.
+	if deltaEnabled {
+		deltaFieldsFP = openAIWSDeltaFieldsFingerprint(payload)
+		reason := "no_checkpoint"
+		checkpoint := lease.conn.deltaCheckpoint.Load()
+		if checkpoint != nil && attempt == 1 {
+			switch {
+			case checkpoint.Scope != deltaScope:
+				reason = "scope_changed"
+			case checkpoint.WindowID != deltaWindowID:
+				reason = "context_window_changed"
+			case checkpoint.UpdatedUnixNano <= 0 || time.Since(time.Unix(0, checkpoint.UpdatedUnixNano)) >= openAIWSDeltaCheckpointTTL:
+				reason = "checkpoint_expired"
+			default:
+				resolved := resolveOpenAIWSDeltaWithHashes(checkpoint, account.ID, deltaFieldsFP, deltaLogicalItems, deltaLogicalHashes)
+				reason = resolved.Reason
+				if resolved.Delta {
+					payload["input"] = resolved.TailItems
+					payload["previous_response_id"] = resolved.PreviousResponse
+					previousResponseID = resolved.PreviousResponse
+					previousResponseIDKind = ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
+					deltaApplied = true
+					payloadBytes = -1
+				}
+			}
+		}
+		if c != nil {
+			c.Set("openai_ws_auto_incremental", deltaApplied)
+			if deltaApplied {
+				c.Set("openai_ws_auto_incremental_attempted", true)
+			}
+			c.Set("openai_ws_auto_incremental_succeeded", false)
+			c.Set("openai_ws_auto_incremental_reason", reason)
+		}
+		logOpenAIWSModeDebug("auto_continuation account_id=%d conn_id=%s incremental=%v reason=%s", account.ID, connID, deltaApplied, reason)
+	}
+	logOpenAIWSModeDebug(
+		"connected account_id=%d account_type=%s transport=%s conn_id=%s conn_reused=%v conn_idle_ms=%d conn_age_ms=%d upstream_pings=%d conn_pick_ms=%d queue_wait_ms=%d has_previous_response_id=%v",
+		account.ID,
+		account.Type,
+		normalizeOpenAIWSLogValue(string(decision.Transport)),
+		connID,
+		lease.Reused(),
+		lease.IdleBefore().Milliseconds(),
+		lease.AgeBefore().Milliseconds(),
+		lease.UpstreamPingCount(),
+		lease.ConnPickDuration().Milliseconds(),
+		lease.QueueWaitDuration().Milliseconds(),
+		previousResponseID != "",
+	)
+	if previousResponseID != "" {
+		logOpenAIWSModeInfo(
+			"continuation_probe account_id=%d account_type=%s conn_id=%s previous_response_id=%s previous_response_id_kind=%s preferred_conn_id=%s conn_reused=%v store_disabled=%v session_hash=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_turn_state=%v turn_state_len=%d has_prompt_cache_key=%v",
+			account.ID,
+			account.Type,
+			truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+			truncateOpenAIWSLogValue(previousResponseID, openAIWSIDValueMaxLen),
+			normalizeOpenAIWSLogValue(previousResponseIDKind),
+			truncateOpenAIWSLogValue(preferredConnID, openAIWSIDValueMaxLen),
+			lease.Reused(),
+			storeDisabled,
+			truncateOpenAIWSLogValue(sessionHash, 12),
+			openAIWSHeaderValueForLog(wsHeaders, "session_id"),
+			openAIWSHeaderValueForLog(wsHeaders, "conversation_id"),
+			normalizeOpenAIWSLogValue(sessionResolution.SessionSource),
+			normalizeOpenAIWSLogValue(sessionResolution.ConversationSource),
+			turnState != "",
+			len(turnState),
+			promptCacheKey != "",
+		)
+	}
+	if c != nil {
+		SetOpsLatencyMs(c, OpsOpenAIWSConnPickMsKey, lease.ConnPickDuration().Milliseconds())
+		SetOpsLatencyMs(c, OpsOpenAIWSQueueWaitMsKey, lease.QueueWaitDuration().Milliseconds())
+		c.Set(OpsOpenAIWSConnReusedKey, lease.Reused())
+		if connID != "" {
+			c.Set(OpsOpenAIWSConnIDKey, connID)
+		}
+	}
+
+	handshakeTurnState := strings.TrimSpace(lease.HandshakeHeader(openAIWSTurnStateHeader))
+	logOpenAIWSModeDebug(
+		"handshake account_id=%d conn_id=%s has_turn_state=%v turn_state_len=%d",
+		account.ID,
+		connID,
+		handshakeTurnState != "",
+		len(handshakeTurnState),
+	)
+	if handshakeTurnState != "" {
+		if stateStore != nil && sessionHash != "" {
+			stateStore.BindSessionTurnState(groupID, sessionHash, handshakeTurnState, s.openAIWSSessionStickyTTL())
+		}
+		if c != nil {
+			c.Header(http.CanonicalHeaderKey(openAIWSTurnStateHeader), handshakeTurnState)
+		}
+	}
+
+	preflightSize := !cookieWS && s.shouldPreflightOpenAIHTTPToWS(c, account, reqBody)
+	if preflightSize {
+		frame, frameErr := s.marshalOpenAIWSOutgoingFrame(bodyRaw, payload, account)
+		if frameErr == nil {
+			frameErr = s.checkOpenAIWSOutgoingFrameSize(frame)
+		}
+		if frameErr != nil {
+			cleanExit = true // No request was written; keep the healthy leased socket.
+			return nil, frameErr
+		}
+		payloadBytes = len(frame)
+	}
+
+	var prewarmResult *openAIWSPrewarmResult
+	if attempt == 1 {
+		prewarmResult, err = s.performOpenAIWSGeneratePrewarm(
+			ctx,
+			c,
+			lease,
+			decision,
+			payload,
+			previousResponseID,
+			reqBody,
+			bodyRaw,
+			account,
+			stateStore,
+			groupID,
+			prewarmTrial,
+		)
+	}
+	if err != nil {
+		var rejection *openAIWSPrewarmTerminalError
+		if errors.As(err, &rejection) {
+			safePayload := s.redactAgentIdentitySensitiveBody(ctx, account, rejection.payload)
+			message := sanitizeUpstreamErrorMessage(extractOpenAISSEErrorMessage(safePayload))
+			if ctx.Err() == nil {
+				message = s.recordOpenAIStreamUpstreamError(c, account, false, lease.HandshakeHeader("x-request-id"), "ws_error", safePayload, message)
+				status := openAIStreamFailureStatus(safePayload, message)
+				if !openAIWSKnownParameterError(safePayload) {
+					// The awaited authoritative failure can change family. Apply its
+					// existing account-state transition once, never its retry return.
+					stateCtx, stateCancel := openAIAccountStateContext(ctx)
+					s.handleOpenAIWSFailureAccountSideEffects(stateCtx, account, mappedModel, lease.HandshakeHeaders(), safePayload)
+					stateCancel()
+				}
+				switch {
+				case isOpenAIModelUnavailableTerminalEvent(safePayload):
+					writeOpenAIModelUnavailableTerminal(c, http.StatusSwitchingProtocols, openAIModelErrorResponses)
+				case isOpenAIContextWindowError(message, safePayload):
+					WriteOpenAIResponsesContextLengthExceeded(c, message)
+				case status == http.StatusBadRequest && openAIWSKnownParameterError(safePayload):
+					writeOpenAIUpstreamClientError(c, status, openAIStreamFailedEventPassthroughBody(safePayload, message), message)
+				default:
+					errorBody := gin.H{"type": "upstream_error", "code": "upstream_error", "message": message}
+					if normalized, ok := normalizeOpenAIUpstreamError(safePayload); ok {
+						for field, value := range map[string]string{"type": normalized.Type, "code": normalized.Code, "param": normalized.Param} {
+							if value != "" {
+								errorBody[field] = value
+							}
+						}
+					}
+					if openAIStreamCredentialAuthFailure(safePayload) {
+						status = http.StatusBadGateway
+						errorBody = gin.H{"type": "upstream_error", "message": "Upstream authentication failed"}
+					}
+					writeOpenAIResponsesErrorJSON(c, status, gin.H{"error": errorBody})
+				}
+			}
+			var partial *OpenAIForwardResult
+			if openAIUsageHasTokens(&rejection.usage) && GetOpsCyberPolicy(c) == nil {
+				partial = &OpenAIForwardResult{
+					RequestID: rejection.responseID, ResponseID: rejection.responseID,
+					Usage: rejection.usage, Model: originalModel, UpstreamModel: mappedModel,
+					Stream: reqStream, OpenAIWSMode: true, UpstreamTerminalEvent: "response.failed",
+					ResponseHeaders: lease.HandshakeHeaders(), Duration: time.Since(startTime),
+					ReasoningEffort: extractOpenAIReasoningEffort(reqBody, mappedModel, originalModel),
+					ServiceTier:     extractOpenAIServiceTier(reqBody),
+				}
+			}
+			if rejection.cause != nil {
+				return partial, rejection.cause
+			}
+			return partial, fmt.Errorf("upstream response failed: %s", message)
+		}
+		if openAIWSSessionFallbackReason(err) == "payload_too_large" {
+			cleanExit = true
+		}
+		return nil, err
+	}
+	// 官方行为（from_untraced_warmup）：预热响应成为最新的 last_response，
+	// 真实请求以它为 previous_response_id 锚点。预热 input 与真实请求 input
+	// 一致时，增量尾为空——即抓包里第二帧只有 previous_response_id 的形态。
+	if deltaRecorder != nil && prewarmResult != nil && prewarmResult.ResponseID != "" && prewarmResult.OutputValid {
+		baseline := openAIWSDeltaItemsHash(prewarmResult.SentItems)
+		baseline = append(baseline, prewarmResult.OutputHashes...)
+		if len(baseline) > openAIWSDeltaChainMaxBaseline {
+			stateStore.DeleteSessionDeltaChain(groupID, sessionHash)
+		}
+		warmChain := &openAIWSDeltaChainState{
+			ResponseID:     prewarmResult.ResponseID,
+			AccountID:      account.ID,
+			FieldsFP:       deltaFieldsFP,
+			BaselineHashes: baseline,
+		}
+		currentItems := openAIWSDeltaWireItems(bodyRaw, payload["input"])
+		if decision := resolveOpenAIWSDelta(warmChain, account.ID, deltaFieldsFP, currentItems); decision.Delta {
+			payload["input"] = decision.TailItems
+			payload["previous_response_id"] = decision.PreviousResponse
+			previousResponseID = decision.PreviousResponse
+			previousResponseIDKind = ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
+			deltaApplied = true
+			if c != nil {
+				c.Set("openai_ws_auto_incremental", true)
+				c.Set("openai_ws_auto_incremental_attempted", true)
+				c.Set("openai_ws_auto_incremental_reason", "prewarm")
+			}
+			logOpenAIWSModeInfo(
+				"delta_applied_prewarm account_id=%d conn_id=%s previous_response_id=%s tail_items=%d baseline_items=%d",
+				account.ID,
+				connID,
+				truncateOpenAIWSLogValue(decision.PreviousResponse, openAIWSIDValueMaxLen),
+				len(decision.TailItems),
+				len(baseline),
+			)
+		}
+	}
+
+	// codex lane 按官方 ResponseCreateWsRequest serde 序输出帧字节；未改写字段
+	// 透传原始请求体字节，保持与真实客户端逐字节一致。其余账号走通用 marshal。
+	var frameBytes []byte
+	if account.UsesOpenAICodexProtocol() && s.isOpenAIWSExactFidelityEnabled() {
+		if encoded, marshalErr := marshalCodexWSCreateFrame(bodyRaw, payload, s.codexMapOrderJitterEnabled()); marshalErr == nil {
+			frameBytes = encoded
+		} else {
+			logOpenAIWSModeInfo(
+				"frame_marshal_fail account_id=%d conn_id=%s cause=%s",
+				account.ID, connID, truncateOpenAIWSLogValue(marshalErr.Error(), openAIWSLogValueMaxLen),
+			)
+		}
+	}
+	if preflightSize {
+		if len(frameBytes) == 0 {
+			frameBytes, err = s.marshalOpenAIWSOutgoingFrame(bodyRaw, payload, account)
+			if err != nil {
+				cleanExit = true
+				return nil, err
+			}
+		}
+		if err := s.checkOpenAIWSOutgoingFrameSize(frameBytes); err != nil {
+			cleanExit = true
+			return nil, err
+		}
+		payloadBytes = len(frameBytes)
+	}
+	var writeErr error
+	if len(frameBytes) > 0 {
+		writeErr = lease.WriteJSONWithContextTimeout(ctx, json.RawMessage(frameBytes), s.openAIWSWriteTimeout())
+	} else {
+		writeErr = lease.WriteJSONWithContextTimeout(ctx, payload, s.openAIWSWriteTimeout())
+	}
+	if writeErr != nil {
+		lease.MarkBroken()
+		logOpenAIWSModeInfo(
+			"write_request_fail account_id=%d conn_id=%s cause=%s payload_bytes=%d",
+			account.ID,
+			connID,
+			truncateOpenAIWSLogValue(writeErr.Error(), openAIWSLogValueMaxLen),
+			resolvePayloadBytes(),
+		)
+		return nil, wrapOpenAIWSFallback("write_request", writeErr)
+	}
+	if prewarmTrial != nil && prewarmTrial.skipped {
+		c.Set(responsesStatelessCacheActionKey, "full_input_written")
+	}
+	if debugEnabled {
+		logOpenAIWSModeDebug(
+			"write_request_sent account_id=%d conn_id=%s stream=%v payload_bytes=%d previous_response_id=%s",
+			account.ID,
+			connID,
+			reqStream,
+			resolvePayloadBytes(),
+			truncateOpenAIWSLogValue(previousResponseID, openAIWSIDValueMaxLen),
+		)
+	}
+
+	usage := &OpenAIUsage{}
+	usageObserved := false
+	upstreamTerminalSeen := false
+	cookieProbeObserver := openAICookieWSProbeObserver{enabled: cookieWS && openAICookieWSIsProbePayload(payload)}
+	imageCounter := newOpenAIImageOutputCounter()
+	// 部分上游（ChatGPT Codex WS）的 response.completed 只带 output:[]，正文仅在
+	// output_item.done / delta 事件里。与 HTTP SSE 路径共用同一套补全逻辑。
+	terminalOutput := newResponsesTerminalOutputCollector()
+	var firstTokenMs *int
+	upstreamOutputStarted := false
+	responseID := ""
+	boundHTTPResponseID := ""
+	interruptState := &openAIWSInterruptState{}
+	interruptReader := &openAIWSInterruptReader{lease: lease}
+	defer interruptReader.close()
+	var finalResponse []byte
+	wroteDownstream := false
+	// clientOutputStarted 与 HTTP firstOutputStage 的提交点同口径：首个对
+	// 客户端可见的事件（含 reasoning item.added 等结构性输出）到达后，
+	// 前置缓冲放行、本次尝试提交，错误事件改为下发客户端而不再静默 failover。
+	clientOutputStarted := false
+	needModelReplace := originalModel != mappedModel
+	var mappedModelBytes []byte
+	if needModelReplace && mappedModel != "" {
+		mappedModelBytes = []byte(mappedModel)
+	}
+	bufferedStreamEvents := make([][]byte, 0, 4)
+	eventCount := 0
+	tokenEventCount := 0
+	terminalEventCount := 0
+	bufferedEventCount := 0
+	flushedBufferedEventCount := 0
+	firstEventType := ""
+	lastEventType := ""
+	upstreamTerminalEvent := ""
+	clientDisconnected := false
+	clientDisconnectDrainStartedAt := time.Time{}
+	readTimeout := s.openAIWSReadTimeout()
+	upstreamReadCtx := ctx
+	upstreamReadDetached := false
+	clientRequestCanceled := func() bool {
+		return ctx != nil && errors.Is(ctx.Err(), context.Canceled)
+	}
+	markClientDisconnected := func(cause string) {
+		if clientDisconnected {
+			return
+		}
+		clientDisconnected = true
+		clientDisconnectDrainStartedAt = time.Now()
+		if !upstreamReadDetached {
+			upstreamReadCtx = context.WithoutCancel(ctx)
+			upstreamReadDetached = true
+		}
+		if raw := interruptState.automaticRequest(); len(raw) > 0 {
+			interruptReader.deadline = time.Time{}
+			if err := lease.WriteJSONWithContextTimeout(context.WithoutCancel(ctx), json.RawMessage(raw), s.openAIWSWriteTimeout()); err != nil {
+				interruptState.failure = err
+				lease.MarkBroken()
+			}
+		}
+		logOpenAIWSModeInfo(
+			"client_disconnected account_id=%d conn_id=%s cause=%s events=%d token_events=%d",
+			account.ID,
+			connID,
+			cause,
+			eventCount,
+			tokenEventCount,
+		)
+	}
+	markClientRequestCanceled := func() {
+		if clientRequestCanceled() {
+			markClientDisconnected("request_context_canceled")
+		}
+	}
+	resultWithUsage := func() *OpenAIForwardResult {
+		return &OpenAIForwardResult{
+			RequestID:                     responseID,
+			ResponseID:                    responseID,
+			Usage:                         *usage,
+			Model:                         originalModel,
+			UpstreamModel:                 mappedModel,
+			UpstreamResponseModel:         responseModelObserver.Model(),
+			UpstreamResponseModelConflict: responseModelObserver.Conflict(),
+			UpstreamResponseServiceTier:   responseModelObserver.ServiceTier(),
+			ServiceTier:                   resolvedOpenAIUpstreamServiceTierFromObserver(responseModelObserver, extractOpenAIServiceTier(reqBody)),
+			ReasoningEffort:               extractOpenAIReasoningEffort(reqBody, mappedModel, originalModel),
+			Stream:                        reqStream,
+			OpenAIWSMode:                  true,
+			UpstreamTerminalEvent:         upstreamTerminalEvent,
+			ResponseHeaders:               lease.HandshakeHeaders(),
+			Duration:                      time.Since(startTime),
+			FirstTokenMs:                  firstTokenMs,
+			ClientDisconnect:              clientDisconnected,
+			ClientInterrupted:             cleanExit && interruptState.requested && interruptState.reusable(),
+			ImageCount:                    imageCounter.Count(),
+			ImageOutputSizes:              imageCounter.Sizes(),
+		}
+	}
+
+	// The upstream can already have generated text or executed a hosted tool
+	// while a non-streaming client has received no bytes. Client delivery and
+	// upstream progress are independent replay boundaries; metered usage/image
+	// results also cannot be discarded by a new attempt.
+	var replayGuard openAIResponseReplayGuard
+	upstreamProgress := func() bool {
+		return replayGuard.progressed || upstreamOutputStarted || openAIUsageHasTokens(usage) || imageCounter.Count() > 0
+	}
+	replayUnsafe := func() bool { return wroteDownstream || upstreamProgress() }
+	partialResultWithUsage := func() *OpenAIForwardResult {
+		// Cyber-policy failures already settle their observed usage through
+		// OpsCyberPolicy in the handler; returning it again would bill twice.
+		if GetOpsCyberPolicy(c) != nil {
+			return nil
+		}
+		return resultWithUsage()
+	}
+
+	var flusher http.Flusher
+	if reqStream {
+		if s.responseHeaderFilter != nil {
+			responseheaders.WriteFilteredHeaders(c.Writer.Header(), http.Header{}, s.responseHeaderFilter)
+		}
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+		f, ok := c.Writer.(http.Flusher)
+		if !ok {
+			lease.MarkBroken()
+			return nil, wrapOpenAIWSFallback("streaming_not_supported", errors.New("streaming not supported"))
+		}
+		flusher = f
+	}
+
+	flushBatchSize := s.openAIWSEventFlushBatchSize()
+	flushInterval := s.openAIWSEventFlushInterval()
+	pendingFlushEvents := 0
+	lastFlushAt := time.Now()
+	flushStreamWriter := func(force bool) {
+		if clientDisconnected || flusher == nil || pendingFlushEvents <= 0 {
+			return
+		}
+		if !force && flushBatchSize > 1 && pendingFlushEvents < flushBatchSize {
+			if flushInterval <= 0 || time.Since(lastFlushAt) < flushInterval {
+				return
+			}
+		}
+		flusher.Flush()
+		pendingFlushEvents = 0
+		lastFlushAt = time.Now()
+	}
+	emitStreamMessage := func(message []byte, forceFlush bool) {
+		if clientDisconnected {
+			return
+		}
+		frame := make([]byte, 0, len(message)+8)
+		frame = append(frame, "data: "...)
+		frame = append(frame, message...)
+		frame = append(frame, '\n', '\n')
+		_, wErr := c.Writer.Write(frame)
+		if wErr == nil {
+			wroteDownstream = true
+			pendingFlushEvents++
+			flushStreamWriter(forceFlush)
+			return
+		}
+		markClientDisconnected("downstream_write_error")
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI WS Mode] client disconnected, continue draining upstream: account=%d", account.ID)
+	}
+	flushBufferedStreamEvents := func(reason string) {
+		if len(bufferedStreamEvents) == 0 {
+			return
+		}
+		flushed := len(bufferedStreamEvents)
+		for _, buffered := range bufferedStreamEvents {
+			emitStreamMessage(buffered, false)
+		}
+		bufferedStreamEvents = bufferedStreamEvents[:0]
+		flushStreamWriter(true)
+		flushedBufferedEventCount += flushed
+		if debugEnabled {
+			logOpenAIWSModeDebug(
+				"buffer_flush account_id=%d conn_id=%s reason=%s flushed=%d total_flushed=%d client_disconnected=%v",
+				account.ID,
+				connID,
+				truncateOpenAIWSLogValue(reason, openAIWSLogValueMaxLen),
+				flushed,
+				flushedBufferedEventCount,
+				clientDisconnected,
+			)
+		}
+	}
+
+	incompleteAfterProgress := func(cause error) (*OpenAIForwardResult, error) {
+		if reqStream && wroteDownstream && responseID == "" && !openAIUsageHasTokens(usage) && imageCounter.Count() == 0 {
+			// Preserve the existing streaming error contract when there is no
+			// response identity or metered result to retain.
+			return nil, fmt.Errorf("upstream websocket error after downstream output: %w", cause)
+		}
+		// A locally terminated stream has no successful upstream terminal.
+		// Preserve its known attribution/usage without marking it successful.
+		upstreamTerminalEvent = "response.incomplete"
+		message := "upstream websocket ended before completing the response"
+		setOpsUpstreamError(c, http.StatusBadGateway, sanitizeUpstreamErrorMessage(cause.Error()), "")
+		if !clientDisconnected && ctx.Err() == nil {
+			usageSource := OpsReplayUsageAbsent
+			if usageObserved {
+				usageSource = OpsReplayUsageUpstream
+			}
+			recordOpenAIWSReadDiagnostic(c, account, OpsReplayBoundary{
+				UpstreamProgressObserved: upstreamProgress(),
+				ClientOutputStarted:      clientOutputStarted && wroteDownstream,
+				TerminalSeen:             upstreamTerminalSeen,
+				UsageSource:              usageSource,
+				RetryRequested:           false,
+			})
+		}
+		if !reqStream && !clientDisconnected {
+			MarkResponseCommitted(c)
+			c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"type": "upstream_error", "message": message}})
+		}
+
+		if reqStream && imageCounter.Count() > 0 && terminalEventCount == 0 && GetOpsCyberPolicy(c) == nil {
+			// The HTTP handler settles partial image results without its generic
+			// error writer. Close this interrupted Responses turn here, retaining
+			// the image and observed response ID instead of leaving clients to
+			// infer completion from a disconnected stream.
+			clientStillWritable := func() bool {
+				return !clientDisconnected && ctx.Err() == nil &&
+					(c.Request == nil || c.Request.Context().Err() == nil)
+			}
+			if clientStillWritable() {
+				flushBufferedStreamEvents("incomplete_after_image")
+				if clientStillWritable() {
+					failure := buildOpenAIResponseFailedEvent(responseID, originalModel, 0, nil, message)
+					emitStreamMessage(failure, true)
+					if clientStillWritable() {
+						terminalEventCount++
+						MarkResponseCommitted(c)
+						markOpenAIWSClientVisibleFailure(c, "response.failed", failure)
+					}
+				}
+			}
+		}
+		return partialResultWithUsage(), fmt.Errorf("openai ws incomplete response after upstream progress: %w", cause)
+	}
+
+	// Keep per-read timeouts unchanged for connected clients. Once a client
+	// disconnects, use the same timeout as a bounded total drain budget.
+	var pendingJSONDocuments [][]byte
+
+	var pendingParameterError []byte
+readLoop:
+	for {
+		markClientRequestCanceled()
+		var message []byte
+		var readErr error
+		readUsedDetachedContext := upstreamReadDetached
+		if len(pendingJSONDocuments) > 0 {
+			message = pendingJSONDocuments[0]
+			pendingJSONDocuments = pendingJSONDocuments[1:]
+		} else {
+			currentReadTimeout := readTimeout
+			if clientDisconnected && !clientDisconnectDrainStartedAt.IsZero() {
+				remaining := readTimeout - time.Since(clientDisconnectDrainStartedAt)
+				if remaining <= 0 {
+					lease.MarkBroken()
+					break readLoop
+				}
+				if remaining < currentReadTimeout {
+					currentReadTimeout = remaining
+				}
+			}
+			message, _, readErr = interruptReader.read(upstreamReadCtx, currentReadTimeout, nil)
+			if readErr == nil {
+				if documents, repaired := splitOpenAIConcatenatedJSONDocuments(message); repaired {
+					logOpenAIWSModeInfo(
+						"concatenated_json_repaired account_id=%d conn_id=%s documents=%d bytes=%d",
+						account.ID,
+						truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+						len(documents),
+						len(message),
+					)
+					message = documents[0]
+					pendingJSONDocuments = append(pendingJSONDocuments, documents[1:]...)
+				}
+			}
+		}
+		markClientRequestCanceled()
+		synthesizedParameterFailure := false
+		if readErr != nil && len(pendingParameterError) > 0 && ctx.Err() == nil && !clientDisconnected {
+			// A standalone parameter error must surface without turning the
+			// following EOF into a new model execution. Only a real failed
+			// terminal can authorize targeted repair.
+			message = buildOpenAIResponseFailedEvent(responseID, originalModel, 0, pendingParameterError, extractOpenAISSEErrorMessage(pendingParameterError))
+			pendingParameterError = nil
+			readErr = nil
+			synthesizedParameterFailure = true
+			lease.MarkBroken()
+		}
+		if readErr == nil && !json.Valid(message) {
+			eventType, _, _ := parseOpenAIWSEventEnvelope(message)
+			if eventType == "" {
+				eventType = "unknown"
+			}
+			lease.MarkBroken()
+			logOpenAIWSModeInfo(
+				"invalid_event_json account_id=%d conn_id=%s event_type=%s bytes=%d wrote_downstream=%v",
+				account.ID,
+				truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
+				truncateOpenAIWSLogValue(eventType, openAIWSLogValueMaxLen),
+				len(message),
+				wroteDownstream,
+			)
+			if replayUnsafe() {
+				return incompleteAfterProgress(errors.New("upstream websocket returned malformed Responses event JSON"))
+			}
+			if !wroteDownstream {
+				return nil, wrapOpenAIWSFallback("invalid_event_json", errors.New("upstream websocket returned malformed Responses event JSON"))
+			}
+			return nil, errors.New("upstream websocket returned malformed Responses event JSON after downstream output")
+		}
+		if readErr != nil {
+			if clientDisconnected && !readUsedDetachedContext && errors.Is(readErr, context.Canceled) && clientRequestCanceled() && responseID != "" {
+				continue
+			}
+			lease.MarkBroken()
+			closeStatus, closeReason := summarizeOpenAIWSReadCloseError(readErr)
+			logOpenAIWSModeInfo(
+				"read_fail account_id=%d conn_id=%s wrote_downstream=%v close_status=%s close_reason=%s cause=%s payload_bytes=%d events=%d token_events=%d terminal_events=%d buffered_pending=%d buffered_flushed=%d first_event=%s last_event=%s",
+				account.ID,
+				connID,
+				wroteDownstream,
+				closeStatus,
+				closeReason,
+				truncateOpenAIWSLogValue(readErr.Error(), openAIWSLogValueMaxLen),
+				resolvePayloadBytes(),
+				eventCount,
+				tokenEventCount,
+				terminalEventCount,
+				len(bufferedStreamEvents),
+				flushedBufferedEventCount,
+				truncateOpenAIWSLogValue(firstEventType, openAIWSLogValueMaxLen),
+				truncateOpenAIWSLogValue(lastEventType, openAIWSLogValueMaxLen),
+			)
+			if clientDisconnected {
+				break
+			}
+			if wroteDownstream && reqStream && isOpenAIWSGracefulClose(readErr) {
+				incomplete := map[string]any{
+					"type": "response.incomplete",
+					"response": map[string]any{
+						"id":                 responseID,
+						"object":             "response",
+						"status":             "incomplete",
+						"incomplete_details": map[string]any{"reason": "server_error"},
+					},
+				}
+				if eventBytes, marshalErr := json.Marshal(incomplete); marshalErr == nil {
+					upstreamTerminalEvent = "response.incomplete"
+					terminalEventCount++
+					emitStreamMessage(eventBytes, true)
+					break readLoop
+				}
+			}
+			if replayUnsafe() {
+				return incompleteAfterProgress(readErr)
+			}
+			if !wroteDownstream {
+				return nil, wrapOpenAIWSFallback(classifyOpenAIWSReadFallbackReason(readErr), readErr)
+			}
+			setOpsUpstreamError(c, 0, sanitizeUpstreamErrorMessage(readErr.Error()), "")
+			return nil, fmt.Errorf("openai ws read event: %w", readErr)
+		}
+		if deltaRecorder != nil {
+			deltaRecorder.observe(message)
+		}
+		if normalized, changed := normalizeCompletedImageGenerationStatus(message); changed {
+			message = normalized
+		}
+
+		eventType, eventResponseID, responseField := parseOpenAIWSEventEnvelope(message)
+		ack, interruptErr := interruptState.observe(message, eventType, eventResponseID)
+		if interruptErr != nil {
+			if terminalEventCount > 0 {
+				lease.MarkBroken()
+				break readLoop
+			}
+			if !ack {
+				lease.MarkBroken()
+				return partialResultWithUsage(), interruptErr
+			}
+		}
+		if ack {
+			if interruptState.ready() {
+				cleanExit = interruptState.reusable() && len(pendingJSONDocuments) == 0
+				if !cleanExit {
+					lease.MarkBroken()
+				}
+				break readLoop
+			}
+			continue
+		}
+		if clientDisconnected && !interruptState.requested && interruptState.responseID != "" {
+			if raw := interruptState.automaticRequest(); len(raw) > 0 {
+				interruptReader.deadline = time.Time{}
+				if err := lease.WriteJSONWithContextTimeout(context.WithoutCancel(ctx), json.RawMessage(raw), s.openAIWSWriteTimeout()); err != nil {
+					interruptState.failure = err
+					lease.MarkBroken()
+				}
+			}
+		}
+		if eventType == "" {
+			continue
+		}
+		if deltaApplied && eventType == "response.completed" {
+			status := gjson.GetBytes(message, "response.status").String()
+			deltaSucceeded = (status == "" || status == "completed") && gjson.GetBytes(message, "response.error").Type != gjson.JSON && gjson.GetBytes(message, "error").Type != gjson.JSON
+		}
+		responseModelObserver.ObserveOpenAI(message, eventType)
+		cookieProbeObserver.observe(lease, message, eventType)
+		if cookieWS && !cookieProbeObserver.enabled && isOpenAIWSTerminalEvent(eventType) &&
+			s.openAICookieWSTurnModelMismatch(account, mappedModel, message, eventType) {
+			// Served by another model: this socket never serves another turn.
+			lease.MarkBroken()
+		}
+		eventCount++
+		if firstEventType == "" {
+			firstEventType = eventType
+		}
+		lastEventType = eventType
+
+		if responseID == "" && eventResponseID != "" {
+			responseID = eventResponseID
+		}
+
+		isTokenEvent := isOpenAIWSTokenEvent(eventType)
+		if isTokenEvent {
+			tokenEventCount++
+		}
+		isTerminalEvent := isOpenAIWSTerminalEvent(eventType)
+		if isTerminalEvent {
+			terminalEventCount++
+			if !synthesizedParameterFailure {
+				upstreamTerminalSeen = true
+			}
+		}
+		if firstTokenMs == nil && isTokenEvent {
+			ms := int(time.Since(startTime).Milliseconds())
+			firstTokenMs = &ms
+		}
+		if debugEnabled && shouldLogOpenAIWSEvent(eventCount, eventType) {
+			logOpenAIWSModeDebug(
+				"event_received account_id=%d conn_id=%s idx=%d type=%s bytes=%d token=%v terminal=%v buffered_pending=%d",
+				account.ID,
+				connID,
+				eventCount,
+				truncateOpenAIWSLogValue(eventType, openAIWSLogValueMaxLen),
+				len(message),
+				isTokenEvent,
+				isTerminalEvent,
+				len(bufferedStreamEvents),
+			)
+		}
+
+		if !clientDisconnected {
+			if needModelReplace && len(mappedModelBytes) > 0 && openAIWSEventMayContainModel(eventType) && bytes.Contains(message, mappedModelBytes) {
+				message = replaceOpenAIWSMessageModel(message, mappedModel, originalModel)
+			}
+			if openAIWSEventMayContainToolCalls(eventType) && openAIWSMessageLikelyContainsToolCalls(message) {
+				if corrected, changed := s.toolCorrector.CorrectToolCallsInSSEBytes(message); changed {
+					message = corrected
+				}
+			}
+			message = restoreCodexToolNamesFromContext(c, message)
+		}
+		replayGuard.Observe(message, eventType)
+		if openAIWSMessageShouldParseUsage(eventType, message) {
+			if observed := parseOpenAIWSResponseUsageWithObservation(message, usage); observed && !synthesizedParameterFailure {
+				usageObserved = true
+			}
+		}
+		imageCounter.AddSSEData(message)
+		// 放在用量/图片计数之后：补进 terminal 的 item 已由 output_item.done 计过，
+		// 不能再被计一次。补全后重取 responseField，非流式 finalResponse 才拿得到正文。
+		terminalOutput.Observe(message, eventType)
+		if isTerminalEvent {
+			if normalized, changed := terminalOutput.Normalize(message); changed {
+				message = normalized
+				responseField = gjson.GetBytes(message, "response")
+			}
+		}
+		// 下发客户端的副本单独改写容量降载码（server_is_overloaded/slow_down →
+		// server_error）：Codex 对原码判致命并终止会话，改写后走客户端内置退避
+		// 重试。policy/账号状态判定仍用未改写的 message，与 ingress 路径一致。
+		clientMessage := message
+		if reqStream {
+			clientMessage = prepareOpenAIImageOutput(c, message)
+		} else {
+			observeOpenAIImageOutputModel(c, message)
+		}
+		if normalized, changed := normalizeOpenAIModelUnavailableClientEvent(clientMessage); changed {
+			clientMessage = normalized
+		}
+		if eventType == "error" || eventType == "response.failed" {
+			if rewritten, changed := sanitizeOpenAICapacityShedErrorCodeForClient(clientMessage); changed {
+				clientMessage = rewritten
+			}
+		}
+
+		if eventType == "error" || eventType == "response.failed" {
+			markOpenAICyberPolicyEvent(c, message, http.StatusOK, usage)
+			if eventType == "response.failed" && !synthesizedParameterFailure && !deltaApplied && !replayUnsafe() && !clientDisconnected && ctx.Err() == nil && replayGuard.CanReplay(c) {
+				// Rejection indices refer to the exact WS frame: OAuth may have
+				// inserted an instructions item, shifting the HTTP body's input.
+				wireBody := frameBytes
+				if len(wireBody) == 0 {
+					wireBody, err = json.Marshal(payload)
+					if err != nil {
+						return nil, err
+					}
+				}
+				value, _ := c.Get(openAIRejectedFieldRetryAttemptKey)
+				if attempt, _ := value.(*openAIRejectedFieldRetryAttempt); attempt != nil {
+					_, retryErr := withOpenAIRejectedFieldRetryAttempt(c, wireBody, attempt.state, func() (*OpenAIForwardResult, error) {
+						return nil, newOpenAIRejectedFieldStreamRetrySignal(c, message)
+					})
+					if retryErr != nil {
+						lease.MarkBroken()
+						return nil, retryErr
+					}
+				}
+			}
+			if imageErr := openAIImageGenerationUserError(message); imageErr != nil {
+				// Preview/format and other image user errors cannot be repaired by
+				// reconnecting or switching credentials. Keep their structured cause.
+				lease.MarkBroken()
+				if deltaApplied && stateStore != nil && sessionHash != "" {
+					stateStore.DeleteSessionDeltaChain(groupID, sessionHash)
+				}
+				s.recordOpenAIStreamUpstreamError(c, account, false, lease.HandshakeHeader("x-request-id"), "ws_error", message, imageErr.clientMessage())
+				if !clientDisconnected {
+					if reqStream {
+						MarkResponseCommitted(c)
+						markOpenAIWSClientVisibleFailure(c, eventType, message)
+						flushBufferedStreamEvents(eventType)
+						emitStreamMessage(clientMessage, true)
+						if eventType == "error" && !clientDisconnected {
+							emitStreamMessage(buildOpenAIResponseFailedEvent(responseID, originalModel, 0, message, imageErr.clientMessage()), true)
+						}
+					} else {
+						writeOpenAIImageGenerationUserError(c, imageErr)
+					}
+				}
+				upstreamTerminalEvent = eventType
+				if upstreamProgress() {
+					return partialResultWithUsage(), imageErr
+				}
+				return nil, imageErr
+			}
+		}
+
+		parameterErrorCode, parameterErrorType, parameterErrorMessage := parseOpenAIWSErrorEventFields(message)
+		parameterFallbackReason, _ := classifyOpenAIWSErrorEventFromRaw(parameterErrorCode, parameterErrorType, parameterErrorMessage)
+		if eventType == "error" && len(message) <= maxOpenAIErrorNormalizationBytes &&
+			openAIStreamFailureStatus(message, parameterErrorMessage) == http.StatusBadRequest &&
+			parameterFallbackReason != "previous_response_not_found" && parameterFallbackReason != openAIWSFallbackReasonInvalidEncryptedContent &&
+			!isOpenAIContextWindowError(parameterErrorMessage, message) && GetOpsCyberPolicy(c) == nil {
+			// Keep parameter errors private until their authoritative terminal:
+			// response.failed can carry metered work absent from the bare event.
+			pendingParameterError = append(pendingParameterError[:0], message...)
+			continue
+		}
+		if isTerminalEvent {
+			pendingParameterError = nil
+		}
+
+		if eventType == "response.failed" {
+			if _, ok := openAIQuotaSignal(account, http.StatusTooManyRequests, message); ok {
+				s.handleOpenAIAccountUpstreamError(ctx, account, http.StatusTooManyRequests, nil, message, mappedModel)
+				if !replayUnsafe() && !clientDisconnected && ctx.Err() == nil && replayGuard.CanReplay(c) &&
+					!openAIUsageHasTokens(usage) && imageCounter.Count() == 0 {
+					lease.MarkBroken()
+					msg := s.recordOpenAIStreamUpstreamError(c, account, false, lease.HandshakeHeader("x-request-id"), "failover", message, extractOpenAISSEErrorMessage(message))
+					return nil, s.newOpenAIWSRateLimitFailoverError(account, nil, message, msg)
+				}
+			}
+		}
+		// A standalone capacity terminal can precede any semantic output, just
+		// like a bare error. Preserve already metered usage and image results.
+		if reqStream && eventType == "response.failed" &&
+			!openAIUsageHasTokens(usage) && imageCounter.Count() == 0 &&
+			isOpenAIUpstreamCapacityShedEvent(message) {
+			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
+			if failoverErr := s.openAIWSV2PreOutputAccountFailover(c, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw, replayUnsafe(), clientDisconnected); failoverErr != nil {
+				lease.MarkBroken()
+				return nil, failoverErr
+			}
+		}
+
+		if eventType != "error" && !isTerminalEvent && (openAIStreamDataStartsClientOutput(string(message), eventType) || openAIStreamDataStartsVisibleOutput(string(message), eventType)) {
+			upstreamOutputStarted = true
+		}
+		// A synthesized failure only settles client error delivery; it cannot
+		// prove that the upstream rejected this delta before doing any work.
+		if deltaApplied && !synthesizedParameterFailure && !wroteDownstream && !upstreamOutputStarted && !clientDisconnected && ctx.Err() == nil &&
+			!replayGuard.progressed && !openAIUsageHasTokens(usage) && imageCounter.Count() == 0 && (eventType == "error" || eventType == "response.failed") {
+			path := "error"
+			if eventType == "response.failed" {
+				path = "response.error"
+			}
+			rejection := gjson.GetBytes(message, path)
+			reason, _ := classifyOpenAIWSErrorEventFromRaw(rejection.Get("code").String(), rejection.Get("type").String(), rejection.Get("message").String())
+			if reason == "previous_response_not_found" || openAIWSCanReplayMissingToolOutput(rejection, reqBody) {
+				lease.MarkBroken()
+				stateStore.DeleteSessionDeltaChain(groupID, sessionHash)
+				if c != nil {
+					c.Set("openai_ws_auto_incremental_replay", true)
+				}
+				return nil, wrapOpenAIWSFallback("auto_continuation_miss", errors.New(rejection.Get("message").String()))
+			}
+		}
+
+		if eventType == "response.failed" {
+			if openAIWSKnownParameterError(message) {
+				// A known parameter rejection is terminal on HTTP ingress too.
+				// Keep the raw terminal for streaming clients (including usage),
+				// but return structured 400 JSON before non-streaming headers commit.
+				// Bare errors reach this point only after terminal/EOF settlement;
+				// schema constraints are never removed or replayed to hide rejection.
+				lease.MarkBroken()
+				if deltaApplied && stateStore != nil && sessionHash != "" {
+					stateStore.DeleteSessionDeltaChain(groupID, sessionHash)
+				}
+				upstreamTerminalEvent = "response.failed"
+				safePayload := s.redactAgentIdentitySensitiveBody(ctx, account, message)
+				errMsg := s.recordOpenAIStreamUpstreamError(c, account, false, lease.HandshakeHeader("x-request-id"), "ws_error", safePayload, extractOpenAISSEErrorMessage(safePayload))
+				if !clientDisconnected {
+					MarkResponseCommitted(c)
+					if reqStream {
+						flushBufferedStreamEvents(eventType)
+						emitStreamMessage(s.redactAgentIdentitySensitiveBody(ctx, account, clientMessage), true)
+						if !clientDisconnected {
+							markOpenAIWSClientVisibleFailure(c, eventType, safePayload)
+						}
+					} else {
+						writeOpenAIUpstreamClientError(c, http.StatusBadRequest, openAIStreamFailedEventPassthroughBody(safePayload, errMsg), errMsg)
+					}
+				}
+				if upstreamProgress() {
+					return partialResultWithUsage(), fmt.Errorf("upstream response failed: %s", errMsg)
+				}
+				return nil, fmt.Errorf("upstream response failed: %s", errMsg)
+			}
+		}
+
+		if eventType == "error" {
+			if deltaApplied && stateStore != nil && sessionHash != "" {
+				// 注入的增量锚点被上游拒绝（如 previous_response_not_found）
+				// 时链已失效；删除后重试回到完整上下文发送。
+				stateStore.DeleteSessionDeltaChain(groupID, sessionHash)
+			}
+			s.handleOpenAIWSErrorEventTransientFailure(ctx, account, mappedModel, lease.HandshakeHeaders(), message)
+			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
+			s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw, mappedModel)
+			errMsg := strings.TrimSpace(errMsgRaw)
+			if errMsg == "" {
+				errMsg = "Upstream websocket error"
+			}
+			fallbackReason, canFallback := classifyOpenAIWSErrorEventFromRaw(errCodeRaw, errTypeRaw, errMsgRaw)
+			errCode, errType, errMessage := summarizeOpenAIWSErrorEventFieldsFromRaw(errCodeRaw, errTypeRaw, errMsgRaw)
+			logOpenAIWSModeInfo(
+				"error_event account_id=%d conn_id=%s idx=%d fallback_reason=%s can_fallback=%v wrote_downstream=%v client_output_started=%v err_code=%s err_type=%s err_message=%s",
+				account.ID,
+				connID,
+				eventCount,
+				truncateOpenAIWSLogValue(fallbackReason, openAIWSLogValueMaxLen),
+				canFallback,
+				wroteDownstream,
+				clientOutputStarted,
+				errCode,
+				errType,
+				errMessage,
+			)
+			if fallbackReason == "previous_response_not_found" {
+				logOpenAIWSModeInfo(
+					"previous_response_not_found_diag account_id=%d account_type=%s conn_id=%s previous_response_id=%s previous_response_id_kind=%s response_id=%s event_idx=%d req_stream=%v store_disabled=%v conn_reused=%v session_hash=%s header_session_id=%s header_conversation_id=%s session_id_source=%s conversation_id_source=%s has_turn_state=%v turn_state_len=%d has_prompt_cache_key=%v err_code=%s err_type=%s err_message=%s",
+					account.ID,
+					account.Type,
+					connID,
+					truncateOpenAIWSLogValue(previousResponseID, openAIWSIDValueMaxLen),
+					normalizeOpenAIWSLogValue(previousResponseIDKind),
+					truncateOpenAIWSLogValue(responseID, openAIWSIDValueMaxLen),
+					eventCount,
+					reqStream,
+					storeDisabled,
+					lease.Reused(),
+					truncateOpenAIWSLogValue(sessionHash, 12),
+					openAIWSHeaderValueForLog(wsHeaders, "session_id"),
+					openAIWSHeaderValueForLog(wsHeaders, "conversation_id"),
+					normalizeOpenAIWSLogValue(sessionResolution.SessionSource),
+					normalizeOpenAIWSLogValue(sessionResolution.ConversationSource),
+					turnState != "",
+					len(turnState),
+					promptCacheKey != "",
+					errCode,
+					errType,
+					errMessage,
+				)
+			}
+			// error 事件后连接不再可复用，避免回池后污染下一请求。
+			lease.MarkBroken()
+			if failoverErr := s.openAIWSV2PreOutputAccountFailover(c, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw, replayUnsafe(), clientDisconnected); failoverErr != nil {
+				return nil, failoverErr
+			}
+			if !replayUnsafe() && canFallback {
+				return nil, wrapOpenAIWSFallback(fallbackReason, errors.New(errMsg))
+			}
+			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
+			capacityShed := isOpenAIUpstreamCapacityShedEvent(message)
+			_, hardQuota := openAIQuotaSignal(account, statusCode, message)
+			if hardQuota {
+				s.recordOpenAIStreamUpstreamError(c, account, false, lease.HandshakeHeader("x-request-id"), "ws_error", message, errMsg)
+			} else if capacityShed {
+				// Preserve the semantic capacity failure after output has committed.
+				// The generic WS fallback would otherwise overwrite it with a 502.
+				statusCode = http.StatusServiceUnavailable
+				errMsg = s.recordOpenAIStreamUpstreamError(c, account, false, lease.HandshakeHeader("x-request-id"), "ws_error", message, errMsg)
+			} else {
+				setOpsUpstreamError(c, statusCode, errMsg, "")
+			}
+			// Codex ignores bare `error` events (only flex-unavailable is
+			// parsed) and the handler would append response.failed with
+			// code=upstream_error, so overflow must become the terminal
+			// response.failed with code=context_length_exceeded.
+			if isOpenAIContextWindowError(errMsg, message) {
+				if !clientDisconnected {
+					if reqStream {
+						flushBufferedStreamEvents("error_event")
+					}
+					WriteOpenAIResponsesContextLengthExceeded(c, errMsg)
+				}
+				if upstreamProgress() {
+					upstreamTerminalEvent = "error"
+					return partialResultWithUsage(), fmt.Errorf("openai ws error event: %s", errMsg)
+				}
+				return nil, fmt.Errorf("openai ws error event: %s", errMsg)
+			}
+			if reqStream && !clientDisconnected {
+				flushBufferedStreamEvents("error_event")
+				emitStreamMessage(clientMessage, true)
+				if (hardQuota || capacityShed) && !clientDisconnected {
+					// Responses clients require a terminal event. Finish here while
+					// the typed error is available so the handler cannot append a
+					// generic response.failed that loses its retryable capacity code.
+					code := openAICapacityShedRetryableClientCode
+					if hardQuota {
+						code = string(OpenAIQuotaExhaustedReason)
+					}
+					writeOpenAIResponsesSSEFailure(c, statusCode, gin.H{
+						"type":    firstNonEmpty(errTypeRaw, "upstream_error"),
+						"code":    code,
+						"message": errMsg,
+					})
+				}
+			}
+			if !reqStream {
+				MarkResponseCommitted(c)
+				c.JSON(statusCode, gin.H{
+					"error": gin.H{
+						"type":    "upstream_error",
+						"message": errMsg,
+					},
+				})
+			}
+			if upstreamProgress() {
+				upstreamTerminalEvent = "error"
+				return partialResultWithUsage(), fmt.Errorf("openai ws error event: %s", errMsg)
+			}
+			return nil, fmt.Errorf("openai ws error event: %s", errMsg)
+		}
+
+		if isTerminalEvent && !clientDisconnected && !interruptState.requested {
+			boundHTTPResponseID = s.bindOpenAIWSHTTPResponse(ctx, c, account, connID, eventType, message)
+		}
+		if reqStream {
+			// 与 HTTP firstOutputStage 同口径的提交点：首个客户端可见事件
+			// （delta/可见输出/reasoning item.added 等）到达即放行缓冲并提交
+			// 本次尝试；此前仅首个 token 事件放行，推理思考期客户端看不到
+			// response.created / output_item.added 等前置事件。
+			if !clientOutputStarted && !isTerminalEvent &&
+				(openAIStreamDataStartsClientOutput(string(clientMessage), eventType) ||
+					openAIStreamDataStartsVisibleOutput(string(clientMessage), eventType)) {
+				clientOutputStarted = true
+			}
+			shouldBuffer := !clientOutputStarted && !isTerminalEvent
+			if shouldBuffer {
+				buffered := make([]byte, len(clientMessage))
+				copy(buffered, clientMessage)
+				bufferedStreamEvents = append(bufferedStreamEvents, buffered)
+				bufferedEventCount++
+				if debugEnabled && shouldLogOpenAIWSBufferedEvent(bufferedEventCount) {
+					logOpenAIWSModeDebug(
+						"buffer_enqueue account_id=%d conn_id=%s idx=%d event_idx=%d event_type=%s buffer_size=%d",
+						account.ID,
+						connID,
+						bufferedEventCount,
+						eventCount,
+						truncateOpenAIWSLogValue(eventType, openAIWSLogValueMaxLen),
+						len(bufferedStreamEvents),
+					)
+				}
+			} else {
+				flushBufferedStreamEvents(eventType)
+				emitStreamMessage(clientMessage, isTerminalEvent)
+			}
+		} else {
+			if responseField.Exists() && responseField.Type == gjson.JSON {
+				finalResponse = []byte(responseField.Raw)
+			}
+		}
+
+		if isTerminalEvent {
+			if !clientDisconnected {
+				markOpenAIWSClientVisibleFailure(c, eventType, message)
+			}
+			if isOpenAIModelUnavailableTerminalEvent(message) {
+				upstreamTerminalEvent = "response.failed"
+				lease.MarkBroken()
+				if !clientDisconnected {
+					if !reqStream {
+						writeOpenAIModelUnavailableTerminal(c, http.StatusSwitchingProtocols, openAIModelErrorResponses)
+					} else {
+						setOpsUpstreamError(c, http.StatusSwitchingProtocols, OpenAIModelUnavailableClientMessage, "")
+						MarkResponseCommitted(c)
+					}
+				}
+				return partialResultWithUsage(), fmt.Errorf("upstream model unavailable")
+			}
+			upstreamTerminalEvent = s.handleOpenAIWSTerminalTransientFailure(ctx, account, mappedModel, lease.HandshakeHeaders(), message)
+			// A terminal event must be the final JSON document in its WS message.
+			// Ignore any tail for the completed client turn, but never reuse the
+			// ambiguous upstream connection for another request.
+			if interruptState.ready() {
+				cleanExit = len(pendingJSONDocuments) == 0 && interruptState.reusable()
+				if !cleanExit {
+					lease.MarkBroken()
+				}
+				break
+			}
+		}
+	}
+
+	if clientDisconnected && terminalEventCount == 0 {
+		return resultWithUsage(), fmt.Errorf("openai ws stream incomplete after client disconnect: %w", context.Canceled)
+	}
+	if !reqStream {
+		if clientDisconnected {
+			return resultWithUsage(), nil
+		}
+		if len(finalResponse) == 0 {
+			logOpenAIWSModeInfo(
+				"missing_final_response account_id=%d conn_id=%s events=%d token_events=%d terminal_events=%d wrote_downstream=%v",
+				account.ID,
+				connID,
+				eventCount,
+				tokenEventCount,
+				terminalEventCount,
+				wroteDownstream,
+			)
+			if replayUnsafe() {
+				return incompleteAfterProgress(errors.New("no terminal response payload"))
+			}
+			if !wroteDownstream {
+				return nil, wrapOpenAIWSFallback("missing_final_response", errors.New("no terminal response payload"))
+			}
+			return nil, errors.New("ws finished without final response")
+		}
+
+		if needModelReplace {
+			finalResponse = s.replaceModelInResponseBody(finalResponse, mappedModel, originalModel)
+		}
+		finalResponse = s.correctToolCallsInResponseBody(finalResponse)
+		populateOpenAIUsageFromResponseJSON(finalResponse, usage)
+		if responseID == "" {
+			responseID = strings.TrimSpace(gjson.GetBytes(finalResponse, "id").String())
+		}
+
+		c.Data(http.StatusOK, "application/json", prepareOpenAIImageOutput(c, finalResponse))
+	} else {
+		flushStreamWriter(true)
+	}
+
+	if responseID != "" && responseID != boundHTTPResponseID && stateStore != nil {
+		ttl := s.openAIWSResponseStickyTTL()
+		if successfulOpenAIResponseAuthOwnerTerminal(upstreamTerminalEvent) {
+			s.bindOpenAIResponseAuthOwner(ctx, c, account, responseID)
+		}
+		logOpenAIWSBindResponseAccountWarn(groupID, account.ID, responseID, stateStore.BindResponseAccount(ctx, groupID, responseID, account.ID, ttl))
+		stateStore.BindResponseConn(responseID, lease.ConnID(), ttl)
+	}
+	if stateStore != nil && sessionHash != "" {
+		stateStore.BindSessionConn(groupID, sessionHash, lease.ConnID(), s.openAIWSSessionStickyTTL())
+	}
+	if deltaRecorder != nil && stateStore != nil && sessionHash != "" && cleanExit && !clientDisconnected {
+		if next, ok := deltaRecorder.finalize(account.ID, deltaFieldsFP, deltaLogicalHashes, nil); ok {
+			if next == nil {
+				stateStore.DeleteSessionDeltaChain(groupID, sessionHash)
+			} else {
+				next.Scope, next.WindowID = deltaScope, deltaWindowID
+				lease.conn.deltaCheckpoint.Store(next)
+				stateStore.BindSessionDeltaChain(groupID, sessionHash, next, s.openAIWSSessionStickyTTL())
+				logOpenAIWSModeInfo(
+					"delta_chain_updated account_id=%d session_hash=%s response_id=%s baseline_items=%d",
+					account.ID,
+					truncateOpenAIWSLogValue(sessionHash, 12),
+					truncateOpenAIWSLogValue(next.ResponseID, openAIWSIDValueMaxLen),
+					len(next.BaselineHashes),
+				)
+			}
+		}
+	}
+	if c != nil && deltaApplied && deltaSucceeded && cleanExit && !clientDisconnected {
+		c.Set("openai_ws_auto_incremental_succeeded", true)
+	}
+	firstTokenMsValue := -1
+	if firstTokenMs != nil {
+		firstTokenMsValue = *firstTokenMs
+	}
+	logOpenAIWSModeDebug(
+		"completed account_id=%d conn_id=%s response_id=%s stream=%v duration_ms=%d events=%d token_events=%d terminal_events=%d buffered_events=%d buffered_flushed=%d first_event=%s last_event=%s first_token_ms=%d wrote_downstream=%v client_disconnected=%v",
+		account.ID,
+		connID,
+		truncateOpenAIWSLogValue(strings.TrimSpace(responseID), openAIWSIDValueMaxLen),
+		reqStream,
+		time.Since(startTime).Milliseconds(),
+		eventCount,
+		tokenEventCount,
+		terminalEventCount,
+		bufferedEventCount,
+		flushedBufferedEventCount,
+		truncateOpenAIWSLogValue(firstEventType, openAIWSLogValueMaxLen),
+		truncateOpenAIWSLogValue(lastEventType, openAIWSLogValueMaxLen),
+		firstTokenMsValue,
+		wroteDownstream,
+		clientDisconnected,
+	)
+
+	return resultWithUsage(), nil
+}

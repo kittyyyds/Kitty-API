@@ -1,0 +1,340 @@
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+)
+
+// longestMessageCacheControlTTL preserves the longest client-requested TTL
+// when cache breakpoints are moved to stable positions. Invalid custom values
+// are retained only when no valid duration is present, leaving validation to
+// Anthropic.
+func longestMessageCacheControlTTL(body []byte) string {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return ""
+	}
+	best := ""
+	var bestDuration time.Duration
+	messages.ForEach(func(_, message gjson.Result) bool {
+		content := message.Get("content")
+		if !content.IsArray() {
+			return true
+		}
+		content.ForEach(func(_, block gjson.Result) bool {
+			ttl := block.Get("cache_control.ttl").String()
+			if ttl == "" {
+				return true
+			}
+			duration, err := time.ParseDuration(ttl)
+			if err != nil {
+				if best == "" {
+					best = ttl
+				}
+				return true
+			}
+			if duration > bestDuration {
+				bestDuration = duration
+				best = ttl
+			}
+			return true
+		})
+		return true
+	})
+	return best
+}
+
+// stripMessageCacheControl 移除 $.messages[*].content[*].cache_control。
+// 与 Parrot _strip_message_cache_control 语义一致。
+//
+// 旧策略为什么整体清空：客户端（特别是 Claude Code）经常把 cache_control 打在
+// "当前最后一条 user message" 上；下一轮对话 messages 追加后，原本的最后一条
+// 变成中间某条，cache_control 还挂着就导致"前缀签名变化"，破坏缓存命中。
+// 统一由代理重新打断点（addMessageCacheBreakpoints）才能在多轮间稳定。
+func stripMessageCacheControl(body []byte) []byte {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return body
+	}
+	msgIdx := -1
+	messages.ForEach(func(_, msg gjson.Result) bool {
+		msgIdx++
+		content := msg.Get("content")
+		if !content.IsArray() {
+			return true
+		}
+		blockIdx := -1
+		content.ForEach(func(_, block gjson.Result) bool {
+			blockIdx++
+			if !block.Get("cache_control").Exists() {
+				return true
+			}
+			path := fmt.Sprintf("messages.%d.content.%d.cache_control", msgIdx, blockIdx)
+			if next, err := sjson.DeleteBytes(body, path); err == nil {
+				body = next
+			}
+			return true
+		})
+		return true
+	})
+	return body
+}
+
+// addMessageCacheBreakpoints 在 messages 上注入两个稳定的 cache 断点：
+//  1. 最后一条 message
+//  2. 当 messages 数量 ≥ 4 时，倒数第二个 role=user 的 message
+//
+// 与 Parrot add_cache_breakpoints 一致。两个断点 + system prompt block 的断点
+// + tools[-1] 的断点共同构成最多 4 个断点（Anthropic 上限）。
+//
+// cache_control ttl 策略：
+//   - 若目标 block 已有 cache_control.ttl → 不覆盖
+//   - 否则写入 {"type":"ephemeral","ttl": claude.DefaultCacheControlTTL}
+//
+// 调用前应先 stripMessageCacheControl 以保证幂等和稳定。
+func addMessageCacheBreakpoints(body []byte) []byte {
+	return addMessageCacheBreakpointsWithTTL(body, claude.DefaultCacheControlTTL)
+}
+
+// addMessageCacheBreakpointsWithTTL 与 addMessageCacheBreakpoints 相同，但 ttl 为空时
+// 注入不带 ttl 的 {"type":"ephemeral"}（Anthropic 默认 5m），保留「客户端未指定 TTL」
+// 这一信息，让上游（如 kiro-rs 的 TTL 智能路由）自行决定 5m / 1h。
+func addMessageCacheBreakpointsWithTTL(body []byte, ttl string) []byte {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return body
+	}
+	arr := messages.Array()
+	if len(arr) == 0 {
+		return body
+	}
+
+	body = injectCacheControlOnLastContentBlock(body, len(arr)-1, &arr[len(arr)-1], ttl)
+
+	if len(arr) >= 4 {
+		userCount := 0
+		for i := len(arr) - 1; i >= 0; i-- {
+			if arr[i].Get("role").String() != "user" {
+				continue
+			}
+			userCount++
+			if userCount == 2 {
+				body = injectCacheControlOnLastContentBlock(body, i, &arr[i], ttl)
+				break
+			}
+		}
+	}
+
+	return body
+}
+
+// rewriteMessageCacheControlIfEnabled 按系统设置决定是否执行旧版 messages 缓存断点改写。
+func (s *GatewayService) rewriteMessageCacheControlIfEnabled(ctx context.Context, body []byte) []byte {
+	if s == nil || !s.isRewriteMessageCacheControlEnabled(ctx) {
+		return body
+	}
+	return addMessageCacheBreakpoints(stripMessageCacheControl(body))
+}
+
+// rewriteMessageCacheControlBody applies stable breakpoints without consulting
+// global settings. Account-scoped API key opt-ins use this path.
+//
+// The longest client TTL is carried over to the moved breakpoints. When the
+// client sent no TTL, the breakpoints carry no TTL either (Anthropic's 5m
+// default) so the upstream can still apply its own TTL routing.
+func rewriteMessageCacheControlBody(body []byte) []byte {
+	ttl := longestMessageCacheControlTTL(body)
+	body = stripMessageCacheControl(body)
+	return addMessageCacheBreakpointsWithTTL(body, ttl)
+}
+
+func messagesHaveCacheControl(body []byte) bool {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return false
+	}
+	found := false
+	messages.ForEach(func(_, message gjson.Result) bool {
+		content := message.Get("content")
+		if !content.IsArray() {
+			return true
+		}
+		content.ForEach(func(_, block gjson.Result) bool {
+			if block.Get("cache_control").Exists() {
+				found = true
+				return false
+			}
+			return true
+		})
+		return !found
+	})
+	return found
+}
+
+func ensureMessageCacheBreakpointsIfMissing(body []byte) []byte {
+	if messagesHaveCacheControl(body) {
+		return body
+	}
+	return addMessageCacheBreakpointsWithTTL(body, "")
+}
+
+// ensureConvertedAnthropicCacheBreakpoints adds stable Anthropic cache
+// breakpoints to OpenAI→Anthropic converted bodies that have none.
+//
+// Claude CLI /v1/messages already ships its own breakpoints; this helper is
+// only for conversion exits. Existing cache_control is left in place.
+func ensureConvertedAnthropicCacheBreakpoints(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	body = ensureSystemCacheBreakpointIfMissing(body)
+	body = ensureToolsCacheBreakpointIfMissing(body)
+	return ensureMessageCacheBreakpointsIfMissing(body)
+}
+
+func ensureSystemCacheBreakpointIfMissing(body []byte) []byte {
+	sys := gjson.GetBytes(body, "system")
+	if !sys.Exists() {
+		return body
+	}
+	if sys.Type == gjson.String {
+		text := sys.String()
+		if strings.TrimSpace(text) == "" {
+			return body
+		}
+		blockRaw := fmt.Sprintf(
+			`[{"type":"text","text":%s,"cache_control":{"type":"ephemeral"}}]`,
+			mustJSONString(text),
+		)
+		next, err := sjson.SetRawBytes(body, "system", []byte(blockRaw))
+		if err != nil {
+			return body
+		}
+		return next
+	}
+	if !sys.IsArray() {
+		return body
+	}
+	arr := sys.Array()
+	lastTextIdx := -1
+	for i, block := range arr {
+		typ := block.Get("type").String()
+		if typ == "text" || typ == "" {
+			lastTextIdx = i
+		}
+	}
+	if lastTextIdx < 0 || arr[lastTextIdx].Get("cache_control").Exists() {
+		return body
+	}
+	path := fmt.Sprintf("system.%d.cache_control", lastTextIdx)
+	next, err := sjson.SetRawBytes(body, path, []byte(`{"type":"ephemeral"}`))
+	if err != nil {
+		return body
+	}
+	return next
+}
+
+func ensureToolsCacheBreakpointIfMissing(body []byte) []byte {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() {
+		return body
+	}
+	arr := tools.Array()
+	lastIdx := -1
+	for i, tool := range arr {
+		if isDeferredLoadingTool(tool) {
+			continue
+		}
+		lastIdx = i
+	}
+	if lastIdx < 0 || arr[lastIdx].Get("cache_control").Exists() {
+		return body
+	}
+	return applyToolsLastCacheBreakpoint(body)
+}
+
+func (s *GatewayService) isRewriteMessageCacheControlEnabled(ctx context.Context) bool {
+	if s == nil {
+		return false
+	}
+	if s.settingService != nil {
+		return s.settingService.IsRewriteMessageCacheControlEnabled(ctx)
+	}
+	return false
+}
+
+// injectCacheControlOnLastContentBlock 把 cache_control 断点打在 messages[idx]
+// 的最后一个 content block 上。若 content 是 string，先升级成单块 text 数组
+// （对齐 Parrot _inject_cache_on_msg 的行为）。
+//
+// msg 是调用方已持有的 gjson.Result 快照，用于省一次 GetBytes。
+// ttl 为空时写入不带 ttl 的 ephemeral 断点（Anthropic 默认 5m）。
+func injectCacheControlOnLastContentBlock(body []byte, idx int, msg *gjson.Result, ttl string) []byte {
+	content := msg.Get("content")
+
+	if content.Type == gjson.String {
+		text := content.String()
+		blockRaw := fmt.Sprintf(
+			`[{"type":"text","text":%s,"cache_control":%s}]`,
+			mustJSONString(text), ephemeralCacheControlJSON(ttl),
+		)
+		if next, err := sjson.SetRawBytes(body, fmt.Sprintf("messages.%d.content", idx), []byte(blockRaw)); err == nil {
+			body = next
+		}
+		return body
+	}
+
+	if !content.IsArray() {
+		return body
+	}
+	contentArr := content.Array()
+	if len(contentArr) == 0 {
+		return body
+	}
+	lastBlockIdx := len(contentArr) - 1
+	lastBlock := contentArr[lastBlockIdx]
+
+	if cc := lastBlock.Get("cache_control"); cc.Exists() && cc.Get("ttl").String() != "" {
+		return body
+	}
+
+	pathPrefix := fmt.Sprintf("messages.%d.content.%d.cache_control", idx, lastBlockIdx)
+	existingCC := lastBlock.Get("cache_control")
+	if existingCC.Exists() {
+		if ttl == "" {
+			return body
+		}
+		if next, err := sjson.SetBytes(body, pathPrefix+".ttl", ttl); err == nil {
+			body = next
+		}
+		return body
+	}
+	if next, err := sjson.SetRawBytes(body, pathPrefix, []byte(ephemeralCacheControlJSON(ttl))); err == nil {
+		body = next
+	}
+	return body
+}
+
+// ephemeralCacheControlJSON 生成 ephemeral cache_control；ttl 为空时不写 ttl 字段。
+func ephemeralCacheControlJSON(ttl string) string {
+	if ttl == "" {
+		return `{"type":"ephemeral"}`
+	}
+	return fmt.Sprintf(`{"type":"ephemeral","ttl":%q}`, ttl)
+}
+
+// mustJSONString 把一个 Go string 序列化为合法 JSON string（含引号），
+// 用于 sjson.SetRawBytes 场景下手工拼 JSON。
+func mustJSONString(s string) string {
+	// Go string quoting can emit non-JSON escapes such as \x7f or \a.
+	// Marshaling a string cannot fail.
+	encoded, _ := json.Marshal(s)
+	return string(encoded)
+}

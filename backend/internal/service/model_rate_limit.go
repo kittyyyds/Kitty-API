@@ -1,0 +1,250 @@
+package service
+
+import (
+	"context"
+	"maps"
+	"strings"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+)
+
+const (
+	modelRateLimitsKey                = "model_rate_limits"
+	openAIImageGenerationRateLimitKey = "openai:image_generation"
+	// anthropicFableRateLimitKey 是 Anthropic 7d_oi（Fable 专属 7d 窗口）限流的
+	// 家族级 scope：命中后所有 Fable 变体（含 [1m] 等后缀）都不再调度到该账号。
+	anthropicFableRateLimitKey = "claude-fable-5"
+)
+
+// isRateLimitActiveForKey 检查指定 key 的限流是否生效
+func (a *Account) isRateLimitActiveForKey(key string) bool {
+	resetAt := a.modelRateLimitResetAt(key)
+	return resetAt != nil && time.Now().Before(*resetAt)
+}
+
+// getRateLimitRemainingForKey 获取指定 key 的限流剩余时间，0 表示未限流或已过期
+func (a *Account) getRateLimitRemainingForKey(key string) time.Duration {
+	resetAt := a.modelRateLimitResetAt(key)
+	if resetAt == nil {
+		return 0
+	}
+	remaining := time.Until(*resetAt)
+	if remaining > 0 {
+		return remaining
+	}
+	return 0
+}
+
+func (a *Account) isModelRateLimitedWithContext(ctx context.Context, requestedModel string) bool {
+	for _, key := range a.modelRateLimitKeysForRequest(ctx, requestedModel) {
+		if a.isRateLimitActiveForKey(key) {
+			return true
+		}
+	}
+	return false
+}
+
+// GetModelRateLimitRemainingTime 获取模型限流剩余时间
+// 返回 0 表示未限流或已过期
+func (a *Account) GetModelRateLimitRemainingTime(requestedModel string) time.Duration {
+	return a.GetModelRateLimitRemainingTimeWithContext(context.Background(), requestedModel)
+}
+
+func (a *Account) GetModelRateLimitRemainingTimeWithContext(ctx context.Context, requestedModel string) time.Duration {
+	remaining := time.Duration(0)
+	for _, key := range a.modelRateLimitKeysForRequest(ctx, requestedModel) {
+		if keyRemaining := a.getRateLimitRemainingForKey(key); keyRemaining > remaining {
+			remaining = keyRemaining
+		}
+	}
+	return remaining
+}
+
+func (a *Account) modelRateLimitKeysForRequest(ctx context.Context, requestedModel string) []string {
+	if a == nil {
+		return nil
+	}
+
+	modelKey := strings.TrimSpace(a.GetMappedModel(requestedModel))
+	if modelKey == "" {
+		return nil
+	}
+
+	keys := []string{modelKey}
+	switch a.Platform {
+	case PlatformOpenAI:
+		if openAIImageGenerationRateLimitApplies(ctx, requestedModel, modelKey) && modelKey != openAIImageGenerationRateLimitKey {
+			keys = append(keys, openAIImageGenerationRateLimitKey)
+		}
+	case PlatformAnthropic:
+		if isAnthropicFableModel(modelKey) && modelKey != anthropicFableRateLimitKey {
+			keys = append(keys, anthropicFableRateLimitKey)
+		}
+	case PlatformCline:
+		if walletKey := clineWalletRateLimitKey(modelKey); walletKey != "" {
+			keys = append(keys, walletKey)
+		}
+	}
+	return keys
+}
+
+// isAnthropicFableModel 判断是否为 Fable 模型家族（claude-fable-5、claude-fable-5[1m] 等变体）
+func isAnthropicFableModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "fable")
+}
+
+func openAIImageGenerationRateLimitApplies(ctx context.Context, requestedModel, modelKey string) bool {
+	if isOpenAIImageGenerationModel(requestedModel) || isOpenAIImageGenerationModel(modelKey) {
+		return true
+	}
+	return OpenAIImageGenerationIntentFromContext(ctx)
+}
+
+func WithOpenAIImageGenerationIntent(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, ctxkey.OpenAIImageGenerationIntent, true)
+}
+
+func OpenAIImageGenerationIntentFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	enabled, ok := ctx.Value(ctxkey.OpenAIImageGenerationIntent).(bool)
+	return ok && enabled
+}
+
+// WithOpenAIImagesEndpoint 标记请求从 /v1/images/* 专用生图端点入站。
+func WithOpenAIImagesEndpoint(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, ctxkey.OpenAIImagesEndpoint, true)
+}
+
+// OpenAIImagesEndpointFromContext 报告请求是否来自 /v1/images/*。
+func OpenAIImagesEndpointFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	enabled, ok := ctx.Value(ctxkey.OpenAIImagesEndpoint).(bool)
+	return ok && enabled
+}
+
+func (a *Account) modelRateLimitResetAt(scope string) *time.Time {
+	if a == nil || a.Extra == nil || scope == "" {
+		return nil
+	}
+	rawLimits, ok := a.Extra[modelRateLimitsKey].(map[string]any)
+	if !ok {
+		return nil
+	}
+	rawLimit, ok := rawLimits[scope].(map[string]any)
+	if !ok {
+		return nil
+	}
+	resetAtRaw, ok := rawLimit["rate_limit_reset_at"].(string)
+	if !ok || strings.TrimSpace(resetAtRaw) == "" {
+		return nil
+	}
+	resetAt, err := time.Parse(time.RFC3339, resetAtRaw)
+	if err != nil {
+		return nil
+	}
+	return &resetAt
+}
+
+// modelRateLimitReason 返回指定 scope 冷却记录中的原因；没有记录时为空。
+func (a *Account) modelRateLimitReason(scope string) string {
+	if a == nil || a.Extra == nil {
+		return ""
+	}
+	rawLimits, _ := a.Extra[modelRateLimitsKey].(map[string]any)
+	rawLimit, _ := rawLimits[scope].(map[string]any)
+	reason, _ := rawLimit["reason"].(string)
+	return reason
+}
+
+// setAccountModelRateLimitSnapshot 把模型级限流写进本账号对象的 Extra 快照。
+// 写时复制：Extra 与其中的 model_rate_limits 可能与调度快照母本及其它副本共享，
+// 这里只读取旧 map，写入新复制的 map 后替换 account.Extra，不修改任何已有 map。
+func setAccountModelRateLimitSnapshot(account *Account, scope string, resetAt time.Time, reason string, now time.Time) {
+	if account == nil || strings.TrimSpace(scope) == "" {
+		return
+	}
+	payload := map[string]any{
+		"rate_limited_at":     now.UTC().Format(time.RFC3339),
+		"rate_limit_reset_at": resetAt.UTC().Format(time.RFC3339),
+	}
+	if reason = strings.TrimSpace(reason); reason != "" {
+		payload["reason"] = reason
+	}
+
+	oldLimits, _ := account.Extra[modelRateLimitsKey].(map[string]any)
+	limits := make(map[string]any, len(oldLimits)+1)
+	maps.Copy(limits, oldLimits)
+	limits[scope] = payload
+
+	extra := make(map[string]any, len(account.Extra)+1)
+	maps.Copy(extra, account.Extra)
+	extra[modelRateLimitsKey] = limits
+	account.Extra = extra
+}
+
+// clearAccountModelRateLimitSnapshot 从本账号对象的 Extra 快照中删除指定 scope，
+// 让当前实例立刻停止跳过该模型，而不必等下一次快照重建。
+// 与 setAccountModelRateLimitSnapshot 一样写时复制，不修改可能共享的旧 map。
+func clearAccountModelRateLimitSnapshot(account *Account, scope string) {
+	if account == nil || strings.TrimSpace(scope) == "" {
+		return
+	}
+	oldLimits, ok := account.Extra[modelRateLimitsKey].(map[string]any)
+	if !ok {
+		return
+	}
+	if _, exists := oldLimits[scope]; !exists {
+		return
+	}
+	limits := make(map[string]any, len(oldLimits))
+	maps.Copy(limits, oldLimits)
+	delete(limits, scope)
+
+	extra := make(map[string]any, len(account.Extra))
+	maps.Copy(extra, account.Extra)
+	extra[modelRateLimitsKey] = limits
+	account.Extra = extra
+}
+
+// IsSchedulableForModel 结合模型级限流判断是否可调度。
+// 保持旧签名以兼容既有调用方；默认使用 context.Background()。
+func (a *Account) IsSchedulableForModel(requestedModel string) bool {
+	return a.IsSchedulableForModelWithContext(context.Background(), requestedModel)
+}
+
+// IsSchedulableForModelWithContext 结合模型级限流判断是否可调度。
+func (a *Account) IsSchedulableForModelWithContext(ctx context.Context, requestedModel string) bool {
+	if a == nil {
+		return false
+	}
+	if !a.IsSchedulable() {
+		return false
+	}
+	return !a.isModelRateLimitedWithContext(ctx, requestedModel)
+}
+
+// GetRateLimitRemainingTime 获取限流剩余时间（模型级限流）
+// 返回 0 表示未限流或已过期
+func (a *Account) GetRateLimitRemainingTime(requestedModel string) time.Duration {
+	return a.GetRateLimitRemainingTimeWithContext(context.Background(), requestedModel)
+}
+
+// GetRateLimitRemainingTimeWithContext 获取限流剩余时间（模型级限流）
+// 返回 0 表示未限流或已过期
+func (a *Account) GetRateLimitRemainingTimeWithContext(ctx context.Context, requestedModel string) time.Duration {
+	if a == nil {
+		return 0
+	}
+	return a.GetModelRateLimitRemainingTimeWithContext(ctx, requestedModel)
+}

@@ -1,0 +1,789 @@
+package service
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
+)
+
+// ForwardAsChatCompletions accepts an OpenAI Chat Completions API request body,
+// converts it to Anthropic Messages format (chained via Responses format),
+// forwards to the Anthropic upstream, and converts the response back to Chat
+// Completions format. This enables Chat Completions clients to access Anthropic
+// models through Anthropic platform groups.
+func (s *GatewayService) ForwardAsChatCompletions(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	parsed *ParsedRequest,
+) (*ForwardResult, error) {
+	startTime := time.Now()
+
+	// 1. Parse Chat Completions request
+	var ccReq apicompat.ChatCompletionsRequest
+	if err := json.Unmarshal(body, &ccReq); err != nil {
+		return nil, fmt.Errorf("parse chat completions request: %w", err)
+	}
+	originalModel := ccReq.Model
+	clientStream := ccReq.Stream
+
+	// 2. Convert CC → Responses → Anthropic (chained conversion)
+	responsesReq, err := chatCompletionsToResponses(s.cfg, &ccReq)
+	if err != nil {
+		return nil, fmt.Errorf("convert chat completions to responses: %w", err)
+	}
+
+	// Resolve the final upstream model before model-specific conversion.
+	mappedModel := originalModel
+	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
+		mappedModel = account.GetMappedModel(originalModel)
+	}
+	if mappedModel == originalModel && account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount {
+		normalized := normalizeVertexAnthropicModelID(claude.NormalizeModelID(originalModel))
+		if normalized != originalModel {
+			mappedModel = normalized
+		}
+	} else if mappedModel == originalModel && account.Platform == PlatformAnthropic && account.Type != AccountTypeAPIKey {
+		normalized := claude.NormalizeModelID(originalModel)
+		if normalized != originalModel {
+			mappedModel = normalized
+		}
+	}
+	if err := validateClaude55Request(body, mappedModel); err != nil {
+		writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
+	responsesReq.Model = mappedModel
+	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(responsesReq)
+	if err != nil {
+		if isClaude55SignedThinkingModel(mappedModel) {
+			writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		}
+		return nil, fmt.Errorf("convert responses to anthropic: %w", err)
+	}
+
+	// 3. Force upstream streaming
+	anthropicReq.Stream = true
+	reqStream := true
+
+	logger.L().Debug("gateway forward_as_chat_completions: model mapping applied",
+		zap.Int64("account_id", account.ID),
+		zap.String("original_model", originalModel),
+		zap.String("mapped_model", mappedModel),
+		zap.Bool("client_stream", clientStream),
+	)
+
+	// 5. Marshal Anthropic request body
+	anthropicBody, err := json.Marshal(anthropicReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal anthropic request: %w", err)
+	}
+	if !account.IsOAuth() {
+		// OAuth accounts get their id from the mimicry below.
+		anthropicBody = withChatCompletionsMetadataUserID(body, anthropicBody)
+	}
+
+	// 6. Apply Claude Code mimicry for OAuth accounts.
+	// Chat Completions 协议进来的请求永远不是 Claude Code 客户端，所以对 OAuth 账号
+	// 必须完整执行 /v1/messages 主路径上的伪装链路（system 重写 + normalize + metadata 注入），
+	// 否则会被 Anthropic 判为第三方应用并扣 extra usage。
+	// 见 applyClaudeCodeOAuthMimicryToBody 的 godoc。
+	isClaudeCode := false
+	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode
+
+	if shouldMimicClaudeCode {
+		anthropicBody = s.applyClaudeCodeOAuthMimicryToBody(ctx, c, account, anthropicBody, anthropicReq.System, mappedModel)
+	}
+	if account.IsAnthropicAPIKeyCacheControlRewriteEnabled() {
+		anthropicBody = injectAnthropicAPIKeyCacheMetadata(anthropicBody, parsed, account)
+		anthropicBody = rewriteMessageCacheControlBody(anthropicBody)
+	}
+	anthropicBody = ensureConvertedAnthropicCacheBreakpoints(anthropicBody)
+
+	// 7. Enforce cache_control block limit
+	anthropicBody = enforceCacheControlLimit(anthropicBody)
+
+	// 8. Get access token
+	token, tokenType, err := s.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, fmt.Errorf("get access token: %w", err)
+	}
+
+	// 9. Get proxy URL
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	// 10. Build and send the request, recovering a concurrent token rotation once.
+	var upstreamReq *http.Request
+	var forwardedBody []byte
+	var resp *http.Response
+	for retriedRotatedToken := false; ; {
+		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
+		upstreamReq, forwardedBody, err = s.buildUpstreamRequest(upstreamCtx, c, account, anthropicBody, token, tokenType, mappedModel, reqStream, shouldMimicClaudeCode)
+		releaseUpstreamCtx()
+		if err != nil {
+			return nil, fmt.Errorf("build upstream request: %w", err)
+		}
+		resp, err = s.doClaudeUpstreamRequest(ctx, upstreamReq, proxyURL, account, s.tlsFPProfileService.ResolveTLSProfile(account))
+		if err != nil {
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			return nil, s.handleUpstreamTransportError(ctx, c, account, err, OpsUpstreamErrorEvent{
+				UpstreamURL: safeUpstreamURL(upstreamReq.URL.String()),
+			})
+		}
+		if resp.StatusCode == http.StatusUnauthorized && !retriedRotatedToken {
+			if rotatedToken := s.rotatedClaudeAccessToken(ctx, account, token); rotatedToken != "" {
+				_ = resp.Body.Close()
+				token = rotatedToken
+				retriedRotatedToken = true
+				continue
+			}
+		}
+		break
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Bill the final Anthropic effort after conversion and account normalization.
+	// For example, OpenAI xhigh is forwarded as output_config.effort=max.
+	reasoningEffort := NormalizeClaudeOutputEffort(gjson.GetBytes(forwardedBody, "output_config.effort").String())
+	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, forwardedBody, mappedModel)
+
+	// 12. Handle error response with failover
+	if resp.StatusCode >= 400 {
+		respBody, _ := s.readUpstreamErrorBody(resp)
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+
+		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+
+		// Apply account policies even for statuses outside the default failover list.
+		shouldDisable := false
+		if s.rateLimitService != nil {
+			shouldDisable = s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, mappedModel)
+		}
+		if shouldDisable || s.shouldFailoverUpstreamError(resp.StatusCode) {
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				ProxyID:            opsUpstreamProxyID(account),
+				ProxyName:          opsUpstreamProxyName(account),
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				Kind:               "failover",
+				Message:            upstreamMsg,
+			})
+			return nil, newGatewayHTTPFailoverError(account, resp, respBody, shouldDisable)
+		}
+
+		recordConvertedUpstreamHTTPError(c, account, resp, upstreamMsg)
+		writeGatewayCCError(c, mapUpstreamStatusCode(resp.StatusCode), convertedUpstreamErrorCode(resp.StatusCode), upstreamMsg)
+		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, upstreamMsg)
+	}
+
+	// 13. Handle normal response
+	// Read Anthropic SSE → convert to Responses events → convert to CC format
+	var result *ForwardResult
+	var handleErr error
+	if clientStream {
+		writerSizeBeforeStream := c.Writer.Size()
+		result, handleErr = s.handleCCStreamingFromAnthropic(resp, c, originalModel, mappedModel, reasoningEffort, startTime)
+		var sseErr *sseStreamErrorEventError
+		switch {
+		case errors.As(handleErr, &sseErr) && c.Writer.Size() == writerSizeBeforeStream:
+			return nil, s.sseStreamErrorEventFailover(ctx, c, account, resp, sseErr.RawData, mappedModel, false)
+		case errors.Is(handleErr, errAnthropicNativeStreamIdle) && s.rateLimitService != nil:
+			s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
+		}
+	} else {
+		result, handleErr = s.handleCCBufferedFromAnthropic(resp, c, originalModel, mappedModel, reasoningEffort, startTime)
+	}
+
+	return result, handleErr
+}
+
+// handleCCBufferedFromAnthropic reads Anthropic SSE events, assembles the full
+// response, then converts Anthropic → Responses → Chat Completions.
+func (s *GatewayService) handleCCBufferedFromAnthropic(
+	resp *http.Response,
+	c *gin.Context,
+	originalModel string,
+	mappedModel string,
+	reasoningEffort *string,
+	startTime time.Time,
+) (*ForwardResult, error) {
+	observer := beginUpstreamResponseModelObservation(c)
+	requestID := resp.Header.Get("x-request-id")
+
+	scanner := bufio.NewScanner(resp.Body)
+	maxLineSize := defaultMaxLineSize
+	if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
+		maxLineSize = s.cfg.Gateway.MaxLineSize
+	}
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+	scanner.Split(newBoundedSSESplit(s.cfg, maxLineSize, nil))
+
+	var finalResp *apicompat.AnthropicResponse
+	var usage ClaudeUsage
+	streamStatus := &anthropicCompatStream{body: resp.Body}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		// SSE 规范允许 `event:xxx`（冒号后无空格）：Kimi 等 Anthropic 兼容上游
+		// 返回紧凑格式，严格匹配 "event: " 会丢弃全部事件（#4653 同根因）。
+		if _, ok := extractOpenAISSEEventLine(line); !ok {
+			continue
+		}
+
+		if !scanner.Scan() {
+			break
+		}
+		payload, ok := extractOpenAISSEDataLine(scanner.Text())
+		if !ok {
+			continue
+		}
+
+		var event apicompat.AnthropicStreamEvent
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			continue
+		}
+
+		observer.ObserveAnthropic([]byte(payload))
+		if event.Type == "error" {
+			upstreamErr := parseAnthropicStreamErrorEvent(payload)
+			logAnthropicStreamErrorEvent("forward_as_cc buffered: upstream error event", requestID, upstreamErr)
+			_ = resp.Body.Close()
+			writeGatewayCCError(c, upstreamErr.Status, upstreamErr.Type, upstreamErr.Message)
+			return nil, fmt.Errorf("upstream stream error: %s: %s", upstreamErr.Type, upstreamErr.Message)
+		}
+		streamStatus.observe(&event, payload)
+
+		// message_start carries the initial response structure and cache usage
+		if event.Type == "message_start" && event.Message != nil {
+			finalResp = event.Message
+			mergeAnthropicUsage(&usage, event.Message.Usage)
+		}
+
+		// message_delta carries final usage and stop_reason
+		if event.Type == "message_delta" {
+			if event.Usage != nil {
+				mergeAnthropicUsage(&usage, *event.Usage)
+			}
+			if event.Delta != nil && event.Delta.StopReason != "" && finalResp != nil {
+				finalResp.StopReason = apicompat.AnthropicStopReasonPtr(event.Delta.StopReason)
+			}
+		}
+		if event.Type == "content_block_start" && event.ContentBlock != nil && finalResp != nil {
+			finalResp.Content = append(finalResp.Content, *event.ContentBlock)
+		}
+		if event.Type == "content_block_delta" && event.Delta != nil && finalResp != nil && event.Index != nil {
+			idx := *event.Index
+			if idx >= 0 && idx < len(finalResp.Content) {
+				switch event.Delta.Type {
+				case "text_delta":
+					finalResp.Content[idx].Text += event.Delta.Text
+				case "thinking_delta":
+					finalResp.Content[idx].Thinking += event.Delta.Thinking
+				case "input_json_delta":
+					finalResp.Content[idx].Input = appendRawJSON(finalResp.Content[idx].Input, event.Delta.PartialJSON)
+				}
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			logger.L().Warn("forward_as_cc buffered: read error",
+				zap.Error(err),
+				zap.String("request_id", requestID),
+			)
+		}
+	}
+
+	streamStatus.readErr = scanner.Err()
+	if failure := streamStatus.failure(); failure != nil {
+		_ = resp.Body.Close()
+		writeGatewayCCError(c, http.StatusBadGateway, "server_error", failure.message)
+		return &ForwardResult{
+			UpstreamResponseModel:         observer.Model(),
+			UpstreamResponseModelConflict: observer.Conflict(),
+			UpstreamResponseServiceTier:   observer.ServiceTier(),
+			RequestID:                     requestID, UpstreamHeaders: resp.Header, Usage: usage,
+			Model: originalModel, UpstreamModel: mappedModel, ReasoningEffort: reasoningEffort,
+			Duration: time.Since(startTime),
+		}, failure.err
+	}
+
+	if finalResp == nil {
+		writeGatewayCCError(c, http.StatusBadGateway, "server_error", "Upstream stream ended without a response")
+		return nil, fmt.Errorf("upstream stream ended without response")
+	}
+
+	if !anthropicResponseHasVisibleOutput(finalResp) {
+		logger.L().Warn("forward_as_cc buffered: empty anthropic completion",
+			zap.String("request_id", requestID),
+			zap.String("model", originalModel),
+			zap.String("mapped_model", mappedModel),
+		)
+		return nil, emptyAnthropicCompletionFailoverError()
+	}
+
+	// Update usage from accumulated delta
+	normalizeAnthropicEventUsageForResponses(&apicompat.AnthropicStreamEvent{Message: finalResp}, usage)
+
+	// Chain: Anthropic → Responses → Chat Completions
+	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
+	ccResp := apicompat.ResponsesToChatCompletions(responsesResp, originalModel)
+
+	if s.responseHeaderFilter != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	}
+	// 非流式响应必须是 application/json。上游被强制流式后会返回
+	// Content-Type: text/event-stream，经 WriteFilteredHeaders 透传后会污染
+	// 响应头；而 c.Data/c.JSON 走 Gin 的 writeContentType（仅当头不存在时才设置），
+	// 无法覆盖已存在的 SSE 头。这里显式 Set 强制改回 JSON，避免下游中间层
+	// （如 new-api）按 Content-Type 误判为流式。
+	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// Marshal then bytes-replace so tool name mapping is reversed at byte level
+	// (parity with Parrot non-stream flow that marshals → restore → emit).
+	if respBytes, err := json.Marshal(ccResp); err == nil {
+		respBytes = reverseToolNamesIfPresent(c, respBytes)
+		c.Data(http.StatusOK, "application/json; charset=utf-8", respBytes)
+	} else {
+		c.JSON(http.StatusOK, ccResp)
+	}
+
+	return &ForwardResult{
+		UpstreamResponseModel:         observer.Model(),
+		UpstreamResponseModelConflict: observer.Conflict(),
+		UpstreamResponseServiceTier:   observer.ServiceTier(),
+		RequestID:                     requestID,
+		UpstreamHeaders:               resp.Header,
+		Usage:                         usage,
+		Model:                         originalModel,
+		UpstreamModel:                 mappedModel,
+		ReasoningEffort:               reasoningEffort,
+		Stream:                        false,
+		Duration:                      time.Since(startTime),
+	}, nil
+}
+
+// handleCCStreamingFromAnthropic reads Anthropic SSE events, converts each
+// to Responses events, then to Chat Completions chunks, and writes them.
+func (s *GatewayService) handleCCStreamingFromAnthropic(
+	resp *http.Response,
+	c *gin.Context,
+	originalModel string,
+	mappedModel string,
+	reasoningEffort *string,
+	startTime time.Time,
+) (*ForwardResult, error) {
+	observer := beginUpstreamResponseModelObservation(c)
+	requestID := resp.Header.Get("x-request-id")
+
+	if s.responseHeaderFilter != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	}
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.WriteHeader(http.StatusOK)
+
+	// Use Anthropic→Responses state machine, then convert Responses→CC
+	anthState := apicompat.NewAnthropicEventToResponsesState()
+	anthState.Model = originalModel
+	ccState := apicompat.NewResponsesEventToChatState()
+	ccState.Model = originalModel
+
+	var usage ClaudeUsage
+	var firstTokenMs *int
+	firstChunk := true
+	sawVisibleOutput := false
+	writerSizeBeforeStream := c.Writer.Size()
+
+	stream := newAnthropicCompatStream(s.cfg, c, resp, "forward_as_cc", requestID)
+	defer stream.stop()
+
+	resultWithUsage := func() *ForwardResult {
+		return &ForwardResult{
+			UpstreamResponseModel:         observer.Model(),
+			UpstreamResponseModelConflict: observer.Conflict(),
+			UpstreamResponseServiceTier:   observer.ServiceTier(),
+			RequestID:                     requestID,
+			UpstreamHeaders:               resp.Header,
+			Usage:                         usage,
+			Model:                         originalModel,
+			UpstreamModel:                 mappedModel,
+			ReasoningEffort:               reasoningEffort,
+			Stream:                        true,
+			Duration:                      time.Since(startTime),
+			FirstTokenMs:                  firstTokenMs,
+			ClientDisconnect:              stream.clientDisconnected,
+		}
+	}
+
+	writeChunk := func(chunk apicompat.ChatCompletionsChunk) bool {
+		sse, err := apicompat.ChatChunkToSSE(chunk)
+		if err != nil {
+			return false
+		}
+		// Reverse tool name mapping: fake → real, per-chunk bytes.Replace.
+		// c 可能持有请求侧注入的 ToolNameRewrite；无则仅做静态前缀还原。
+		out := reverseToolNamesIfPresentString(c, sse)
+		if _, err := fmt.Fprint(c.Writer, out); err != nil {
+			return true // client disconnected
+		}
+		return false
+	}
+
+	processAnthropicEvent := func(event *apicompat.AnthropicStreamEvent) {
+		if event == nil {
+			return
+		}
+		if event.Type == "ping" {
+			if stream.clientDisconnected {
+				return
+			}
+			if _, err := fmt.Fprint(c.Writer, ": ping\n\n"); err != nil {
+				stream.markClientDisconnected()
+				return
+			}
+			c.Writer.Flush()
+			return
+		}
+		if firstChunk {
+			firstChunk = false
+			ms := int(time.Since(startTime).Milliseconds())
+			firstTokenMs = &ms
+		}
+		if anthropicStreamEventHasVisibleOutput(event) {
+			sawVisibleOutput = true
+		}
+		// 无可见输出时暂扣结束事件：流尾由空回答检测写出可重试错误，而不是
+		// 补发 finish_reason=stop 的空回答。
+		if (event.Type == "message_delta" || event.Type == "message_stop") && !sawVisibleOutput {
+			if event.Type == "message_delta" && event.Usage != nil {
+				mergeAnthropicUsage(&usage, *event.Usage)
+			}
+			return
+		}
+
+		// Extract usage from message_delta
+		if event.Type == "message_delta" && event.Usage != nil {
+			mergeAnthropicUsage(&usage, *event.Usage)
+		}
+		// Also capture usage from message_start (carries cache fields)
+		if event.Type == "message_start" && event.Message != nil {
+			mergeAnthropicUsage(&usage, event.Message.Usage)
+		}
+		if stream.clientDisconnected {
+			return
+		}
+
+		// Keep the outward Responses/Chat usage on the same normalized buckets used
+		// for billing, including converter handlers that consume event usage.
+		syncAnthropicResponsesUsage(anthState, usage)
+		normalizeAnthropicEventUsageForResponses(event, usage)
+
+		// Chain: Anthropic event → Responses events → CC chunks
+		responsesEvents := apicompat.AnthropicEventToResponsesEvents(event, anthState)
+		for _, resEvt := range responsesEvents {
+			ccChunks := apicompat.ResponsesEventToChatChunks(&resEvt, ccState)
+			for _, chunk := range ccChunks {
+				if disconnected := writeChunk(chunk); disconnected {
+					stream.markClientDisconnected()
+					return
+				}
+			}
+		}
+		c.Writer.Flush()
+	}
+
+	// 上游 Anthropic 流内 error 事件（kiro-rs 的 overloaded_error / api_error /
+	// upstream_tool_json_error 等）。转换器没有 error 分支，旧逻辑会静默丢弃，
+	// 再按正常完成补发 finish_reason=stop，客户端既看不到错误也不会重试。
+	// 这里改为透传一个 OpenAI 流式错误帧并结束流。
+	writeUpstreamStreamError := func(event *apicompat.AnthropicStreamEvent, payload string) {
+		upstreamErr := parseAnthropicStreamErrorEvent(payload)
+		// error 路径没有 message_delta：kiro-rs 在 error 事件顶层附带已消耗用量，这里并入计费。
+		if event != nil && event.Usage != nil {
+			mergeAnthropicUsage(&usage, *event.Usage)
+		}
+		logAnthropicStreamErrorEvent("forward_as_cc stream: upstream error event", requestID, upstreamErr)
+		MarkOpsStreamFailure(c, upstreamErr.Type, upstreamErr.Type, upstreamErr.Message, upstreamErr.Status)
+		fmt.Fprint(c.Writer, buildChatStreamUpstreamErrorSSE(upstreamErr.Type, upstreamErr.Message)) //nolint:errcheck
+		fmt.Fprint(c.Writer, "data: [DONE]\n\n")                                                     //nolint:errcheck
+		c.Writer.Flush()
+	}
+
+	for {
+		line, ok := stream.nextLine()
+		if !ok {
+			break
+		}
+		// 与缓冲路径一致：接受 SSE 紧凑格式（冒号后无空格，#4653 同根因）。
+		if _, ok := extractOpenAISSEEventLine(line); !ok {
+			continue
+		}
+
+		dataLine, ok := stream.nextLine()
+		if !ok {
+			break
+		}
+		payload, ok := extractOpenAISSEDataLine(dataLine)
+		if !ok {
+			continue
+		}
+
+		var event apicompat.AnthropicStreamEvent
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			continue
+		}
+
+		// Forward received usage regardless of the client stream_options.
+		// The intermediate Responses converter synthesizes usage even when absent.
+		ccState.IncludeUsage = ccState.IncludeUsage || anthropicChatStreamHasUsage(&event, payload)
+
+		observer.ObserveAnthropic([]byte(payload))
+		stream.observe(&event, payload)
+		if stream.upstreamErrType != "" {
+			// error 路径没有 message_delta：kiro-rs 在 error 事件顶层附带已消耗用量，并入计费。
+			if event.Usage != nil {
+				mergeAnthropicUsage(&usage, *event.Usage)
+			}
+			break
+		}
+		processAnthropicEvent(&event)
+	}
+
+	if failure := stream.failure(); failure != nil {
+		var sseErr *sseStreamErrorEventError
+		if errors.As(failure.err, &sseErr) {
+			// 上游流内 error 事件：尚未向客户端写出内容时交给调用方转为
+			// UpstreamFailoverError 换号重试（本次不计费）；已写出内容时透传
+			// 错误帧 + [DONE] 结束流，并按已观测到的 usage 计费（与 /v1/messages 一致）。
+			if c.Writer.Size() == writerSizeBeforeStream {
+				return nil, failure.err
+			}
+			writeUpstreamStreamError(nil, stream.upstreamErrPayload)
+			MarkResponseCommitted(c)
+			return resultWithUsage(), nil
+		}
+		return finishAnthropicCompatStreamFailure(c, writerSizeBeforeStream, failure, resultWithUsage(), func() {
+			writeAnthropicCompatCCStreamFailure(c, failure)
+		})
+	}
+	if stream.clientDisconnected {
+		return resultWithUsage(), nil
+	}
+
+	if !sawVisibleOutput {
+		logger.L().Warn("forward_as_cc stream: empty anthropic completion",
+			zap.String("request_id", requestID),
+			zap.String("model", originalModel),
+			zap.String("mapped_model", mappedModel),
+		)
+		writeUpstreamStreamError(nil, emptyAnthropicCompletionErrorPayload())
+		return resultWithUsage(), nil
+	}
+
+	// Finalize both state machines
+	finalResEvents := apicompat.FinalizeAnthropicResponsesStream(anthState)
+	for _, resEvt := range finalResEvents {
+		ccChunks := apicompat.ResponsesEventToChatChunks(&resEvt, ccState)
+		for _, chunk := range ccChunks {
+			writeChunk(chunk) //nolint:errcheck
+		}
+	}
+	finalCCChunks := apicompat.FinalizeResponsesChatStream(ccState)
+	for _, chunk := range finalCCChunks {
+		writeChunk(chunk) //nolint:errcheck
+	}
+
+	// Write [DONE] marker
+	fmt.Fprint(c.Writer, "data: [DONE]\n\n") //nolint:errcheck
+	c.Writer.Flush()
+
+	return resultWithUsage(), nil
+}
+
+// writeGatewayCCError writes an error in OpenAI Chat Completions format for
+// the Anthropic-upstream CC forwarding path.
+func writeGatewayCCError(c *gin.Context, statusCode int, errType, message string) {
+	MarkResponseCommitted(c)
+	c.JSON(statusCode, gin.H{
+		"error": gin.H{
+			"type":    errType,
+			"message": message,
+		},
+	})
+}
+
+// anthropicChatStreamHasUsage distinguishes an explicit zero-valued usage object
+// from omitted/null usage before the Anthropic→Responses conversion loses that distinction.
+func anthropicChatStreamHasUsage(event *apicompat.AnthropicStreamEvent, payload string) bool {
+	switch event.Type {
+	case "message_start":
+		return event.Message != nil && gjson.Get(payload, "message.usage").IsObject()
+	case "message_delta":
+		return event.Usage != nil
+	default:
+		return false
+	}
+}
+
+// anthropicStreamError 是上游 Anthropic SSE 流内 `error` 事件的归一化结果。
+type anthropicStreamError struct {
+	Type    string // 上游 error.type，缺省 upstream_error
+	Message string // 已脱敏的 error.message
+	Status  int    // 语义 HTTP 状态：overloaded_error → 503，其余 502
+}
+
+// parseAnthropicStreamErrorEvent 解析 `{"type":"error","error":{type,message}}`。
+// 所有 Anthropic 上游流内错误转发路径（CC / Responses，流式与缓冲）共用，
+// 保证脱敏与状态码映射一致。
+const emptyAnthropicCompletionClientMessage = "Upstream model became unavailable: the stream ended without any answer text, reasoning, or tool call. Please retry."
+
+func emptyAnthropicCompletionErrorPayload() string {
+	return `{"type":"error","error":{"type":"api_error","message":"` + emptyAnthropicCompletionClientMessage + `"}}`
+}
+
+func emptyAnthropicCompletionFailoverError() *UpstreamFailoverError {
+	return &UpstreamFailoverError{
+		StatusCode:             http.StatusBadGateway,
+		ResponseBody:           []byte(emptyAnthropicCompletionErrorPayload()),
+		RetryableOnSameAccount: true,
+	}
+}
+
+func anthropicResponseHasVisibleOutput(resp *apicompat.AnthropicResponse) bool {
+	if resp == nil {
+		return false
+	}
+	for _, block := range resp.Content {
+		switch block.Type {
+		case "text":
+			if block.Text != "" {
+				return true
+			}
+		case "thinking":
+			if block.Thinking != "" {
+				return true
+			}
+		case "redacted_thinking":
+			if block.Data != "" {
+				return true
+			}
+		case "tool_use":
+			return true
+		}
+	}
+	return false
+}
+
+func anthropicStreamEventHasVisibleOutput(event *apicompat.AnthropicStreamEvent) bool {
+	if event == nil {
+		return false
+	}
+	switch event.Type {
+	case "content_block_start":
+		if event.ContentBlock == nil {
+			return false
+		}
+		switch event.ContentBlock.Type {
+		case "text":
+			return event.ContentBlock.Text != ""
+		case "thinking":
+			return event.ContentBlock.Thinking != ""
+		case "redacted_thinking":
+			return event.ContentBlock.Data != ""
+		case "tool_use":
+			return true
+		}
+	case "content_block_delta":
+		if event.Delta == nil {
+			return false
+		}
+		switch event.Delta.Type {
+		case "text_delta":
+			return event.Delta.Text != ""
+		case "thinking_delta":
+			return event.Delta.Thinking != ""
+		case "input_json_delta":
+			return true
+		}
+	}
+	return false
+}
+
+func parseAnthropicStreamErrorEvent(payload string) anthropicStreamError {
+	errType := strings.TrimSpace(gjson.Get(payload, "error.type").String())
+	if errType == "" {
+		errType = "upstream_error"
+	}
+	message := sanitizeUpstreamErrorMessage(strings.TrimSpace(gjson.Get(payload, "error.message").String()))
+	if message == "" {
+		message = "Upstream stream error"
+	}
+	status := http.StatusBadGateway
+	if errType == "overloaded_error" {
+		status = http.StatusServiceUnavailable
+	}
+	return anthropicStreamError{Type: errType, Message: message, Status: status}
+}
+
+func logAnthropicStreamErrorEvent(msg, requestID string, upstreamErr anthropicStreamError) {
+	logger.L().Warn(msg,
+		zap.String("request_id", requestID),
+		zap.String("error_type", upstreamErr.Type),
+		zap.String("error_message", upstreamErr.Message),
+	)
+}
+
+// responsesCode 把 Anthropic error.type 映射为 OpenAI Responses 的错误码词表，
+// 便于 Codex 等 Responses 客户端按 server_is_overloaded / server_error 判定重试。
+func (e anthropicStreamError) responsesCode() string {
+	if e.Type == "overloaded_error" {
+		return "server_is_overloaded"
+	}
+	return "server_error"
+}
+
+// buildChatStreamUpstreamErrorSSE 把上游 Anthropic 流内 error 事件转成 OpenAI chat
+// 流式错误帧。保留上游 error.type（不像 buildChatStreamErrorSSE 那样固定为
+// invalid_request_error），客户端可据此和 message 文案判断是否重试。
+func buildChatStreamUpstreamErrorSSE(errType, message string) string {
+	payload, err := json.Marshal(gin.H{
+		"error": gin.H{
+			"type":    errType,
+			"code":    errType,
+			"message": message,
+		},
+	})
+	if err != nil {
+		return "data: {\"error\":{\"type\":\"upstream_error\",\"code\":\"upstream_error\",\"message\":\"Upstream model unavailable\"}}\n\n"
+	}
+	return "data: " + string(payload) + "\n\n"
+}

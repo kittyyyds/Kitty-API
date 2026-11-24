@@ -1,0 +1,167 @@
+package service
+
+import (
+	"context"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/userfacing"
+)
+
+// VIP 用户策略常量。
+const (
+	// VipBalanceThreshold 总余额（含赠送）达到该值时自动升级为 VIP。
+	VipBalanceThreshold = 100.0
+	// VipExclusiveModelName 是 gpt-5.6-luna 家族基名。访问已对全部用户开放，
+	// 该常量仍作为 Luna 保底计费的家族标识。
+	VipExclusiveModelName = "gpt-5.6-luna"
+	// LunaMinRateMultiplier 是 gpt-5.6-luna 与 gpt-6-luna 家族在分组/用户倍率低于该值时的计费保底。
+	// 普通用户和 VIP 使用相同保底，叠加分组时段因子后的 token 倍率也不得低于该值。
+	LunaMinRateMultiplier = 0.2
+	// vipSweepTimeout 启动扫描的超时上限。
+	vipSweepTimeout = 30 * time.Second
+)
+
+// VipExclusiveModelAccessMessage 是网关拒绝用户调用受限模型时的稳定提示。
+// Luna 已对全部用户开放；该文案仅在未来的用户级模型策略拒绝时使用。
+var VipExclusiveModelAccessMessage = userfacing.VipExclusiveModel
+
+// IsVIPOnlyModel 判断模型是否属于 gpt-5.6-luna 家族。日期版等带连字符后缀的
+// Luna 变体与基名使用相同保底计费。名称是历史遗留：Luna 已对全部用户开放。
+func IsVIPOnlyModel(model string) bool {
+	normalized := normalizeVIPModelCandidate(model)
+	return normalized == VipExclusiveModelName || strings.HasPrefix(normalized, VipExclusiveModelName+"-")
+}
+
+func normalizeVIPModelCandidate(model string) string {
+	normalized := strings.ToLower(lastOpenAIModelSegment(model))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	normalized = strings.Join(strings.Fields(normalized), "-")
+	for strings.Contains(normalized, "--") {
+		normalized = strings.ReplaceAll(normalized, "--", "-")
+	}
+	if strings.HasPrefix(normalized, "gpt5.6") {
+		normalized = "gpt-5.6" + strings.TrimPrefix(normalized, "gpt5.6")
+	}
+	if strings.HasPrefix(normalized, "gpt-5.6luna") {
+		normalized = VipExclusiveModelName + strings.TrimPrefix(normalized, "gpt-5.6luna")
+	}
+	return normalized
+}
+
+// UserCanAccessModel 判断用户是否可以调用指定模型。
+// Luna 已对全部用户开放；该钩子保留给未来的用户级模型策略。
+func UserCanAccessModel(_ *User, _ string) bool {
+	return true
+}
+
+// FilterUserAccessibleModels 返回当前用户在模型发现列表中可见的模型。
+// Luna 已对全部用户开放，因此按原顺序原样返回，不复制切片。
+func FilterUserAccessibleModels(_ *User, models []string) []string {
+	return models
+}
+
+// isLunaMinRateModel 判断模型是否套用 Luna 0.2 倍率保底。
+// 覆盖 gpt-5.6-luna 与 gpt-6-luna，含日期版和紧凑拼写。gpt-6-sol / gpt-6-astra 不在内。
+func isLunaMinRateModel(model string) bool {
+	return IsVIPOnlyModel(model) || isOpenAIGPT6LunaModel(model)
+}
+
+// ApplyLunaMinRateMultiplier 在计费模型属于 Luna 家族且当前倍率低于保底时抬到 0.2。
+// 不修改非 Luna 模型；已达到或超过保底的倍率原样返回。
+func ApplyLunaMinRateMultiplier(model string, multiplier float64) float64 {
+	if !isLunaMinRateModel(model) || multiplier >= LunaMinRateMultiplier {
+		return multiplier
+	}
+	return LunaMinRateMultiplier
+}
+
+func applyLunaMinRateForModels(multiplier float64, models ...string) float64 {
+	for _, model := range models {
+		if isLunaMinRateModel(model) {
+			return ApplyLunaMinRateMultiplier(model, multiplier)
+		}
+	}
+	return multiplier
+}
+
+// applyRequestBillingRatePolicies 对所有分组、所有用户统一应用 Luna 保底。
+// 基础倍率和叠加高峰因子后的 token 倍率都要应用，避免时段折扣绕过下限；不修改 user:group 倍率缓存。
+func applyRequestBillingRatePolicies(multiplier float64, models ...string) float64 {
+	return applyLunaMinRateForModels(multiplier, models...)
+}
+
+// vipUpgradeExecutor 提供 VIP 升级的公共执行逻辑，避免各触发点重复实现。
+type vipUpgradeExecutor struct {
+	userRepo    UserRepository
+	invalidator APIKeyAuthCacheInvalidator
+}
+
+// NewVipUpgradeExecutor 创建 VIP 升级执行器。
+func NewVipUpgradeExecutor(userRepo UserRepository, invalidator APIKeyAuthCacheInvalidator) *vipUpgradeExecutor {
+	return &vipUpgradeExecutor{userRepo: userRepo, invalidator: invalidator}
+}
+
+// EnsureUpgrade 惰性升级：余额达到阈值且未升级时原子置位 vip 并失效认证缓存。
+// 返回本次调用是否实际完成了升级。自动升级仍是单向的；管理员可手动取消 SVIP。
+func (e *vipUpgradeExecutor) EnsureUpgrade(ctx context.Context, userID int64) bool {
+	if e == nil || e.userRepo == nil || userID <= 0 {
+		return false
+	}
+	user, err := e.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return false
+	}
+	if user == nil || user.IsVIP || user.Balance < VipBalanceThreshold {
+		return false
+	}
+	upgraded, err := e.userRepo.SetVIPIfNotSet(ctx, userID)
+	if err != nil {
+		logger.LegacyPrintf("service.vip", "Warning: upgrade user %d to vip failed: %v", userID, err)
+		return false
+	}
+	if !upgraded {
+		return false
+	}
+	slog.Info("vip.user_upgraded", "user_id", userID, "balance", user.Balance)
+	if e.invalidator != nil {
+		e.invalidator.InvalidateAuthCacheByUserID(ctx, userID)
+	}
+	return true
+}
+
+// SweepExisting 全量扫描并升级所有满足余额条件的存量用户，返回升级的用户 ID。
+func (e *vipUpgradeExecutor) SweepExisting(ctx context.Context) []int64 {
+	if e == nil || e.userRepo == nil {
+		return nil
+	}
+	userIDs, err := e.userRepo.UpgradeUsersAboveBalanceThreshold(ctx, VipBalanceThreshold)
+	if err != nil {
+		logger.LegacyPrintf("service.vip", "Warning: vip sweep failed: %v", err)
+		return nil
+	}
+	for _, userID := range userIDs {
+		slog.Info("vip.user_upgraded", "user_id", userID, "source", "sweep")
+		if e.invalidator != nil {
+			e.invalidator.InvalidateAuthCacheByUserID(ctx, userID)
+		}
+	}
+	return userIDs
+}
+
+// StartSweep 异步执行一次启动扫描，兜底覆盖存量余额达标的用户（幂等）。
+func (e *vipUpgradeExecutor) StartSweep() {
+	if e == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), vipSweepTimeout)
+		defer cancel()
+		upgraded := e.SweepExisting(ctx)
+		if len(upgraded) > 0 {
+			logger.LegacyPrintf("service.vip", "startup sweep upgraded %d users to vip", len(upgraded))
+		}
+	}()
+}

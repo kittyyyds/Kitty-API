@@ -1,0 +1,209 @@
+package handler
+
+import (
+	"errors"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/userfacing"
+	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
+	"go.uber.org/zap"
+)
+
+// CodexModels serves the Codex models manifest for Codex clients.
+//
+// Codex CLI and the Codex desktop app refresh their model picker from
+// GET {base_url}/models?client_version=... (custom provider mode) or
+// GET /backend-api/codex/models (chatgpt_base_url mode). Both routes land
+// here. Pinned discovery takes precedence over local account model mappings;
+// when disabled, groups with explicit mappings are generated locally;
+// otherwise ChatGPT manifests are proxied verbatim and custom API key manifests
+// receive provider-compatibility normalization plus short-lived caching.
+func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
+	if c.Request.Context().Err() != nil {
+		return
+	}
+	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
+	if !ok || apiKey.Group == nil {
+		h.errorResponse(c, http.StatusUnauthorized, "invalid_request_error", userfacing.APIKeyGroupRequired)
+		return
+	}
+	if apiKey.Group.Platform != service.PlatformOpenAI && apiKey.Group.Platform != service.PlatformComposite {
+		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Codex models manifest is only available for OpenAI and Composite groups")
+		return
+	}
+
+	ifNoneMatch := c.GetHeader("If-None-Match")
+	pinnedDiscoveryFailed := false
+	// 固定账号分支：开启后只用选定账号拉取 manifest，不经过调度器；
+	// 全部不可用/全部失败时按 FallbackToScheduler 决定回退调度器或返回错误。
+	if apiKey.Group.Platform == service.PlatformOpenAI &&
+		apiKey.Group.CodexModelsManifestConfig.Enabled {
+		pinnedManifest, pinnedAccount, pinnedErr := h.gatewayService.FetchPinnedCodexModelsManifest(
+			c.Request.Context(),
+			apiKey.Group,
+			c.Query("client_version"),
+		)
+		if pinnedErr != nil {
+			if c.Request.Context().Err() != nil {
+				return
+			}
+			if !apiKey.Group.CodexModelsManifestConfig.FallbackToScheduler {
+				recordCodexModelsManifestFailure(c, pinnedErr, service.CodexModelsStagePinnedFetch)
+				if errors.Is(pinnedErr, service.ErrNoPinnedCodexModelsAccounts) {
+					h.errorResponse(c, http.StatusServiceUnavailable, "upstream_error", userfacing.NoAvailablePinnedOpenAIAccounts)
+					return
+				}
+				h.errorResponse(c, infraerrors.Code(pinnedErr), "upstream_error", infraerrors.Message(pinnedErr))
+				return
+			}
+			// A failed pinned discovery may already have reached an upstream.
+			// Preserve its existing attribution if scheduler fallback also fails.
+			pinnedDiscoveryFailed = true
+			// 回退开启：跌入下方调度器循环。
+		} else {
+			// 让 ops 错误日志携带实际拉取成功的首个固定账号。
+			setOpsSelectedAccount(c, pinnedAccount.ID, pinnedAccount.Platform)
+			if err := h.gatewayService.MergeGroupConfiguredCodexModels(c.Request.Context(), apiKey.Group, pinnedManifest, ifNoneMatch); err != nil {
+				if c.Request.Context().Err() != nil {
+					return
+				}
+				recordCodexModelsManifestFailure(c, err, service.CodexModelsStageConfiguredMerge)
+				h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to build Codex models manifest")
+				return
+			}
+			if c.Request.Context().Err() != nil {
+				return
+			}
+			writeOpenAIModelsResponse(c, pinnedManifest)
+			return
+		}
+	}
+
+	if !apiKey.Group.CodexModelsManifestConfig.Enabled {
+		configuredManifest, configured, err := h.gatewayService.BuildGroupConfiguredCodexModelsManifest(
+			c.Request.Context(),
+			apiKey.Group,
+			ifNoneMatch,
+		)
+		if err != nil {
+			if c.Request.Context().Err() != nil {
+				return
+			}
+			recordCodexModelsManifestFailure(c, err, service.CodexModelsStageConfiguredBuild)
+			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to build Codex models manifest")
+			return
+		}
+		if configured {
+			writeOpenAIModelsResponse(c, configuredManifest)
+			return
+		}
+	}
+
+	maxAccountSwitches := h.maxAccountSwitches
+	if maxAccountSwitches <= 0 {
+		maxAccountSwitches = 3
+	}
+	failedAccountIDs := make(map[int64]struct{})
+	switchCount := 0
+	var lastUpstreamErr error
+	// The client ETag represents the final group-specific body, so it is never
+	// forwarded upstream; the source manifest is fetched unconditionally and
+	// filtered locally before the ETag is compared. Upstream generalized what
+	// was previously a VIP-only guard here.
+	clientIfNoneMatch := c.GetHeader("If-None-Match")
+
+	for {
+		account, err := h.gatewayService.SelectAccountForModelWithExclusions(c.Request.Context(), apiKey.GroupID, "", "", failedAccountIDs)
+		if err != nil {
+			if c.Request.Context().Err() != nil {
+				return
+			}
+			if lastUpstreamErr != nil {
+				recordCodexModelsManifestFailure(c, lastUpstreamErr, service.CodexModelsStageUpstreamFetch)
+				h.errorResponse(c, infraerrors.Code(lastUpstreamErr), "upstream_error", infraerrors.Message(lastUpstreamErr))
+				return
+			}
+			errType := "upstream_error"
+			if !pinnedDiscoveryFailed {
+				// Initial selection failed before any manifest fetch. Only typed
+				// capacity failures are excluded from SLA; repository failures
+				// remain platform errors even if their text says no accounts.
+				errType = "api_error"
+				if errors.Is(err, service.ErrNoAvailableAccounts) || errors.Is(err, service.ErrNoAvailableCompactAccounts) {
+					markOpsRoutingCapacityLimited(c)
+				}
+			}
+			h.errorResponse(c, http.StatusServiceUnavailable, errType, userfacing.NoAvailableOpenAIAccounts)
+			return
+		}
+		// 让 ops 错误日志携带实际选中的上游账号，便于定位失效账号（#4544）。
+		setOpsSelectedAccount(c, account.ID, account.Platform)
+
+		modelsCtx := service.WithCodexModelsClientContext(c.Request.Context(), c.GetHeader("User-Agent"), c.GetHeader("originator"))
+		manifest, err := h.gatewayService.FetchCodexModelsManifest(modelsCtx, account, c.Query("client_version"), "")
+		if err != nil {
+			if c.Request.Context().Err() != nil {
+				return
+			}
+			if service.IsRetryableCodexModelsManifestError(err) && switchCount < maxAccountSwitches {
+				failedAccountIDs[account.ID] = struct{}{}
+				switchCount++
+				lastUpstreamErr = err
+				continue
+			}
+			recordCodexModelsManifestFailure(c, err, service.CodexModelsStageUpstreamFetch)
+			h.errorResponse(c, infraerrors.Code(err), "upstream_error", infraerrors.Message(err))
+			return
+		}
+		if err := h.gatewayService.CompleteAPIKeyCodexModelsManifestForClient(manifest, account); err != nil {
+			recordCodexModelsManifestFailure(c, err, service.CodexModelsStageMetadataCompletion)
+			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to complete Codex models manifest")
+			return
+		}
+		if err := service.ApplyPinnedCodexModelsMapping(manifest, account, apiKey.Group); err != nil {
+			recordCodexModelsManifestFailure(c, err, service.CodexModelsStageAccountMapping)
+			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to apply model mappings")
+			return
+		}
+		if err := h.gatewayService.MergeGroupConfiguredCodexModels(c.Request.Context(), apiKey.Group, manifest, ifNoneMatch); err != nil {
+			if c.Request.Context().Err() != nil {
+				return
+			}
+			recordCodexModelsManifestFailure(c, err, service.CodexModelsStageConfiguredMerge)
+			h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to build Codex models manifest")
+			return
+		}
+		if c.Request.Context().Err() != nil {
+			return
+		}
+		manifest, err = service.FilterCodexModelsManifestForUser(manifest, apiKey.User, clientIfNoneMatch)
+		if err != nil {
+			recordCodexModelsManifestFailure(c, err, service.CodexModelsStageUserFilter)
+			h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Codex models manifest could not be filtered")
+			return
+		}
+
+		writeOpenAIModelsResponse(c, manifest)
+		return
+	}
+}
+
+// Keep build failure evidence without publishing repository/provider error text.
+// Only a final failed request reaches here, so recovered attempts do not become
+// final failures and successful catalogs retain their existing Ops semantics.
+func recordCodexModelsManifestFailure(c *gin.Context, err error, fallback service.CodexModelsFailureStage) {
+	if c == nil || err == nil || (c.Request != nil && c.Request.Context().Err() != nil) {
+		return
+	}
+	stage, class := service.CodexModelsFailureMetadata(err, fallback)
+	service.SetOpsLocalErrorType(c, "api_error", "codex_models_"+stage+"_"+class)
+	if c.Request != nil {
+		logger.FromContext(c.Request.Context()).Warn("codex.models_manifest.failed",
+			zap.String("manifest_failure_stage", stage), zap.String("manifest_failure_class", class))
+	}
+}

@@ -1,0 +1,187 @@
+package service
+
+import (
+	"bytes"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
+)
+
+func pacificTestContext(t *testing.T, hour int) openAILocalTimeContext {
+	t.Helper()
+	loc, err := time.LoadLocation(openAIOutboundTimezoneName)
+	require.NoError(t, err)
+	now := time.Date(2026, 9, 17, hour, 15, 4, 0, loc)
+	return openAILocalTimeContext{
+		Timezone:    openAIOutboundTimezoneName,
+		CurrentDate: now.Format("2006-01-02"),
+		CurrentTime: now.Format("15:04:05"),
+	}
+}
+
+func TestRewriteOpenAIClientLocalTimeContext_EnvironmentTags(t *testing.T) {
+	ctx := pacificTestContext(t, 22)
+
+	body := []byte(`{"model":"gpt-5.4","input":[{"role":"user","content":"<environment_context>\n  <shell>zsh</shell>\n  <current_date>2026-02-26</current_date>\n  <timezone>Asia/Shanghai</timezone>\n</environment_context>"}]}`)
+	got, changed := rewriteOpenAIClientLocalTimeContextWith(body, ctx)
+	require.True(t, changed)
+	text := gjson.GetBytes(got, "input.0.content").String()
+	require.Contains(t, text, "<current_date>2026-09-17</current_date>")
+	require.Contains(t, text, "<timezone>America/Los_Angeles</timezone>")
+	require.NotContains(t, text, "2026-02-26")
+	require.NotContains(t, text, "Asia/Shanghai")
+}
+
+func TestRewriteOpenAIClientLocalTimePreservesNativeEnvironment(t *testing.T) {
+	body := []byte(`{"input":[{"role":"developer","content":"base","internal_chat_message_metadata_passthrough":{"content_item_kinds":["model.base_instructions"]}},{"role":"user","content":"<environment_context><timezone>Asia/Tokyo</timezone></environment_context>"}]}`)
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	got := svc.rewriteOpenAIClientLocalTimeIfEnabled(&Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}, body)
+	require.Equal(t, body, got)
+}
+
+func TestNativeCodexDeltasPreserveClientDatesAndQuotedText(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("GET", "/v1/responses", nil)
+	c.Request.Header.Set("User-Agent", "codex_exec/0.166.0 (Ubuntu 26.4.0; x86_64) xterm-256color")
+	c.Request.Header.Set("originator", "codex_exec")
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	for _, body := range []string{
+		`{"type":"response.create","input":[{"role":"developer","content":"base","internal_chat_message_metadata_passthrough":{"content_item_kinds":["model.base_instructions"]}}],"generate":false}`,
+		`{"type":"response.create","input":[{"role":"user","content":"<environment_context><current_date>2026-01-01</current_date><timezone>Pacific/Kiritimati</timezone></environment_context>","internal_chat_message_metadata_passthrough":{"content_item_kinds":["environments.environment_context"]}}]}`,
+		`{"type":"response.create","input":[{"role":"user","content":"Explain the quoted XML: <environment_context><current_date>2000-01-01</current_date><timezone>UTC</timezone></environment_context>"}]}`,
+		`{"type":"response.create","input":[{"type":"function_call_output","call_id":"call_1","output":"<environment_context><timezone>Asia/Tokyo</timezone></environment_context>"}]}`,
+	} {
+		require.Equal(t, body, string(svc.rewriteOpenAIClientLocalTimeForRequest(c, account, []byte(body))))
+	}
+	// Existing generic-client overrides still use the selected account policy.
+	c.Request.Header.Del("User-Agent")
+	c.Request.Header.Del("originator")
+	body := []byte(`{"input":"<environment_context><timezone>UTC</timezone></environment_context>"}`)
+	require.Contains(t, string(svc.rewriteOpenAIClientLocalTimeForRequest(c, account, body)), "America/Los_Angeles")
+}
+
+func TestRewriteOpenAIClientLocalTimeContext_DoesNotTouchProseDates(t *testing.T) {
+	ctx := pacificTestContext(t, 8)
+
+	body := []byte(`{"input":[{"role":"user","content":"the bug from 2026-01-15 in Asia/Tokyo still happens"}]}`)
+	got, changed := rewriteOpenAIClientLocalTimeContextWith(body, ctx)
+	require.False(t, changed)
+	require.JSONEq(t, string(body), string(got))
+}
+
+func TestRewriteOpenAIClientLocalTimeContext_JSONKeysAndUserLocation(t *testing.T) {
+	ctx := pacificTestContext(t, 9)
+
+	body := []byte(`{"current_date":"2026-06-04","timezone":"Europe/London","web_search_options":{"user_location":{"approximate":{"timezone":"UTC"}}},"tools":[{"type":"web_search","user_location":{"timezone":"UTC+8"}}]}`)
+	got, changed := rewriteOpenAIClientLocalTimeContextWith(body, ctx)
+	require.True(t, changed)
+	require.Equal(t, "2026-09-17", gjson.GetBytes(got, "current_date").String())
+	require.Equal(t, "America/Los_Angeles", gjson.GetBytes(got, "timezone").String())
+	require.Equal(t, "America/Los_Angeles", gjson.GetBytes(got, "web_search_options.user_location.approximate.timezone").String())
+	require.Equal(t, "America/Los_Angeles", gjson.GetBytes(got, "tools.0.user_location.timezone").String())
+}
+
+func TestRewriteOpenAIClientLocalTimeContext_CurrentTimeTag(t *testing.T) {
+	ctx := pacificTestContext(t, 22)
+
+	body := []byte(`{"input":"<environment_context><current_time>07:00:00</current_time></environment_context>"}`)
+	got, changed := rewriteOpenAIClientLocalTimeContextWith(body, ctx)
+	require.True(t, changed)
+	require.Contains(t, string(got), "<current_time>22:15:04</current_time>")
+}
+
+func TestRewriteOpenAIClientLocalTimeContext_Idempotent(t *testing.T) {
+	ctx := pacificTestContext(t, 10)
+
+	body := []byte(`{"input":"<environment_context><current_date>2026-09-17</current_date><timezone>America/Los_Angeles</timezone></environment_context>"}`)
+	got, changed := rewriteOpenAIClientLocalTimeContextWith(body, ctx)
+	require.False(t, changed)
+	require.Equal(t, string(body), string(got))
+}
+
+func TestRewriteOpenAIClientLocalTimeIfEnabled_UsesPacificTime(t *testing.T) {
+	// timezone.Init 会改全局 time.Local；不恢复会让同包后面按本地时间比较的测试（如支付租约）失败。
+	prevName, prevLocal := timezone.Name(), time.Local
+	require.NoError(t, timezone.Init("Asia/Shanghai"))
+	t.Cleanup(func() {
+		if prevName != "Local" {
+			require.NoError(t, timezone.Init(prevName))
+		}
+		time.Local = prevLocal
+	})
+
+	account := &Account{Platform: PlatformOpenAI}
+	body := []byte(`{"input":"<environment_context><timezone>UTC</timezone></environment_context>"}`)
+
+	enabled := &OpenAIGatewayService{}
+	got := enabled.rewriteOpenAIClientLocalTimeIfEnabled(account, body)
+	require.Contains(t, string(got), "<timezone>America/Los_Angeles</timezone>")
+	require.NotContains(t, string(got), "Asia/Shanghai")
+	require.NotContains(t, string(got), "<timezone>UTC</timezone>")
+
+	disabled := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{DisableOpenAIClientLocalTimeRewrite: true}}}
+	unchanged := disabled.rewriteOpenAIClientLocalTimeIfEnabled(account, body)
+	require.Equal(t, string(body), string(unchanged))
+
+	nonOpenAI := enabled.rewriteOpenAIClientLocalTimeIfEnabled(&Account{Platform: PlatformGrok}, body)
+	require.Equal(t, string(body), string(nonOpenAI))
+}
+
+func TestRewriteOpenAIClientLocalTimeContext_EscapedJSONInUserTextUntouched(t *testing.T) {
+	ctx := pacificTestContext(t, 8)
+	body := []byte(`{"input":"example payload {\"timezone\":\"UTC\"}"}`)
+	got, changed := rewriteOpenAIClientLocalTimeContextWith(body, ctx)
+	require.False(t, changed)
+	require.Equal(t, string(body), string(got))
+}
+
+func TestRewriteOpenAIClientLocalTimeContext_HistoricalWorkBuddyCurrentTimeUntouched(t *testing.T) {
+	ctx := pacificTestContext(t, 22)
+	historical := "<current_time>Friday, October 2, 2026 at 09:36:00 GMT+8</current_time>"
+	body := []byte(`{"input":[{"role":"user","content":"<system-reminder additional-data>` + historical + `</system-reminder>"},{"role":"user","content":"<environment_context><current_time>07:00:00</current_time></environment_context>"}]}`)
+	got, changed := rewriteOpenAIClientLocalTimeContextWith(body, ctx)
+	require.True(t, changed)
+	require.Contains(t, string(got), historical)
+	require.Contains(t, string(got), "<current_time>22:15:04</current_time>")
+	require.NotContains(t, string(got), "<current_time>07:00:00</current_time>")
+}
+
+func TestRewriteOpenAIClientLocalTimeContext_DatedCurrentTimeInsideEnvContextSkipped(t *testing.T) {
+	ctx := pacificTestContext(t, 22)
+	body := []byte(`{"input":"<environment_context><current_time>Friday, October 2, 2026 at 09:36:00 GMT+8</current_time></environment_context>"}`)
+	got, changed := rewriteOpenAIClientLocalTimeContextWith(body, ctx)
+	require.False(t, changed)
+	require.Equal(t, string(body), string(got))
+}
+
+func TestRewriteOpenAIClientLocalTimeContext_HistoricalPrefixStableAcrossTurns(t *testing.T) {
+	ctx1 := pacificTestContext(t, 10)
+	ctx2 := pacificTestContext(t, 22)
+	common := `{"input":[{"role":"user","content":"<system-reminder additional-data><current_time>Friday, October 2, 2026 at 09:36:00 GMT+8</current_time></system-reminder>"},{"role":"user","content":"first question"}`
+	body1 := []byte(common + `]}`)
+	body2 := []byte(common + `,{"role":"user","content":"<environment_context><current_time>07:00:00</current_time></environment_context>"}]}`)
+	got1, changed1 := rewriteOpenAIClientLocalTimeContextWith(body1, ctx1)
+	got2, changed2 := rewriteOpenAIClientLocalTimeContextWith(body2, ctx2)
+	require.False(t, changed1)
+	require.True(t, changed2)
+	prefix := len(common)
+	require.True(t, bytes.Equal(got1[:prefix], got2[:prefix]))
+	require.Equal(t, common, string(got2[:prefix]))
+	require.Contains(t, string(got2), "<current_time>22:15:04</current_time>")
+	require.NotContains(t, string(got2), "<current_time>07:00:00</current_time>")
+}
+
+func TestCurrentOpenAIOutboundLocalTimeContext_IsPacific(t *testing.T) {
+	ctx := currentOpenAIOutboundLocalTimeContext()
+	require.Equal(t, "America/Los_Angeles", ctx.Timezone)
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	require.NoError(t, err)
+	require.Equal(t, time.Now().In(loc).Format("2006-01-02"), ctx.CurrentDate)
+}

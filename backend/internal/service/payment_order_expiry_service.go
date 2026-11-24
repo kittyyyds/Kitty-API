@@ -1,0 +1,102 @@
+package service
+
+import (
+	"context"
+	"database/sql"
+	"log/slog"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+const expiryCheckTimeout = 30 * time.Second
+
+const (
+	// paymentOrderExpiryLeaderLockKey gates the periodic reconcile + expiry sweep so
+	// that only one instance issues the upstream payment-provider calls per cycle.
+	paymentOrderExpiryLeaderLockKey = "payment:order:expiry:leader"
+	// paymentOrderExpiryLeaderLockTTL must exceed the combined reconcile + expiry
+	// timeouts (2 * expiryCheckTimeout) so the lock never expires mid-run.
+	paymentOrderExpiryLeaderLockTTL = 3 * time.Minute
+)
+
+// PaymentOrderExpiryService periodically expires timed-out payment orders.
+type PaymentOrderExpiryService struct {
+	paymentSvc *PaymentService
+	interval   time.Duration
+	stopCh     chan struct{}
+
+	lockCache  LeaderLockCache
+	db         *sql.DB
+	instanceID string
+}
+
+func NewPaymentOrderExpiryService(paymentSvc *PaymentService, interval time.Duration) *PaymentOrderExpiryService {
+	return &PaymentOrderExpiryService{
+		paymentSvc: paymentSvc,
+		interval:   interval,
+		stopCh:     make(chan struct{}),
+		instanceID: uuid.NewString(),
+	}
+}
+
+// SetLeaderLock injects the leader-lock cache and DB used to elect a single
+// instance for the periodic reconcile/expiry sweep. When both are nil the job
+// runs ungated (single-instance / test behavior).
+func (s *PaymentOrderExpiryService) SetLeaderLock(lockCache LeaderLockCache, db *sql.DB) {
+	if s == nil {
+		return
+	}
+	s.lockCache = lockCache
+	s.db = db
+}
+
+const paymentOrderExpiryLockAcquireTimeout = 2 * time.Second
+
+// Interval returns the configured worker interval.
+func (s *PaymentOrderExpiryService) Interval() time.Duration {
+	if s == nil {
+		return 0
+	}
+	return s.interval
+}
+
+// Run reconciles and expires payment orders once while retaining its leader lock.
+func (s *PaymentOrderExpiryService) Run(ctx context.Context) error {
+	if s == nil || s.paymentSvc == nil {
+		return nil
+	}
+	lockCtx, lockCancel := context.WithTimeout(ctx, paymentOrderExpiryLockAcquireTimeout)
+	release, ok := tryAcquireSingletonLeaderLock(lockCtx, s.lockCache, s.db, paymentOrderExpiryLeaderLockKey, s.instanceID, paymentOrderExpiryLeaderLockTTL)
+	lockCancel()
+	if !ok {
+		return nil
+	}
+	defer release()
+
+	reconcileCtx, cancel := context.WithTimeout(ctx, expiryCheckTimeout)
+	recovered, err := s.paymentSvc.ReconcilePendingPaymentOrders(reconcileCtx)
+	cancel()
+	if err != nil {
+		slog.Warn("[PaymentOrderExpiry] failed to reconcile pending payment orders", "error", err)
+	} else if recovered > 0 {
+		slog.Info("[PaymentOrderExpiry] reconciled paid orders", "count", recovered)
+	}
+
+	expireCtx, cancel := context.WithTimeout(ctx, expiryCheckTimeout)
+	defer cancel()
+	expired, err := s.paymentSvc.ExpireTimedOutOrders(expireCtx)
+	if err != nil {
+		slog.Error("[PaymentOrderExpiry] failed to expire orders", "error", err)
+		return err
+	}
+	if expired > 0 {
+		slog.Info("[PaymentOrderExpiry] expired timed-out orders", "count", expired)
+	}
+	return nil
+}
+
+// Start is retained for compatibility; runtime owns this worker's lifecycle.
+func (s *PaymentOrderExpiryService) Start() {}
+
+func (s *PaymentOrderExpiryService) Stop() {}

@@ -1,0 +1,3108 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"golang.org/x/sync/errgroup"
+)
+
+const (
+	openAIWSConnMaxAge          = 60 * time.Minute
+	openAIWSConnHealthCheckIdle = 90 * time.Second
+	// 仅对没有常驻读循环的连接实现生效：这类连接空闲时无人应答上游 ping，须在
+	// 上游保活窗口到期前回收。coder/websocket 连接由池常驻读循环应答 ping，不受此阈值约束。
+	openAIWSConnIdleRecycleAfter = 90 * time.Second
+	openAIWSConnHealthCheckTO    = 2 * time.Second
+	// 不在请求热路径上的探活（后台巡检、轮次间预检）给经代理链路的 pong 留足余量，
+	// 实测最大往返约 1.7s；误判的代价是换连甚至断会话，比多等几秒重得多。
+	openAIWSProbePingTO            = 10 * time.Second
+	openAIWSConnPrewarmExtraDelay  = 2 * time.Second
+	openAIWSAcquireCleanupInterval = 3 * time.Second
+	openAIWSBackgroundPingInterval = 30 * time.Second
+	openAIWSBackgroundSweepTicker  = 30 * time.Second
+
+	openAIWSPrewarmFailureWindow   = 30 * time.Second
+	openAIWSPrewarmFailureSuppress = 2
+)
+
+var (
+	errOpenAIWSConnClosed               = errors.New("openai ws connection closed")
+	errOpenAIWSConnQueueFull            = errors.New("openai ws connection queue full")
+	errOpenAIWSPreferredConnUnavailable = errors.New("openai ws preferred connection unavailable")
+	errOpenAIWSPoolChanged              = errors.New("openai ws account pool changed")
+	errOpenAIWSCookieExpired            = errors.New("openai ws cookie expired")
+	errOpenAIWSCookieRetired            = errors.New("openai ws cookie generation retired")
+	errOpenAIWSCookieValidatorMissing   = errors.New("openai ws cookie connection validator unavailable")
+)
+
+type openAIWSDialError struct {
+	StatusCode      int
+	ResponseHeaders http.Header
+	ResponseBody    []byte
+	Err             error
+}
+
+func (e *openAIWSDialError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.StatusCode > 0 {
+		return fmt.Sprintf("openai ws dial failed: status=%d err=%v", e.StatusCode, e.Err)
+	}
+	return fmt.Sprintf("openai ws dial failed: %v", e.Err)
+}
+
+func (e *openAIWSDialError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+type openAIWSAcquireRequest struct {
+	Account *Account
+	WSURL   string
+	Headers http.Header
+	// HeadersFactory resolves authentication for this dial, including a fresh
+	// OAuth owner when the stored credentials have rotated. Neither its bearer
+	// nor the resolved owner is retained in a prewarm snapshot or a dial error.
+	HeadersFactory func(context.Context, http.Header) (http.Header, *Account, error)
+	onUnauthorized func(*Account, string)
+	// BeforeFreshDial is request-local. It runs after current auth headers are
+	// resolved and only when reuse could not satisfy this acquire. Persistent
+	// prewarm snapshots must clear it; ordinary clones/auth retries retain it.
+	BeforeFreshDial openAIWSFreshDialHook
+	ProxyURL        string
+	PreferredConnID string
+	// ForceNewConn: 强制本次获取新连接（避免复用导致连接内续链状态互相污染）。
+	ForceNewConn bool
+	// ForcePreferredConn: 强制本次只使用 PreferredConnID，禁止漂移到其它连接。
+	ForcePreferredConn bool
+	// CookieWarmup creates a verified, initially unassigned business socket.
+	// The first real request atomically binds it to its execution scope.
+	CookieWarmup bool
+}
+
+type openAIWSHandshakeCompatibilityKey struct {
+	oauthOwner          openAIOAuthOwner
+	cookieGeneration    string
+	cookieScope         string
+	cookieSlot          int
+	cookieProbe         bool
+	betaFeatures        string
+	codexInstallationID string
+	sessionIDHyphen     string
+	sessionIDUnderscore string
+	threadID            string
+	clientRequestID     string
+	codexWindowID       string
+}
+
+type openAIWSConnLease struct {
+	pool       *openAIWSConnPool
+	accountID  int64
+	conn       *openAIWSConn
+	queueWait  time.Duration
+	connPick   time.Duration
+	idleBefore time.Duration
+	ageBefore  time.Duration
+	reused     bool
+	released   atomic.Bool
+}
+
+func (l *openAIWSConnLease) activeConn() (*openAIWSConn, error) {
+	if l == nil || l.conn == nil {
+		return nil, errOpenAIWSConnClosed
+	}
+	if l.released.Load() {
+		return nil, errOpenAIWSConnClosed
+	}
+	return l.conn, nil
+}
+
+func (l *openAIWSConnLease) ConnID() string {
+	if l == nil || l.conn == nil {
+		return ""
+	}
+	return l.conn.id
+}
+
+func (l *openAIWSConnLease) QueueWaitDuration() time.Duration {
+	if l == nil {
+		return 0
+	}
+	return l.queueWait
+}
+
+func (l *openAIWSConnLease) ConnPickDuration() time.Duration {
+	if l == nil {
+		return 0
+	}
+	return l.connPick
+}
+
+func (l *openAIWSConnLease) Reused() bool {
+	if l == nil {
+		return false
+	}
+	return l.reused
+}
+
+// IdleBefore 返回借出时该连接已空闲的时长。
+func (l *openAIWSConnLease) IdleBefore() time.Duration {
+	if l == nil {
+		return 0
+	}
+	return l.idleBefore
+}
+
+// AgeBefore 返回借出时该连接自建立起的时长。
+func (l *openAIWSConnLease) AgeBefore() time.Duration {
+	if l == nil {
+		return 0
+	}
+	return l.ageBefore
+}
+
+func (l *openAIWSConnLease) UpstreamPingCount() int64 {
+	if l == nil || l.conn == nil {
+		return 0
+	}
+	return l.conn.upstreamPingCount()
+}
+
+func (l *openAIWSConnLease) HandshakeHeader(name string) string {
+	if l == nil || l.conn == nil {
+		return ""
+	}
+	return l.conn.handshakeHeader(name)
+}
+
+func (l *openAIWSConnLease) HandshakeHeaders() http.Header {
+	if l == nil || l.conn == nil {
+		return nil
+	}
+	return cloneHeader(l.conn.handshakeHeaders)
+}
+
+func (l *openAIWSConnLease) IsPrewarmed() bool {
+	if l == nil || l.conn == nil {
+		return false
+	}
+	return l.conn.isPrewarmed()
+}
+
+func (l *openAIWSConnLease) MarkPrewarmed() {
+	if l == nil || l.conn == nil {
+		return
+	}
+	l.conn.markPrewarmed()
+}
+
+func (l *openAIWSConnLease) WriteJSON(value any, timeout time.Duration) error {
+	conn, err := l.activeConn()
+	if err != nil {
+		return err
+	}
+	return conn.writeJSONWithTimeout(context.Background(), value, timeout)
+}
+
+func (l *openAIWSConnLease) WriteJSONWithContextTimeout(ctx context.Context, value any, timeout time.Duration) error {
+	conn, err := l.activeConn()
+	if err != nil {
+		return err
+	}
+	return conn.writeJSONWithTimeout(ctx, value, timeout)
+}
+
+func (l *openAIWSConnLease) WriteJSONContext(ctx context.Context, value any) error {
+	conn, err := l.activeConn()
+	if err != nil {
+		return err
+	}
+	return conn.writeJSON(value, ctx)
+}
+
+func (l *openAIWSConnLease) ReadMessage(timeout time.Duration) ([]byte, error) {
+	conn, err := l.activeConn()
+	if err != nil {
+		return nil, err
+	}
+	return conn.readMessageWithTimeout(timeout)
+}
+
+func (l *openAIWSConnLease) ReadMessageContext(ctx context.Context) ([]byte, error) {
+	conn, err := l.activeConn()
+	if err != nil {
+		return nil, err
+	}
+	return conn.readMessage(ctx)
+}
+
+func (l *openAIWSConnLease) ReadMessageWithContextTimeout(ctx context.Context, timeout time.Duration) ([]byte, error) {
+	conn, err := l.activeConn()
+	if err != nil {
+		return nil, err
+	}
+	return conn.readMessageWithContextTimeout(ctx, timeout)
+}
+
+func (l *openAIWSConnLease) PingWithTimeout(timeout time.Duration) error {
+	conn, err := l.activeConn()
+	if err != nil {
+		return err
+	}
+	return conn.pingWithTimeout(timeout)
+}
+
+func (l *openAIWSConnLease) SupportsIdlePingWithoutReader() bool {
+	conn, err := l.activeConn()
+	if err != nil {
+		return false
+	}
+	return conn.cookieGeneration() == "" && conn.supportsIdlePingWithoutReader()
+}
+
+func (l *openAIWSConnLease) CookieExpired() bool {
+	return l != nil && l.conn != nil && l.conn.cookieExpired(time.Now())
+}
+
+func (l *openAIWSConnLease) MarkBroken() {
+	if l == nil || l.conn == nil || l.released.Load() {
+		return
+	}
+	if l.pool == nil {
+		l.conn.close()
+		return
+	}
+	l.pool.evictConn(l.accountID, l.conn.id)
+}
+
+func (l *openAIWSConnLease) Release() {
+	if l == nil || l.conn == nil {
+		return
+	}
+	if !l.released.CompareAndSwap(false, true) {
+		return
+	}
+	l.conn.release()
+	if l.pool != nil {
+		l.pool.releaseConn(l.accountID, l.conn)
+	}
+}
+
+type openAIWSConn struct {
+	id string
+	ws openAIWSClientConn
+
+	handshakeHeaders       http.Header
+	handshakeCompatibility openAIWSHandshakeCompatibilityKey
+	routingAffinity        string
+	cookieExpiresAt        time.Time
+	cookieDraining         atomic.Bool
+	cookieVerified         atomic.Bool
+	// cookieUnassigned and cookieScope are guarded by the account pool mutex.
+	// handshakeCompatibility stays immutable once the connection is dialed.
+	cookieUnassigned bool
+	cookieScope      string
+
+	leaseCh   chan struct{}
+	closedCh  chan struct{}
+	closeOnce sync.Once
+
+	readMu  sync.Mutex
+	writeMu sync.Mutex
+	// The subscription backend fixes hosted-search support on the first create.
+	responseCreateSent bool // guarded by writeMu
+	initialWebSearch   bool // guarded by writeMu
+
+	// readerLoopResults 非 nil 表示池为该连接常驻了读循环：coder/websocket 只在
+	// 阻塞读期间应答上游 ping，空闲连接没有读循环会被上游按保活超时关闭。
+	readerLoopResults    chan []byte
+	readerLoopErrMu      sync.Mutex
+	readerLoopErr        error
+	readerLoopPeerClosed atomic.Bool
+	// onPeerClosed 由池在建连后设置：上游主动关闭时立刻把连接移出账号池，不等清理周期。
+	onPeerClosed atomic.Pointer[func()]
+	// unusable 表示空闲期收到数据被判为脏连接：持有令牌不再借出，由池在锁外关闭。
+	unusable atomic.Bool
+
+	waiters       atomic.Int32
+	createdAtNano atomic.Int64
+	lastUsedNano  atomic.Int64
+	prewarmed     atomic.Bool
+	// The leased socket is authoritative; a session map is only an affinity hint.
+	deltaCheckpoint atomic.Pointer[openAIWSDeltaChainState]
+}
+
+func newOpenAIWSConn(id string, _ int64, ws openAIWSClientConn, handshakeHeaders http.Header) *openAIWSConn {
+	now := time.Now()
+	conn := &openAIWSConn{
+		id:               id,
+		ws:               ws,
+		handshakeHeaders: cloneHeader(handshakeHeaders),
+		leaseCh:          make(chan struct{}, 1),
+		closedCh:         make(chan struct{}),
+	}
+	conn.leaseCh <- struct{}{}
+	conn.createdAtNano.Store(now.UnixNano())
+	conn.lastUsedNano.Store(now.UnixNano())
+	if capable, ok := ws.(openAIWSReaderLoopCapable); ok && capable.RequiresReaderLoop() {
+		conn.readerLoopResults = make(chan []byte, 1)
+		go conn.runReaderLoop()
+	}
+	return conn
+}
+
+func (c *openAIWSConn) runReaderLoop() {
+	defer close(c.readerLoopResults)
+	for {
+		payload, err := c.ws.ReadMessage(context.Background())
+		if err != nil {
+			c.readerLoopErrMu.Lock()
+			c.readerLoopErr = err
+			c.readerLoopErrMu.Unlock()
+			// 本地主动关闭时对端会回 close 帧，同样以读错误结束循环，不算上游事件。
+			peerClosed := false
+			select {
+			case <-c.closedCh:
+			default:
+				peerClosed = true
+				c.readerLoopPeerClosed.Store(true)
+				now := time.Now()
+				// 空闲连接被上游断开是常态，池已当场出池，只记 info；借出中断开会影响请求，记 warn。
+				logClosed := logOpenAIWSModeInfo
+				if c.isLeased() {
+					logClosed = logOpenAIWSModeWarn
+				}
+				logClosed(
+					"conn_reader_loop_closed conn_id=%s leased=%v idle_ms=%d age_ms=%d upstream_pings=%d cause=%s",
+					c.id,
+					c.isLeased(),
+					c.idleDuration(now).Milliseconds(),
+					c.age(now).Milliseconds(),
+					c.upstreamPingCount(),
+					truncateOpenAIWSLogValue(err.Error(), openAIWSLogValueMaxLen),
+				)
+			}
+			c.close()
+			if evict := c.onPeerClosed.Load(); peerClosed && evict != nil {
+				(*evict)()
+			}
+			return
+		}
+		select {
+		case c.readerLoopResults <- payload:
+		case <-c.closedCh:
+			return
+		}
+	}
+}
+
+func (c *openAIWSConn) hasReaderLoop() bool {
+	return c != nil && c.readerLoopResults != nil
+}
+
+func (c *openAIWSConn) readerLoopClosedByPeer() bool {
+	return c != nil && c.readerLoopPeerClosed.Load()
+}
+
+func (c *openAIWSConn) upstreamPingCount() int64 {
+	if c == nil || c.ws == nil {
+		return 0
+	}
+	if counter, ok := c.ws.(openAIWSUpstreamPingCounter); ok {
+		return counter.UpstreamPingCount()
+	}
+	return 0
+}
+
+// readerLoopPending 报告空闲期是否已有数据消息被读循环缓存。len 不消费消息；
+// 缓存满时读循环阻塞在投递上，因此最多只有这一条待接管消息。
+func (c *openAIWSConn) readerLoopPending() bool {
+	return c.hasReaderLoop() && len(c.readerLoopResults) > 0
+}
+
+func (c *openAIWSConn) readerLoopError() error {
+	c.readerLoopErrMu.Lock()
+	defer c.readerLoopErrMu.Unlock()
+	if c.readerLoopErr != nil {
+		return c.readerLoopErr
+	}
+	return errOpenAIWSConnClosed
+}
+
+// leaseTokenUsable 在拿到租约令牌后确认连接仍可借出：已关闭的连接退回令牌；
+// 空闲期收到过数据消息的连接状态已不可信，直接关闭而不交给借用者。
+func (c *openAIWSConn) leaseTokenUsable() bool {
+	select {
+	case <-c.closedCh:
+		c.release()
+		return false
+	default:
+	}
+	if c.cookieExpired(time.Now()) {
+		c.release()
+		return false
+	}
+	if c.readerLoopPending() {
+		// 只记事件类型，不记报文原文，避免模型输出进日志。
+		eventType := ""
+		select {
+		case payload := <-c.readerLoopResults:
+			eventType = effectiveOpenAISSEEventType(payload, "")
+		default:
+		}
+		logOpenAIWSModeWarn(
+			"conn_idle_dirty_discard conn_id=%s idle_ms=%d upstream_pings=%d event=%s",
+			c.id,
+			c.idleDuration(time.Now()).Milliseconds(),
+			c.upstreamPingCount(),
+			normalizeOpenAIWSLogValue(eventType),
+		)
+		// 关闭握手可能阻塞到一个 RTT，而 tryAcquire 在池锁内调用，这里只标记，出池后再关闭。
+		c.unusable.Store(true)
+		return false
+	}
+	return true
+}
+
+func (c *openAIWSConn) isClosed() bool {
+	if c == nil {
+		return true
+	}
+	select {
+	case <-c.closedCh:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *openAIWSConn) isUnusable() bool {
+	return c != nil && c.unusable.Load()
+}
+
+func (c *openAIWSConn) tryAcquire() bool {
+	if c == nil {
+		return false
+	}
+	select {
+	case <-c.closedCh:
+		return false
+	default:
+	}
+	select {
+	case <-c.leaseCh:
+		return c.leaseTokenUsable()
+	default:
+		return false
+	}
+}
+
+func (c *openAIWSConn) acquire(ctx context.Context) error {
+	if c == nil {
+		return errOpenAIWSConnClosed
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-c.closedCh:
+			return errOpenAIWSConnClosed
+		case <-c.leaseCh:
+			// A cancellation and a lease delivery can become ready together. Once
+			// the semaphore token has been consumed, check the context again and
+			// return it before reporting cancellation so a canceled waiter cannot
+			// strand a pooled connection.
+			if err := ctx.Err(); err != nil {
+				c.release()
+				return err
+			}
+			if !c.leaseTokenUsable() {
+				return errOpenAIWSConnClosed
+			}
+			return nil
+		}
+	}
+}
+
+// acquireOrPoolChanged 与 acquire 相同，但同时监听账号池的变更信号：
+// 别的连接释放、连接被剔除或新拨号完成都会触发它，此时返回 errOpenAIWSPoolChanged，
+// 调用方应放弃只等这一条连接，回到选择逻辑重新挑选。
+func (c *openAIWSConn) acquireOrPoolChanged(ctx context.Context, poolChanged <-chan struct{}) error {
+	if c == nil {
+		return errOpenAIWSConnClosed
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.closedCh:
+		return errOpenAIWSConnClosed
+	case <-poolChanged:
+		return errOpenAIWSPoolChanged
+	case <-c.leaseCh:
+		if err := ctx.Err(); err != nil {
+			c.release()
+			return err
+		}
+		if !c.leaseTokenUsable() {
+			return errOpenAIWSConnClosed
+		}
+		return nil
+	}
+}
+
+func (c *openAIWSConn) release() {
+	if c == nil {
+		return
+	}
+	select {
+	case c.leaseCh <- struct{}{}:
+	default:
+	}
+	c.touch()
+}
+
+func (c *openAIWSConn) close() {
+	c.closeWith(false)
+}
+
+// abort 不做关闭握手直接切断。读循环常驻持有读锁，礼貌关闭要等对端回 close 帧，
+// 对端已不响应时库会等满 5 秒；读超时这类场景必须立即返回。
+func (c *openAIWSConn) abort() {
+	c.closeWith(true)
+}
+
+func (c *openAIWSConn) closeWith(force bool) {
+	if c == nil {
+		return
+	}
+	c.closeOnce.Do(func() {
+		close(c.closedCh)
+		if c.ws != nil {
+			if forceCloser, ok := c.ws.(openAIWSForceCloser); ok && force {
+				_ = forceCloser.CloseNow()
+			} else {
+				_ = c.ws.Close()
+			}
+		}
+		select {
+		case c.leaseCh <- struct{}{}:
+		default:
+		}
+	})
+}
+
+func (c *openAIWSConn) writeJSONWithTimeout(parent context.Context, value any, timeout time.Duration) error {
+	if c == nil {
+		return errOpenAIWSConnClosed
+	}
+	select {
+	case <-c.closedCh:
+		return errOpenAIWSConnClosed
+	default:
+	}
+
+	writeCtx := parent
+	if writeCtx == nil {
+		writeCtx = context.Background()
+	}
+	if timeout <= 0 {
+		return c.writeJSON(value, writeCtx)
+	}
+	var cancel context.CancelFunc
+	writeCtx, cancel = context.WithTimeout(writeCtx, timeout)
+	defer cancel()
+	return c.writeJSON(value, writeCtx)
+}
+
+func (c *openAIWSConn) writeJSON(value any, writeCtx context.Context) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	// A new native, prewarm, or failed write supersedes the prior checkpoint.
+	c.deltaCheckpoint.Store(nil)
+	if c.ws == nil {
+		return errOpenAIWSConnClosed
+	}
+	// A session may retain its lease between turns. Do not start a new turn
+	// with an expired Cookie; an already-running turn may still drain reads.
+	if c.cookieExpired(time.Now()) {
+		return errOpenAIWSCookieExpired
+	}
+	if writeCtx == nil {
+		writeCtx = context.Background()
+	}
+	if err := c.ws.WriteJSON(writeCtx, value); err != nil {
+		return err
+	}
+	if !c.responseCreateSent {
+		c.recordInitialWebSearch(value)
+	}
+	c.touch()
+	return nil
+}
+
+func (c *openAIWSConn) readMessageWithTimeout(timeout time.Duration) ([]byte, error) {
+	return c.readMessageWithContextTimeout(context.Background(), timeout)
+}
+
+func (c *openAIWSConn) readMessageWithContextTimeout(parent context.Context, timeout time.Duration) ([]byte, error) {
+	if c == nil {
+		return nil, errOpenAIWSConnClosed
+	}
+	// 有读循环时连接关闭后缓冲里可能还有未取走的消息，交给 readMessage 先排空再报错。
+	if c.readerLoopResults == nil {
+		select {
+		case <-c.closedCh:
+			return nil, errOpenAIWSConnClosed
+		default:
+		}
+	}
+
+	if parent == nil {
+		parent = context.Background()
+	}
+	if timeout <= 0 {
+		return c.readMessage(parent)
+	}
+	readCtx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	return c.readMessage(readCtx)
+}
+
+func (c *openAIWSConn) readMessage(readCtx context.Context) ([]byte, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	if c.ws == nil {
+		return nil, errOpenAIWSConnClosed
+	}
+	if readCtx == nil {
+		readCtx = context.Background()
+	}
+	if c.readerLoopResults == nil {
+		payload, err := c.ws.ReadMessage(readCtx)
+		if err != nil {
+			return nil, err
+		}
+		c.touch()
+		return payload, nil
+	}
+	select {
+	case payload, ok := <-c.readerLoopResults:
+		if !ok {
+			return nil, c.readerLoopError()
+		}
+		c.touch()
+		return payload, nil
+	case <-readCtx.Done():
+		// 与库在 ctx 取消时切断连接的语义一致：读超时后消息边界已不可信，且对端多半
+		// 已不响应，直接切断而不做关闭握手。
+		c.abort()
+		return nil, readCtx.Err()
+	}
+}
+
+func (c *openAIWSConn) pingWithTimeout(timeout time.Duration) error {
+	if c == nil {
+		return errOpenAIWSConnClosed
+	}
+	select {
+	case <-c.closedCh:
+		return errOpenAIWSConnClosed
+	default:
+	}
+	if c.cookieGeneration() != "" {
+		return nil
+	}
+
+	// coder/websocket 除 Reader/Read 外的方法都可并发调用，控制帧由库内 writeFrameMu 串行化，
+	// 这里不持有 writeMu，避免等 pong 期间阻塞借用者写请求。
+	if c.ws == nil {
+		return errOpenAIWSConnClosed
+	}
+	if timeout <= 0 {
+		timeout = openAIWSConnHealthCheckTO
+	}
+	pingCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := c.ws.Ping(pingCtx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *openAIWSConn) supportsIdlePingWithoutReader() bool {
+	if c == nil || c.ws == nil {
+		return false
+	}
+	if c.readerLoopResults != nil {
+		return true
+	}
+	capable, ok := c.ws.(openAIWSIdlePingCapable)
+	// Test and alternate implementations keep the historical probe behavior
+	// unless they explicitly declare it unsafe.
+	return !ok || capable.SupportsIdlePingWithoutReader()
+}
+
+func (c *openAIWSConn) touch() {
+	if c == nil {
+		return
+	}
+	c.lastUsedNano.Store(time.Now().UnixNano())
+}
+
+func (c *openAIWSConn) createdAt() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	nano := c.createdAtNano.Load()
+	if nano <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nano)
+}
+
+func (c *openAIWSConn) lastUsedAt() time.Time {
+	if c == nil {
+		return time.Time{}
+	}
+	nano := c.lastUsedNano.Load()
+	if nano <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nano)
+}
+
+func (c *openAIWSConn) idleDuration(now time.Time) time.Duration {
+	if c == nil {
+		return 0
+	}
+	last := c.lastUsedAt()
+	if last.IsZero() {
+		return 0
+	}
+	return now.Sub(last)
+}
+
+func (c *openAIWSConn) age(now time.Time) time.Duration {
+	if c == nil {
+		return 0
+	}
+	created := c.createdAt()
+	if created.IsZero() {
+		return 0
+	}
+	return now.Sub(created)
+}
+
+func (c *openAIWSConn) isLeased() bool {
+	if c == nil {
+		return false
+	}
+	return len(c.leaseCh) == 0
+}
+
+func (c *openAIWSConn) handshakeHeader(name string) string {
+	if c == nil || c.handshakeHeaders == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.handshakeHeaders.Get(strings.TrimSpace(name)))
+}
+
+func (c *openAIWSConn) matchesHandshakeCompatibility(compatibility openAIWSHandshakeCompatibilityKey) bool {
+	return c != nil && !c.cookieUnassigned && !c.cookieDraining.Load() && !c.cookieExpired(time.Now()) && c.effectiveHandshakeCompatibility() == compatibility
+}
+
+func (c *openAIWSConn) effectiveHandshakeCompatibility() openAIWSHandshakeCompatibilityKey {
+	key := c.handshakeCompatibility
+	if key.cookieGeneration != "" {
+		key.cookieScope = c.cookieScope
+	}
+	return key
+}
+
+// A bound continuation may finish on its original generation until expiry.
+// Identity and user/session scope still have to match; only the generation
+// itself may change when the same account rotates its Cookie.
+func (c *openAIWSConn) matchesPreferredHandshakeCompatibility(compatibility openAIWSHandshakeCompatibilityKey) bool {
+	if c == nil || c.cookieUnassigned || c.cookieExpired(time.Now()) {
+		return false
+	}
+	key := c.effectiveHandshakeCompatibility()
+	if key.cookieGeneration != "" && compatibility.cookieGeneration != "" {
+		key.cookieGeneration = compatibility.cookieGeneration
+	}
+	return key == compatibility
+}
+
+func (c *openAIWSConn) cookieGeneration() string {
+	if c == nil {
+		return ""
+	}
+	return c.handshakeCompatibility.cookieGeneration
+}
+
+func (c *openAIWSConn) cookieExpired(now time.Time) bool {
+	return c != nil && c.cookieGeneration() != "" && (c.cookieExpiresAt.IsZero() || !now.Before(c.cookieExpiresAt))
+}
+
+func (c *openAIWSConn) matchesRoutingAffinity(routingAffinity string) bool {
+	return c != nil && c.routingAffinity == routingAffinity
+}
+
+func (c *openAIWSConn) isPrewarmed() bool {
+	if c == nil {
+		return false
+	}
+	return c.prewarmed.Load()
+}
+
+func (c *openAIWSConn) markPrewarmed() {
+	if c == nil {
+		return
+	}
+	c.prewarmed.Store(true)
+}
+
+type openAIWSAccountPool struct {
+	mu                       sync.Mutex
+	conns                    map[string]*openAIWSConn
+	pinnedConns              map[string]int
+	changedCh                chan struct{}
+	creating                 int
+	generation               uint64
+	lastCleanupAt            time.Time
+	lastAcquire              *openAIWSAcquireRequest
+	prewarmActive            bool
+	prewarmUntil             time.Time
+	prewarmFails             int
+	prewarmFailAt            time.Time
+	cookieGenerations        [openAICookieWSSlotCount]string
+	cookieExpiresAts         [openAICookieWSSlotCount]time.Time
+	cookieCreating           [openAICookieWSSlotCount]int
+	cookieProbeCreating      int
+	retiredCookieGenerations map[string]time.Time
+	candidateAcquires        [openAICookieWSSlotCount]*openAIWSAcquireRequest
+}
+
+func (ap *openAIWSAccountPool) changeChannelLocked() chan struct{} {
+	if ap.changedCh == nil {
+		ap.changedCh = make(chan struct{})
+	}
+	return ap.changedCh
+}
+
+func (ap *openAIWSAccountPool) signalChangedLocked() {
+	if ap == nil {
+		return
+	}
+	if ap.changedCh != nil {
+		close(ap.changedCh)
+	}
+	ap.changedCh = make(chan struct{})
+}
+
+type OpenAIWSPoolMetricsSnapshot struct {
+	AcquireTotal            int64
+	AcquireReuseTotal       int64
+	AcquireCreateTotal      int64
+	AcquireQueueWaitTotal   int64
+	AcquireQueueWaitMsTotal int64
+	ConnPickTotal           int64
+	ConnPickMsTotal         int64
+	ScaleUpTotal            int64
+	ScaleDownTotal          int64
+}
+
+type openAIWSPoolMetrics struct {
+	acquireTotal          atomic.Int64
+	acquireReuseTotal     atomic.Int64
+	acquireCreateTotal    atomic.Int64
+	acquireQueueWaitTotal atomic.Int64
+	acquireQueueWaitMs    atomic.Int64
+	connPickTotal         atomic.Int64
+	connPickMs            atomic.Int64
+	scaleUpTotal          atomic.Int64
+	scaleDownTotal        atomic.Int64
+}
+
+type openAIWSConnPool struct {
+	cfg *config.Config
+	// 通过接口解耦底层 WS 客户端实现，默认使用 coder/websocket。
+	clientDialer      openAIWSClientDialer
+	cookieValidatorMu sync.RWMutex
+	cookieValidator   func(context.Context, *Account, *openAIWSConnLease) error
+	cookieEligibility func(context.Context, *Account) error
+
+	accounts sync.Map // key: int64(accountID), value: *openAIWSAccountPool
+	seq      atomic.Uint64
+
+	metrics openAIWSPoolMetrics
+
+	workerStopCh chan struct{}
+	workerWg     sync.WaitGroup
+	closeOnce    sync.Once
+}
+
+func (p *openAIWSConnPool) SetCookieValidator(validator func(context.Context, *Account, *openAIWSConnLease) error) {
+	if p == nil {
+		return
+	}
+	p.cookieValidatorMu.Lock()
+	p.cookieValidator = validator
+	p.cookieValidatorMu.Unlock()
+}
+
+func (p *openAIWSConnPool) SetCookieEligibility(eligibility func(context.Context, *Account) error) {
+	if p == nil {
+		return
+	}
+	p.cookieValidatorMu.Lock()
+	p.cookieEligibility = eligibility
+	p.cookieValidatorMu.Unlock()
+}
+
+func (p *openAIWSConnPool) validateCookieConn(ctx context.Context, account *Account, conn *openAIWSConn) error {
+	if conn.cookieGeneration() == "" || conn.handshakeCompatibility.cookieProbe {
+		return nil
+	}
+	p.cookieValidatorMu.RLock()
+	validator := p.cookieValidator
+	eligibility := p.cookieEligibility
+	p.cookieValidatorMu.RUnlock()
+	if validator == nil {
+		return errOpenAIWSCookieValidatorMissing
+	}
+	if eligibility != nil {
+		if err := eligibility(ctx, account); err != nil {
+			return err
+		}
+	}
+	// The caller has already claimed the sole lease. Keep this private lease
+	// detached from the pool until validation succeeds, so a False response
+	// cannot leak into the business pool or be counted as ready capacity.
+	lease := &openAIWSConnLease{accountID: account.ID, conn: conn}
+	if err := validator(ctx, account, lease); err != nil {
+		return err
+	}
+	if conn.isClosed() || conn.cookieExpired(time.Now()) {
+		return errOpenAIWSConnClosed
+	}
+	conn.cookieVerified.Store(true)
+	return nil
+}
+
+func newOpenAIWSConnPool(cfg *config.Config) *openAIWSConnPool {
+	pool := &openAIWSConnPool{
+		cfg:          cfg,
+		clientDialer: newDefaultOpenAIWSClientDialer(),
+		workerStopCh: make(chan struct{}),
+	}
+	pool.startBackgroundWorkers()
+	return pool
+}
+
+func (p *openAIWSConnPool) SnapshotMetrics() OpenAIWSPoolMetricsSnapshot {
+	if p == nil {
+		return OpenAIWSPoolMetricsSnapshot{}
+	}
+	return OpenAIWSPoolMetricsSnapshot{
+		AcquireTotal:            p.metrics.acquireTotal.Load(),
+		AcquireReuseTotal:       p.metrics.acquireReuseTotal.Load(),
+		AcquireCreateTotal:      p.metrics.acquireCreateTotal.Load(),
+		AcquireQueueWaitTotal:   p.metrics.acquireQueueWaitTotal.Load(),
+		AcquireQueueWaitMsTotal: p.metrics.acquireQueueWaitMs.Load(),
+		ConnPickTotal:           p.metrics.connPickTotal.Load(),
+		ConnPickMsTotal:         p.metrics.connPickMs.Load(),
+		ScaleUpTotal:            p.metrics.scaleUpTotal.Load(),
+		ScaleDownTotal:          p.metrics.scaleDownTotal.Load(),
+	}
+}
+
+func (p *openAIWSConnPool) SnapshotTransportMetrics() OpenAIWSTransportMetricsSnapshot {
+	if p == nil {
+		return OpenAIWSTransportMetricsSnapshot{}
+	}
+	if dialer, ok := p.clientDialer.(openAIWSTransportMetricsDialer); ok {
+		return dialer.SnapshotTransportMetrics()
+	}
+	return OpenAIWSTransportMetricsSnapshot{}
+}
+
+func (p *openAIWSConnPool) setClientDialerForTest(dialer openAIWSClientDialer) {
+	if p == nil || dialer == nil {
+		return
+	}
+	p.clientDialer = dialer
+}
+
+// Close 停止后台 worker 并关闭所有空闲连接，应在优雅关闭时调用。
+func (p *openAIWSConnPool) Close() {
+	if p == nil {
+		return
+	}
+	p.closeOnce.Do(func() {
+		if p.workerStopCh != nil {
+			close(p.workerStopCh)
+		}
+		p.workerWg.Wait()
+		// 遍历所有账户池，关闭全部空闲连接。
+		p.accounts.Range(func(key, value any) bool {
+			ap, ok := value.(*openAIWSAccountPool)
+			if !ok || ap == nil {
+				return true
+			}
+			ap.mu.Lock()
+			for _, conn := range ap.conns {
+				if conn != nil && !conn.isLeased() {
+					conn.close()
+				}
+			}
+			ap.mu.Unlock()
+			return true
+		})
+	})
+}
+
+func (p *openAIWSConnPool) startBackgroundWorkers() {
+	if p == nil || p.workerStopCh == nil {
+		return
+	}
+	p.workerWg.Add(2)
+	go func() {
+		defer p.workerWg.Done()
+		p.runBackgroundPingWorker()
+	}()
+	go func() {
+		defer p.workerWg.Done()
+		p.runBackgroundCleanupWorker()
+	}()
+}
+
+type openAIWSIdlePingCandidate struct {
+	accountID int64
+	conn      *openAIWSConn
+}
+
+// clientPingEnabled reports whether the gateway may send client-initiated WS
+// pings upstream. The official Codex client never does (it only answers server
+// pings), so this is off unless gateway.openai_ws.client_ping_enabled is set.
+// A nil cfg (unit tests constructing pools directly) keeps the legacy behavior.
+func (p *openAIWSConnPool) clientPingEnabled() bool {
+	if p == nil {
+		return false
+	}
+	if p.cfg == nil {
+		return true
+	}
+	return p.cfg.Gateway.OpenAIWS.ClientPingEnabled
+}
+
+func (p *openAIWSConnPool) runBackgroundPingWorker() {
+	if p == nil {
+		return
+	}
+	ticker := time.NewTicker(openAIWSBackgroundPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			p.runBackgroundPingSweep()
+		case <-p.workerStopCh:
+			return
+		}
+	}
+}
+
+func (p *openAIWSConnPool) runBackgroundPingSweep() {
+	if p == nil || !p.clientPingEnabled() {
+		return
+	}
+	candidates := p.snapshotIdleConnsForPing()
+	var g errgroup.Group
+	g.SetLimit(10)
+	for _, item := range candidates {
+		item := item
+		if item.conn == nil || item.conn.cookieGeneration() != "" || item.conn.isLeased() || item.conn.waiters.Load() > 0 || !item.conn.supportsIdlePingWithoutReader() {
+			continue
+		}
+		g.Go(func() error {
+			started := time.Now()
+			idleMs := item.conn.idleDuration(started).Milliseconds()
+			if err := item.conn.pingWithTimeout(openAIWSProbePingTO); err != nil {
+				// 只有拿到租约令牌才能剔除：判断与占有必须是同一个原子动作，否则
+				// 等 pong 期间刚借出的连接会被从借用者手里关掉。已关闭或已判脏的连接
+				// 没有借用者，照常剔除。
+				if !item.conn.tryAcquire() && !item.conn.isClosed() && !item.conn.isUnusable() {
+					logOpenAIWSModeWarn(
+						"conn_background_ping_skip_leased conn_id=%s idle_ms=%d upstream_pings=%d cause=%s",
+						item.conn.id,
+						idleMs,
+						item.conn.upstreamPingCount(),
+						truncateOpenAIWSLogValue(err.Error(), openAIWSLogValueMaxLen),
+					)
+					return nil
+				}
+				logOpenAIWSModeWarn(
+					"conn_background_ping_evict conn_id=%s idle_ms=%d upstream_pings=%d cause=%s",
+					item.conn.id,
+					idleMs,
+					item.conn.upstreamPingCount(),
+					truncateOpenAIWSLogValue(err.Error(), openAIWSLogValueMaxLen),
+				)
+				p.evictConn(item.accountID, item.conn.id)
+				return nil
+			}
+			logOpenAIWSModeDebug(
+				"conn_background_ping_ok conn_id=%s idle_ms=%d rtt_ms=%d upstream_pings=%d",
+				item.conn.id,
+				idleMs,
+				time.Since(started).Milliseconds(),
+				item.conn.upstreamPingCount(),
+			)
+			return nil
+		})
+	}
+	_ = g.Wait()
+}
+
+func (p *openAIWSConnPool) snapshotIdleConnsForPing() []openAIWSIdlePingCandidate {
+	if p == nil {
+		return nil
+	}
+	candidates := make([]openAIWSIdlePingCandidate, 0)
+	p.accounts.Range(func(key, value any) bool {
+		accountID, ok := key.(int64)
+		if !ok || accountID <= 0 {
+			return true
+		}
+		ap, ok := value.(*openAIWSAccountPool)
+		if !ok || ap == nil {
+			return true
+		}
+		ap.mu.Lock()
+		for _, conn := range ap.conns {
+			if conn == nil || conn.cookieGeneration() != "" || conn.isLeased() || conn.waiters.Load() > 0 {
+				continue
+			}
+			candidates = append(candidates, openAIWSIdlePingCandidate{
+				accountID: accountID,
+				conn:      conn,
+			})
+		}
+		ap.mu.Unlock()
+		return true
+	})
+	return candidates
+}
+
+func (p *openAIWSConnPool) runBackgroundCleanupWorker() {
+	if p == nil {
+		return
+	}
+	ticker := time.NewTicker(openAIWSBackgroundSweepTicker)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			p.runBackgroundCleanupSweep(time.Now())
+		case <-p.workerStopCh:
+			return
+		}
+	}
+}
+
+func (p *openAIWSConnPool) runBackgroundCleanupSweep(now time.Time) {
+	if p == nil {
+		return
+	}
+	type cleanupResult struct {
+		evicted []*openAIWSConn
+	}
+	results := make([]cleanupResult, 0)
+	p.accounts.Range(func(_ any, value any) bool {
+		ap, ok := value.(*openAIWSAccountPool)
+		if !ok || ap == nil {
+			return true
+		}
+		maxConns := p.maxConnsHardCap()
+		ap.mu.Lock()
+		if ap.lastAcquire != nil && ap.lastAcquire.Account != nil {
+			maxConns = p.effectiveMaxConnsByAccount(ap.lastAcquire.Account)
+		}
+		evicted := p.cleanupAccountLocked(ap, now, maxConns)
+		ap.lastCleanupAt = now
+		ap.mu.Unlock()
+		if len(evicted) > 0 {
+			results = append(results, cleanupResult{evicted: evicted})
+		}
+		return true
+	})
+	for _, result := range results {
+		closeOpenAIWSConns(result.evicted)
+	}
+}
+
+// openAIWSAcquireQueueWait 跨广播重选与递归重试累计一次获取的排队耗时，
+// 由 Acquire 在统一出口写入租约与指标，任何成功路径都不会漏记。
+type openAIWSAcquireQueueWait struct {
+	queued  bool
+	rewoken bool
+	total   time.Duration
+}
+
+func (p *openAIWSConnPool) Acquire(ctx context.Context, req openAIWSAcquireRequest) (*openAIWSConnLease, error) {
+	if req.CookieWarmup {
+		if req.Headers.Get(openAICookieWSGenerationHeader) == "" || req.Headers.Get(openAICookieWSScopeHeader) != "" || req.Headers.Get(openAICookieWSProbeHeader) == "1" {
+			return nil, errors.New("invalid cookie warmup request")
+		}
+		req.ForceNewConn = true
+		req.ForcePreferredConn = false
+		req.PreferredConnID = ""
+	}
+	if p != nil {
+		p.metrics.acquireTotal.Add(1)
+	}
+	queueWait := &openAIWSAcquireQueueWait{}
+	lease, err := p.acquire(ctx, cloneOpenAIWSAcquireRequest(req), 0, queueWait)
+	if lease != nil && queueWait.rewoken {
+		// 广播重选经 tryAcquire 拿令牌，不像排队分支那样在取得令牌后检查取消，
+		// 这里补上复查：上下文已取消就归还令牌并按取消返回。
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			lease.Release()
+			return nil, ctxErr
+		}
+	}
+	if lease != nil && queueWait.total > 0 {
+		lease.queueWait = queueWait.total
+		p.metrics.acquireQueueWaitMs.Add(queueWait.total.Milliseconds())
+	}
+	if lease != nil && lease.conn != nil {
+		now := time.Now()
+		if lease.conn.cookieExpired(now) {
+			lease.Release()
+			return nil, errOpenAIWSCookieExpired
+		}
+		if lease.conn.cookieDraining.Load() && !req.ForcePreferredConn {
+			lease.Release()
+			return nil, errOpenAIWSCookieRetired
+		}
+		lease.idleBefore = lease.conn.idleDuration(now)
+		lease.ageBefore = lease.conn.age(now)
+	}
+	return lease, err
+}
+
+func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireRequest, retry int, queueWait *openAIWSAcquireQueueWait) (*openAIWSConnLease, error) {
+	if p == nil || req.Account == nil || req.Account.ID <= 0 {
+		return nil, errors.New("invalid ws acquire request")
+	}
+	if stringsTrim(req.WSURL) == "" {
+		return nil, errors.New("ws url is empty")
+	}
+	if queueWait == nil {
+		queueWait = &openAIWSAcquireQueueWait{}
+	}
+	if _, err := openAIWSCookieExpiry(req.Headers); err != nil {
+		return nil, err
+	}
+
+retryAcquire:
+	accountID := req.Account.ID
+	compatibility := normalizeOpenAIWSHandshakeCompatibility(req.Account, req.Headers)
+	routingAffinity := normalizeOpenAIWSRoutingAffinity(req.Headers)
+	effectiveMaxConns := p.effectiveMaxConnsByAccount(req.Account)
+	if effectiveMaxConns <= 0 {
+		return nil, errOpenAIWSConnQueueFull
+	}
+	var evicted []*openAIWSConn
+	var replacement *openAIWSConn
+	ap := p.getOrCreateAccountPool(accountID)
+	ap.mu.Lock()
+	acquireGeneration := ap.generation
+	now := time.Now()
+	candidate := compatibility.cookieGeneration != "" && (compatibility.cookieProbe || compatibility.cookieGeneration != ap.cookieGenerations[compatibility.cookieSlot])
+	if compatibility.cookieGeneration != "" && !compatibility.cookieProbe && effectiveMaxConns > 1 {
+		// Reserve one slot for the next generation's validation handshake so
+		// long-lived business sessions cannot prevent a 50-minute refresh.
+		effectiveMaxConns--
+	}
+	if _, retired := ap.retiredCookieGenerations[compatibility.cookieGeneration]; retired && !req.ForcePreferredConn {
+		ap.mu.Unlock()
+		return nil, errOpenAIWSCookieRetired
+	}
+	if !candidate && (ap.lastCleanupAt.IsZero() || now.Sub(ap.lastCleanupAt) >= openAIWSAcquireCleanupInterval) {
+		evicted = p.cleanupAccountLocked(ap, now, effectiveMaxConns)
+		ap.lastCleanupAt = now
+	}
+	pickStartedAt := time.Now()
+	allowReuse := !req.ForceNewConn
+	preferredConnID := stringsTrim(req.PreferredConnID)
+	forcePreferredConn := allowReuse && req.ForcePreferredConn
+
+	if allowReuse {
+		if forcePreferredConn {
+			if preferredConnID == "" {
+				p.recordConnPickDuration(time.Since(pickStartedAt))
+				ap.mu.Unlock()
+				closeOpenAIWSConns(evicted)
+				return nil, errOpenAIWSPreferredConnUnavailable
+			}
+			preferredConn, ok := ap.conns[preferredConnID]
+			if !ok || !preferredConn.matchesPreferredHandshakeCompatibility(compatibility) {
+				p.recordConnPickDuration(time.Since(pickStartedAt))
+				ap.mu.Unlock()
+				closeOpenAIWSConns(evicted)
+				return nil, errOpenAIWSPreferredConnUnavailable
+			}
+			if preferredConn.tryAcquire() {
+				connPick := time.Since(pickStartedAt)
+				p.recordConnPickDuration(connPick)
+				ap.mu.Unlock()
+				closeOpenAIWSConns(evicted)
+				if p.shouldHealthCheckConn(preferredConn) {
+					if err := preferredConn.pingWithTimeout(openAIWSConnHealthCheckTO); err != nil {
+						preferredConn.close()
+						p.evictConn(accountID, preferredConn.id)
+						if retry < 1 {
+							return p.acquire(ctx, req, retry+1, queueWait)
+						}
+						return nil, err
+					}
+				}
+				lease := &openAIWSConnLease{
+					pool:      p,
+					accountID: accountID,
+					conn:      preferredConn,
+					connPick:  connPick,
+					reused:    true,
+				}
+				p.metrics.acquireReuseTotal.Add(1)
+				p.recordLastSuccessfulAcquire(accountID, acquireGeneration, req)
+				p.ensureTargetIdleAsync(accountID)
+				return lease, nil
+			}
+
+			if p.dropDeadConnLocked(ap, preferredConn, &evicted) {
+				p.recordConnPickDuration(time.Since(pickStartedAt))
+				ap.mu.Unlock()
+				closeOpenAIWSConns(evicted)
+				return nil, errOpenAIWSPreferredConnUnavailable
+			}
+			connPick := time.Since(pickStartedAt)
+			p.recordConnPickDuration(connPick)
+			if int(preferredConn.waiters.Load()) >= p.queueLimitPerConn() {
+				ap.mu.Unlock()
+				closeOpenAIWSConns(evicted)
+				return nil, errOpenAIWSConnQueueFull
+			}
+			preferredConn.waiters.Add(1)
+			ap.mu.Unlock()
+			closeOpenAIWSConns(evicted)
+			defer preferredConn.waiters.Add(-1)
+			waitStart := time.Now()
+			p.metrics.acquireQueueWaitTotal.Add(1)
+
+			if err := preferredConn.acquire(ctx); err != nil {
+				if errors.Is(err, errOpenAIWSConnClosed) {
+					p.evictConn(accountID, preferredConn.id)
+					if retry < 1 {
+						return p.acquire(ctx, req, retry+1, queueWait)
+					}
+				}
+				return nil, err
+			}
+			if p.shouldHealthCheckConn(preferredConn) {
+				if err := preferredConn.pingWithTimeout(openAIWSConnHealthCheckTO); err != nil {
+					preferredConn.release()
+					preferredConn.close()
+					p.evictConn(accountID, preferredConn.id)
+					if retry < 1 {
+						return p.acquire(ctx, req, retry+1, queueWait)
+					}
+					return nil, err
+				}
+			}
+
+			queueWait := time.Since(waitStart)
+			p.metrics.acquireQueueWaitMs.Add(queueWait.Milliseconds())
+			lease := &openAIWSConnLease{
+				pool:      p,
+				accountID: accountID,
+				conn:      preferredConn,
+				queueWait: queueWait,
+				connPick:  connPick,
+				reused:    true,
+			}
+			p.metrics.acquireReuseTotal.Add(1)
+			p.recordLastSuccessfulAcquire(accountID, acquireGeneration, req)
+			p.ensureTargetIdleAsync(accountID)
+			return lease, nil
+		}
+
+		if preferredConnID != "" {
+			if conn, ok := ap.conns[preferredConnID]; ok && conn.matchesHandshakeCompatibility(compatibility) && conn.tryAcquire() {
+				connPick := time.Since(pickStartedAt)
+				p.recordConnPickDuration(connPick)
+				ap.mu.Unlock()
+				closeOpenAIWSConns(evicted)
+				if p.shouldHealthCheckConn(conn) {
+					if err := conn.pingWithTimeout(openAIWSConnHealthCheckTO); err != nil {
+						conn.close()
+						p.evictConn(accountID, conn.id)
+						if retry < 1 {
+							return p.acquire(ctx, req, retry+1, queueWait)
+						}
+						return nil, err
+					}
+				}
+				lease := &openAIWSConnLease{pool: p, accountID: accountID, conn: conn, connPick: connPick, reused: true}
+				p.metrics.acquireReuseTotal.Add(1)
+				p.recordLastSuccessfulAcquire(accountID, acquireGeneration, req)
+				p.ensureTargetIdleAsync(accountID)
+				return lease, nil
+			} else if conn, ok := ap.conns[preferredConnID]; ok {
+				p.dropDeadConnLocked(ap, conn, &evicted)
+			}
+		}
+
+		// A routing hint is advisory at WebSocket dial time. Prefer a pooled
+		// connection whose handshake used the same hint, but do not make that
+		// preference a continuation compatibility requirement.
+		best := p.pickLeastBusyConnWithRoutingAffinityLocked(ap, compatibility, routingAffinity)
+		if best != nil && best.tryAcquire() {
+			connPick := time.Since(pickStartedAt)
+			p.recordConnPickDuration(connPick)
+			ap.mu.Unlock()
+			closeOpenAIWSConns(evicted)
+			if p.shouldHealthCheckConn(best) {
+				if err := best.pingWithTimeout(openAIWSConnHealthCheckTO); err != nil {
+					best.close()
+					p.evictConn(accountID, best.id)
+					if retry < 1 {
+						return p.acquire(ctx, req, retry+1, queueWait)
+					}
+					return nil, err
+				}
+			}
+			lease := &openAIWSConnLease{pool: p, accountID: accountID, conn: best, connPick: connPick, reused: true}
+			p.metrics.acquireReuseTotal.Add(1)
+			p.recordLastSuccessfulAcquire(accountID, acquireGeneration, req)
+			p.ensureTargetIdleAsync(accountID)
+			return lease, nil
+		} else if best != nil {
+			p.dropDeadConnLocked(ap, best, &evicted)
+		}
+		if routingAffinity == "" || p.cookieRequestAtCapacityLocked(ap, compatibility, effectiveMaxConns) {
+			for _, conn := range ap.conns {
+				if conn == nil || conn == best || !conn.matchesHandshakeCompatibility(compatibility) {
+					continue
+				}
+				if conn.tryAcquire() {
+					connPick := time.Since(pickStartedAt)
+					p.recordConnPickDuration(connPick)
+					ap.mu.Unlock()
+					closeOpenAIWSConns(evicted)
+					if p.shouldHealthCheckConn(conn) {
+						if err := conn.pingWithTimeout(openAIWSConnHealthCheckTO); err != nil {
+							conn.close()
+							p.evictConn(accountID, conn.id)
+							if retry < 1 {
+								return p.acquire(ctx, req, retry+1, queueWait)
+							}
+							return nil, err
+						}
+					}
+					lease := &openAIWSConnLease{pool: p, accountID: accountID, conn: conn, connPick: connPick, reused: true}
+					p.metrics.acquireReuseTotal.Add(1)
+					p.recordLastSuccessfulAcquire(accountID, acquireGeneration, req)
+					p.ensureTargetIdleAsync(accountID)
+					return lease, nil
+				}
+				p.dropDeadConnLocked(ap, conn, &evicted)
+			}
+		}
+	}
+
+	// Prefer an already-bound compatible socket above. A verified spare has
+	// never served a business turn, so it also satisfies fresh-connection mode.
+	if compatibility.cookieGeneration != "" && !compatibility.cookieProbe && !req.CookieWarmup {
+		if conn := p.adoptCookieWarmupConnLocked(ap, compatibility); conn != nil {
+			connPick := time.Since(pickStartedAt)
+			p.recordConnPickDuration(connPick)
+			ap.mu.Unlock()
+			closeOpenAIWSConns(evicted)
+			p.metrics.acquireReuseTotal.Add(1)
+			p.recordLastSuccessfulAcquire(accountID, acquireGeneration, req)
+			return &openAIWSConnLease{pool: p, accountID: accountID, conn: conn, connPick: connPick, reused: true}, nil
+		}
+	}
+
+	if !req.ForceNewConn && !candidate && p.cookieRequestAtCapacityLocked(ap, compatibility, effectiveMaxConns) {
+		affine := p.pickLeastBusyConnWithRoutingAffinityLocked(ap, compatibility, routingAffinity)
+		idle := p.pickOldestIdleConnWithoutHandshakeCompatibilityLocked(ap, compatibility)
+		if compatibility.cookieGeneration != "" {
+			idle = p.pickOldestIdleCookieConnLocked(ap, compatibility, true)
+		}
+		if idle != nil {
+			if req.BeforeFreshDial != nil && compatibility.cookieGeneration == "" {
+				// Keep the healthy socket in the pool while auth and fresh-dial
+				// admission run. Its lease prevents concurrent reuse/replacement.
+				if idle.tryAcquire() {
+					replacement = idle
+				}
+			} else {
+				delete(ap.conns, idle.id)
+				evicted = append(evicted, idle)
+				p.metrics.scaleDownTotal.Add(1)
+			}
+		} else if affine == nil {
+			compatible := p.pickLeastBusyConnLocked(ap, "", compatibility)
+			if compatible != nil {
+				// Capacity is full and every compatible connection is busy. The
+				// hint remains soft here: queue on a compatible connection below.
+				goto acquireAtCapacity
+			}
+			hasConnection := false
+			for _, conn := range ap.conns {
+				if conn != nil {
+					hasConnection = true
+					break
+				}
+			}
+			if !hasConnection && ap.creating == 0 {
+				ap.mu.Unlock()
+				closeOpenAIWSConns(evicted)
+				return nil, errOpenAIWSConnClosed
+			}
+			changedCh := ap.changeChannelLocked()
+			ap.mu.Unlock()
+			closeOpenAIWSConns(evicted)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-changedCh:
+				goto retryAcquire
+			}
+		}
+	}
+
+	if req.ForceNewConn && !req.CookieWarmup && !candidate && p.cookieRequestAtCapacityLocked(ap, compatibility, effectiveMaxConns) {
+		idle := p.pickOldestIdleConnLocked(ap)
+		if compatibility.cookieGeneration != "" {
+			idle = p.pickOldestIdleCookieConnLocked(ap, compatibility, false)
+		}
+		if idle != nil {
+			if req.BeforeFreshDial != nil && compatibility.cookieGeneration == "" {
+				if idle.tryAcquire() {
+					replacement = idle
+				}
+			} else {
+				delete(ap.conns, idle.id)
+				evicted = append(evicted, idle)
+				p.metrics.scaleDownTotal.Add(1)
+			}
+		}
+	}
+
+	if replacement != nil || !p.cookieRequestAtCapacityLocked(ap, compatibility, effectiveMaxConns) {
+		connPick := time.Since(pickStartedAt)
+		p.recordConnPickDuration(connPick)
+		ap.creating++
+		ap.adjustCookieCreatingLocked(compatibility, 1)
+		ap.mu.Unlock()
+		closeOpenAIWSConns(evicted)
+
+		var beforeDial func(context.Context) error
+		if replacement != nil {
+			beforeDial = func(dialCtx context.Context) error {
+				ap.mu.Lock()
+				if err := dialCtx.Err(); err != nil {
+					ap.mu.Unlock()
+					return err
+				}
+				if ap.generation != acquireGeneration || ap.conns[replacement.id] != replacement {
+					ap.mu.Unlock()
+					return errOpenAIWSConnClosed
+				}
+				if replacement.waiters.Load() > 0 || p.isConnPinnedLocked(ap, replacement.id) {
+					ap.mu.Unlock()
+					return errOpenAIWSConnQueueFull
+				}
+				delete(ap.conns, replacement.id)
+				p.metrics.scaleDownTotal.Add(1)
+				ap.signalChangedLocked()
+				ap.mu.Unlock()
+				replacement.close()
+				return nil
+			}
+		}
+		conn, dialErr := p.dialConnBeforeOpen(ctx, req, beforeDial)
+		if replacement != nil {
+			// A refused/canceled admission must make the original socket
+			// available again. On admission it has already been retired.
+			replacement.release()
+		}
+		if dialErr == nil {
+			// Claim before running the validator. The permanent reader loop may
+			// already be running, but all probe events belong to this lease.
+			if !conn.tryAcquire() {
+				dialErr = errOpenAIWSConnClosed
+			} else {
+				dialErr = p.validateCookieConn(ctx, req.Account, conn)
+			}
+			if dialErr != nil {
+				conn.close()
+			}
+		}
+
+		ap = p.getOrCreateAccountPool(accountID)
+		ap.mu.Lock()
+		ap.creating--
+		ap.adjustCookieCreatingLocked(compatibility, -1)
+		_, retired := ap.retiredCookieGenerations[compatibility.cookieGeneration]
+		if ap.generation != acquireGeneration || retired {
+			ap.signalChangedLocked()
+			ap.mu.Unlock()
+			if conn != nil {
+				conn.close()
+			}
+			if retry < 1 {
+				return p.acquire(ctx, req, retry+1, queueWait)
+			}
+			return nil, errOpenAIWSConnClosed
+		}
+		if dialErr != nil {
+			if !errors.Is(dialErr, errOpenAIWSEdgeBackoff) {
+				ap.prewarmFails++
+				ap.prewarmFailAt = time.Now()
+			}
+			ap.signalChangedLocked()
+			ap.mu.Unlock()
+			return nil, dialErr
+		}
+		// Validation owns the freshly dialed connection's lease throughout;
+		// topology waiters cannot take it before the creating caller returns.
+		conn.cookieUnassigned = req.CookieWarmup
+		ap.conns[conn.id] = conn
+		ap.prewarmFails = 0
+		ap.prewarmFailAt = time.Time{}
+		// Wake acquires that observed creating>0 with no compatible connection.
+		// Without this signal they can remain asleep until the new lease is
+		// released, even though the pool topology already changed.
+		ap.signalChangedLocked()
+		ap.mu.Unlock()
+		p.metrics.acquireCreateTotal.Add(1)
+		lease := &openAIWSConnLease{pool: p, accountID: accountID, conn: conn, connPick: connPick}
+		p.recordLastSuccessfulAcquire(accountID, acquireGeneration, req)
+		p.ensureTargetIdleAsync(accountID)
+		return lease, nil
+	}
+
+	if req.ForceNewConn {
+		p.recordConnPickDuration(time.Since(pickStartedAt))
+		ap.mu.Unlock()
+		closeOpenAIWSConns(evicted)
+		return nil, errOpenAIWSConnQueueFull
+	}
+
+acquireAtCapacity:
+	target := p.pickLeastBusyConnLocked(ap, req.PreferredConnID, compatibility)
+	connPick := time.Since(pickStartedAt)
+	p.recordConnPickDuration(connPick)
+	if target == nil {
+		ap.mu.Unlock()
+		closeOpenAIWSConns(evicted)
+		return nil, errOpenAIWSConnClosed
+	}
+	if int(target.waiters.Load()) >= p.queueLimitPerConn() {
+		ap.mu.Unlock()
+		closeOpenAIWSConns(evicted)
+		return nil, errOpenAIWSConnQueueFull
+	}
+	target.waiters.Add(1)
+	// 排队时不只等这一条连接的令牌：账号池任何容量变化（别的连接释放、被剔除、
+	// 新拨号完成）都会唤醒等待者回到 retryAcquire 重新选择。变更通道必须在锁内取，
+	// 否则会漏掉解锁到开始等待之间的信号。
+	changedCh := ap.changeChannelLocked()
+	ap.mu.Unlock()
+	closeOpenAIWSConns(evicted)
+	waitStart := time.Now()
+	if !queueWait.queued {
+		queueWait.queued = true
+		p.metrics.acquireQueueWaitTotal.Add(1)
+	}
+
+	waitErr := target.acquireOrPoolChanged(ctx, changedCh)
+	target.waiters.Add(-1)
+	queueWait.total += time.Since(waitStart)
+	if waitErr != nil {
+		if errors.Is(waitErr, errOpenAIWSPoolChanged) {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			queueWait.rewoken = true
+			goto retryAcquire
+		}
+		if errors.Is(waitErr, errOpenAIWSConnClosed) {
+			p.evictConn(accountID, target.id)
+			if retry < 1 {
+				return p.acquire(ctx, req, retry+1, queueWait)
+			}
+		}
+		return nil, waitErr
+	}
+	if p.shouldHealthCheckConn(target) {
+		if err := target.pingWithTimeout(openAIWSConnHealthCheckTO); err != nil {
+			target.release()
+			target.close()
+			p.evictConn(accountID, target.id)
+			if retry < 1 {
+				return p.acquire(ctx, req, retry+1, queueWait)
+			}
+			return nil, err
+		}
+	}
+
+	lease := &openAIWSConnLease{pool: p, accountID: accountID, conn: target, connPick: connPick, reused: true}
+	p.metrics.acquireReuseTotal.Add(1)
+	p.recordLastSuccessfulAcquire(accountID, acquireGeneration, req)
+	p.ensureTargetIdleAsync(accountID)
+	return lease, nil
+}
+
+func (p *openAIWSConnPool) recordConnPickDuration(duration time.Duration) {
+	if p == nil {
+		return
+	}
+	if duration < 0 {
+		duration = 0
+	}
+	p.metrics.connPickTotal.Add(1)
+	p.metrics.connPickMs.Add(duration.Milliseconds())
+}
+
+func (p *openAIWSConnPool) recordLastSuccessfulAcquire(accountID int64, generation uint64, req openAIWSAcquireRequest) {
+	if p == nil || accountID <= 0 || req.CookieWarmup {
+		return
+	}
+	ap, ok := p.getAccountPool(accountID)
+	if !ok || ap == nil {
+		return
+	}
+	ap.mu.Lock()
+	if ap.generation != generation {
+		ap.mu.Unlock()
+		return
+	}
+	key := normalizeOpenAIWSHandshakeCompatibility(req.Account, req.Headers)
+	if cookieGeneration := key.cookieGeneration; cookieGeneration != "" && (key.cookieProbe || cookieGeneration != ap.cookieGenerations[key.cookieSlot]) {
+		if _, retired := ap.retiredCookieGenerations[cookieGeneration]; !retired {
+			ap.candidateAcquires[key.cookieSlot] = cloneOpenAIWSPersistentAcquireRequest(&req)
+		}
+		ap.mu.Unlock()
+		return
+	}
+	ap.lastAcquire = cloneOpenAIWSPersistentAcquireRequest(&req)
+	if strings.TrimSpace(req.Headers.Get(openAICookieWSGenerationHeader)) != "" {
+		ap.cookieExpiresAts[key.cookieSlot], _ = openAIWSCookieExpiry(req.Headers)
+	}
+	ap.mu.Unlock()
+}
+
+func (p *openAIWSConnPool) pickOldestIdleConnLocked(ap *openAIWSAccountPool) *openAIWSConn {
+	if ap == nil || len(ap.conns) == 0 {
+		return nil
+	}
+	var oldest *openAIWSConn
+	for _, conn := range ap.conns {
+		if conn == nil || conn.isLeased() || conn.waiters.Load() > 0 || p.isConnPinnedLocked(ap, conn.id) {
+			continue
+		}
+		if oldest == nil || conn.lastUsedAt().Before(oldest.lastUsedAt()) {
+			oldest = conn
+		}
+	}
+	return oldest
+}
+
+const openAIWSCookieSlotConnLimit = 1
+
+func (ap *openAIWSAccountPool) adjustCookieCreatingLocked(key openAIWSHandshakeCompatibilityKey, delta int) {
+	if key.cookieGeneration == "" {
+		return
+	}
+	if key.cookieProbe {
+		ap.cookieProbeCreating += delta
+	} else {
+		ap.cookieCreating[key.cookieSlot] += delta
+	}
+}
+
+func (p *openAIWSConnPool) cookieRequestAtCapacityLocked(ap *openAIWSAccountPool, key openAIWSHandshakeCompatibilityKey, maxConns int) bool {
+	if len(ap.conns)+ap.creating >= maxConns {
+		return true
+	}
+	if key.cookieGeneration == "" {
+		return false
+	}
+	count := ap.cookieCreating[key.cookieSlot]
+	limit := openAIWSCookieSlotConnLimit
+	if key.cookieProbe {
+		count, limit = ap.cookieProbeCreating, 1
+	}
+	for _, conn := range ap.conns {
+		if conn == nil || conn.cookieGeneration() == "" {
+			continue
+		}
+		other := conn.handshakeCompatibility
+		if (key.cookieProbe && other.cookieProbe) || (!key.cookieProbe && !other.cookieProbe && key.cookieSlot == other.cookieSlot) {
+			count++
+		}
+	}
+	return count >= limit
+}
+
+// Retiring or incompatible connections from one Cookie slot must not evict
+// healthy capacity from the other independently refreshed slot.
+func (p *openAIWSConnPool) pickOldestIdleCookieConnLocked(ap *openAIWSAccountPool, key openAIWSHandshakeCompatibilityKey, incompatibleOnly bool) *openAIWSConn {
+	var oldest *openAIWSConn
+	for _, conn := range ap.conns {
+		if conn == nil || conn.cookieGeneration() == "" || conn.handshakeCompatibility.cookieSlot != key.cookieSlot || conn.handshakeCompatibility.cookieProbe ||
+			conn.isLeased() || conn.waiters.Load() > 0 || p.isConnPinnedLocked(ap, conn.id) || (incompatibleOnly && conn.matchesHandshakeCompatibility(key)) {
+			continue
+		}
+		if oldest == nil || conn.lastUsedAt().Before(oldest.lastUsedAt()) {
+			oldest = conn
+		}
+	}
+	return oldest
+}
+
+func (p *openAIWSConnPool) ConnCookieSlot(accountID int64, connID string) (int, bool) {
+	ap, ok := p.getAccountPool(accountID)
+	if !ok || ap == nil {
+		return 0, false
+	}
+	ap.mu.Lock()
+	defer ap.mu.Unlock()
+	conn := ap.conns[connID]
+	if conn == nil || conn.cookieGeneration() == "" || conn.handshakeCompatibility.cookieProbe || conn.cookieExpired(time.Now()) || conn.isClosed() {
+		return 0, false
+	}
+	return conn.handshakeCompatibility.cookieSlot, true
+}
+
+// adoptCookieWarmupConnLocked binds a verified unused socket once. The
+// handshake identity remains immutable; only this local execution scope is
+// assigned while holding the same mutex used by all compatibility lookups.
+func (p *openAIWSConnPool) adoptCookieWarmupConnLocked(ap *openAIWSAccountPool, key openAIWSHandshakeCompatibilityKey) *openAIWSConn {
+	for _, conn := range ap.conns {
+		if conn == nil || !conn.cookieUnassigned || !conn.cookieVerified.Load() || conn.cookieDraining.Load() || conn.cookieExpired(time.Now()) || conn.isClosed() {
+			continue
+		}
+		other := conn.effectiveHandshakeCompatibility()
+		other.cookieScope = key.cookieScope
+		if other != key || !conn.tryAcquire() {
+			continue
+		}
+		conn.cookieScope = key.cookieScope
+		conn.cookieUnassigned = false
+		return conn
+	}
+	return nil
+}
+
+// CookieVerifiedCounts includes idle and leased business sockets that passed
+// their own Tibo check and still belong to the slot's published generation.
+func (p *openAIWSConnPool) CookieVerifiedCounts(accountID int64) [openAICookieWSSlotCount]int {
+	counts := [openAICookieWSSlotCount]int{}
+	ap, ok := p.getAccountPool(accountID)
+	if !ok || ap == nil {
+		return counts
+	}
+	ap.mu.Lock()
+	defer ap.mu.Unlock()
+	now := time.Now()
+	for _, conn := range ap.conns {
+		if conn == nil || !conn.cookieVerified.Load() || conn.cookieDraining.Load() || conn.cookieExpired(now) || conn.isClosed() || conn.isUnusable() || (!conn.isLeased() && conn.readerLoopPending()) {
+			continue
+		}
+		key := conn.handshakeCompatibility
+		if key.cookieGeneration != "" && !key.cookieProbe && key.cookieGeneration == ap.cookieGenerations[key.cookieSlot] {
+			counts[key.cookieSlot]++
+		}
+	}
+	return counts
+}
+
+func (p *openAIWSConnPool) pickOldestIdleConnWithoutHandshakeCompatibilityLocked(
+	ap *openAIWSAccountPool,
+	compatibility openAIWSHandshakeCompatibilityKey,
+) *openAIWSConn {
+	if ap == nil || len(ap.conns) == 0 {
+		return nil
+	}
+	var oldest *openAIWSConn
+	for _, conn := range ap.conns {
+		if conn == nil ||
+			conn.matchesHandshakeCompatibility(compatibility) ||
+			conn.isLeased() || conn.waiters.Load() > 0 || p.isConnPinnedLocked(ap, conn.id) {
+			continue
+		}
+		if oldest == nil || conn.lastUsedAt().Before(oldest.lastUsedAt()) {
+			oldest = conn
+		}
+	}
+	return oldest
+}
+
+func (p *openAIWSConnPool) getOrCreateAccountPool(accountID int64) *openAIWSAccountPool {
+	if p == nil || accountID <= 0 {
+		return nil
+	}
+	if existing, ok := p.accounts.Load(accountID); ok {
+		if ap, typed := existing.(*openAIWSAccountPool); typed && ap != nil {
+			return ap
+		}
+	}
+	ap := &openAIWSAccountPool{
+		conns:       make(map[string]*openAIWSConn),
+		pinnedConns: make(map[string]int),
+		changedCh:   make(chan struct{}),
+	}
+	actual, _ := p.accounts.LoadOrStore(accountID, ap)
+	if typed, ok := actual.(*openAIWSAccountPool); ok && typed != nil {
+		return typed
+	}
+	return ap
+}
+
+// ensureAccountPoolLocked 兼容旧调用。
+func (p *openAIWSConnPool) ensureAccountPoolLocked(accountID int64) *openAIWSAccountPool {
+	return p.getOrCreateAccountPool(accountID)
+}
+
+func (p *openAIWSConnPool) getAccountPool(accountID int64) (*openAIWSAccountPool, bool) {
+	if p == nil || accountID <= 0 {
+		return nil, false
+	}
+	value, ok := p.accounts.Load(accountID)
+	if !ok || value == nil {
+		return nil, false
+	}
+	ap, typed := value.(*openAIWSAccountPool)
+	return ap, typed && ap != nil
+}
+
+func (p *openAIWSConnPool) releaseConn(accountID int64, conn *openAIWSConn) {
+	ap, ok := p.getAccountPool(accountID)
+	if !ok || ap == nil || conn == nil {
+		return
+	}
+	ap.mu.Lock()
+	remove := ap.conns[conn.id] == conn && !conn.isLeased() &&
+		(conn.cookieExpired(time.Now()) || (conn.cookieDraining.Load() && !p.isConnPinnedLocked(ap, conn.id)))
+	if remove {
+		delete(ap.conns, conn.id)
+		delete(ap.pinnedConns, conn.id)
+	}
+	ap.signalChangedLocked()
+	ap.mu.Unlock()
+	if remove {
+		conn.close()
+	}
+}
+
+func (p *openAIWSConnPool) isConnPinnedLocked(ap *openAIWSAccountPool, connID string) bool {
+	if ap == nil || connID == "" || len(ap.pinnedConns) == 0 {
+		return false
+	}
+	return ap.pinnedConns[connID] > 0
+}
+
+func (p *openAIWSConnPool) cleanupAccountLocked(ap *openAIWSAccountPool, now time.Time, maxConns int) []*openAIWSConn {
+	if ap == nil {
+		return nil
+	}
+	maxAge := p.maxConnAge()
+
+	evicted := make([]*openAIWSConn, 0)
+	for id, conn := range ap.conns {
+		if conn == nil {
+			delete(ap.conns, id)
+			if len(ap.pinnedConns) > 0 {
+				delete(ap.pinnedConns, id)
+			}
+			continue
+		}
+		if conn.isClosed() || conn.isUnusable() {
+			delete(ap.conns, id)
+			if len(ap.pinnedConns) > 0 {
+				delete(ap.pinnedConns, id)
+			}
+			evicted = append(evicted, conn)
+			continue
+		}
+		// Expiry applies even to pinned sessions. Finish an already-running
+		// response, but never assign another turn using its expired Cookie.
+		if !conn.isLeased() && (conn.cookieExpired(now) || (conn.cookieDraining.Load() && !p.isConnPinnedLocked(ap, id) && conn.waiters.Load() == 0)) {
+			delete(ap.conns, id)
+			delete(ap.pinnedConns, id)
+			evicted = append(evicted, conn)
+			continue
+		}
+		if p.isConnPinnedLocked(ap, id) {
+			continue
+		}
+		if !conn.isLeased() && conn.waiters.Load() == 0 &&
+			!conn.supportsIdlePingWithoutReader() &&
+			conn.idleDuration(now) >= openAIWSConnIdleRecycleAfter {
+			delete(ap.conns, id)
+			if len(ap.pinnedConns) > 0 {
+				delete(ap.pinnedConns, id)
+			}
+			evicted = append(evicted, conn)
+			p.metrics.scaleDownTotal.Add(1)
+			continue
+		}
+		if maxAge > 0 && !conn.isLeased() && conn.age(now) > maxAge {
+			delete(ap.conns, id)
+			if len(ap.pinnedConns) > 0 {
+				delete(ap.pinnedConns, id)
+			}
+			evicted = append(evicted, conn)
+		}
+	}
+
+	if maxConns <= 0 {
+		maxConns = p.maxConnsHardCap()
+	}
+	maxIdle := p.maxIdlePerAccount()
+	if maxIdle < 0 || maxIdle > maxConns {
+		maxIdle = maxConns
+	}
+	if maxIdle >= 0 && len(ap.conns) > maxIdle {
+		idleConns := make([]*openAIWSConn, 0, len(ap.conns))
+		trimEligibleCount := 0
+		for id, conn := range ap.conns {
+			if conn == nil {
+				delete(ap.conns, id)
+				if len(ap.pinnedConns) > 0 {
+					delete(ap.pinnedConns, id)
+				}
+				continue
+			}
+			// Cookie business sockets already have a strict one-per-slot
+			// bound. Keep healthy current sockets for the next concurrent wave;
+			// the legacy idle limit must not shrink that capacity to two.
+			key := conn.handshakeCompatibility
+			if key.cookieGeneration != "" && !key.cookieProbe && !conn.cookieDraining.Load() && !conn.cookieExpired(now) &&
+				key.cookieGeneration == ap.cookieGenerations[key.cookieSlot] {
+				continue
+			}
+			trimEligibleCount++
+			// 有等待者的连接不能在清理阶段被淘汰，否则等待中的 acquire 会收到 closed 错误。
+			if conn.isLeased() || conn.waiters.Load() > 0 || p.isConnPinnedLocked(ap, conn.id) {
+				continue
+			}
+			idleConns = append(idleConns, conn)
+		}
+		sort.SliceStable(idleConns, func(i, j int) bool {
+			return idleConns[i].lastUsedAt().Before(idleConns[j].lastUsedAt())
+		})
+		redundant := trimEligibleCount - maxIdle
+		if redundant > len(idleConns) {
+			redundant = len(idleConns)
+		}
+		for i := 0; i < redundant; i++ {
+			conn := idleConns[i]
+			delete(ap.conns, conn.id)
+			if len(ap.pinnedConns) > 0 {
+				delete(ap.pinnedConns, conn.id)
+			}
+			evicted = append(evicted, conn)
+		}
+		if redundant > 0 {
+			p.metrics.scaleDownTotal.Add(int64(redundant))
+		}
+	}
+	if len(evicted) > 0 {
+		ap.signalChangedLocked()
+	}
+
+	return evicted
+}
+
+func (p *openAIWSConnPool) pickLeastBusyConnLocked(
+	ap *openAIWSAccountPool,
+	preferredConnID string,
+	compatibility openAIWSHandshakeCompatibilityKey,
+) *openAIWSConn {
+	if ap == nil || len(ap.conns) == 0 {
+		return nil
+	}
+	preferredConnID = stringsTrim(preferredConnID)
+	if preferredConnID != "" {
+		if conn, ok := ap.conns[preferredConnID]; ok && conn.matchesHandshakeCompatibility(compatibility) {
+			return conn
+		}
+	}
+	var best *openAIWSConn
+	var bestWaiters int32
+	var bestLastUsed time.Time
+	for _, conn := range ap.conns {
+		if conn == nil || !conn.matchesHandshakeCompatibility(compatibility) {
+			continue
+		}
+		waiters := conn.waiters.Load()
+		lastUsed := conn.lastUsedAt()
+		if best == nil ||
+			waiters < bestWaiters ||
+			(waiters == bestWaiters && lastUsed.Before(bestLastUsed)) {
+			best = conn
+			bestWaiters = waiters
+			bestLastUsed = lastUsed
+		}
+	}
+	return best
+}
+
+func (p *openAIWSConnPool) pickLeastBusyConnWithRoutingAffinityLocked(
+	ap *openAIWSAccountPool,
+	compatibility openAIWSHandshakeCompatibilityKey,
+	routingAffinity string,
+) *openAIWSConn {
+	if ap == nil || len(ap.conns) == 0 {
+		return nil
+	}
+	var best *openAIWSConn
+	var bestWaiters int32
+	var bestLastUsed time.Time
+	for _, conn := range ap.conns {
+		if conn == nil ||
+			!conn.matchesHandshakeCompatibility(compatibility) ||
+			!conn.matchesRoutingAffinity(routingAffinity) {
+			continue
+		}
+		waiters := conn.waiters.Load()
+		lastUsed := conn.lastUsedAt()
+		if best == nil ||
+			waiters < bestWaiters ||
+			(waiters == bestWaiters && lastUsed.Before(bestLastUsed)) {
+			best = conn
+			bestWaiters = waiters
+			bestLastUsed = lastUsed
+		}
+	}
+	return best
+}
+
+func accountPoolLoadLocked(ap *openAIWSAccountPool) (inflight int, waiters int) {
+	if ap == nil {
+		return 0, 0
+	}
+	for _, conn := range ap.conns {
+		if conn == nil {
+			continue
+		}
+		if conn.isLeased() {
+			inflight++
+		}
+		waiters += int(conn.waiters.Load())
+	}
+	return inflight, waiters
+}
+
+// AccountPoolLoad 返回指定账号连接池的并发与排队快照。
+func (p *openAIWSConnPool) AccountPoolLoad(accountID int64) (inflight int, waiters int, conns int) {
+	if p == nil || accountID <= 0 {
+		return 0, 0, 0
+	}
+	ap, ok := p.getAccountPool(accountID)
+	if !ok || ap == nil {
+		return 0, 0, 0
+	}
+	ap.mu.Lock()
+	defer ap.mu.Unlock()
+	inflight, waiters = accountPoolLoadLocked(ap)
+	return inflight, waiters, len(ap.conns)
+}
+
+func (p *openAIWSConnPool) ensureTargetIdleAsync(accountID int64) {
+	if p == nil || accountID <= 0 {
+		return
+	}
+
+	var req openAIWSAcquireRequest
+	generation := uint64(0)
+	need := 0
+	ap, ok := p.getAccountPool(accountID)
+	if !ok || ap == nil {
+		return
+	}
+	ap.mu.Lock()
+	defer ap.mu.Unlock()
+	if ap.lastAcquire == nil {
+		return
+	}
+	// Cookie sockets are warmed by the verified-minimum worker, which owns
+	// model validation and safe assignment of an initially empty scope.
+	if ap.lastAcquire.Headers.Get(openAICookieWSGenerationHeader) != "" {
+		return
+	}
+	if _, err := openAIWSCookieExpiry(ap.lastAcquire.Headers); err != nil {
+		return
+	}
+	if ap.prewarmActive {
+		return
+	}
+	now := time.Now()
+	if !ap.prewarmUntil.IsZero() && now.Before(ap.prewarmUntil) {
+		return
+	}
+	if p.shouldSuppressPrewarmLocked(ap, now) {
+		return
+	}
+	effectiveMaxConns := p.maxConnsHardCap()
+	if ap.lastAcquire != nil && ap.lastAcquire.Account != nil {
+		effectiveMaxConns = p.effectiveMaxConnsByAccount(ap.lastAcquire.Account)
+	}
+	if ap.lastAcquire.Headers.Get(openAICookieWSGenerationHeader) != "" && effectiveMaxConns > 1 {
+		effectiveMaxConns--
+	}
+	target := p.targetConnCountLocked(ap, effectiveMaxConns)
+	current := len(ap.conns) + ap.creating
+	if current >= target {
+		return
+	}
+	need = target - current
+	if need <= 0 {
+		return
+	}
+	req = cloneOpenAIWSAcquireRequest(*ap.lastAcquire)
+	key := normalizeOpenAIWSHandshakeCompatibility(req.Account, req.Headers)
+	if key.cookieGeneration != "" {
+		if key.cookieProbe || key.cookieGeneration != ap.cookieGenerations[key.cookieSlot] {
+			return
+		}
+		remaining := openAIWSCookieSlotConnLimit - ap.cookieCreating[key.cookieSlot]
+		for _, conn := range ap.conns {
+			if conn != nil && conn.cookieGeneration() != "" && !conn.handshakeCompatibility.cookieProbe && conn.handshakeCompatibility.cookieSlot == key.cookieSlot {
+				remaining--
+			}
+		}
+		if remaining < need {
+			need = remaining
+		}
+		if need <= 0 {
+			return
+		}
+	}
+	generation = ap.generation
+	ap.prewarmActive = true
+	if cooldown := p.prewarmCooldown(); cooldown > 0 {
+		ap.prewarmUntil = now.Add(cooldown)
+	}
+	ap.creating += need
+	ap.adjustCookieCreatingLocked(key, need)
+	p.metrics.scaleUpTotal.Add(int64(need))
+
+	go p.prewarmConns(accountID, req, need, generation)
+}
+
+func (p *openAIWSConnPool) targetConnCountLocked(ap *openAIWSAccountPool, maxConns int) int {
+	if ap == nil {
+		return 0
+	}
+
+	if maxConns <= 0 {
+		return 0
+	}
+
+	minIdle := p.minIdlePerAccount()
+	if minIdle < 0 {
+		minIdle = 0
+	}
+	if minIdle > maxConns {
+		minIdle = maxConns
+	}
+
+	inflight, waiters := accountPoolLoadLocked(ap)
+	utilization := p.targetUtilization()
+	demand := inflight + waiters
+	if demand <= 0 {
+		return minIdle
+	}
+
+	target := 1
+	if demand > 1 {
+		target = int(math.Ceil(float64(demand) / utilization))
+	}
+	if waiters > 0 && target < len(ap.conns)+1 {
+		target = len(ap.conns) + 1
+	}
+	if target < minIdle {
+		target = minIdle
+	}
+	if target > maxConns {
+		target = maxConns
+	}
+	return target
+}
+
+func (p *openAIWSConnPool) prewarmConns(accountID int64, req openAIWSAcquireRequest, total int, generations ...uint64) {
+	key := normalizeOpenAIWSHandshakeCompatibility(req.Account, req.Headers)
+	if key.cookieGeneration != "" {
+		if ap, ok := p.getAccountPool(accountID); ok && ap != nil {
+			ap.mu.Lock()
+			ap.creating -= total
+			ap.adjustCookieCreatingLocked(key, -total)
+			ap.prewarmActive = false
+			ap.signalChangedLocked()
+			ap.mu.Unlock()
+		}
+		return
+	}
+	generation := uint64(0)
+	if len(generations) > 0 {
+		generation = generations[0]
+	}
+	staleTarget := false
+	defer func() {
+		if ap, ok := p.getAccountPool(accountID); ok && ap != nil {
+			ap.mu.Lock()
+			ap.prewarmActive = false
+			ap.signalChangedLocked()
+			ap.mu.Unlock()
+		}
+		if staleTarget {
+			// A newer acquire arrived while the old dial was in flight. Re-run
+			// target selection only after clearing prewarmActive so the latest
+			// beta/hint target can fill the idle budget.
+			p.ensureTargetIdleAsync(accountID)
+		}
+	}()
+
+	for i := 0; i < total; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), p.dialTimeout()+openAIWSConnPrewarmExtraDelay)
+		conn, err := p.dialConn(ctx, req)
+		cancel()
+
+		ap, ok := p.getAccountPool(accountID)
+		if !ok || ap == nil {
+			if conn != nil {
+				conn.close()
+			}
+			return
+		}
+		ap.mu.Lock()
+		if ap.creating > 0 {
+			ap.creating--
+		}
+		ap.adjustCookieCreatingLocked(key, -1)
+		if err != nil {
+			ap.prewarmFails++
+			ap.prewarmFailAt = time.Now()
+			ap.signalChangedLocked()
+			ap.mu.Unlock()
+			continue
+		}
+		_, retired := ap.retiredCookieGenerations[key.cookieGeneration]
+		if ap.generation != generation || ap.lastAcquire == nil || retired {
+			ap.mu.Unlock()
+			conn.close()
+			continue
+		}
+		if conn.cookieExpired(time.Now()) {
+			ap.mu.Unlock()
+			conn.close()
+			continue
+		}
+		if !sameOpenAIWSPrewarmTarget(req, *ap.lastAcquire) {
+			staleTarget = true
+			ap.signalChangedLocked()
+			ap.mu.Unlock()
+			conn.close()
+			continue
+		}
+		if p.cookieRequestAtCapacityLocked(ap, key, p.effectiveMaxConnsByAccount(req.Account)) {
+			ap.signalChangedLocked()
+			ap.mu.Unlock()
+			conn.close()
+			continue
+		}
+		ap.conns[conn.id] = conn
+		ap.prewarmFails = 0
+		ap.prewarmFailAt = time.Time{}
+		ap.signalChangedLocked()
+		ap.mu.Unlock()
+	}
+}
+
+// RotateCookieGeneration preserves the original slot-zero API.
+func (p *openAIWSConnPool) RotateCookieGeneration(accountID int64, generation string) {
+	p.RotateCookieSlot(accountID, 0, generation)
+}
+
+// RotateCookieSlot publishes an already-verified Cookie version. It
+// never interrupts a leased response, nor closes pinned continuations before
+// their original Cookie expires. The other slot and legacy pools are untouched.
+func (p *openAIWSConnPool) RotateCookieSlot(accountID int64, slot int, generation string) {
+	if p == nil || accountID <= 0 || slot < 0 || slot >= openAICookieWSSlotCount || strings.TrimSpace(generation) == "" {
+		return
+	}
+	ap := p.getOrCreateAccountPool(accountID)
+	ap.mu.Lock()
+	if ap.cookieGenerations[slot] == generation {
+		ap.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	if ap.retiredCookieGenerations == nil {
+		ap.retiredCookieGenerations = make(map[string]time.Time)
+	}
+	for old, expiry := range ap.retiredCookieGenerations {
+		if !now.Before(expiry) {
+			delete(ap.retiredCookieGenerations, old)
+		}
+	}
+	if ap.cookieGenerations[slot] != "" {
+		ap.retiredCookieGenerations[ap.cookieGenerations[slot]] = ap.cookieExpiresAts[slot]
+	}
+	ap.cookieGenerations[slot] = generation
+	ap.cookieExpiresAts[slot] = time.Time{}
+	// The retired-generation check invalidates delayed dials for this slot
+	// without cancelling healthy in-flight dials for the other slot.
+	if candidate := ap.candidateAcquires[slot]; candidate != nil && candidate.Headers.Get(openAICookieWSGenerationHeader) == generation {
+		ap.cookieExpiresAts[slot], _ = openAIWSCookieExpiry(candidate.Headers)
+		if candidate.Headers.Get(openAICookieWSProbeHeader) != "1" {
+			ap.lastAcquire = cloneOpenAIWSPersistentAcquireRequest(candidate)
+		}
+	}
+	if ap.lastAcquire != nil && ap.lastAcquire.Headers.Get(openAICookieWSGenerationHeader) != "" && openAIWSCookieSlot(ap.lastAcquire.Headers) == slot && ap.lastAcquire.Headers.Get(openAICookieWSGenerationHeader) != generation {
+		ap.lastAcquire = nil
+	}
+	ap.candidateAcquires[slot] = nil
+	ap.prewarmUntil = time.Time{}
+	var evicted []*openAIWSConn
+	for id, conn := range ap.conns {
+		if conn == nil || conn.cookieGeneration() == "" || conn.handshakeCompatibility.cookieSlot != slot {
+			continue
+		}
+		if conn.cookieGeneration() == generation {
+			ap.cookieExpiresAts[slot] = conn.cookieExpiresAt
+			continue
+		}
+		ap.retiredCookieGenerations[conn.cookieGeneration()] = conn.cookieExpiresAt
+		conn.cookieDraining.Store(true)
+		if !conn.isLeased() && conn.waiters.Load() == 0 && !p.isConnPinnedLocked(ap, id) {
+			delete(ap.conns, id)
+			evicted = append(evicted, conn)
+		}
+	}
+	ap.signalChangedLocked()
+	ap.mu.Unlock()
+	closeOpenAIWSConns(evicted)
+	p.ensureTargetIdleAsync(accountID)
+}
+
+// ClearAccount closes all pooled connections and discards delayed prewarm
+// state for one account. The generation guard prevents an in-flight prewarm
+// started before credential recovery from re-entering the pool afterwards.
+func (p *openAIWSConnPool) ClearAccount(accountID int64) {
+	if p == nil || accountID <= 0 {
+		return
+	}
+	ap, ok := p.getAccountPool(accountID)
+	if !ok || ap == nil {
+		return
+	}
+	ap.mu.Lock()
+	ap.generation++
+	conns := make([]*openAIWSConn, 0, len(ap.conns))
+	for id, conn := range ap.conns {
+		delete(ap.conns, id)
+		delete(ap.pinnedConns, id)
+		if conn != nil {
+			conns = append(conns, conn)
+		}
+	}
+	ap.lastAcquire = nil
+	ap.cookieGenerations = [openAICookieWSSlotCount]string{}
+	ap.cookieExpiresAts = [openAICookieWSSlotCount]time.Time{}
+	ap.retiredCookieGenerations = nil
+	ap.candidateAcquires = [openAICookieWSSlotCount]*openAIWSAcquireRequest{}
+	ap.prewarmUntil = time.Time{}
+	ap.prewarmFails = 0
+	ap.prewarmFailAt = time.Time{}
+	ap.signalChangedLocked()
+	ap.mu.Unlock()
+	closeOpenAIWSConns(conns)
+}
+
+// dropDeadConnLocked 在池锁内把已关闭或已判脏的连接移出账号池并释放容量，
+// 连接本身交给调用方在解锁后关闭。
+func (p *openAIWSConnPool) dropDeadConnLocked(ap *openAIWSAccountPool, conn *openAIWSConn, evicted *[]*openAIWSConn) bool {
+	if ap == nil || conn == nil || (!conn.isClosed() && !conn.isUnusable() && (!conn.cookieExpired(time.Now()) || conn.isLeased())) {
+		return false
+	}
+	if _, exists := ap.conns[conn.id]; !exists {
+		return false
+	}
+	delete(ap.conns, conn.id)
+	if len(ap.pinnedConns) > 0 {
+		delete(ap.pinnedConns, conn.id)
+	}
+	ap.signalChangedLocked()
+	*evicted = append(*evicted, conn)
+	return true
+}
+
+func (p *openAIWSConnPool) evictConn(accountID int64, connID string) {
+	if p == nil || accountID <= 0 || stringsTrim(connID) == "" {
+		return
+	}
+	var conn *openAIWSConn
+	ap, ok := p.getAccountPool(accountID)
+	if ok && ap != nil {
+		ap.mu.Lock()
+		if c, exists := ap.conns[connID]; exists {
+			conn = c
+			delete(ap.conns, connID)
+			if len(ap.pinnedConns) > 0 {
+				delete(ap.pinnedConns, connID)
+			}
+			ap.signalChangedLocked()
+		}
+		ap.mu.Unlock()
+	}
+	if conn != nil {
+		conn.close()
+	}
+}
+
+func (p *openAIWSConnPool) PinConn(accountID int64, connID string) bool {
+	if p == nil || accountID <= 0 {
+		return false
+	}
+	connID = stringsTrim(connID)
+	if connID == "" {
+		return false
+	}
+	ap, ok := p.getAccountPool(accountID)
+	if !ok || ap == nil {
+		return false
+	}
+	ap.mu.Lock()
+	defer ap.mu.Unlock()
+	if _, exists := ap.conns[connID]; !exists {
+		return false
+	}
+	if ap.pinnedConns == nil {
+		ap.pinnedConns = make(map[string]int)
+	}
+	ap.pinnedConns[connID]++
+	return true
+}
+
+func (p *openAIWSConnPool) UnpinConn(accountID int64, connID string) {
+	if p == nil || accountID <= 0 {
+		return
+	}
+	connID = stringsTrim(connID)
+	if connID == "" {
+		return
+	}
+	ap, ok := p.getAccountPool(accountID)
+	if !ok || ap == nil {
+		return
+	}
+	ap.mu.Lock()
+	if len(ap.pinnedConns) == 0 {
+		ap.mu.Unlock()
+		return
+	}
+	count := ap.pinnedConns[connID]
+	if count <= 1 {
+		delete(ap.pinnedConns, connID)
+		conn := ap.conns[connID]
+		remove := conn != nil && !conn.isLeased() && (conn.cookieDraining.Load() || conn.cookieExpired(time.Now()))
+		if remove {
+			delete(ap.conns, connID)
+		}
+		ap.signalChangedLocked()
+		ap.mu.Unlock()
+		if remove {
+			conn.close()
+		}
+		return
+	}
+	ap.pinnedConns[connID] = count - 1
+	ap.signalChangedLocked()
+	ap.mu.Unlock()
+}
+
+func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequest) (*openAIWSConn, error) {
+	return p.dialConnBeforeOpen(ctx, req, nil)
+}
+
+// beforeDial retires a reserved replacement only after the request-local dial
+// admission succeeds. Cookie and prewarm callers retain their existing path.
+func (p *openAIWSConnPool) dialConnBeforeOpen(ctx context.Context, req openAIWSAcquireRequest, beforeDial func(context.Context) error) (*openAIWSConn, error) {
+	if p == nil || p.clientDialer == nil {
+		return nil, errors.New("openai ws client dialer is nil")
+	}
+	if req.Headers.Get(openAICookieWSGenerationHeader) != "" && req.Headers.Get(openAICookieWSProbeHeader) != "1" {
+		p.cookieValidatorMu.RLock()
+		eligibility := p.cookieEligibility
+		p.cookieValidatorMu.RUnlock()
+		if eligibility != nil {
+			if err := eligibility(ctx, req.Account); err != nil {
+				return nil, err
+			}
+		}
+	}
+	headers := cloneHeader(req.Headers)
+	credentialOwner := req.Account
+	var err error
+	if req.HeadersFactory != nil {
+		headers, credentialOwner, err = req.HeadersFactory(ctx, headers)
+		if err != nil {
+			return nil, err
+		}
+	}
+	cookieExpiry, err := openAIWSCookieExpiry(req.Headers)
+	if err != nil {
+		return nil, err
+	}
+	// Cookie lifecycle and scope are local pool metadata, never upstream
+	// headers. Match case-insensitively to cover alternate header builders.
+	for name := range headers {
+		if strings.EqualFold(name, openAICookieWSGenerationHeader) || strings.EqualFold(name, openAICookieWSExpiresHeader) || strings.EqualFold(name, openAICookieWSScopeHeader) || strings.EqualFold(name, openAICookieWSSlotHeader) || strings.EqualFold(name, openAICookieWSProbeHeader) {
+			delete(headers, name)
+		}
+	}
+	var conn openAIWSClientConn
+	var status int
+	var handshakeHeaders http.Header
+	var edgeLease *openAIWSEdgeDialLease
+	if req.BeforeFreshDial != nil {
+		edgeLease, err = req.BeforeFreshDial(ctx, openAIWSFreshDialInfo{
+			Request: req, Headers: headers, Config: p.cfg, Dialer: p.clientDialer,
+		})
+		if err != nil {
+			edgeLease.Finish(err, time.Now())
+			return nil, err
+		}
+		if edgeLease != nil {
+			ctx = edgeLease.Context()
+		}
+	}
+	if req.BeforeFreshDial != nil {
+		if err := ctx.Err(); err != nil {
+			edgeLease.Finish(err, time.Now())
+			return nil, err
+		}
+	}
+	if beforeDial != nil {
+		if err := beforeDial(ctx); err != nil {
+			edgeLease.Finish(err, time.Now())
+			return nil, err
+		}
+	}
+	sentAuthorization := headers.Get("Authorization")
+	conn, status, handshakeHeaders, err = dialOpenAIWSForAccount(ctx, p.cfg, req, headers, p.clientDialer)
+	if status == http.StatusUnauthorized && req.onUnauthorized != nil {
+		req.onUnauthorized(credentialOwner, sentAuthorization)
+	}
+	if err != nil {
+		var handshakeErr *openAIWSHandshakeError
+		var responseBody []byte
+		if errors.As(err, &handshakeErr) && handshakeErr != nil {
+			responseBody = append([]byte(nil), handshakeErr.Body...)
+		}
+		dialErr := &openAIWSDialError{
+			StatusCode:      status,
+			ResponseHeaders: cloneHeader(handshakeHeaders),
+			ResponseBody:    responseBody,
+			Err:             err,
+		}
+		edgeLease.Finish(dialErr, time.Now())
+		return nil, dialErr
+	}
+	if conn == nil {
+		dialErr := &openAIWSDialError{
+			StatusCode:      status,
+			ResponseHeaders: cloneHeader(handshakeHeaders),
+			Err:             errors.New("openai ws dialer returned nil connection"),
+		}
+		edgeLease.Finish(dialErr, time.Now())
+		return nil, dialErr
+	}
+	edgeLease.Finish(nil, time.Now())
+	id := p.nextConnID(req.Account.ID)
+	pooledConn := newOpenAIWSConn(id, req.Account.ID, conn, handshakeHeaders)
+	accountID := req.Account.ID
+	evict := func() { p.evictConn(accountID, id) }
+	pooledConn.onPeerClosed.Store(&evict)
+	pooledConn.handshakeCompatibility = normalizeOpenAIWSHandshakeCompatibility(req.Account, req.Headers)
+	pooledConn.cookieScope = pooledConn.handshakeCompatibility.cookieScope
+	pooledConn.routingAffinity = normalizeOpenAIWSRoutingAffinity(req.Headers)
+	pooledConn.cookieExpiresAt = cookieExpiry
+	return pooledConn, nil
+}
+
+func (p *openAIWSConnPool) nextConnID(accountID int64) string {
+	seq := p.seq.Add(1)
+	buf := make([]byte, 0, 32)
+	buf = append(buf, "oa_ws_"...)
+	buf = strconv.AppendInt(buf, accountID, 10)
+	buf = append(buf, '_')
+	buf = strconv.AppendUint(buf, seq, 10)
+	return string(buf)
+}
+
+func (p *openAIWSConnPool) shouldHealthCheckConn(conn *openAIWSConn) bool {
+	if conn == nil || conn.cookieGeneration() != "" || !conn.supportsIdlePingWithoutReader() {
+		return false
+	}
+	// 有读循环的连接能即时感知上游关闭，半开探测已由后台巡检覆盖，借出前不再多付一个往返。
+	if conn.hasReaderLoop() {
+		return false
+	}
+	return conn.idleDuration(time.Now()) >= openAIWSConnHealthCheckIdle
+}
+
+func (p *openAIWSConnPool) maxConnsHardCap() int {
+	if p != nil && p.cfg != nil && p.cfg.Gateway.OpenAIWS.MaxConnsPerAccount > 0 {
+		return p.cfg.Gateway.OpenAIWS.MaxConnsPerAccount
+	}
+	return 8
+}
+
+func (p *openAIWSConnPool) dynamicMaxConnsEnabled() bool {
+	if p != nil && p.cfg != nil {
+		return p.cfg.Gateway.OpenAIWS.DynamicMaxConnsByAccountConcurrencyEnabled
+	}
+	return false
+}
+
+func (p *openAIWSConnPool) modeRouterV2Enabled() bool {
+	if p != nil && p.cfg != nil {
+		return p.cfg.Gateway.OpenAIWS.ModeRouterV2Enabled
+	}
+	return false
+}
+
+func (p *openAIWSConnPool) maxConnsFactorByAccount(account *Account) float64 {
+	if p == nil || p.cfg == nil || account == nil {
+		return 1.0
+	}
+	switch account.Type {
+	case AccountTypeOAuth:
+		if p.cfg.Gateway.OpenAIWS.OAuthMaxConnsFactor > 0 {
+			return p.cfg.Gateway.OpenAIWS.OAuthMaxConnsFactor
+		}
+	case AccountTypeAPIKey:
+		if p.cfg.Gateway.OpenAIWS.APIKeyMaxConnsFactor > 0 {
+			return p.cfg.Gateway.OpenAIWS.APIKeyMaxConnsFactor
+		}
+	}
+	return 1.0
+}
+
+func (p *openAIWSConnPool) effectiveMaxConnsByAccount(account *Account) int {
+	hardCap := p.maxConnsHardCap()
+	if hardCap <= 0 {
+		return 0
+	}
+	if p.modeRouterV2Enabled() && account != nil && account.Concurrency <= 0 {
+		return 0
+	}
+	if account == nil || !p.dynamicMaxConnsEnabled() {
+		return hardCap
+	}
+	if account.Concurrency <= 0 {
+		// 0/-1 等“无限制”并发场景下，仍由全局硬上限兜底。
+		return hardCap
+	}
+	factor := p.maxConnsFactorByAccount(account)
+	if factor <= 0 {
+		factor = 1.0
+	}
+	effective := int(math.Ceil(float64(account.Concurrency) * factor))
+	if effective < 1 {
+		effective = 1
+	}
+	if effective > hardCap {
+		effective = hardCap
+	}
+	return effective
+}
+
+func (p *openAIWSConnPool) minIdlePerAccount() int {
+	if p != nil && p.cfg != nil && p.cfg.Gateway.OpenAIWS.MinIdlePerAccount >= 0 {
+		return p.cfg.Gateway.OpenAIWS.MinIdlePerAccount
+	}
+	return 0
+}
+
+func (p *openAIWSConnPool) maxIdlePerAccount() int {
+	if p != nil && p.cfg != nil && p.cfg.Gateway.OpenAIWS.MaxIdlePerAccount >= 0 {
+		return p.cfg.Gateway.OpenAIWS.MaxIdlePerAccount
+	}
+	return 4
+}
+
+func (p *openAIWSConnPool) maxConnAge() time.Duration {
+	return openAIWSConnMaxAge
+}
+
+func (p *openAIWSConnPool) queueLimitPerConn() int {
+	if p != nil && p.cfg != nil && p.cfg.Gateway.OpenAIWS.QueueLimitPerConn > 0 {
+		return p.cfg.Gateway.OpenAIWS.QueueLimitPerConn
+	}
+	return 256
+}
+
+func (p *openAIWSConnPool) targetUtilization() float64 {
+	if p != nil && p.cfg != nil {
+		ratio := p.cfg.Gateway.OpenAIWS.PoolTargetUtilization
+		if ratio > 0 && ratio <= 1 {
+			return ratio
+		}
+	}
+	return 0.7
+}
+
+func (p *openAIWSConnPool) prewarmCooldown() time.Duration {
+	if p != nil && p.cfg != nil && p.cfg.Gateway.OpenAIWS.PrewarmCooldownMS > 0 {
+		return time.Duration(p.cfg.Gateway.OpenAIWS.PrewarmCooldownMS) * time.Millisecond
+	}
+	return 0
+}
+
+func (p *openAIWSConnPool) shouldSuppressPrewarmLocked(ap *openAIWSAccountPool, now time.Time) bool {
+	if ap == nil {
+		return true
+	}
+	if ap.prewarmFails <= 0 {
+		return false
+	}
+	if ap.prewarmFailAt.IsZero() {
+		ap.prewarmFails = 0
+		return false
+	}
+	if now.Sub(ap.prewarmFailAt) > openAIWSPrewarmFailureWindow {
+		ap.prewarmFails = 0
+		ap.prewarmFailAt = time.Time{}
+		return false
+	}
+	return ap.prewarmFails >= openAIWSPrewarmFailureSuppress
+}
+
+func (p *openAIWSConnPool) dialTimeout() time.Duration {
+	if p != nil && p.cfg != nil && p.cfg.Gateway.OpenAIWS.DialTimeoutSeconds > 0 {
+		return time.Duration(p.cfg.Gateway.OpenAIWS.DialTimeoutSeconds) * time.Second
+	}
+	return 10 * time.Second
+}
+
+func cloneOpenAIWSAcquireRequest(req openAIWSAcquireRequest) openAIWSAcquireRequest {
+	copied := req
+	copied.Headers = cloneHeader(req.Headers)
+	copied.WSURL = stringsTrim(req.WSURL)
+	copied.ProxyURL = stringsTrim(req.ProxyURL)
+	copied.PreferredConnID = stringsTrim(req.PreferredConnID)
+	return copied
+}
+
+func cloneOpenAIWSAcquireRequestPtr(req *openAIWSAcquireRequest) *openAIWSAcquireRequest {
+	if req == nil {
+		return nil
+	}
+	copied := cloneOpenAIWSAcquireRequest(*req)
+	return &copied
+}
+
+// Authentication factories remain refreshable during prewarm. A caller's
+// short backoff eligibility and identity must never be retained in pool state.
+func cloneOpenAIWSPersistentAcquireRequest(req *openAIWSAcquireRequest) *openAIWSAcquireRequest {
+	copied := cloneOpenAIWSAcquireRequestPtr(req)
+	if copied != nil {
+		copied.BeforeFreshDial = nil
+	}
+	return copied
+}
+
+func sameOpenAIWSPrewarmTarget(a, b openAIWSAcquireRequest) bool {
+	return stringsTrim(a.WSURL) == stringsTrim(b.WSURL) &&
+		stringsTrim(a.ProxyURL) == stringsTrim(b.ProxyURL) &&
+		normalizeOpenAIWSHandshakeCompatibility(a.Account, a.Headers) == normalizeOpenAIWSHandshakeCompatibility(b.Account, b.Headers)
+}
+
+func normalizeOpenAIWSBetaFeatures(headers http.Header) string {
+	features := make(map[string]struct{})
+	for name, values := range headers {
+		if !strings.EqualFold(strings.TrimSpace(name), "x-codex-beta-features") {
+			continue
+		}
+		for _, value := range values {
+			for _, feature := range strings.Split(value, ",") {
+				if feature = strings.TrimSpace(feature); feature != "" {
+					features[feature] = struct{}{}
+				}
+			}
+		}
+	}
+	if len(features) == 0 {
+		return ""
+	}
+	normalized := make([]string, 0, len(features))
+	for feature := range features {
+		normalized = append(normalized, feature)
+	}
+	sort.Strings(normalized)
+	return strings.Join(normalized, ",")
+}
+
+func normalizeOpenAIWSHandshakeCompatibility(account *Account, headers http.Header) openAIWSHandshakeCompatibilityKey {
+	key := openAIWSHandshakeCompatibilityKey{
+		oauthOwner:       openAIOAuthOwnerForAccount(account),
+		cookieGeneration: normalizeOpenAIWSStableIdentityHeader(headers, openAICookieWSGenerationHeader),
+		cookieScope:      normalizeOpenAIWSStableIdentityHeader(headers, openAICookieWSScopeHeader),
+		cookieSlot:       openAIWSCookieSlot(headers),
+		cookieProbe:      headers.Get(openAICookieWSProbeHeader) == "1",
+		betaFeatures:     normalizeOpenAIWSBetaFeatures(headers),
+	}
+	mode := activeCodexFingerprintMode(account)
+	if mode == codexFingerprintOff && key.cookieGeneration == "" {
+		return key
+	}
+	key.codexInstallationID = normalizeOpenAIWSStableIdentityHeader(headers, "x-codex-installation-id")
+	if mode == codexFingerprintDevice && key.cookieGeneration == "" {
+		return key
+	}
+	key.sessionIDHyphen = normalizeOpenAIWSStableIdentityHeader(headers, "session-id")
+	key.sessionIDUnderscore = normalizeOpenAIWSStableIdentityHeader(headers, "session_id")
+	key.threadID = normalizeOpenAIWSStableIdentityHeader(headers, "thread-id")
+	key.clientRequestID = normalizeOpenAIWSStableIdentityHeader(headers, "x-client-request-id")
+	key.codexWindowID = normalizeOpenAIWSStableIdentityHeader(headers, "x-codex-window-id")
+	return key
+}
+
+func openAIWSCookieExpiry(headers http.Header) (time.Time, error) {
+	if strings.TrimSpace(headers.Get(openAICookieWSGenerationHeader)) == "" {
+		return time.Time{}, nil
+	}
+	if slot := strings.TrimSpace(headers.Get(openAICookieWSSlotHeader)); slot != "" && slot != "0" && slot != "1" && slot != "2" {
+		return time.Time{}, errors.New("invalid openai ws cookie slot")
+	}
+	epoch, err := strconv.ParseInt(strings.TrimSpace(headers.Get(openAICookieWSExpiresHeader)), 10, 64)
+	if err != nil || epoch <= 0 {
+		return time.Time{}, errOpenAIWSCookieExpired
+	}
+	expires := time.Unix(epoch, 0)
+	if !time.Now().Before(expires) {
+		return time.Time{}, errOpenAIWSCookieExpired
+	}
+	return expires, nil
+}
+
+func openAIWSCookieSlot(headers http.Header) int {
+	slot, err := strconv.Atoi(strings.TrimSpace(headers.Get(openAICookieWSSlotHeader)))
+	if err == nil && slot >= 0 && slot < openAICookieWSSlotCount {
+		return slot
+	}
+	return 0
+}
+
+func activeCodexFingerprintMode(account *Account) codexFingerprintMode {
+	if account == nil || account.GetCodexFingerprintMode() == codexFingerprintOff {
+		return codexFingerprintOff
+	}
+	if _, ok := codexFingerprintSeed(account.Extra); !ok {
+		return codexFingerprintOff
+	}
+	return account.GetCodexFingerprintMode()
+}
+
+func normalizeOpenAIWSStableIdentityHeader(headers http.Header, name string) string {
+	if headers == nil {
+		return ""
+	}
+	return strings.TrimSpace(headers.Get(name))
+}
+
+func normalizeOpenAIWSRoutingAffinity(headers http.Header) string {
+	canonicalName := http.CanonicalHeaderKey(openAICodexRoutingHintHeader)
+	if values, ok := headers[canonicalName]; ok {
+		for _, value := range values {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
+			}
+		}
+	}
+
+	variantNames := make([]string, 0)
+	for name := range headers {
+		if name != canonicalName && strings.EqualFold(strings.TrimSpace(name), openAICodexRoutingHintHeader) {
+			variantNames = append(variantNames, name)
+		}
+	}
+	sort.Strings(variantNames)
+	for _, name := range variantNames {
+		for _, value := range headers[name] {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func cloneHeader(src http.Header) http.Header {
+	if src == nil {
+		return nil
+	}
+	dst := make(http.Header, len(src))
+	for k, vals := range src {
+		if len(vals) == 0 {
+			dst[k] = nil
+			continue
+		}
+		copied := make([]string, len(vals))
+		copy(copied, vals)
+		dst[k] = copied
+	}
+	return dst
+}
+
+func closeOpenAIWSConns(conns []*openAIWSConn) {
+	if len(conns) == 0 {
+		return
+	}
+	for _, conn := range conns {
+		if conn == nil {
+			continue
+		}
+		conn.close()
+	}
+}
+
+func stringsTrim(value string) string {
+	return strings.TrimSpace(value)
+}

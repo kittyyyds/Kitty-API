@@ -1,0 +1,278 @@
+package repository
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
+	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/stretchr/testify/require"
+)
+
+func TestBuildContentModerationLogWhere_LegacyBlockedNormalizesToViolationBlocks(t *testing.T) {
+	where, args := buildContentModerationLogWhere(service.ContentModerationLogFilter{Result: "blocked"})
+
+	require.Empty(t, args)
+	sql := strings.Join(where, " AND ")
+	require.Contains(t, sql, "l.flagged = TRUE")
+	require.Contains(t, sql, "l.action IN ('block', 'keyword_block', 'hash_block', 'second_layer_block', 'cache_block')")
+	require.NotContains(t, sql, "restricted_block")
+	require.NotContains(t, sql, "cyber_policy")
+}
+
+func TestBuildContentModerationLogWhere_AuditRecordViews(t *testing.T) {
+	tests := []struct {
+		name       string
+		result     string
+		contains   string
+		notContain string
+	}{
+		{
+			name:     "cyber policy",
+			result:   service.ContentModerationLogResultCyberPolicy,
+			contains: "l.action = 'cyber_policy'",
+		},
+		{
+			name:       "violation blocked",
+			result:     service.ContentModerationLogResultViolationBlocked,
+			contains:   "l.flagged = TRUE AND l.action IN ('block', 'keyword_block', 'hash_block', 'second_layer_block', 'cache_block')",
+			notContain: "restricted_block",
+		},
+		{
+			name:     "restricted",
+			result:   service.ContentModerationLogResultRestricted,
+			contains: "l.action = 'restricted_block'",
+		},
+		{
+			name:     "risky shadow",
+			result:   service.ContentModerationLogResultRiskyShadow,
+			contains: "l.action IN ('first_layer_shadow', 'second_layer_shadow', 'whitelist_shadow') AND COALESCE(BTRIM(l.highest_category), '') <> ''",
+		},
+		{
+			name:     "review unavailable",
+			result:   service.ContentModerationLogResultReviewFailure,
+			contains: "l.action IN ('review_unavailable', 'degraded_allow')",
+		},
+		{
+			name:     "evidence capacity exceeded",
+			result:   service.ContentModerationLogResultEvidenceCapacityExceeded,
+			contains: "l.action = 'evidence_capacity_exceeded'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			where, args := buildContentModerationLogWhere(service.ContentModerationLogFilter{Result: tt.result})
+
+			require.Empty(t, args)
+			sql := strings.Join(where, " AND ")
+			require.Contains(t, sql, tt.contains)
+			if tt.notContain != "" {
+				require.NotContains(t, sql, tt.notContain)
+			}
+		})
+	}
+}
+
+func TestContentModerationRepositoryCountFlaggedByUserSince_ExcludesReplayBlocks(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	repo := NewContentModerationRepository(db)
+	since := time.Now().Add(-time.Hour)
+	mock.ExpectQuery(regexp.QuoteMeta("AND action NOT IN ('hash_block', 'cache_block')")).
+		WithArgs(int64(1001), since, false, "").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	count, err := repo.CountFlaggedByUserSince(context.Background(), 1001, since, false)
+
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestContentModerationRepositoryCleanupExpiredLogs_ExpiresArchivePayloadsButRetainsSummaries(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	repo := NewContentModerationRepository(db)
+	hitBefore := time.Now().Add(-180 * 24 * time.Hour)
+	nonHitBefore := time.Now().Add(-3 * 24 * time.Hour)
+	mock.ExpectQuery(`(?s)WITH candidates AS .*archive_status = 'available'.*action = 'cache_block'.*SELECT COUNT\(\*\) FROM expired`).
+		WithArgs(nonHitBefore, hitBefore).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+	mock.ExpectQuery(`(?s)WITH candidates AS .*archive_status = 'available'.*action = 'cache_block'.*SELECT COUNT\(\*\) FROM expired`).
+		WithArgs(nonHitBefore, hitBefore).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec(regexp.QuoteMeta(`
+DELETE FROM content_moderation_logs
+WHERE flagged = TRUE
+  AND created_at < $1
+  AND archive_status = 'none'
+  AND archive_incomplete = FALSE
+  AND action NOT IN ('block', 'keyword_block', 'second_layer_block', 'cache_block', 'cyber_policy')
+`)).WithArgs(hitBefore).WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectExec(regexp.QuoteMeta(`
+DELETE FROM content_moderation_logs
+WHERE flagged = FALSE AND created_at < $1
+  AND action <> 'restricted_block'
+`)).WithArgs(nonHitBefore).WillReturnResult(sqlmock.NewResult(0, 4))
+
+	result, err := repo.CleanupExpiredLogs(context.Background(), hitBefore, nonHitBefore)
+
+	require.NoError(t, err)
+	require.Equal(t, int64(2), result.DeletedArchives)
+	require.Equal(t, int64(3), result.DeletedHit)
+	require.Equal(t, int64(4), result.DeletedNonHit)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestContentModerationDeepSeekConfidencePreservesDatabaseNullInAPI(t *testing.T) {
+	tests := []struct {
+		name          string
+		scanned       sql.NullFloat64
+		wantScore     float64
+		wantJSONValue *float64
+	}{
+		{name: "historical null"},
+		{name: "reviewed score", scanned: sql.NullFloat64{Float64: 0.91, Valid: true}, wantScore: 0.91, wantJSONValue: float64Ptr(0.91)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := service.ContentModerationLog{DeepSeekConfidence: 0.42, DeepSeekConfidenceValue: float64Ptr(0.42)}
+			setContentModerationDeepSeekConfidence(&item, tt.scanned)
+
+			require.Equal(t, tt.wantScore, item.DeepSeekConfidence)
+			if tt.wantJSONValue == nil {
+				require.Nil(t, item.DeepSeekConfidenceValue)
+			} else {
+				require.NotNil(t, item.DeepSeekConfidenceValue)
+				require.InDelta(t, *tt.wantJSONValue, *item.DeepSeekConfidenceValue, 0.00001)
+			}
+
+			raw, err := json.Marshal(item)
+			require.NoError(t, err)
+			var payload map[string]any
+			require.NoError(t, json.Unmarshal(raw, &payload))
+			jsonValue, present := payload["deepseek_confidence"]
+			require.True(t, present)
+			if tt.wantJSONValue == nil {
+				require.Nil(t, jsonValue)
+			} else {
+				require.InDelta(t, *tt.wantJSONValue, jsonValue, 0.00001)
+			}
+		})
+	}
+}
+
+func TestContentModerationDeepSeekConfidenceInsertValuePreservesAbsence(t *testing.T) {
+	require.Nil(t, contentModerationDeepSeekConfidenceValue(&service.ContentModerationLog{}))
+	require.Nil(t, contentModerationDeepSeekConfidenceValue(&service.ContentModerationLog{ReviewOutcome: "unavailable"}))
+	require.Equal(t, 0.0, contentModerationDeepSeekConfidenceValue(&service.ContentModerationLog{ReviewOutcome: "safe"}))
+	require.Equal(t, 0.0, contentModerationDeepSeekConfidenceValue(&service.ContentModerationLog{DeepSeekCategory: "safe"}))
+	require.Equal(t, 0.91, contentModerationDeepSeekConfidenceValue(&service.ContentModerationLog{DeepSeekConfidence: 0.91}))
+}
+
+func float64Ptr(value float64) *float64 {
+	return &value
+}
+
+func TestContentModerationRepositoryCountFlaggedByUserSince_ExcludesCyberPolicyWhenRequested(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	repo := NewContentModerationRepository(db)
+	since := time.Now().Add(-time.Hour)
+	mock.ExpectQuery(regexp.QuoteMeta("AND ($3::bool IS FALSE OR action <> 'cyber_policy')")).
+		WithArgs(int64(1001), since, true, "").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
+
+	count, err := repo.CountFlaggedByUserSince(context.Background(), 1001, since, true)
+
+	require.NoError(t, err)
+	require.Equal(t, 3, count)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestContentModerationRepositoryClaimLogEmailDeliveryWinsOnlyOnce(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	repo, ok := NewContentModerationRepository(db).(service.ContentModerationEmailDeliveryRepository)
+	require.True(t, ok)
+
+	mock.ExpectExec(regexp.QuoteMeta("WHERE id = $1 AND email_delivery_claimed_at IS NULL")).
+		WithArgs(int64(77)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	claim, err := repo.ClaimLogEmailDelivery(context.Background(), 77)
+	require.NoError(t, err)
+	require.Equal(t, service.ContentModerationEmailDeliveryClaim{Exists: true, Claimed: true, Status: "claimed"}, claim)
+
+	mock.ExpectExec(regexp.QuoteMeta("WHERE id = $1 AND email_delivery_claimed_at IS NULL")).
+		WithArgs(int64(77)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT email_delivery_status FROM content_moderation_logs WHERE id = $1")).
+		WithArgs(int64(77)).
+		WillReturnRows(sqlmock.NewRows([]string{"email_delivery_status"}).AddRow("claimed"))
+	claim, err = repo.ClaimLogEmailDelivery(context.Background(), 77)
+	require.NoError(t, err)
+	require.Equal(t, service.ContentModerationEmailDeliveryClaim{Exists: true, Status: "claimed"}, claim)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestContentModerationRepositoryEmailCompletionRequiresClaim(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	repo, ok := NewContentModerationRepository(db).(service.ContentModerationEmailDeliveryRepository)
+	require.True(t, ok)
+
+	mock.ExpectExec(regexp.QuoteMeta("WHERE archive_id = $1::uuid AND email_delivery_claimed_at IS NOT NULL")).
+		WithArgs("b411db6f-39c3-4ff7-acfb-ecb860d6a68b", "sent", true).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	require.NoError(t, repo.CompleteLogEmailDeliveryByArchiveID(context.Background(), "b411db6f-39c3-4ff7-acfb-ecb860d6a68b", true))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestContentModerationRepositoryReferencedArchiveKeyIDsIncludesDeepSeekCredentialEnvelopes(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	repo, ok := NewContentModerationRepository(db).(service.ContentModerationArchiveRepository)
+	require.True(t, ok)
+
+	mock.ExpectQuery(`(?s)WITH referenced_keys AS .*jsonb_path_query.*api_key_envelope.key_id.*SELECT DISTINCT key_id`).
+		WithArgs(service.SettingKeyContentModerationConfig).
+		WillReturnRows(sqlmock.NewRows([]string{"key_id"}).
+			AddRow("archive-key-2026-01").
+			AddRow("credential-key-2026-02"))
+
+	keyIDs, err := repo.ReferencedArchiveKeyIDs(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"archive-key-2026-01", "credential-key-2026-02"}, keyIDs)
+}
+
+func TestContentModerationRepositoryCountFlaggedByUserSince_ExcludesCyberLogOnly(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	repo := NewContentModerationRepository(db)
+	since := time.Now().Add(-time.Hour)
+	mock.ExpectQuery(regexp.QuoteMeta("AND mode <> 'cyber_log_only'\n  AND mode <> 'risk_control_log_only'")).
+		WithArgs(int64(12), since, false, "").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	count, err := repo.CountFlaggedByUserSince(context.Background(), 12, since, false)
+	require.NoError(t, err)
+	require.Zero(t, count)
+	require.NoError(t, mock.ExpectationsWereMet())
+}

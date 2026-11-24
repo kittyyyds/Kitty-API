@@ -1,0 +1,166 @@
+package service
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+)
+
+func openAIResponsesInputItemIDPrefix(itemType string) (string, bool) {
+	switch strings.TrimSpace(itemType) {
+	case "message":
+		return "msg", true
+	case "reasoning":
+		return "rs", true
+	case "web_search_call":
+		return "ws", true
+	case "custom_tool_call":
+		return openAIResponsesToolCallIDPrefix(itemType), true
+	case "tool_search_call":
+		return openAIResponsesToolCallIDPrefix(itemType), true
+	case "custom_tool_call_output":
+		// Although custom calls use ctc IDs, OpenAI validates replayed custom
+		// call output item IDs against the generic fc namespace.
+		return "fc", true
+	default:
+		if isCodexToolCallInputType(itemType) {
+			return openAIResponsesToolCallIDPrefix(itemType), true
+		}
+		return "", false
+	}
+}
+
+func openAIResponsesToolCallIDPrefix(itemType string) string {
+	switch strings.TrimSpace(itemType) {
+	case "custom_tool_call", "custom_tool_call_output":
+		return "ctc"
+	case "tool_search_call", "tool_search_output":
+		return "tsc"
+	default:
+		return "fc"
+	}
+}
+
+// Invalid replayed IDs are removed rather than rewritten because a fabricated
+// ID may point at a different upstream object.
+func shouldStripOpenAIResponsesInputItemID(itemType, id string) bool {
+	// ctco_* is Codex's custom-tool output namespace. "ctc" is a string prefix
+	// of "ctco_", so a plain HasPrefix(id, "ctc") check treats it as a valid
+	// custom_tool_call id and lets it through. Upstream validates the fc
+	// namespace instead and rejects the replay:
+	// Invalid 'input[N].id': 'ctco_...'. Expected an ID that begins with 'fc'.
+	// fco_* stays: it really does begin with "fc", which is the check upstream uses.
+	if strings.HasPrefix(id, "ctco_") {
+		return true
+	}
+	prefix, constrained := openAIResponsesInputItemIDPrefix(itemType)
+	if !constrained {
+		return false
+	}
+	return id == "" || len(id) > 64 || !strings.HasPrefix(id, prefix)
+}
+
+func shouldStripOpenAIResponsesNonPairCallID(itemType string) bool {
+	switch strings.TrimSpace(itemType) {
+	case "message", "reasoning", "image_generation_call":
+		return true
+	default:
+		return false
+	}
+}
+
+func sanitizeOpenAIResponsesInputItemIDs(body []byte) ([]byte, bool, error) {
+	return sanitizeOpenAIResponsesInputItemIDsForAccount(body, nil)
+}
+
+// The Codex backend uses the client's prefix_suffix identity contract. Native
+// API-key relays also preserve each output ID in a Codex exec notification chain.
+func sanitizeOpenAIResponsesInputItemIDsForAccount(body []byte, account *Account) ([]byte, bool, error) {
+	codexNative := isCodexOAuthAccount(account)
+	input := parseRawJSONView(body).Get("input")
+	if !input.IsArray() {
+		return body, false, nil
+	}
+
+	type inputItem struct {
+		raw         string
+		stripID     bool
+		stripCallID bool
+		drop        bool
+	}
+
+	items := make([]inputItem, 0)
+	var notificationIDs map[string]bool
+	checkedNotificationIDs := false
+	input.ForEach(func(_, item gjson.Result) bool {
+		parsed := inputItem{raw: item.Raw}
+		if item.IsObject() {
+			itemType := item.Get("type")
+			id := item.Get("id")
+			trimmedItemType := strings.TrimSpace(itemType.String())
+			parsed.stripCallID = item.Get("call_id").Exists() && shouldStripOpenAIResponsesNonPairCallID(trimmedItemType)
+			if id.Type == gjson.String {
+				completeReasoning := trimmedItemType == "reasoning" && keepOpenAIReasoningReplayID(id.String(), item.Get("encrypted_content").Value(), item.Get("status").Value())
+				parsed.stripID = !completeReasoning && shouldStripOpenAIResponsesInputItemID(trimmedItemType, id.String())
+				if codexNative {
+					parsed.stripID = !hasNativeCodexInputItemID(id.String())
+				} else if parsed.stripID && account != nil && account.IsOpenAIApiKey() &&
+					trimmedItemType == "custom_tool_call_output" && strings.HasPrefix(id.Str, "ctco_") && len(id.Str) > len("ctco_") {
+					// Each notification has its own item identity while sharing
+					// a call_id. A native Responses relay needs both to resume.
+					if !checkedNotificationIDs {
+						notificationIDs = codexExecNotificationIDs(input)
+						checkedNotificationIDs = true
+					}
+					parsed.stripID = !notificationIDs[item.Get("call_id").Str]
+				}
+			}
+			// A reference with no usable id cannot point at an upstream item.
+			if trimmedItemType == "item_reference" && parsed.stripID {
+				parsed.drop = true
+			}
+		}
+		items = append(items, parsed)
+		return true
+	})
+	hasSanitization := false
+	for _, item := range items {
+		if item.drop || item.stripID || item.stripCallID {
+			hasSanitization = true
+			break
+		}
+	}
+	if !hasSanitization {
+		return body, false, nil
+	}
+
+	rebuiltItems := make([]string, 0, len(items))
+	for index, item := range items {
+		if item.drop {
+			continue
+		}
+		if !item.stripID && !item.stripCallID {
+			rebuiltItems = append(rebuiltItems, item.raw)
+			continue
+		}
+		itemBody := []byte(item.raw)
+		if item.stripID {
+			var err error
+			itemBody, err = sjson.DeleteBytes(itemBody, "id")
+			if err != nil {
+				return nil, false, fmt.Errorf("delete input.%d.id: %w", index, err)
+			}
+		}
+		if item.stripCallID {
+			var err error
+			itemBody, err = sjson.DeleteBytes(itemBody, "call_id")
+			if err != nil {
+				return nil, false, fmt.Errorf("delete input.%d.call_id: %w", index, err)
+			}
+		}
+		rebuiltItems = append(rebuiltItems, string(itemBody))
+	}
+	return replaceOpenAIRawInput(body, input, rebuiltItems), true, nil
+}

@@ -1,0 +1,217 @@
+package service
+
+import (
+	"regexp"
+	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+)
+
+// Match GPT text model IDs as they appear on the wire. An alias may
+// grant access only after routing resolves it to the actual upstream model.
+var gptChatModelID = regexp.MustCompile(`^gpt-[1-9][0-9]*(\.[0-9]+)*o?(-[a-z0-9]+)*$`)
+
+func isCanonicalGPTChatModel(model string) bool {
+	if len(model) > 256 || !strings.HasPrefix(model, "gpt-") || !isOfficialOpenAICodexCatalogModel(model) {
+		return false
+	}
+	if gptChatModelID.MatchString(model) {
+		return true
+	}
+	// The pinned OpenAI catalog also contains named GPT models such as
+	// Daybreak. Lookup accepts aliases, so require the actual published slug.
+	entry, ok := openai.CodexCatalogModelForSlug(model)
+	return ok && entry.Slug == model
+}
+
+func lastOpenAIModelSegment(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ""
+	}
+	if strings.Contains(model, "/") {
+		parts := strings.Split(model, "/")
+		model = parts[len(parts)-1]
+	}
+	return strings.TrimSpace(model)
+}
+
+func canonicalizeOpenAIModelAliasSpelling(model string) string {
+	return openai.CanonicalizeOpenAIModelAliasSpelling(model)
+}
+
+func normalizeKnownOpenAICodexModel(model string) string {
+	normalized := canonicalizeOpenAIModelAliasSpelling(model)
+	if normalized == "" {
+		return ""
+	}
+	// Preserve the retired identity so broad Codex aliases cannot revive it.
+	if openai.IsRetiredSparkModel(normalized) {
+		return normalized
+	}
+
+	// Compact aliases use the same exact base/effort rules below. If the base
+	// is unknown, return no match so the caller preserves the complete name.
+	normalized = strings.TrimSuffix(normalized, "-openai-compact")
+	if mapped := getNormalizedCodexModel(normalized); mapped != "" {
+		return mapped
+	}
+	if openai.IsGPT62AstraModelSpelling(normalized) {
+		return "gpt-6.2-astra"
+	}
+	if openai.IsGPT62SolModelSpelling(normalized) {
+		return "gpt-6.2-sol"
+	}
+
+	if openai.IsGPT61TerraModelSpelling(normalized) {
+		return "gpt-6.1-terra"
+	}
+	if openai.IsGPT61SolModelSpelling(normalized) {
+		return "gpt-6.1-sol"
+	}
+	if openai.IsGPT6SolOrLunaModelSpelling(normalized) {
+		if strings.HasPrefix(normalized, "gpt-6-sol") {
+			return "gpt-6-sol"
+		}
+		return "gpt-6-luna"
+	}
+
+	switch normalized {
+	case "gpt-6", "gpt-6-astra":
+		return "gpt-6-astra"
+	case "gpt-5.6":
+		return "gpt-5.6-sol"
+	}
+	// A family substring is not a model identity. In particular, the old
+	// catch-all gpt-5 match silently routed gpt-5.6sol and future/custom models
+	// to gpt-5.4. Only known family/suffix combinations may change the target.
+	for _, family := range codexVersionModelPrefixes {
+		if normalized == family.prefix {
+			return family.target
+		}
+		if suffix, ok := strings.CutPrefix(normalized, family.prefix+"-"); ok &&
+			(suffix == "max" || isKnownCodexModelSuffix(suffix)) {
+			return family.target
+		}
+	}
+	if suffix, ok := strings.CutPrefix(normalized, "gpt-5.6-"); ok &&
+		(suffix == "max" || isKnownCodexModelSuffix(suffix)) {
+		return "gpt-5.6-sol"
+	}
+	// Retain documented legacy aliases, but never infer a replacement for an
+	// unknown family. The caller preserves that model for explicit routing or
+	// an authoritative upstream model error.
+	for _, family := range []string{"gpt-5.3", "gpt-5.1", "gpt-5"} {
+		if suffix, ok := strings.CutPrefix(normalized, family+"-"); ok && isKnownCodexModelSuffix(suffix) {
+			return codexModelMap[family]
+		}
+	}
+	return ""
+}
+
+// isOpenAIGPT56Model 判断是否 GPT-5.6 系列模型；入参可为原始模型名
+// （含大小写/路径/后缀变体）或已归一化的基名，两者均能正确识别。
+func isOpenAIGPT56Model(model string) bool {
+	normalized := canonicalizeOpenAIModelAliasSpelling(model)
+	if normalized == "gpt-5.6" {
+		return true
+	}
+	if suffix, ok := strings.CutPrefix(normalized, "gpt-5.6-"); ok && (suffix == "max" || isKnownCodexModelSuffix(suffix)) {
+		return true
+	}
+	for _, prefix := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		if normalized == prefix || strings.HasPrefix(normalized, prefix+"-") {
+			return true
+		}
+	}
+	return false
+}
+
+// isOpenAIGPT6AstraModel reports GPT-6 Astra and dated/provider-prefixed variants.
+// The public "gpt-6" alias routes to Astra; unrelated GPT-6 families stay excluded.
+func isOpenAIGPT6AstraModel(model string) bool {
+	normalized := canonicalizeOpenAIModelAliasSpelling(model)
+	return normalized == "gpt-6" || normalized == "gpt-6-astra" || strings.HasPrefix(normalized, "gpt-6-astra-")
+}
+
+// isOpenAIGPT56LunaModel reports GPT-5.6 Luna and dated/effort-suffixed variants.
+func isOpenAIGPT56LunaModel(model string) bool {
+	normalized := canonicalizeOpenAIModelAliasSpelling(model)
+	return normalized == "gpt-5.6-luna" || strings.HasPrefix(normalized, "gpt-5.6-luna-")
+}
+
+// isOpenAIGPT6LunaModel reports GPT-6 Luna and dated/effort-suffixed variants.
+// Compact spellings such as gpt6luna are accepted. gpt-6-lunatic is not.
+func isOpenAIGPT6LunaModel(model string) bool {
+	normalized := canonicalizeOpenAIModelAliasSpelling(model)
+	if normalized == "" {
+		normalized = strings.ToLower(strings.TrimSpace(lastOpenAIModelSegment(model)))
+		normalized = strings.ReplaceAll(normalized, "_", "-")
+		normalized = strings.Join(strings.Fields(normalized), "-")
+		for strings.Contains(normalized, "--") {
+			normalized = strings.ReplaceAll(normalized, "--", "-")
+		}
+	}
+	if strings.HasPrefix(normalized, "gpt6") {
+		normalized = "gpt-6" + strings.TrimPrefix(normalized, "gpt6")
+	}
+	if strings.HasPrefix(normalized, "gpt-6luna") {
+		normalized = "gpt-6-luna" + strings.TrimPrefix(normalized, "gpt-6luna")
+	}
+	return normalized == "gpt-6-luna" || strings.HasPrefix(normalized, "gpt-6-luna-")
+}
+
+// isLunaBilledAsGPT56Model is true when the request uses the GPT-5.6 Luna price card.
+func isLunaBilledAsGPT56Model(model string) bool {
+	return isOpenAIGPT56LunaModel(model) || isOpenAIGPT6LunaModel(model)
+}
+
+func appendUsageBillingModelCandidate(candidates []string, seen map[string]struct{}, model string) []string {
+	trimmed := strings.TrimSpace(model)
+	if trimmed == "" {
+		return candidates
+	}
+	add := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return
+		}
+		key := strings.ToLower(candidate)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		candidates = append(candidates, candidate)
+	}
+
+	add(trimmed)
+	if canonical := canonicalizeOpenAIModelAliasSpelling(trimmed); canonical != "" {
+		add(canonical)
+	}
+	if normalized := normalizeKnownOpenAICodexModel(trimmed); normalized != "" {
+		add(normalized)
+	}
+	return candidates
+}
+
+func usageBillingModelCandidates(primary string, alternates ...string) []string {
+	seen := make(map[string]struct{}, 1+len(alternates))
+	candidates := appendUsageBillingModelCandidate(nil, seen, primary)
+	for _, alternate := range alternates {
+		candidates = appendUsageBillingModelCandidate(candidates, seen, alternate)
+	}
+	return candidates
+}
+
+func firstUsageBillingModel(candidates []string) string {
+	for _, candidate := range candidates {
+		if trimmed := strings.TrimSpace(candidate); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func isOpenAIGPT6Model(model string) bool {
+	return openai.IsGPT62ModelSpelling(model) || openai.IsGPT61TerraModelSpelling(model) || isOpenAIGPT6AstraModel(model) || openai.IsGPT6SolOrLunaModelSpelling(model) || openai.IsGPT61SolModelSpelling(model)
+}

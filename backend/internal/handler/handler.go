@@ -1,0 +1,75 @@
+package handler
+
+import "github.com/Wei-Shaw/sub2api/internal/handler/admin"
+
+// AdminHandlers contains all admin-related HTTP handlers
+type AdminHandlers struct {
+	Dashboard              *admin.DashboardHandler
+	User                   *admin.UserHandler
+	Group                  *admin.GroupHandler
+	Account                *admin.AccountHandler
+	IntelligentTest        *admin.IntelligentTestHandler
+	SecurityPolicy         *admin.SecurityPolicyHandler
+	AccountHealth          *admin.AccountHealthHandler
+	Announcement           *admin.AnnouncementHandler
+	DataManagement         *admin.DataManagementHandler
+	Backup                 *admin.BackupHandler
+	OAuth                  *admin.OAuthHandler
+	OpenAIOAuth            *admin.OpenAIOAuthHandler
+	GrokOAuth              *admin.GrokOAuthHandler
+	CNProvider             *admin.CNProviderHandler
+	Proxy                  *admin.ProxyHandler
+	Redeem                 *admin.RedeemHandler
+	Setting                *admin.SettingHandler
+	Ops                    *admin.OpsHandler
+	System                 *admin.SystemHandler
+	Subscription           *admin.SubscriptionHandler
+	Usage                  *admin.UsageHandler
+	UserAttribute          *admin.UserAttributeHandler
+	ErrorPassthrough       *admin.ErrorPassthroughHandler
+	TLSFingerprintProfile  *admin.TLSFingerprintProfileHandler
+	Plugin                 *admin.PluginHandler
+	APIKey                 *admin.AdminAPIKeyHandler
+	Channel                *admin.ChannelHandler
+	ChannelMonitor         *admin.ChannelMonitorHandler
+	ChannelMonitorTemplate *admin.ChannelMonitorRequestTemplateHandler
+	ContentModeration      *admin.ContentModerationHandler
+	UsagePolicy            *admin.UsagePolicyHandler
+	Payment                *admin.PaymentHandler
+	Affiliate              *admin.AffiliateHandler
+	Compliance             *admin.ComplianceHandler
+	AuditLog               *admin.AuditLogHandler
+}
+
+// Handlers contains all HTTP handlers
+type Handlers struct {
+	KeyPouchImport   *KeyPouchImportHandler
+	Auth             *AuthHandler
+	User             *UserHandler
+	APIKey           *APIKeyHandler
+	Usage            *UsageHandler
+	Redeem           *RedeemHandler
+	Subscription     *SubscriptionHandler
+	Announcement     *AnnouncementHandler
+	ChannelMonitor   *ChannelMonitorUserHandler
+	ChannelMonitorV2 *ChannelMonitorV2Handler
+	Admin            *AdminHandlers
+	Gateway          *GatewayHandler
+	OpenAIGateway    *OpenAIGatewayHandler
+	Setting          *SettingHandler
+	Totp             *TotpHandler
+	Passkey          *PasskeyHandler
+	Payment          *PaymentHandler
+	PaymentWebhook   *PaymentWebhookHandler
+	AvailableChannel *AvailableChannelHandler
+	ModelPlaza       *ModelPlazaHandler
+	AsyncImage       *AsyncImageHandler
+}
+
+// BuildInfo contains build-time information
+type BuildInfo struct {
+	Version    string
+	Commit     string
+	BuildType  string // "source" for manual builds, "release" for CI builds
+	ReleaseURL string // release page for the current custom build
+}
