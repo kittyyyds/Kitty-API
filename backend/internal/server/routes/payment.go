@@ -48,6 +48,15 @@ func RegisterPaymentRoutes(
 		authenticated.GET("/plans", paymentHandler.GetPlans)
 		authenticated.GET("/limits", paymentHandler.GetLimits)
 
+		invoices := authenticated.Group("/invoices")
+		{
+			invoices.GET("/config", paymentHandler.GetInvoiceConfig)
+			invoices.GET("/orders", paymentHandler.ListInvoiceOrders)
+			invoices.GET("", paymentHandler.ListInvoiceRequests)
+			invoices.POST("", paymentHandler.CreateInvoiceRequest)
+			invoices.GET("/:id/pdf", paymentHandler.DownloadInvoicePDF)
+		}
+
 		orders := authenticated.Group("/orders")
 		{
 			orders.POST("", paymentHandler.CreateOrder)
@@ -86,6 +95,8 @@ func RegisterPaymentRoutes(
 		webhook.POST("/wxpay", webhookHandler.WxpayNotify)
 		webhook.POST("/stripe", webhookHandler.StripeWebhook)
 		webhook.POST("/airwallex", webhookHandler.AirwallexWebhook)
+		webhook.POST("/dujiaopay", webhookHandler.DujiaoPayWebhook)
+		webhook.POST("/paypal", webhookHandler.PayPalWebhook)
 	}
 
 	// --- Admin payment endpoints (admin auth) ---
@@ -114,6 +125,16 @@ func RegisterPaymentRoutes(
 		}
 
 		// Subscription Plans
+		invoices := adminGroup.Group("/invoices")
+		{
+			invoices.GET("/config", adminPaymentHandler.GetInvoiceConfig)
+			invoices.PUT("/config", adminPaymentHandler.UpdateInvoiceConfig)
+			invoices.GET("", adminPaymentHandler.ListInvoiceRequests)
+			invoices.POST("/:id/reject", adminPaymentHandler.RejectInvoiceRequest)
+			invoices.POST("/:id/issue", adminPaymentHandler.IssueInvoiceRequest)
+			invoices.GET("/:id/pdf", adminPaymentHandler.DownloadInvoicePDF)
+		}
+
 		plans := adminGroup.Group("/plans")
 		{
 			plans.GET("", adminPaymentHandler.ListPlans)

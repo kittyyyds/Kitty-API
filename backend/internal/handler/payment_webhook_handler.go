@@ -67,6 +67,14 @@ func (h *PaymentWebhookHandler) AirwallexWebhook(c *gin.Context) {
 	h.handleNotify(c, payment.TypeAirwallex)
 }
 
+func (h *PaymentWebhookHandler) DujiaoPayWebhook(c *gin.Context) {
+	h.handleNotify(c, payment.TypeDujiaoPay)
+}
+
+func (h *PaymentWebhookHandler) PayPalWebhook(c *gin.Context) {
+	h.handleNotify(c, payment.TypePayPal)
+}
+
 // handleNotify is the shared logic for all provider webhook handlers.
 func (h *PaymentWebhookHandler) handleNotify(c *gin.Context, providerKey string) {
 	var rawBody string
@@ -172,6 +180,41 @@ func extractOutTradeNo(rawBody, providerKey string) string {
 		if err := json.Unmarshal([]byte(rawBody), &payload); err == nil {
 			return strings.TrimSpace(payload.Data.Object.MerchantOrderID)
 		}
+	case payment.TypeDujiaoPay:
+		var payload struct {
+			Data struct {
+				MerchantOrderID string `json:"merchant_order_id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(rawBody), &payload); err == nil {
+			return strings.TrimSpace(payload.Data.MerchantOrderID)
+		}
+	case payment.TypePayPal:
+		var payload struct {
+			Resource struct {
+				CustomID      string `json:"custom_id"`
+				InvoiceID     string `json:"invoice_id"`
+				PurchaseUnits []struct {
+					CustomID    string `json:"custom_id"`
+					InvoiceID   string `json:"invoice_id"`
+					ReferenceID string `json:"reference_id"`
+				} `json:"purchase_units"`
+			} `json:"resource"`
+		}
+		if err := json.Unmarshal([]byte(rawBody), &payload); err == nil {
+			for _, candidate := range []string{payload.Resource.CustomID, payload.Resource.InvoiceID} {
+				if s := strings.TrimSpace(candidate); s != "" {
+					return s
+				}
+			}
+			for _, unit := range payload.Resource.PurchaseUnits {
+				for _, candidate := range []string{unit.CustomID, unit.InvoiceID, unit.ReferenceID} {
+					if s := strings.TrimSpace(candidate); s != "" {
+						return s
+					}
+				}
+			}
+		}
 	}
 	// For other providers (Stripe, Alipay direct, WxPay direct), the registry
 	// typically has only one instance, so no instance lookup is needed.
@@ -219,7 +262,7 @@ func writeSuccessResponse(c *gin.Context, providerKey string) {
 	switch providerKey {
 	case payment.TypeWxpay:
 		c.JSON(http.StatusOK, wxpaySuccessResponse{Code: wxpaySuccessCode, Message: wxpaySuccessMessage})
-	case payment.TypeStripe, payment.TypeAirwallex:
+	case payment.TypeStripe, payment.TypeAirwallex, payment.TypeDujiaoPay, payment.TypePayPal:
 		c.String(http.StatusOK, "")
 	default:
 		c.String(http.StatusOK, "success")

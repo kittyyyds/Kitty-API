@@ -46,7 +46,12 @@ const (
 const (
 	defaultOrderTimeoutMin   = 30
 	defaultMaxPendingOrders  = 3
-	defaultMinRechargeAmount = 10
+	SettingInvoiceEnabled      = "PAYMENT_INVOICE_ENABLED"
+	SettingInvoiceMinAmount    = "PAYMENT_INVOICE_MIN_AMOUNT"
+	SettingInvoiceFeeRate      = "PAYMENT_INVOICE_FEE_RATE"
+	SettingInvoiceFeeMinAmount = "PAYMENT_INVOICE_FEE_MIN_AMOUNT"
+	SettingInvoiceInstructions = "PAYMENT_INVOICE_INSTRUCTIONS"
+	defaultMinRechargeAmount   = 1 // Kitty: preserve 5 CNY fixed recharge package floor
 )
 
 // PaymentConfig holds the payment system configuration.
@@ -87,10 +92,20 @@ type PaymentConfig struct {
 	AlipayForceQRCode bool `json:"alipay_force_qrcode"`
 	// Use Alipay face-to-face precreate and an app deep link on mobile clients.
 	AlipayMobilePrecreateDeepLink bool `json:"alipay_mobile_precreate_deep_link"`
+	InvoiceEnabled                bool    `json:"invoice_enabled"`
+	InvoiceMinAmount              float64 `json:"invoice_min_amount"`
+	InvoiceFeeRate                float64 `json:"invoice_fee_rate"`
+	InvoiceFeeMinAmount           float64 `json:"invoice_fee_min_amount"`
+	InvoiceInstructions           string  `json:"invoice_instructions"`
 }
 
 // UpdatePaymentConfigRequest contains fields to update payment configuration.
 type UpdatePaymentConfigRequest struct {
+	InvoiceEnabled      *bool    `json:"invoice_enabled"`
+	InvoiceMinAmount    *float64 `json:"invoice_min_amount"`
+	InvoiceFeeRate      *float64 `json:"invoice_fee_rate"`
+	InvoiceFeeMinAmount *float64 `json:"invoice_fee_min_amount"`
+	InvoiceInstructions *string  `json:"invoice_instructions"`
 	Enabled                   *bool    `json:"enabled"`
 	MinAmount                 *float64 `json:"min_amount"`
 	MaxAmount                 *float64 `json:"max_amount"`
@@ -239,6 +254,8 @@ func (s *PaymentConfigService) GetPaymentConfig(ctx context.Context) (*PaymentCo
 		SettingAlipayForceQRCode, SettingAlipayMobilePrecreateDeepLink,
 		SettingPaymentVisibleMethodAlipayEnabled, SettingPaymentVisibleMethodAlipaySource,
 		SettingPaymentVisibleMethodWxpayEnabled, SettingPaymentVisibleMethodWxpaySource,
+		SettingInvoiceEnabled, SettingInvoiceMinAmount, SettingInvoiceInstructions,
+		SettingInvoiceFeeRate, SettingInvoiceFeeMinAmount,
 	}
 	vals, err := s.settingRepo.GetMultiple(ctx, keys)
 	if err != nil {
@@ -284,6 +301,11 @@ func (s *PaymentConfigService) parsePaymentConfig(vals map[string]string) *Payme
 
 		AlipayForceQRCode:             vals[SettingAlipayForceQRCode] == "true",
 		AlipayMobilePrecreateDeepLink: vals[SettingAlipayMobilePrecreateDeepLink] == "true",
+		InvoiceEnabled:                vals[SettingInvoiceEnabled] == "true",
+		InvoiceMinAmount:              normalizedInvoiceMinAmount(vals[SettingInvoiceMinAmount]),
+		InvoiceFeeRate:                normalizedInvoiceFeeRate(vals[SettingInvoiceFeeRate]),
+		InvoiceFeeMinAmount:           normalizedInvoiceFeeMinAmount(vals[SettingInvoiceFeeMinAmount]),
+		InvoiceInstructions:           vals[SettingInvoiceInstructions],
 	}
 	cfg.RechargeBonusMode, _ = NormalizeRechargeBonusMode(vals[SettingRechargeBonusMode])
 	cfg.AlipayMobilePrecreateDeepLink = pcEnvBoolOverride(
@@ -379,6 +401,18 @@ func (s *PaymentConfigService) UpdatePaymentConfig(ctx context.Context, req Upda
 			return infraerrors.BadRequest("INVALID_RECHARGE_BONUS_NOTICE", err.Error())
 		}
 	}
+	if req.InvoiceMinAmount != nil && !validInvoiceMinAmount(*req.InvoiceMinAmount) {
+		return infraerrors.BadRequest("INVALID_INVOICE_MIN_AMOUNT", "minimum invoice amount must be positive, at most 1000000000, with at most 2 decimal places")
+	}
+	if req.InvoiceFeeRate != nil && !validInvoiceFeeRate(*req.InvoiceFeeRate) {
+		return infraerrors.BadRequest("INVALID_INVOICE_FEE_RATE", "invoice fee rate must be between 0 and 100, with at most 2 decimal places")
+	}
+	if req.InvoiceFeeMinAmount != nil && !validInvoiceFeeMinAmount(*req.InvoiceFeeMinAmount) {
+		return infraerrors.BadRequest("INVALID_INVOICE_FEE_MIN_AMOUNT", "minimum invoice fee must be between 0 and 1000000000, with at most 2 decimal places")
+	}
+	if req.InvoiceInstructions != nil && len([]rune(*req.InvoiceInstructions)) > 5000 {
+		return infraerrors.BadRequest("INVALID_INVOICE_INSTRUCTIONS", "invoice instructions must not exceed 5000 characters")
+	}
 	m := make(map[string]string)
 	if req.Enabled != nil {
 		m[SettingPaymentEnabled] = formatBoolOrEmpty(req.Enabled)
@@ -461,6 +495,21 @@ func (s *PaymentConfigService) UpdatePaymentConfig(ctx context.Context, req Upda
 	}
 	if req.AlipayMobilePrecreateDeepLink != nil {
 		m[SettingAlipayMobilePrecreateDeepLink] = formatBoolOrEmpty(req.AlipayMobilePrecreateDeepLink)
+	}
+	if req.InvoiceEnabled != nil {
+		m[SettingInvoiceEnabled] = strconv.FormatBool(*req.InvoiceEnabled)
+	}
+	if req.InvoiceMinAmount != nil {
+		m[SettingInvoiceMinAmount] = strconv.FormatFloat(*req.InvoiceMinAmount, 'f', 2, 64)
+	}
+	if req.InvoiceFeeRate != nil {
+		m[SettingInvoiceFeeRate] = strconv.FormatFloat(*req.InvoiceFeeRate, 'f', 2, 64)
+	}
+	if req.InvoiceFeeMinAmount != nil {
+		m[SettingInvoiceFeeMinAmount] = strconv.FormatFloat(*req.InvoiceFeeMinAmount, 'f', 2, 64)
+	}
+	if req.InvoiceInstructions != nil {
+		m[SettingInvoiceInstructions] = strings.TrimSpace(*req.InvoiceInstructions)
 	}
 	if req.VisibleMethodAlipaySource != nil {
 		m[SettingPaymentVisibleMethodAlipaySource] = derefStr(req.VisibleMethodAlipaySource)
