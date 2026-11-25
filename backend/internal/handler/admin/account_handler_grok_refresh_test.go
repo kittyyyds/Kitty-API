@@ -59,7 +59,7 @@ func TestRefreshSingleAccountRoutesGrokThroughGrokOAuthService(t *testing.T) {
 	handler := NewAccountHandler(
 		adminSvc,
 		nil,
-		nil,
+		nil, nil, nil,
 		grokOAuth,
 		nil,
 		nil,
@@ -68,8 +68,7 @@ func TestRefreshSingleAccountRoutesGrokThroughGrokOAuthService(t *testing.T) {
 		nil,
 		nil,
 		nil,
-		nil,
-	)
+		nil)
 	account := &service.Account{
 		ID:       4227,
 		Platform: service.PlatformGrok,

@@ -36,7 +36,7 @@ func TestCheckErrorPolicy_401_DBFallback_Escalates(t *testing.T) {
 				TempUnschedulableReason: `{"status_code":401,"until_unix":1735689600}`,
 			},
 		}
-		svc := NewRateLimitService(repo, nil, &config.Config{}, nil)
+		svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 
 		account := &Account{
 			ID:                      20,
@@ -70,7 +70,7 @@ func TestCheckErrorPolicy_401_DBFallback_NoDBRecord_FirstHit(t *testing.T) {
 			TempUnschedulableReason: "", // DB also empty
 		},
 	}
-	svc := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 
 	account := &Account{
 		ID:                      21,
@@ -99,7 +99,7 @@ func TestCheckErrorPolicy_401_DBFallback_DBError_FirstHit(t *testing.T) {
 	repo := &dbFallbackRepoStub{
 		dbAccount: nil, // GetByID returns nil, nil
 	}
-	svc := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 
 	account := &Account{
 		ID:                      22,

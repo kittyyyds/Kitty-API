@@ -180,7 +180,7 @@ func TestOAuthReliabilityContractWSHTTPIncompleteReplayDiagnostic(t *testing.T) 
 			h := NewOpenAIGatewayHandler(svc, service.NewConcurrencyService(&fakeConcurrencyCache{}), cache, &service.APIKeyService{}, nil, rules, nil, nil, cfg)
 			key := &service.APIKey{ID: 9943, UserID: 9944, Key: "synthetic-diagnostic-client", GroupID: &groupID, Group: group, User: &service.User{ID: 9944, Status: service.StatusActive, Role: service.RoleUser, Balance: 100}}
 			repo := &ingressRejectOpsRepo{}
-			ops := service.NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil)
+			ops := service.NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			core, _ := observer.New(zap.ErrorLevel)
 			router := gin.New()
 			router.Use(OpsErrorLoggerMiddleware(ops))

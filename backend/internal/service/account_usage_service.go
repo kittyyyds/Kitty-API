@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -106,9 +105,16 @@ type windowStatsCacheKey struct {
 	duration  time.Duration
 }
 
+// antigravityUsageCache 缓存 Antigravity 额度数据
+type antigravityUsageCache struct {
+	usageInfo *UsageInfo
+	timestamp time.Time
+}
+
 const (
 	apiCacheTTL         = 3 * time.Minute
 	apiErrorCacheTTL    = 1 * time.Minute        // 负缓存 TTL：429 等错误缓存 1 分钟
+	antigravityErrorTTL = 1 * time.Minute        // Antigravity 错误缓存 TTL（可恢复错误）
 	apiQueryMaxJitter   = 800 * time.Millisecond // 用量查询最大随机延迟
 	windowStatsCacheTTL = 1 * time.Minute
 	openAIProbeCacheTTL = 10 * time.Minute
@@ -120,6 +126,8 @@ const (
 type UsageCache struct {
 	apiCache         sync.Map           // accountID -> *apiUsageCache
 	windowStatsCache sync.Map           // windowStatsCacheKey -> *windowStatsCache
+	antigravityCache  sync.Map           // accountID -> *antigravityUsageCache
+	antigravityFlight singleflight.Group // 防止同一 Antigravity 账号的并发请求击穿缓存
 	apiFlight        singleflight.Group // 防止同一账号的并发请求击穿缓存（Anthropic）
 	openAIProbeCache sync.Map           // accountID -> time.Time
 	grokProbeCache   sync.Map           // accountID -> last billing probe attempt
@@ -154,6 +162,46 @@ type UsageProgress struct {
 	LimitRequests      int64        `json:"limit_requests,omitempty"`
 }
 
+// AntigravityQuotaGroup is a group of Antigravity models that share their quota windows.
+type AntigravityQuotaGroup struct {
+	Key         string                    `json:"key"` // bucket prefix, e.g. "gemini" or "3p"
+	Name        string                    `json:"name"`
+	Description string                    `json:"description,omitempty"`
+	Windows     []*AntigravityQuotaWindow `json:"windows"`
+}
+
+// AntigravityQuotaWindow is one window ("5h" or "weekly") of an Antigravity quota group.
+type AntigravityQuotaWindow struct {
+	Window      string     `json:"window"`
+	Utilization float64    `json:"utilization"` // used percentage, 0-100
+	ResetsAt    *time.Time `json:"resets_at"`
+}
+
+// AntigravityModelQuota Antigravity 单个模型的配额信息
+type AntigravityModelQuota struct {
+	Utilization int    `json:"utilization"` // 使用率 0-100
+	ResetTime   string `json:"reset_time"`  // 重置时间 ISO8601
+}
+
+// AntigravityModelDetail Antigravity 单个模型的详细能力信息
+type AntigravityModelDetail struct {
+	DisplayName        string          `json:"display_name,omitempty"`
+	SupportsImages     *bool           `json:"supports_images,omitempty"`
+	SupportsThinking   *bool           `json:"supports_thinking,omitempty"`
+	ThinkingBudget     *int            `json:"thinking_budget,omitempty"`
+	Recommended        *bool           `json:"recommended,omitempty"`
+	MaxTokens          *int            `json:"max_tokens,omitempty"`
+	MaxOutputTokens    *int            `json:"max_output_tokens,omitempty"`
+	SupportedMimeTypes map[string]bool `json:"supported_mime_types,omitempty"`
+}
+
+// AICredit 表示 Antigravity 账号的 AI Credits 余额信息。
+type AICredit struct {
+	CreditType     string  `json:"credit_type,omitempty"`
+	Amount         float64 `json:"amount,omitempty"`
+	MinimumBalance float64 `json:"minimum_balance,omitempty"`
+}
+
 // UsageInfo 账号使用量信息
 type UsageInfo struct {
 	Source         string         `json:"source,omitempty"`           // "passive" or "active"
@@ -162,6 +210,12 @@ type UsageInfo struct {
 	SevenDay       *UsageProgress `json:"seven_day,omitempty"`        // 7天窗口
 	SevenDaySonnet *UsageProgress `json:"seven_day_sonnet,omitempty"` // 7天Sonnet窗口
 	SevenDayFable  *UsageProgress `json:"seven_day_fable,omitempty"`  // 7天Fable窗口（响应头 7d_oi）
+	GeminiSharedDaily  *UsageProgress `json:"gemini_shared_daily,omitempty"`
+	GeminiProDaily     *UsageProgress `json:"gemini_pro_daily,omitempty"`
+	GeminiFlashDaily   *UsageProgress `json:"gemini_flash_daily,omitempty"`
+	GeminiSharedMinute *UsageProgress `json:"gemini_shared_minute,omitempty"`
+	GeminiProMinute    *UsageProgress `json:"gemini_pro_minute,omitempty"`
+	GeminiFlashMinute  *UsageProgress `json:"gemini_flash_minute,omitempty"`
 	// Grok / xAI 被动额度快照
 	GrokRequestQuota       *xai.QuotaWindow `json:"grok_request_quota,omitempty"`
 	GrokTokenQuota         *xai.QuotaWindow `json:"grok_token_quota,omitempty"`
@@ -180,9 +234,20 @@ type UsageInfo struct {
 	ThirtyDay   *UsageProgress      `json:"thirty_day,omitempty"`
 	GrokBilling *xai.BillingSummary `json:"grok_billing,omitempty"`
 
+	// Antigravity 账号级信息
 	SubscriptionTier    string `json:"subscription_tier,omitempty"`     // 归一化订阅等级: FREE/PRO/ULTRA/UNKNOWN
 	SubscriptionTierRaw string `json:"subscription_tier_raw,omitempty"` // 上游原始订阅等级名称
 
+	// Antigravity 模型详细能力信息（与 antigravity_quota 同 key）
+	AntigravityQuotaDetails map[string]*AntigravityModelDetail `json:"antigravity_quota_details,omitempty"`
+
+	// Antigravity AI Credits 余额
+	AICredits []AICredit `json:"ai_credits,omitempty"`
+
+	// Antigravity 废弃模型转发规则 (old_model_id -> new_model_id)
+	ModelForwardingRules map[string]string `json:"model_forwarding_rules,omitempty"`
+
+	// Antigravity 账号是否被上游禁止 (HTTP 403)
 	IsForbidden     bool   `json:"is_forbidden,omitempty"`
 	ForbiddenReason string `json:"forbidden_reason,omitempty"`
 	ForbiddenType   string `json:"forbidden_type,omitempty"` // "validation" / "violation" / "forbidden"
@@ -198,6 +263,8 @@ type UsageInfo struct {
 
 	// 获取 usage 时的错误信息（降级返回，而非 500）
 	Error string `json:"error,omitempty"`
+	AntigravityQuota map[string]*AntigravityModelQuota `json:"antigravity_quota,omitempty"`
+	AntigravityQuotaGroups []*AntigravityQuotaGroup `json:"antigravity_quota_groups,omitempty"`
 }
 
 // ClaudeUsageWindow Anthropic /api/oauth/usage 返回的单个用量窗口
@@ -259,6 +326,8 @@ type AccountUsageService struct {
 	accountRepo         AccountRepository
 	usageLogRepo        UsageLogRepository
 	usageFetcher        ClaudeUsageFetcher
+	geminiQuotaService      *GeminiQuotaService
+	antigravityQuotaFetcher *AntigravityQuotaFetcher
 	grokQuotaFetcher    *GrokQuotaFetcher
 	grokQuotaService    *GrokQuotaService
 	openAIQuotaService  *OpenAIQuotaService
@@ -282,6 +351,8 @@ func NewAccountUsageService(
 	accountRepo AccountRepository,
 	usageLogRepo UsageLogRepository,
 	usageFetcher ClaudeUsageFetcher,
+	geminiQuotaService *GeminiQuotaService,
+	antigravityQuotaFetcher *AntigravityQuotaFetcher,
 	grokQuotaFetcher *GrokQuotaFetcher,
 	grokQuotaService *GrokQuotaService,
 	openAIQuotaService *OpenAIQuotaService,
@@ -348,6 +419,23 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 		// Usage can come from a stored snapshot even when a probe fails. Neither
 		// that nor a working access token proves a rejected refresh token recovered.
 		return s.getOpenAIUsage(ctx, account, forceProbe)
+	}
+
+	if account.Platform == PlatformGemini {
+		usage, err := s.getGeminiUsage(ctx, account)
+		if err == nil {
+			s.tryClearRecoverableAccountError(ctx, account)
+		}
+		return usage, err
+	}
+
+	// Antigravity 平台：使用 AntigravityQuotaFetcher 获取额度
+	if account.Platform == PlatformAntigravity {
+		usage, err := s.getAntigravityUsage(ctx, account, forceProbe)
+		if err == nil {
+			s.tryClearRecoverableAccountError(ctx, account)
+		}
+		return usage, err
 	}
 
 	if account.Platform == PlatformGrok {
@@ -1058,6 +1146,139 @@ func hasOpenAIQuotaObservation(updates map[string]any) bool {
 	return has5h || has7d
 }
 
+func (s *AccountUsageService) getGeminiUsage(ctx context.Context, account *Account) (*UsageInfo, error) {
+	now := time.Now()
+	usage := &UsageInfo{
+		UpdatedAt: &now,
+	}
+
+	if s.geminiQuotaService == nil || s.usageLogRepo == nil {
+		return usage, nil
+	}
+
+	quota, ok := s.geminiQuotaService.QuotaForAccount(ctx, account)
+	if !ok {
+		return usage, nil
+	}
+
+	dayStart := geminiDailyWindowStart(now)
+	stats, err := s.usageLogRepo.GetModelStatsWithFilters(ctx, dayStart, now, 0, 0, account.ID, 0, nil, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get gemini usage stats failed: %w", err)
+	}
+
+	dayTotals := geminiAggregateUsage(stats)
+	dailyResetAt := geminiDailyResetTime(now)
+
+	// Daily window (RPD)
+	if quota.SharedRPD > 0 {
+		totalReq := dayTotals.ProRequests + dayTotals.FlashRequests
+		totalTokens := dayTotals.ProTokens + dayTotals.FlashTokens
+		totalCost := dayTotals.ProCost + dayTotals.FlashCost
+		usage.GeminiSharedDaily = buildGeminiUsageProgress(totalReq, quota.SharedRPD, dailyResetAt, totalTokens, totalCost, now)
+	} else {
+		usage.GeminiProDaily = buildGeminiUsageProgress(dayTotals.ProRequests, quota.ProRPD, dailyResetAt, dayTotals.ProTokens, dayTotals.ProCost, now)
+		usage.GeminiFlashDaily = buildGeminiUsageProgress(dayTotals.FlashRequests, quota.FlashRPD, dailyResetAt, dayTotals.FlashTokens, dayTotals.FlashCost, now)
+	}
+
+	// Minute window (RPM) - fixed-window approximation: current minute [truncate(now), truncate(now)+1m)
+	minuteStart := now.Truncate(time.Minute)
+	minuteResetAt := minuteStart.Add(time.Minute)
+	minuteStats, err := s.usageLogRepo.GetModelStatsWithFilters(ctx, minuteStart, now, 0, 0, account.ID, 0, nil, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get gemini minute usage stats failed: %w", err)
+	}
+	minuteTotals := geminiAggregateUsage(minuteStats)
+
+	if quota.SharedRPM > 0 {
+		totalReq := minuteTotals.ProRequests + minuteTotals.FlashRequests
+		totalTokens := minuteTotals.ProTokens + minuteTotals.FlashTokens
+		totalCost := minuteTotals.ProCost + minuteTotals.FlashCost
+		usage.GeminiSharedMinute = buildGeminiUsageProgress(totalReq, quota.SharedRPM, minuteResetAt, totalTokens, totalCost, now)
+	} else {
+		usage.GeminiProMinute = buildGeminiUsageProgress(minuteTotals.ProRequests, quota.ProRPM, minuteResetAt, minuteTotals.ProTokens, minuteTotals.ProCost, now)
+		usage.GeminiFlashMinute = buildGeminiUsageProgress(minuteTotals.FlashRequests, quota.FlashRPM, minuteResetAt, minuteTotals.FlashTokens, minuteTotals.FlashCost, now)
+	}
+
+	return usage, nil
+}
+
+// cachedAntigravityUsage returns the account's cached usage while it is fresh, unless force is
+// set: a manual refresh (the usage cell's query button, force=true) must reach Google, or an
+// account upgraded or reset upstream keeps showing the old figures for the cache TTL.
+func (s *AccountUsageService) cachedAntigravityUsage(accountID int64, force bool) (*UsageInfo, bool) {
+	if force {
+		return nil, false
+	}
+	cached, ok := s.cache.antigravityCache.Load(accountID)
+	if !ok {
+		return nil, false
+	}
+	cache, ok := cached.(*antigravityUsageCache)
+	if !ok || time.Since(cache.timestamp) >= antigravityCacheTTL(cache.usageInfo) {
+		return nil, false
+	}
+	usage := cache.usageInfo
+	// 重新计算 RemainingSeconds，避免返回过时的剩余秒数
+	recalcAntigravityRemainingSeconds(usage)
+	return usage, true
+}
+
+// getAntigravityUsage 获取 Antigravity 账户额度；force 跳过缓存（仍经 singleflight 合并并发请求）。
+func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *Account, force bool) (*UsageInfo, error) {
+	if s.antigravityQuotaFetcher == nil || !s.antigravityQuotaFetcher.CanFetch(account) {
+		now := time.Now()
+		return &UsageInfo{UpdatedAt: &now}, nil
+	}
+
+	// 1. 检查缓存
+	if usage, ok := s.cachedAntigravityUsage(account.ID, force); ok {
+		return usage, nil
+	}
+
+	// 2. singleflight 防止并发击穿
+	flightKey := fmt.Sprintf("ag-usage:%d", account.ID)
+	result, flightErr, _ := s.cache.antigravityFlight.Do(flightKey, func() (any, error) {
+		// 再次检查缓存（等待期间可能已被填充）
+		if usage, ok := s.cachedAntigravityUsage(account.ID, force); ok {
+			return usage, nil
+		}
+
+		// 使用独立 context，避免调用方 cancel 导致所有共享 flight 的请求失败
+		fetchCtx, fetchCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer fetchCancel()
+
+		proxyURL := s.antigravityQuotaFetcher.GetProxyURL(fetchCtx, account)
+		fetchResult, err := s.antigravityQuotaFetcher.FetchQuota(fetchCtx, account, proxyURL)
+		if err != nil {
+			degraded := buildAntigravityDegradedUsage(err)
+			enrichUsageWithAccountError(degraded, account)
+			s.cache.antigravityCache.Store(account.ID, &antigravityUsageCache{
+				usageInfo: degraded,
+				timestamp: time.Now(),
+			})
+			return degraded, nil
+		}
+
+		enrichUsageWithAccountError(fetchResult.UsageInfo, account)
+		s.cache.antigravityCache.Store(account.ID, &antigravityUsageCache{
+			usageInfo: fetchResult.UsageInfo,
+			timestamp: time.Now(),
+		})
+		return fetchResult.UsageInfo, nil
+	})
+
+	if flightErr != nil {
+		return nil, flightErr
+	}
+	usage, ok := result.(*UsageInfo)
+	if !ok || usage == nil {
+		now := time.Now()
+		return &UsageInfo{UpdatedAt: &now}, nil
+	}
+	return usage, nil
+}
+
 func (s *AccountUsageService) getGrokUsage(ctx context.Context, account *Account, force bool) (*UsageInfo, error) {
 	if s.grokQuotaFetcher == nil {
 		now := time.Now()
@@ -1212,71 +1433,6 @@ func (s *AccountUsageService) shouldProbeGrokBilling(accountID int64, now time.T
 	}
 	s.cache.grokProbeCache.Store(accountID, now)
 	return true
-}
-
-const (
-	forbiddenTypeValidation = "validation"
-	forbiddenTypeViolation  = "violation"
-	forbiddenTypeForbidden  = "forbidden"
-
-	// 机器可读的错误码
-	errorCodeForbidden       = "forbidden"
-	errorCodeUnauthenticated = "unauthenticated"
-)
-
-// classifyForbiddenType 根据 403 错误信息判断禁止类型
-func classifyForbiddenType(body string) string {
-	lower := strings.ToLower(body)
-	switch {
-	case strings.Contains(lower, "validation_required") ||
-		strings.Contains(lower, "verify your account") ||
-		strings.Contains(lower, "validation_url"):
-		return forbiddenTypeValidation
-	case strings.Contains(lower, "terms of service") ||
-		strings.Contains(lower, "violation"):
-		return forbiddenTypeViolation
-	default:
-		return forbiddenTypeForbidden
-	}
-}
-
-// urlPattern 用于从 403 错误信息中提取 URL（降级方案）
-var urlPattern = regexp.MustCompile(`https://[^\s"'\\]+`)
-
-// extractValidationURL 从 403 错误信息中提取验证/申诉链接
-func extractValidationURL(body string) string {
-	// 1. 尝试结构化 JSON 提取: /error/details[*]/metadata/validation_url 或 appeal_url
-	var parsed struct {
-		Error struct {
-			Details []struct {
-				Metadata map[string]string `json:"metadata"`
-			} `json:"details"`
-		} `json:"error"`
-	}
-	if json.Unmarshal([]byte(body), &parsed) == nil {
-		for _, detail := range parsed.Error.Details {
-			if u := detail.Metadata["validation_url"]; u != "" {
-				return u
-			}
-			if u := detail.Metadata["appeal_url"]; u != "" {
-				return u
-			}
-		}
-	}
-
-	// 2. 降级：正则匹配 URL
-	lower := strings.ToLower(body)
-	if !strings.Contains(lower, "validation") &&
-		!strings.Contains(lower, "verify") &&
-		!strings.Contains(lower, "appeal") {
-		return ""
-	}
-	// 先解码常见转义再匹配
-	normalized := strings.ReplaceAll(body, `\u0026`, "&")
-	if m := urlPattern.FindString(normalized); m != "" {
-		return m
-	}
-	return ""
 }
 
 // enrichUsageWithAccountError 结合账号错误状态修正 UsageInfo
@@ -1759,8 +1915,87 @@ func (s *AccountUsageService) estimateSetupTokenUsage(account *Account) *UsageIn
 	return info
 }
 
+func buildGeminiUsageProgress(used, limit int64, resetAt time.Time, tokens int64, cost float64, now time.Time) *UsageProgress {
+	// limit <= 0 means "no local quota window" (unknown or unlimited).
+	if limit <= 0 {
+		return nil
+	}
+	utilization := (float64(used) / float64(limit)) * 100
+	remainingSeconds := int(resetAt.Sub(now).Seconds())
+	if remainingSeconds < 0 {
+		remainingSeconds = 0
+	}
+	resetCopy := resetAt
+	return &UsageProgress{
+		Utilization:      utilization,
+		ResetsAt:         &resetCopy,
+		RemainingSeconds: remainingSeconds,
+		UsedRequests:     used,
+		LimitRequests:    limit,
+		WindowStats: &WindowStats{
+			Requests: used,
+			Tokens:   tokens,
+			Cost:     cost,
+		},
+	}
+}
+
 // GetAccountWindowStats 获取账号在指定时间窗口内的使用统计
 // 用于账号列表页面显示当前窗口费用
 func (s *AccountUsageService) GetAccountWindowStats(ctx context.Context, accountID int64, startTime time.Time) (*usagestats.AccountStats, error) {
 	return s.usageLogRepo.GetAccountWindowStats(ctx, accountID, startTime)
+}
+
+func recalcAntigravityRemainingSeconds(info *UsageInfo) {
+	if info == nil {
+		return
+	}
+	if info.FiveHour != nil && info.FiveHour.ResetsAt != nil {
+		remaining := int(time.Until(*info.FiveHour.ResetsAt).Seconds())
+		if remaining < 0 {
+			remaining = 0
+		}
+		info.FiveHour.RemainingSeconds = remaining
+	}
+}
+
+func buildAntigravityDegradedUsage(err error) *UsageInfo {
+	now := time.Now()
+	errMsg := fmt.Sprintf("usage API error: %v", err)
+	slog.Warn("antigravity usage fetch failed, returning degraded response", "error", err)
+
+	info := &UsageInfo{
+		UpdatedAt: &now,
+		Error:     errMsg,
+	}
+
+	// 从错误信息推断 error_code 和状态标记
+	// 错误格式来自 antigravity/client.go: "fetchAvailableModels 失败 (HTTP %d): ..."
+	errStr := err.Error()
+	switch {
+	case strings.Contains(errStr, "HTTP 401") ||
+		strings.Contains(errStr, "UNAUTHENTICATED") ||
+		strings.Contains(errStr, "invalid_grant"):
+		info.ErrorCode = errorCodeUnauthenticated
+		info.NeedsReauth = true
+	case strings.Contains(errStr, "HTTP 429"):
+		info.ErrorCode = errorCodeRateLimited
+	default:
+		info.ErrorCode = errorCodeNetworkError
+	}
+
+	return info
+}
+
+func antigravityCacheTTL(info *UsageInfo) time.Duration {
+	if info == nil {
+		return antigravityErrorTTL
+	}
+	if info.IsForbidden {
+		return apiCacheTTL // 封号/验证状态不会很快变
+	}
+	if info.ErrorCode != "" || info.Error != "" {
+		return antigravityErrorTTL
+	}
+	return apiCacheTTL
 }

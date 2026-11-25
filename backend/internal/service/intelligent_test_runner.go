@@ -165,7 +165,7 @@ func (s *AccountTestService) RunIntelligentTest(ctx context.Context, r *Intellig
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = (&http.Request{Method: http.MethodPost, Header: http.Header{}}).WithContext(runCtx)
 	readRepo := &intelligentReadOnlyAccountRepo{AccountRepository: s.accountRepo, capture: capture, snapshot: account}
-	clone := NewAccountTestService(readRepo, s.claudeTokenProvider, s.grokTokenProvider, &intelligentHTTPUpstream{inner: s.httpUpstream, capture: capture}, s.cfg, s.tlsFPProfileService)
+	clone := NewAccountTestService(readRepo, s.geminiTokenProvider, s.claudeTokenProvider, s.grokTokenProvider, s.antigravityGatewayService, &intelligentHTTPUpstream{inner: s.httpUpstream, capture: capture}, s.cfg, s.tlsFPProfileService)
 	clone.settingService = s.settingService
 	clone.pluginManager = s.pluginManager
 	clone.openaiGatewayService = s.openaiGatewayService

@@ -84,7 +84,7 @@ func TestAnthropicPoolExcluded429InternalRetryAfter(t *testing.T) {
 				cfg := &config.Config{}
 				svc := &GatewayService{
 					cfg: cfg, httpUpstream: upstream, tlsFPProfileService: &TLSFingerprintProfileService{},
-					rateLimitService: NewRateLimitService(repo, nil, cfg, nil),
+					rateLimitService: NewRateLimitService(repo, nil, cfg, nil, nil),
 				}
 				account := newAnthropicQuotaPoolAccount()
 				account.Extra["anthropic_passthrough"] = passthrough

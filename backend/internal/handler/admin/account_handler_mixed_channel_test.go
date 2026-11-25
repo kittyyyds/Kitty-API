@@ -15,7 +15,7 @@ import (
 func setupAccountMixedChannelRouter(adminSvc *stubAdminService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	accountHandler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	accountHandler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router.POST("/api/v1/admin/accounts/check-mixed-channel", accountHandler.CheckMixedChannel)
 	router.POST("/api/v1/admin/accounts", accountHandler.Create)
 	router.PUT("/api/v1/admin/accounts/:id", accountHandler.Update)
@@ -49,7 +49,7 @@ func TestAccountHandlerCheckMixedChannelNoRisk(t *testing.T) {
 }
 
 func TestAccountHandlerRejectsRetiredPlatforms(t *testing.T) {
-	for _, platform := range []string{"gemini", "antigravity"} {
+	for _, platform := range []string{"video"} {
 		t.Run(platform, func(t *testing.T) {
 			adminSvc := newStubAdminService()
 			router := setupAccountMixedChannelRouter(adminSvc)

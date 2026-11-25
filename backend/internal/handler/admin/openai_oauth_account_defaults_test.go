@@ -29,7 +29,7 @@ func TestOpenAIOAuthCreateDefaultsAccountEndpoints(t *testing.T) {
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				stub := newStubAdminService()
-				h := NewAccountHandler(stub, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				h := NewAccountHandler(stub, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 				router := gin.New()
 				account := map[string]any{"name": "fixture", "platform": tc.platform, "type": tc.accountType, "credentials": map[string]any{"access_token": "fixture"}}
 				if tc.provided != nil {
@@ -60,7 +60,7 @@ func TestOpenAIOAuthCreateDefaultsAccountEndpoints(t *testing.T) {
 func TestOpenAIOAuthCreateDefaultsCodexImport(t *testing.T) {
 	for _, concurrency := range []*int{nil, intPtr(7), intPtr(0)} {
 		svc := newCodexImportMemoryAdminService(nil)
-		h := NewAccountHandler(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		h := NewAccountHandler(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 		result, err := h.importCodexSessions(context.Background(), CodexSessionImportRequest{
 			Concurrency: concurrency, Extra: map[string]any{"codex_image_generation_bridge": nil}, SkipDefaultGroupBind: boolPtr(true),
 		}, []codexImportEntry{{Index: 1, Value: map[string]any{"access_token": "fixture-access-token", "refresh_token": "fixture-refresh"}}})
@@ -83,7 +83,7 @@ func TestOpenAIOAuthCreateDefaultsDataImportPresence(t *testing.T) {
 		var req DataImportRequest
 		require.NoError(t, json.Unmarshal([]byte(`{"data":{"accounts":[{"name":"fixture","platform":"openai","type":"oauth","credentials":{"access_token":"fixture"}`+field+`}]}}`), &req))
 		stub := newStubAdminService()
-		h := NewAccountHandler(stub, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		h := NewAccountHandler(stub, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 		result, err := h.importData(context.Background(), req)
 		require.NoError(t, err)
 		require.Equal(t, 1, result.AccountCreated)
@@ -115,7 +115,7 @@ func TestOpenAIOAuthCreateDefaultsImportReplacesExplicitImageStrategy(t *testing
 				Extra: map[string]any{"codex_image_generation_bridge_enabled": false, "codex_image_generation_explicit_tool_policy": "strip",
 					"openai": map[string]any{"codex_image_generation_bridge": false, "codex_image_generation_explicit_tool_policy": "strip", "unrelated": "keep"}, "custom": "keep"}}
 			svc := newCodexImportMemoryAdminService([]service.Account{existing})
-			h := NewAccountHandler(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			h := NewAccountHandler(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			result, err := h.importCodexSessions(context.Background(), CodexSessionImportRequest{Extra: tc.extra}, []codexImportEntry{{Index: 1, Value: map[string]any{"access_token": "fixture-token", "refresh_token": "fixture-refresh"}}})
 			require.NoError(t, err)
 			require.Equal(t, 1, result.Updated)

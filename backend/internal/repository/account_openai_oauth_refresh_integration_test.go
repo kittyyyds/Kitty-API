@@ -86,7 +86,7 @@ func (s *AccountRepoSuite) TestOpenAIOAuthRefreshErrorCAS_PreservesSchedulingAnd
 			s.Require().Equal(service.StatusError, latest.Status)
 			s.Require().False(latest.IsSchedulable())
 			s.Require().Equal(mode == "enabled", latest.Schedulable)
-			limiter := service.NewRateLimitService(s.repo, nil, nil, nil)
+			limiter := service.NewRateLimitService(s.repo, nil, nil, nil, nil)
 			result, err := limiter.RecoverAccountAfterSuccessfulTest(s.ctx, account.ID)
 			s.Require().NoError(err)
 			s.Require().True(result.ClearedError)

@@ -187,3 +187,10 @@ func (r *boundedSSELineReader) ReadLineString() (string, error) {
 	line, err := r.ReadLine()
 	return unsafe.String(unsafe.SliceData(line), len(line)), err
 }
+
+func (s *AntigravityGatewayService) antigravitySSEConfig() *config.Config {
+	if s == nil || s.settingService == nil {
+		return nil
+	}
+	return s.settingService.cfg
+}

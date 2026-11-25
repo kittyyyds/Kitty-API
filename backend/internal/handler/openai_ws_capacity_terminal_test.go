@@ -87,7 +87,7 @@ func TestOpenAIWSCapacityAfterOutputPreservesTerminalAndOps(t *testing.T) {
 				Credentials: map[string]any{"api_key": "synthetic-key", "base_url": upstream.URL},
 				Extra:       map[string]any{"responses_websockets_v2_enabled": true},
 			}
-			ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			router := gin.New()
 			router.Use(OpsErrorLoggerMiddleware(ops))
 			router.POST("/v1/responses", func(c *gin.Context) {

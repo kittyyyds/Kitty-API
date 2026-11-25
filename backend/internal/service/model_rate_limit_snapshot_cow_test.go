@@ -154,7 +154,7 @@ func TestApplyAccountSchedulingThreshold_FableLimitStaysOnOwnSnapshotCopy(t *tes
 	settingsRepo := newMockSettingRepo()
 	settingsRepo.data[SettingKeyAccountSchedulingThresholds] = `{"anthropic":100}`
 	repo := &sharedSnapshotFableRepoStub{}
-	limiter := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	limiter := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	limiter.SetSettingService(NewSettingService(settingsRepo, &config.Config{}))
 
 	now := time.Now().UTC()

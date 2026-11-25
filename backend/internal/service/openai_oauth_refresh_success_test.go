@@ -179,7 +179,7 @@ func TestOpenAIRefreshSuccessCAS_BackgroundPersistenceFailureIsNotRetried(t *tes
 	account, repo, executor, api, _ := newOpenAIRefreshCASFixture()
 	repo.updateErr = errors.New("synthetic write error")
 	cfg := &config.Config{TokenRefresh: config.TokenRefreshConfig{MaxRetries: 3}}
-	svc := NewTokenRefreshService(repo, nil, nil, nil, nil, cfg, nil)
+	svc := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg, nil)
 	svc.SetRefreshAPI(api)
 	forced := forceOpenAIRefreshForTest(executor, account)
 	err := svc.refreshWithRetry(context.Background(), account, forced, forced, 0)
@@ -191,7 +191,7 @@ func TestOpenAIRefreshSuccessCAS_BackgroundPersistenceFailureIsNotRetried(t *tes
 
 func TestOpenAIRefreshSuccessCAS_BackgroundRequiresSharedCoordinator(t *testing.T) {
 	account, repo, executor, _, _ := newOpenAIRefreshCASFixture()
-	svc := NewTokenRefreshService(repo, nil, nil, nil, nil, &config.Config{}, nil)
+	svc := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, &config.Config{}, nil)
 	err := svc.refreshWithRetry(context.Background(), account, executor, nil, 0)
 	require.Error(t, err)
 	require.True(t, isProviderScopedTerminalRefreshError(err))

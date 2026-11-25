@@ -3613,7 +3613,7 @@ func TestOpenAIWSHTTPBridgeSSEErrorSideEffectsRunOncePerPlatform(t *testing.T) {
 				httpUpstream: upstream,
 			}
 			if platform == PlatformOpenAI {
-				svc.rateLimitService = NewRateLimitService(repo, nil, cfg, nil)
+				svc.rateLimitService = NewRateLimitService(repo, nil, cfg, nil, nil)
 			}
 			account := &Account{ID: 70, Platform: platform, Type: AccountTypeOAuth, Concurrency: 1}
 			recorder := httptest.NewRecorder()

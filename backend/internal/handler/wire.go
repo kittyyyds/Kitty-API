@@ -18,6 +18,8 @@ func ProvideAdminHandlers(
 	intelligentTestHandler *admin.IntelligentTestHandler,
 	securityPolicyHandler *admin.SecurityPolicyHandler,
 	accountHealthHandler *admin.AccountHealthHandler,
+	geminiOAuthHandler *admin.GeminiOAuthHandler,
+	antigravityOAuthHandler *admin.AntigravityOAuthHandler,
 	announcementHandler *admin.AnnouncementHandler,
 	dataManagementHandler *admin.DataManagementHandler,
 	backupHandler *admin.BackupHandler,
@@ -65,6 +67,8 @@ func ProvideAdminHandlers(
 		IntelligentTest:        intelligentTestHandler,
 		SecurityPolicy:         securityPolicyHandler,
 		AccountHealth:          accountHealthHandler,
+		GeminiOAuth:            geminiOAuthHandler,
+		AntigravityOAuth:       antigravityOAuthHandler,
 		Announcement:           announcementHandler,
 		DataManagement:         dataManagementHandler,
 		Backup:                 backupHandler,
@@ -106,6 +110,9 @@ func ProvideOpsHandler(opsService *service.OpsService, billingOutboxWorker *serv
 func ProvideGatewayHandler(
 	gatewayService *service.GatewayService,
 	openAIGatewayService *service.OpenAIGatewayService,
+	geminiCompatService *service.GeminiMessagesCompatService,
+	antigravityGatewayService *service.AntigravityGatewayService,
+	geminiCachedContentService *service.GeminiCachedContentService,
 	userService *service.UserService,
 	concurrencyService *service.ConcurrencyService,
 	billingCacheService *service.BillingCacheService,
@@ -120,9 +127,11 @@ func ProvideGatewayHandler(
 	settingService *service.SettingService,
 ) *GatewayHandler {
 	SetSecurityPolicyService(securityPolicyService)
-	return NewGatewayHandler(gatewayService, openAIGatewayService,
+	h := NewGatewayHandler(gatewayService, openAIGatewayService, geminiCompatService, antigravityGatewayService,
 		userService, concurrencyService, billingCacheService, usageService, apiKeyService, usageRecordWorkerPool,
 		errorPassthroughService, contentModerationService, userMsgQueueService, cfg, settingService)
+	h.geminiCachedContentService = geminiCachedContentService
+	return h
 }
 
 func ProvideOpenAIGatewayHandler(
@@ -262,6 +271,8 @@ var ProviderSet = wire.NewSet(
 	admin.NewIntelligentTestHandler,
 	admin.NewSecurityPolicyHandler,
 	admin.NewAccountHealthHandler,
+	admin.NewGeminiOAuthHandler,
+	admin.NewAntigravityOAuthHandler,
 	admin.NewAnnouncementHandler,
 	admin.NewDataManagementHandler,
 	admin.NewBackupHandler,

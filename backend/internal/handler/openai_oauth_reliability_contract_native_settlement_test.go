@@ -62,7 +62,7 @@ func TestOAuthReliabilityContractNativeWSHandlerSettlesMeteredFailureOnce(t *tes
 			var selectedTokens []string
 			accounts := make([]service.Account, 2)
 			rateRepo := &oauthReliabilityNativeSettlementRateRepo{}
-			rateService := service.NewRateLimitService(rateRepo, nil, nil, nil)
+			rateService := service.NewRateLimitService(rateRepo, nil, nil, nil, nil)
 			upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/backend-api/codex/responses" {
 					http.Error(w, "unexpected endpoint", 404)

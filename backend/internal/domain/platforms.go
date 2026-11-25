@@ -15,6 +15,10 @@ const (
 	PlatformGatewayAnthropic PlatformGateway = "anthropic"
 	// PlatformGatewayOpenAI 由 OpenAIGatewayService 处理（OpenAI、Grok 与多协议 API Key 供应商）。
 	PlatformGatewayOpenAI PlatformGateway = "openai"
+	// PlatformGatewayGemini 由 Gemini 兼容网关处理。
+	PlatformGatewayGemini PlatformGateway = "gemini"
+	// PlatformGatewayAntigravity 由 Antigravity 网关处理。
+	PlatformGatewayAntigravity PlatformGateway = "antigravity"
 )
 
 // PlatformSpec 描述一个具体（非 composite）平台。
@@ -33,6 +37,8 @@ type PlatformSpec struct {
 var platformList = []PlatformSpec{
 	{ID: PlatformAnthropic, DisplayName: "Anthropic", Gateway: PlatformGatewayAnthropic, LiteLLMProvider: "anthropic"},
 	{ID: PlatformOpenAI, DisplayName: "OpenAI", Gateway: PlatformGatewayOpenAI, LiteLLMProvider: "openai"},
+	{ID: PlatformGemini, DisplayName: "Gemini", Gateway: PlatformGatewayGemini, LiteLLMProvider: "gemini"},
+	{ID: PlatformAntigravity, DisplayName: "Antigravity", Gateway: PlatformGatewayAntigravity, LiteLLMProvider: "anthropic"},
 	{ID: PlatformGrok, DisplayName: "Grok", Gateway: PlatformGatewayOpenAI, LiteLLMProvider: "xai"},
 	{ID: PlatformKimi, DisplayName: "Kimi", Gateway: PlatformGatewayOpenAI, CNProvider: true, LiteLLMProvider: "moonshot"},
 	{ID: PlatformZhipu, DisplayName: "Zhipu GLM", Gateway: PlatformGatewayOpenAI, CNProvider: true, LiteLLMProvider: "zhipu"},
@@ -95,12 +101,12 @@ func PlatformIDsWhere(match func(PlatformSpec) bool) []string {
 	return out
 }
 
-// compositePrecedenceHead 是组合分组查找顺序的固定前缀。
-var compositePrecedenceHead = []string{PlatformAnthropic, PlatformOpenAI}
+// compositePrecedenceHead 是组合分组查找顺序的固定前缀（历史顺序：Gemini 先于 OpenAI）。
+var compositePrecedenceHead = []string{PlatformAnthropic, PlatformGemini, PlatformOpenAI}
 
 // CompositePrecedencePlatformIDs 返回按平台依次回退时的顺序：组合分组在请求目标
 // 解析前逐平台查找定价 / 模型映射（先命中者生效）、拼接默认模型列表，以及调度快照
-// 遍历。沿用 anthropic、openai 前缀，其余按展示顺序，新登记的平台追加在末尾。
+// 遍历。沿用历史顺序 anthropic、gemini、openai，其余按展示顺序，新登记的平台追加在末尾。
 func CompositePrecedencePlatformIDs() []string {
 	out := make([]string, 0, len(platformList))
 	seen := make(map[string]struct{}, len(platformList))

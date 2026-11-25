@@ -1914,7 +1914,7 @@ func TestOpenAIGatewayService_APIKeyPassthrough_PoolModeAuthErrorsTriggerFailove
 			svc := &OpenAIGatewayService{
 				tiboRouteDisabled: true,
 				cfg:               &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
-				rateLimitService:  NewRateLimitService(transientCooldownAccountRepo{}, nil, &config.Config{}, nil),
+				rateLimitService:  NewRateLimitService(transientCooldownAccountRepo{}, nil, &config.Config{}, nil, nil),
 				httpUpstream: &httpUpstreamRecorder{resp: &http.Response{
 					StatusCode: tt.statusCode,
 					Header:     http.Header{"Content-Type": []string{"application/json"}},

@@ -20,7 +20,7 @@ func TestOpsErrorLogger_UpstreamStreamTransportClassification(t *testing.T) {
 		t.Run(code, func(t *testing.T) {
 			setupOpsErrorLogTestQueue(t, 2)
 			gin.SetMode(gin.TestMode)
-			ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			router := gin.New()
 			router.Use(OpsErrorLoggerMiddleware(ops))
 			router.POST("/responses", func(c *gin.Context) {

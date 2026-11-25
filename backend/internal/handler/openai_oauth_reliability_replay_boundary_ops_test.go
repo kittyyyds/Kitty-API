@@ -99,7 +99,7 @@ func TestOAuthReliabilityReplayBoundaryForwardOpsAtErrorLevel(t *testing.T) {
 			}
 			seed, _ := oauthReliabilityModelRequest(t, "chat", true, ctx)
 			repo := &ingressRejectOpsRepo{}
-			ops := service.NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil)
+			ops := service.NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			router := gin.New()
 			router.Use(OpsErrorLoggerMiddleware(ops))
 			router.POST("/v1/chat/completions", func(c *gin.Context) {
@@ -199,7 +199,7 @@ func TestOAuthReliabilityReplayBoundaryForwardCancellationDoesNotInventOpsEvent(
 	upstream := &oauthReplayOpsUpstream{wire: oauthReplayOpsCreated, readErr: context.Canceled, onFirst: cancel}
 	h, _ := oauthReliabilityModelHandler(t, upstream, false, false)
 	seed, _ := oauthReliabilityModelRequest(t, "chat", true, ctx)
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	router.POST("/v1/chat/completions", func(c *gin.Context) {

@@ -200,7 +200,7 @@ func (r *openAI429SnapshotRepo) BulkUpdate(_ context.Context, ids []int64, updat
 
 func TestHandle429_OpenAIPersistsCodexSnapshotImmediately(t *testing.T) {
 	repo := &openAI429SnapshotRepo{}
-	svc := NewRateLimitService(repo, nil, nil, nil)
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
 	account := &Account{ID: 123, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 
 	headers := http.Header{}
@@ -229,7 +229,7 @@ func TestHandle429_OpenAIPersistsCodexSnapshotImmediately(t *testing.T) {
 
 func TestHandle429_OpenAISyncsObservedPlanType(t *testing.T) {
 	repo := &openAI429SnapshotRepo{}
-	svc := NewRateLimitService(repo, nil, nil, nil)
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
 	account := &Account{
 		ID:          124,
 		Platform:    PlatformOpenAI,
@@ -260,7 +260,7 @@ func TestHandle429_OpenAIOAuthRateLimited(t *testing.T) {
 	headers.Set("x-codex-secondary-window-minutes", "300")
 
 	normalRepo := &openAI429SnapshotRepo{}
-	normalSvc := NewRateLimitService(normalRepo, nil, nil, nil)
+	normalSvc := NewRateLimitService(normalRepo, nil, nil, nil, nil)
 	normal := &Account{ID: 902, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 
 	normalSvc.handle429(context.Background(), normal, headers, nil)
@@ -340,7 +340,7 @@ func TestNormalizedCodexLimits_OnlyPrimaryData(t *testing.T) {
 
 func TestRateLimitService_HandleUpstreamError_403PreservesOriginalUpstreamMessage(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
-	service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := &Account{
 		ID:       201,
 		Platform: PlatformOpenAI,
@@ -363,7 +363,7 @@ func TestRateLimitService_HandleUpstreamError_403PreservesOriginalUpstreamMessag
 
 func TestRateLimitService_HandleUpstreamError_403FallsBackToRawBody(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
-	service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := &Account{
 		ID:       202,
 		Platform: PlatformOpenAI,

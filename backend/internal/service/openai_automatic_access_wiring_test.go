@@ -50,8 +50,8 @@ func TestOpenAIAutomaticAccessVerificationRestoresScheduledTraffic(t *testing.T)
 		resp.Request = req
 		return resp, nil
 	}}
-	tests := ProvideAccountTestService(accounts, nil, nil, upstream, cfg, nil, gateway, nil, nil)
-	worker := ProvideTokenRefreshService(accounts, nil, nil, nil, nil, nil, cfg, nil, nil, nil, tokens.refreshAPI, gateway, tests)
+	tests := ProvideAccountTestService(accounts, nil, nil, nil, nil, upstream, cfg, nil, gateway, nil, nil)
+	worker := ProvideTokenRefreshService(accounts, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, tokens.refreshAPI, gateway, tests)
 	t.Cleanup(worker.Stop)
 
 	groupID := int64(37)

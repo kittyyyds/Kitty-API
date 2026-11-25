@@ -68,7 +68,7 @@ func TestHandle429_FallbackUsesDBSeconds(t *testing.T) {
 	settingRepo.data[SettingKeyRateLimit429CooldownSettings] = string(data)
 
 	settingSvc := NewSettingService(settingRepo, &config.Config{})
-	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil)
+	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
 	svc.SetSettingService(settingSvc)
 
 	account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
@@ -88,7 +88,7 @@ func TestHandle429_FallbackDisabledSkipsLocalMark(t *testing.T) {
 	settingRepo.data[SettingKeyRateLimit429CooldownSettings] = string(data)
 
 	settingSvc := NewSettingService(settingRepo, &config.Config{})
-	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil)
+	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
 	svc.SetSettingService(settingSvc)
 
 	account := &Account{ID: 43, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
@@ -106,7 +106,7 @@ func TestHandle429_AnthropicNoResetTimeUsesFallbackCooldown(t *testing.T) {
 	settingRepo.data[SettingKeyRateLimit429CooldownSettings] = string(data)
 
 	settingSvc := NewSettingService(settingRepo, &config.Config{})
-	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil)
+	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
 	svc.SetSettingService(settingSvc)
 
 	account := &Account{ID: 45, Platform: PlatformAnthropic, Type: AccountTypeOAuth}
@@ -127,7 +127,7 @@ func TestHandle429_AnthropicNoResetTimeFallbackDisabledSkipsMark(t *testing.T) {
 	settingRepo.data[SettingKeyRateLimit429CooldownSettings] = string(data)
 
 	settingSvc := NewSettingService(settingRepo, &config.Config{})
-	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil)
+	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
 	svc.SetSettingService(settingSvc)
 
 	account := &Account{ID: 46, Platform: PlatformAnthropic, Type: AccountTypeOAuth}
@@ -139,7 +139,7 @@ func TestHandle429_AnthropicNoResetTimeFallbackDisabledSkipsMark(t *testing.T) {
 func TestHandle429_FallbackUsesDefaultSecondsWhenSettingServiceMissing(t *testing.T) {
 	accountRepo := &rateLimit429AccountRepoStub{}
 	cfg := &config.Config{}
-	svc := NewRateLimitService(accountRepo, nil, cfg, nil)
+	svc := NewRateLimitService(accountRepo, nil, cfg, nil, nil)
 
 	account := &Account{ID: 44, Platform: PlatformGrok, Type: AccountTypeAPIKey}
 	before := time.Now()

@@ -205,8 +205,10 @@ type gatewayRequestRootFields struct {
 	outputEffort gjson.Result
 	speed        gjson.Result
 	system       gjson.Result
-	messages     gjson.Result
-	input        gjson.Result
+	messages       gjson.Result
+	input          gjson.Result
+	contents       gjson.Result
+	geminiSysParts gjson.Result
 }
 
 // scanGatewayRequestRoot 用一次根对象遍历取出解析需要的全部字段。
@@ -259,6 +261,14 @@ func scanGatewayRequestRoot(body []byte) gatewayRequestRootFields {
 			if !f.input.Exists() {
 				f.input = value
 			}
+		case "contents":
+			if !f.contents.Exists() {
+				f.contents = value
+			}
+		case "systemInstruction":
+			if !f.geminiSysParts.Exists() {
+				f.geminiSysParts = value.Get("parts")
+			}
 		}
 		return true
 	})
@@ -269,15 +279,25 @@ func setGatewayRequestRangesFromFields(parsed *ParsedRequest, protocol string, f
 	if parsed == nil {
 		return
 	}
-	if fields.system.Exists() {
-		parsed.HasSystem = true
-		parsed.systemRange = rangeFromResult(fields.system)
-	}
-	if fields.messages.Exists() && fields.messages.IsArray() {
-		parsed.messagesRange = rangeFromResult(fields.messages)
-	}
-	if protocol == "responses" && fields.input.Exists() {
-		parsed.inputRange = rangeFromResult(fields.input)
+	switch protocol {
+	case domain.PlatformGemini:
+		if fields.geminiSysParts.Exists() && fields.geminiSysParts.IsArray() {
+			parsed.systemRange = rangeFromResult(fields.geminiSysParts)
+		}
+		if fields.contents.Exists() && fields.contents.IsArray() {
+			parsed.messagesRange = rangeFromResult(fields.contents)
+		}
+	default:
+		if fields.system.Exists() {
+			parsed.HasSystem = true
+			parsed.systemRange = rangeFromResult(fields.system)
+		}
+		if fields.messages.Exists() && fields.messages.IsArray() {
+			parsed.messagesRange = rangeFromResult(fields.messages)
+		}
+		if protocol == "responses" && fields.input.Exists() {
+			parsed.inputRange = rangeFromResult(fields.input)
+		}
 	}
 }
 
@@ -471,7 +491,7 @@ func normalizeSessionUserAgentFallback(raw string) string {
 }
 
 // ParseGatewayRequest 解析网关请求体并返回结构化结果。
-// protocol 指定请求协议格式（domain.PlatformAnthropic 等），
+// protocol 指定请求协议格式（domain.PlatformAnthropic / domain.PlatformGemini），
 // 不同协议使用不同的 system/messages 字段名。
 func ParseGatewayRequest(body *RequestBodyRef, protocol string) (*ParsedRequest, error) {
 	return parseGatewayRequest(body, protocol, true)

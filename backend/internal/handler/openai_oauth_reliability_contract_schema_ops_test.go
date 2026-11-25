@@ -32,7 +32,7 @@ func TestOAuthReliabilityContractSchemaOpsTerminalOverridesPriorAttempt(t *testi
 		t.Run(tc.name, func(t *testing.T) {
 			setupOpsErrorLogTestQueue(t, 4)
 			gin.SetMode(gin.TestMode)
-			ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			router := gin.New()
 			router.Use(OpsErrorLoggerMiddleware(ops))
 			router.POST("/v1/responses", func(c *gin.Context) {

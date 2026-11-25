@@ -83,7 +83,7 @@ func TestAnthropicPoolQuotaCooldown(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &rateLimitAccountRepoStub{}
 			blocker := &runtimeBlockRecorder{}
-			svc := NewRateLimitService(repo, nil, &config.Config{}, nil)
+			svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 			svc.SetAccountRuntimeBlocker(blocker)
 			account := newAnthropicQuotaPoolAccount()
 			now := time.Now()
@@ -106,7 +106,7 @@ func TestAnthropicPoolQuotaCooldown(t *testing.T) {
 func TestAnthropicPoolQuotaKeepsExplicitErrorPolicyAndOrdinary429(t *testing.T) {
 	for _, customExclusion := range []bool{false, true} {
 		repo := &rateLimitAccountRepoStub{}
-		svc := NewRateLimitService(repo, nil, &config.Config{}, nil)
+		svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 		account := newAnthropicQuotaPoolAccount()
 		body := []byte(`{"error":{"type":"rate_limit_error","message":"slow down"}}`)
 		if customExclusion {
@@ -161,7 +161,7 @@ func TestAnthropicPoolQuotaAnd502ForwardPaths(t *testing.T) {
 				cfg := &config.Config{}
 				svc := &GatewayService{
 					cfg: cfg, httpUpstream: upstream, tlsFPProfileService: &TLSFingerprintProfileService{},
-					rateLimitService: NewRateLimitService(repo, nil, cfg, nil),
+					rateLimitService: NewRateLimitService(repo, nil, cfg, nil, nil),
 				}
 				account := newAnthropicQuotaPoolAccount()
 				account.Extra["anthropic_passthrough"] = path == "passthrough"

@@ -86,6 +86,15 @@ func (h *AccountHandler) ScopedAdminKeyAccounts(c *gin.Context) {
 	}
 	c.Abort()
 	base := "/api/v1/admin/accounts"
+	// 静态默认映射不读取任何账户；权限独立于账户查看及凭证写入。
+	if path == base+"/antigravity/default-model-mapping" && c.Request.Method == "GET" {
+		if !adminaccess.RouteAllowed(principal.Policy, c.Request.Method, path) {
+			response.Error(c, 403, "默认模型读取未授权")
+			return
+		}
+		h.GetAntigravityDefaultModelMapping(c)
+		return
+	}
 	if path == base+"/import/codex-session" && c.Request.Method == "POST" {
 		h.scopedAdminImportCodexSession(c)
 		return

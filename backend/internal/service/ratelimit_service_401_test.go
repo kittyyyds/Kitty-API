@@ -101,7 +101,7 @@ func TestRateLimitService_HandleUpstreamError_OAuth401SetsTempUnschedulable(t *t
 	t.Run("grok", func(t *testing.T) {
 		repo := &rateLimitAccountRepoStub{}
 		invalidator := &tokenCacheInvalidatorRecorder{}
-		service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+		service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 		service.SetTokenCacheInvalidator(invalidator)
 		account := &Account{
 			ID:       100,
@@ -131,7 +131,7 @@ func TestRateLimitService_HandleUpstreamError_OAuth401SetsTempUnschedulable(t *t
 
 	t.Run("anthropic", func(t *testing.T) {
 		repo := &rateLimitAccountRepoStub{}
-		service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+		service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 		account := &Account{
 			ID:          109,
 			Platform:    PlatformAnthropic,
@@ -147,7 +147,7 @@ func TestRateLimitService_HandleUpstreamError_OAuth401SetsTempUnschedulable(t *t
 	t.Run("openai does not freeze", func(t *testing.T) {
 		repo := &rateLimitAccountRepoStub{}
 		invalidator := &tokenCacheInvalidatorRecorder{}
-		service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+		service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 		service.SetTokenCacheInvalidator(invalidator)
 		account := &Account{
 			ID:          110,
@@ -171,7 +171,7 @@ func TestRateLimitService_HandleUpstreamError_OAuth401SetsTempUnschedulable(t *t
 func TestRateLimitService_HandleUpstreamError_OAuth401InvalidatorError(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
 	invalidator := &tokenCacheInvalidatorRecorder{err: errors.New("boom")}
-	service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	service.SetTokenCacheInvalidator(invalidator)
 	account := &Account{
 		ID:       101,
@@ -194,7 +194,7 @@ func TestRateLimitService_HandleUpstreamError_OAuth401InvalidatorError(t *testin
 func TestRateLimitService_HandleUpstreamError_NonOAuth401(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
 	invalidator := &tokenCacheInvalidatorRecorder{}
-	service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	service.SetTokenCacheInvalidator(invalidator)
 	account := &Account{
 		ID:       102,
@@ -211,7 +211,7 @@ func TestRateLimitService_HandleUpstreamError_NonOAuth401(t *testing.T) {
 
 func TestRateLimitService_HandleUpstreamError_NonOAuthModel401StillDisablesCredentials(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
-	service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := &Account{
 		ID:       104,
 		Platform: PlatformOpenAI,
@@ -239,7 +239,7 @@ func TestRateLimitService_HandleUpstreamError_NonOAuthModel401StillDisablesCrede
 // 会把新 refresh_token 回滚为快照中的旧值,导致下一周期拿 invalid_grant 被错误 disable。
 func TestRateLimitService_HandleUpstreamError_OAuth401DoesNotOverwriteCredentials(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
-	service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := &Account{
 		ID:       103,
 		Platform: PlatformOpenAI,
@@ -265,7 +265,7 @@ func TestRateLimitService_HandleUpstreamError_OAuth401NoRefreshTokenSetsError(t 
 	t.Run("openai_no_refresh_token", func(t *testing.T) {
 		repo := &rateLimitAccountRepoStub{}
 		invalidator := &tokenCacheInvalidatorRecorder{}
-		service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+		service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 		service.SetTokenCacheInvalidator(invalidator)
 		account := &Account{
 			ID:       2881,
@@ -289,7 +289,7 @@ func TestRateLimitService_HandleUpstreamError_OAuth401NoRefreshTokenSetsError(t 
 
 	t.Run("openai_blank_refresh_token_treated_as_missing", func(t *testing.T) {
 		repo := &rateLimitAccountRepoStub{}
-		service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+		service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 		account := &Account{
 			ID:       2882,
 			Platform: PlatformOpenAI,
@@ -310,7 +310,7 @@ func TestRateLimitService_HandleUpstreamError_OAuth401NoRefreshTokenSetsError(t 
 	t.Run("anthropic_no_refresh_token_sets_error", func(t *testing.T) {
 		repo := &rateLimitAccountRepoStub{}
 		invalidator := &tokenCacheInvalidatorRecorder{}
-		service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+		service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 		service.SetTokenCacheInvalidator(invalidator)
 		account := &Account{
 			ID:       2883,

@@ -95,7 +95,7 @@ func TestOpenAIQuotaCooldownMissingResetCoalescesAndRechecks(t *testing.T) {
 			ctx := context.Background()
 			a := Account{ID: 13501, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}
 			repo := &quotaCooldownTestRepo{account: a, settled: make(chan struct{})}
-			s := NewRateLimitService(repo, nil, nil, nil)
+			s := NewRateLimitService(repo, nil, nil, nil, nil)
 			gateway := &OpenAIGatewayService{rateLimitService: s}
 			started, resume := make(chan struct{}), make(chan struct{})
 			var calls atomic.Int32

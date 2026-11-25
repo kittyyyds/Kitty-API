@@ -290,7 +290,7 @@ func TestOAuthReliabilityWSReadDiagnosticSerializationBoundaries(t *testing.T) {
 				captured = append(captured, input)
 				return int64(len(captured)), nil
 			}}
-			svc := NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil)
+			svc := NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			for _, withDiagnostic := range []bool{false, true} {
 				status := 502
 				entry := &OpsInsertErrorLogInput{CreatedAt: time.Unix(1, 0), ErrorPhase: "upstream", ErrorType: "upstream_error", UpstreamStatusCode: &status,

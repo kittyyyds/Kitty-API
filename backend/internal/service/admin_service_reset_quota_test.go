@@ -31,6 +31,8 @@ func (r *resetAccountQuotaRepoStub) ResetQuotaUsedAndClearRateLimitCooldown(cont
 	return r.resetErr
 }
 
+func (r *resetAccountQuotaRepoStub) ClearAntigravityQuotaScopes(ctx context.Context, id int64) error { return nil }
+
 func (r *resetAccountQuotaRepoStub) ClearRateLimit(context.Context, int64) error {
 	r.clearRateLimitCalls++
 	r.callOrder = append(r.callOrder, "clear_rate_limit")

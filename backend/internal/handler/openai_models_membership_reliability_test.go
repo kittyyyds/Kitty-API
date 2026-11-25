@@ -223,7 +223,7 @@ func oauthModelsMembershipRequest(t *testing.T, codex *OpenAIGatewayHandler, ent
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	core, logs := observer.New(zap.WarnLevel)
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	ordinary := &GatewayHandler{openAIGatewayService: codex.gatewayService, maxAccountSwitches: 1}

@@ -37,6 +37,22 @@ func ClaudeProviderRefreshPolicy() ProviderRefreshPolicy {
 	}
 }
 
+func AntigravityProviderRefreshPolicy() ProviderRefreshPolicy {
+	return ProviderRefreshPolicy{
+		OnRefreshError: ProviderRefreshErrorReturn,
+		OnLockHeld:     ProviderLockHeldUseExistingToken,
+		FailureTTL:     0,
+	}
+}
+
+func GeminiProviderRefreshPolicy() ProviderRefreshPolicy {
+	return ProviderRefreshPolicy{
+		OnRefreshError: ProviderRefreshErrorReturn,
+		OnLockHeld:     ProviderLockHeldUseExistingToken,
+		FailureTTL:     0,
+	}
+}
+
 func OpenAIProviderRefreshPolicy() ProviderRefreshPolicy {
 	return ProviderRefreshPolicy{
 		OnRefreshError: ProviderRefreshErrorUseExistingToken,

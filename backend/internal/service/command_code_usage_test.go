@@ -408,7 +408,7 @@ func TestCNProviderBalanceCheckRunOnceProbesCommandCode(t *testing.T) {
 // 积分不足（402）是可恢复状态：临时停调并标记 balance_low，不能永久置 error。
 func TestHandleUpstreamError_CommandCode402PausesInsteadOfError(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
-	service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := commandCodeUsageAccount()
 
 	shouldDisable := service.HandleUpstreamError(context.Background(), account, http.StatusPaymentRequired,
@@ -423,7 +423,7 @@ func TestHandleUpstreamError_CommandCode402PausesInsteadOfError(t *testing.T) {
 
 func TestHandleUpstreamError_CommandCode429InsufficientBalancePauses(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
-	service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := commandCodeUsageAccount()
 
 	service.HandleUpstreamError(context.Background(), account, http.StatusTooManyRequests,
@@ -464,7 +464,7 @@ func (r *commandCodeRateLimitRepo) SetModelRateLimit(_ context.Context, _ int64,
 func TestHandleUpstreamError_CommandCodeWindowLimitCoolsDownToMessageReset(t *testing.T) {
 	for _, status := range []int{http.StatusTooManyRequests, http.StatusForbidden, http.StatusPaymentRequired} {
 		repo := &commandCodeRateLimitRepo{}
-		service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+		service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 		account := commandCodeUsageAccount()
 
 		shouldDisable := service.HandleUpstreamError(context.Background(), account, status, http.Header{},
@@ -483,7 +483,7 @@ func TestHandleUpstreamError_CommandCodeWindowLimitCoolsDownToMessageReset(t *te
 // 文案没有重置时间时回落额度快照中最早的窗口重置点。
 func TestHandleUpstreamError_CommandCodeWindowLimitFallsBackToSnapshot(t *testing.T) {
 	repo := &commandCodeRateLimitRepo{}
-	service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := commandCodeUsageAccount()
 	account.Extra = map[string]any{
 		"command_code_5h_used_percent":   100.0,
@@ -501,7 +501,7 @@ func TestHandleUpstreamError_CommandCodeWindowLimitFallsBackToSnapshot(t *testin
 // 普通频率限制很快恢复：即使快照里有窗口重置点，也不冷却到窗口重置。
 func TestHandleUpstreamError_CommandCodeRateLimitUsesDefaultCooldown(t *testing.T) {
 	repo := &commandCodeRateLimitRepo{}
-	service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := commandCodeUsageAccount()
 	account.Extra = map[string]any{
 		"command_code_5h_used_percent":   97.0,
@@ -527,7 +527,7 @@ const (
 // 组织为某个模型设的花费上限只限当前模型：写模型级限流到文案中的重置时间，不停整个账号。
 func TestHandleUpstreamError_CommandCodeSpendLimitIsModelScoped(t *testing.T) {
 	repo := &commandCodeRateLimitRepo{}
-	service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := commandCodeUsageAccount()
 	ctx := withTempUnschedulableModel(context.Background(), []string{"glm-5"})
 
@@ -545,7 +545,7 @@ func TestHandleUpstreamError_CommandCodeSpendLimitIsModelScoped(t *testing.T) {
 // 成员总额度耗尽：即使请求模型已知也按账号冷却，但最长一小时（管理员可能调高上限）。
 func TestHandleUpstreamError_CommandCodeMemberSpendLimitIsAccountScoped(t *testing.T) {
 	repo := &commandCodeRateLimitRepo{}
-	service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := commandCodeUsageAccount()
 	ctx := withTempUnschedulableModel(context.Background(), []string{"glm-5"})
 
@@ -560,7 +560,7 @@ func TestHandleUpstreamError_CommandCodeMemberSpendLimitIsAccountScoped(t *testi
 
 	// 文案中的重置时间早于一小时时以文案为准。
 	soon := &commandCodeRateLimitRepo{}
-	NewRateLimitService(soon, nil, &config.Config{}, nil).HandleUpstreamError(ctx, account, http.StatusTooManyRequests, http.Header{},
+	NewRateLimitService(soon, nil, &config.Config{}, nil, nil).HandleUpstreamError(ctx, account, http.StatusTooManyRequests, http.Header{},
 		[]byte(`{"error":{"message":"You've reached the $50.00/mo spending limit your organization set. It resets in 20 minutes."}}`))
 	require.WithinDuration(t, time.Now().Add(20*time.Minute), soon.tempUntil, time.Minute)
 }
@@ -568,7 +568,7 @@ func TestHandleUpstreamError_CommandCodeMemberSpendLimitIsAccountScoped(t *testi
 // 不知道模型时按账号冷却（最长一小时），不停账号数天，也不进入 403 累计禁用。
 func TestHandleUpstreamError_CommandCodeSpendLimitWithoutModelShortCooldown(t *testing.T) {
 	repo := &commandCodeRateLimitRepo{}
-	service := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := commandCodeUsageAccount()
 
 	for i := 0; i < 5; i++ {
@@ -628,7 +628,7 @@ func TestCommandCodeWindowCooldownClearedAfterTopUp(t *testing.T) {
 	account := commandCodeUsageAccount()
 	account.Schedulable = true
 	repo := &commandCodeStatefulRepo{account: account}
-	rateLimit := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	rateLimit := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 
 	rateLimit.HandleUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{},
 		[]byte(`{"error":{"message":"You've reached your 5-hour usage limit. Resets in 3h 10m."}}`))

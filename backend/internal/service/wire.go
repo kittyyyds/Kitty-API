@@ -8,6 +8,7 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -113,6 +114,8 @@ func ProvideTokenRefreshService(
 	accountRepo AccountRepository,
 	oauthService *OAuthService,
 	openaiOAuthService *OpenAIOAuthService,
+	geminiOAuthService *GeminiOAuthService,
+	antigravityOAuthService *AntigravityOAuthService,
 	grokOAuthService *GrokOAuthService,
 	cacheInvalidator TokenCacheInvalidator,
 	schedulerCache SchedulerCache,
@@ -124,7 +127,7 @@ func ProvideTokenRefreshService(
 	runtimeBlocker AccountRuntimeBlocker,
 	accountTests *AccountTestService,
 ) *TokenRefreshService {
-	svc := NewTokenRefreshService(accountRepo, oauthService, openaiOAuthService, cacheInvalidator, schedulerCache, cfg, tempUnschedCache, grokOAuthService)
+	svc := NewTokenRefreshService(accountRepo, oauthService, openaiOAuthService, geminiOAuthService, antigravityOAuthService, cacheInvalidator, schedulerCache, cfg, tempUnschedCache, grokOAuthService)
 	// 注入 OpenAI privacy opt-out 依赖
 	svc.SetPrivacyDeps(privacyClientFactory, proxyRepo)
 	// 注入统一 OAuth 刷新 API（消除 TokenRefreshService 与 TokenProvider 之间的竞争条件）
@@ -236,6 +239,8 @@ func ProvideAccountUsageService(
 	accountRepo AccountRepository,
 	usageLogRepo UsageLogRepository,
 	usageFetcher ClaudeUsageFetcher,
+	geminiQuotaService *GeminiQuotaService,
+	antigravityQuotaFetcher *AntigravityQuotaFetcher,
 	grokQuotaFetcher *GrokQuotaFetcher,
 	grokQuotaService *GrokQuotaService,
 	openAIQuotaService *OpenAIQuotaService,
@@ -249,6 +254,8 @@ func ProvideAccountUsageService(
 		accountRepo,
 		usageLogRepo,
 		usageFetcher,
+		geminiQuotaService,
+		antigravityQuotaFetcher,
 		grokQuotaFetcher,
 		grokQuotaService,
 		openAIQuotaService,
@@ -270,6 +277,8 @@ func ProvideAccountTestService(
 	accountRepo AccountRepository,
 	claudeTokenProvider *ClaudeTokenProvider,
 	grokTokenProvider *GrokTokenProvider,
+	geminiTokenProvider *GeminiTokenProvider,
+	antigravityGatewayService *AntigravityGatewayService,
 	httpUpstream HTTPUpstream,
 	cfg *config.Config,
 	tlsFPProfileService *TLSFingerprintProfileService,
@@ -279,8 +288,10 @@ func ProvideAccountTestService(
 ) *AccountTestService {
 	service := NewAccountTestService(
 		accountRepo,
+		geminiTokenProvider,
 		claudeTokenProvider,
 		grokTokenProvider,
+		antigravityGatewayService,
 		httpUpstream,
 		cfg,
 		tlsFPProfileService,
@@ -492,6 +503,7 @@ func ProvideRateLimitService(
 	accountRepo AccountRepository,
 	usageRepo UsageLogRepository,
 	cfg *config.Config,
+	geminiQuotaService *GeminiQuotaService,
 	tempUnschedCache TempUnschedCache,
 	timeoutCounterCache TimeoutCounterCache,
 	openAI403CounterCache OpenAI403CounterCache,
@@ -499,7 +511,7 @@ func ProvideRateLimitService(
 	tokenCacheInvalidator TokenCacheInvalidator,
 	ollamaCloudUsage *OllamaCloudUsageService,
 ) *RateLimitService {
-	svc := NewRateLimitService(accountRepo, usageRepo, cfg, tempUnschedCache)
+	svc := NewRateLimitService(accountRepo, usageRepo, cfg, geminiQuotaService, tempUnschedCache)
 	if healthCache, ok := tempUnschedCache.(OpenAIAPIKeyHealthCache); ok {
 		svc.SetOpenAIAPIKeyHealthCache(healthCache)
 	}
@@ -746,6 +758,8 @@ func ProvideOpsService(
 	concurrencyService *ConcurrencyService,
 	gatewayService *GatewayService,
 	openAIGatewayService *OpenAIGatewayService,
+	geminiCompatService *GeminiMessagesCompatService,
+	antigravityGatewayService *AntigravityGatewayService,
 	systemLogSink *OpsSystemLogSink,
 	settingService *SettingService,
 	authCacheInvalidationWorker *AuthCacheInvalidationWorker,
@@ -760,6 +774,8 @@ func ProvideOpsService(
 		concurrencyService,
 		gatewayService,
 		openAIGatewayService,
+		geminiCompatService,
+		antigravityGatewayService,
 		systemLogSink,
 	)
 	if settingService != nil {
@@ -816,6 +832,7 @@ func ProvideSettingService(scopedKeys ScopedAdminKeyRepository, settingRepo Sett
 	if err := svc.MigrateGrokDefaultTextModel(context.Background()); err != nil {
 		logger.LegacyPrintf("service.setting", "Warning: migrate Grok default text model failed: %v", err)
 	}
+	antigravity.SetUserAgentVersionResolver(svc.GetAntigravityUserAgentVersion)
 	// enforceCodexIdentityHeaders 是所有 Codex 出站路径共用的纯函数收口点，拿不到 ctx，
 	// 故注入无参解析器；解析器内部自带 60s TTL 缓存，热路径不触库。
 	SetCodexCanonicalUserAgentResolver(func() string {
@@ -942,6 +959,43 @@ func provideContentModerationServiceRetired(
 	return svc, nil
 }
 
+// ProvideGeminiTokenProvider creates GeminiTokenProvider with OAuthRefreshAPI injection
+func ProvideGeminiTokenProvider(
+	accountRepo AccountRepository,
+	tokenCache GeminiTokenCache,
+	geminiOAuthService *GeminiOAuthService,
+	refreshAPI *OAuthRefreshAPI,
+) *GeminiTokenProvider {
+	p := NewGeminiTokenProvider(accountRepo, tokenCache, geminiOAuthService)
+	executor := NewGeminiTokenRefresher(geminiOAuthService)
+	p.SetRefreshAPI(refreshAPI, executor)
+	p.SetRefreshPolicy(GeminiProviderRefreshPolicy())
+	return p
+}
+
+// ProvideAntigravityTokenProvider creates AntigravityTokenProvider with OAuthRefreshAPI injection
+func ProvideAntigravityTokenProvider(
+	accountRepo AccountRepository,
+	tokenCache GeminiTokenCache,
+	antigravityOAuthService *AntigravityOAuthService,
+	refreshAPI *OAuthRefreshAPI,
+	tempUnschedCache TempUnschedCache,
+) *AntigravityTokenProvider {
+	p := NewAntigravityTokenProvider(accountRepo, tokenCache, antigravityOAuthService)
+	executor := NewAntigravityTokenRefresher(antigravityOAuthService)
+	p.SetRefreshAPI(refreshAPI, executor)
+	p.SetRefreshPolicy(AntigravityProviderRefreshPolicy())
+	p.SetTempUnschedCache(tempUnschedCache)
+	return p
+}
+
+// ProvideGeminiCachedContentService creates GeminiCachedContentService and starts its mutation recovery loop.
+func ProvideGeminiCachedContentService(repo GeminiCachedContentRepository, compat *GeminiMessagesCompatService, cfg *config.Config) *GeminiCachedContentService {
+	svc := NewGeminiCachedContentService(repo, compat, cfg)
+	svc.Start()
+	return svc
+}
+
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
 	// Core services
@@ -973,6 +1027,14 @@ var ProviderSet = wire.NewSet(
 	ProvideOpenAIOAuthService,
 	ProvideGrokOAuthService,
 	wire.Bind(new(GrokOAuthTokenService), new(*GrokOAuthService)),
+	NewGeminiOAuthService,
+	ProvideGeminiCachedContentService,
+	NewGeminiQuotaService,
+	NewAntigravityOAuthService,
+	ProvideGeminiTokenProvider,
+	NewGeminiMessagesCompatService,
+	ProvideAntigravityTokenProvider,
+	NewAntigravityGatewayService,
 	NewCompositeTokenCacheInvalidator,
 	wire.Bind(new(TokenCacheInvalidator), new(*CompositeTokenCacheInvalidator)),
 	ProvideOAuthRefreshAPI,
@@ -1033,6 +1095,7 @@ var ProviderSet = wire.NewSet(
 	ProvideDashboardAggregationService,
 	ProvideUsageCleanupService,
 	ProvideDeferredService,
+	NewAntigravityQuotaFetcher,
 	NewGrokQuotaFetcher,
 	NewUserAttributeService,
 	NewUsageCache,

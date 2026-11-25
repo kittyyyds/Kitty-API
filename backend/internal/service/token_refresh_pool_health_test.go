@@ -371,7 +371,7 @@ func newPoolHealthService(repo *poolHealthAccountRepo, refresher *poolHealthRefr
 
 func TestTokenRefreshService_RegistrationsAreCandidateEligibilitySource(t *testing.T) {
 	cfg := &config.Config{}
-	svc := NewTokenRefreshService(nil, nil, nil, nil, nil, cfg, nil)
+	svc := NewTokenRefreshService(nil, nil, nil, nil, nil, nil, nil, cfg, nil)
 
 	require.Equal(t, []string{
 		PlatformAnthropic,

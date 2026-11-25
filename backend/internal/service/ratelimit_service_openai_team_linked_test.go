@@ -78,7 +78,7 @@ func newTeamLinkedFixture() []Account {
 }
 
 func newTeamLinkedTestService(repo *teamLinkedAccountRepoStub) (*RateLimitService, *runtimeBlockRecorder) {
-	rl := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	rl := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	blocker := &runtimeBlockRecorder{}
 	rl.SetAccountRuntimeBlocker(blocker)
 	return rl, blocker

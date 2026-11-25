@@ -244,7 +244,7 @@ func TestForwardSystemOneAppliesExistingAccountStatePolicy(t *testing.T) {
 				return &http.Response{StatusCode: tc.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"private"}`))}, nil
 			}}
 			svc := newSystemOneTestService(upstream)
-			svc.rateLimitService = NewRateLimitService(repo, nil, &config.Config{}, nil)
+			svc.rateLimitService = NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 
 			_, err := svc.ForwardSystemOne(context.Background(), newSystemOneTestContext(), account, []byte(`{}`))
 			require.Error(t, err)
@@ -291,7 +291,7 @@ func TestForwardSystemOneRequestErrorsNeverTouchAccountState(t *testing.T) {
 			}}
 			repo := &systemOnePolicyAccountRepo{account: account}
 			svc := newSystemOneTestService(newSystemOneStatusUpstream(status, `{"detail":"bad question"}`))
-			svc.rateLimitService = NewRateLimitService(repo, nil, &config.Config{}, nil)
+			svc.rateLimitService = NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 			c := newSystemOneTestContext()
 
 			_, err := svc.ForwardSystemOne(context.Background(), c, account, []byte(`{}`))
@@ -321,7 +321,7 @@ func TestForwardSystemOneAccountLevelFailuresFailOver(t *testing.T) {
 			account := &Account{ID: 22, Platform: PlatformTypeSafe, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "http://typesafe.test", "api_key": "ts-secret"}}
 			repo := &systemOnePolicyAccountRepo{account: account}
 			svc := newSystemOneTestService(newSystemOneStatusUpstream(tc.status, `{"detail":"account problem"}`))
-			svc.rateLimitService = NewRateLimitService(repo, nil, &config.Config{}, nil)
+			svc.rateLimitService = NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 			c := newSystemOneTestContext()
 
 			_, err := svc.ForwardSystemOne(context.Background(), c, account, []byte(`{}`))
@@ -342,7 +342,7 @@ func TestForwardSystemOneHonorsCustomErrorCodes(t *testing.T) {
 	}}
 	repo := &systemOnePolicyAccountRepo{account: account}
 	svc := newSystemOneTestService(newSystemOneStatusUpstream(http.StatusNotFound, `{"detail":"missing"}`))
-	svc.rateLimitService = NewRateLimitService(repo, nil, &config.Config{}, nil)
+	svc.rateLimitService = NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 
 	_, err := svc.ForwardSystemOne(context.Background(), newSystemOneTestContext(), account, []byte(`{}`))
 	var failoverErr *UpstreamFailoverError
@@ -354,7 +354,7 @@ func TestForwardSystemOneUnhandledStatusDoesNotFailOver(t *testing.T) {
 	account := &Account{ID: 24, Platform: PlatformTypeSafe, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "http://typesafe.test", "api_key": "ts-secret"}}
 	repo := &systemOnePolicyAccountRepo{account: account}
 	svc := newSystemOneTestService(newSystemOneStatusUpstream(http.StatusConflict, `{"detail":"conflict"}`))
-	svc.rateLimitService = NewRateLimitService(repo, nil, &config.Config{}, nil)
+	svc.rateLimitService = NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 
 	_, err := svc.ForwardSystemOne(context.Background(), newSystemOneTestContext(), account, []byte(`{}`))
 	var upstreamErr *SystemOneUpstreamError

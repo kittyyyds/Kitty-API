@@ -13,6 +13,7 @@ import (
 // 该平台已下线，不再生成 mixed 桶；注册表里的存量 mixed 桶按历史模式处理。
 const (
 	SchedulerModeSingle = "single"
+	SchedulerModeMixed  = "mixed"
 	SchedulerModeForced = "forced"
 )
 

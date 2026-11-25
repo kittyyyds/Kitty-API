@@ -107,6 +107,9 @@ func provideCleanup(
 	oauth *service.OAuthService,
 	openaiOAuth *service.OpenAIOAuthService,
 	grokOAuth *service.GrokOAuthService,
+	geminiOAuth *service.GeminiOAuthService,
+	antigravityOAuth *service.AntigravityOAuthService,
+	geminiCachedContent *service.GeminiCachedContentService,
 	openAIGateway *service.OpenAIGatewayService,
 	backupSvc *service.BackupService,
 	channelMonitorRunner *service.ChannelMonitorRunner,
@@ -315,9 +318,35 @@ func provideCleanup(
 				openaiOAuth.Stop()
 				return nil
 			}},
+			{"GeminiOAuthService", func() error {
+				geminiOAuth.Stop()
+				return nil
+			}},
+			{"AntigravityOAuthService", func() error {
+				antigravityOAuth.Stop()
+				return nil
+			}},
 			{"GrokOAuthService", func() error {
 				if grokOAuth != nil {
 					grokOAuth.Stop()
+				}
+				return nil
+			}},
+			{"GeminiOAuthService", func() error {
+				if geminiOAuth != nil {
+					geminiOAuth.Stop()
+				}
+				return nil
+			}},
+			{"AntigravityOAuthService", func() error {
+				if antigravityOAuth != nil {
+					antigravityOAuth.Stop()
+				}
+				return nil
+			}},
+			{"GeminiCachedContentService", func() error {
+				if geminiCachedContent != nil {
+					geminiCachedContent.Stop()
 				}
 				return nil
 			}},

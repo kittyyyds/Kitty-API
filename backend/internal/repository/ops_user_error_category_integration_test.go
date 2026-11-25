@@ -107,7 +107,7 @@ func TestOpsUserErrorCategoryFilters(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	ops := service.NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	settings := service.NewSettingService(opsCategoryTestSettings{}, nil)
 	usageHandler := handler.NewUsageHandler(nil, nil, ops, settings)
 	adminHandler := adminhandler.NewOpsHandler(ops)

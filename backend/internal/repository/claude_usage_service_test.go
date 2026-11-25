@@ -124,8 +124,19 @@ func TestClaudeUsageFetcher_ScopedFableRoundTrip(t *testing.T) {
 				},
 			}
 			repo := &claudeUsageWindowAccountRepo{account: account}
-			svc := service.NewAccountUsageService(repo, &claudeUsageWindowLogRepo{}, fetcher,
-				nil, nil, nil, service.NewUsageCache(), nil, nil)
+			svc := service.NewAccountUsageService(
+				repo,
+				&claudeUsageWindowLogRepo{},
+				fetcher,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				service.NewUsageCache(),
+				nil,
+				nil,
+			)
 			for range 2 {
 				usage, err := svc.GetUsageForAccount(t.Context(), account)
 				require.NoError(t, err)

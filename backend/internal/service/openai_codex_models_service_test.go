@@ -3297,7 +3297,7 @@ func (r *codexModelsAccountStateRepo) SetTempUnschedulable(_ context.Context, _ 
 }
 
 func newCodexModels401TestService(repo AccountRepository) *OpenAIGatewayService {
-	rateLimitService := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	rateLimitService := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	s := &OpenAIGatewayService{rateLimitService: rateLimitService}
 	rateLimitService.SetAccountRuntimeBlocker(s)
 	return s
@@ -3399,7 +3399,7 @@ func TestFetchCodexModelsManifestAPIKey401KeepsNoFailoverAndNoDisable(t *testing
 
 	repo := &codexModelsAccountStateRepo{}
 	s := newCodexModelsAPIKeyTestService(upstream)
-	s.rateLimitService = NewRateLimitService(repo, nil, &config.Config{}, nil)
+	s.rateLimitService = NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 
 	_, err := s.FetchCodexModelsManifest(
 		context.Background(),

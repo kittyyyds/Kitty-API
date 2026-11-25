@@ -105,7 +105,20 @@ func TestGrokSSOBatchImportKeepsCreatedAccountsWhenOneAutomaticProbeFails(t *tes
 func TestAccountCreateWithoutAutomaticGrokProbeServiceStillSucceeds(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := NewAccountHandler(
-		newGrokImportAdminService(), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		newGrokImportAdminService(),
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
 	)
 
 	router := gin.New()

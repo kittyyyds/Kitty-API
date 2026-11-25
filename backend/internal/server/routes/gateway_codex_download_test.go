@@ -51,7 +51,7 @@ func TestOAuthReliabilityCodexDownloadCanonicalRouteAndPermissions(t *testing.T)
 	svc := service.NewOpenAIGatewayService(repo, nil, nil, nil, nil, nil, nil, cfg,
 		nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil)
 	h := &handler.Handlers{
-		Gateway:       handler.NewGatewayHandler(nil, svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfg, nil),
+		Gateway:       handler.NewGatewayHandler(nil, svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, cfg, nil),
 		OpenAIGateway: handler.NewOpenAIGatewayHandler(svc, nil, nil, nil, nil, nil, nil, nil, cfg),
 		AsyncImage:    handler.NewAsyncImageHandler(nil, nil),
 	}

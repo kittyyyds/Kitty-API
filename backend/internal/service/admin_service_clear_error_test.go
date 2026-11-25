@@ -30,6 +30,8 @@ func (r *accountRepoStubForClearAccountError) ClearError(ctx context.Context, id
 	return nil
 }
 
+func (r *accountRepoStubForClearAccountError) ClearAntigravityQuotaScopes(ctx context.Context, id int64) error { return nil }
+
 func (r *accountRepoStubForClearAccountError) ClearRateLimit(ctx context.Context, id int64) error {
 	r.clearRateLimitCalls++
 	r.account.RateLimitedAt = nil

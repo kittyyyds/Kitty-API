@@ -85,7 +85,7 @@ func TestAccountTestService_OpenAIVerifiesAccessAfterRejectedRefresh(t *testing.
 			}}
 			svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, openaiGatewayService: gateway}
 			db := &rateLimitClearRepoStub{getByIDAccount: &Account{ID: account.ID, Status: StatusError}}
-			limiter := NewRateLimitService(db, nil, nil, nil)
+			limiter := NewRateLimitService(db, nil, nil, nil, nil)
 			var decisions []bool
 			opts := AccountTestOptions{OnOpenAIAccessVerification: func(recoveryCtx context.Context, verified bool) {
 				decisions = append(decisions, verified)

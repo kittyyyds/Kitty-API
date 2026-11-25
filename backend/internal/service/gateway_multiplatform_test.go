@@ -202,6 +202,8 @@ func (m *mockAccountRepoForPlatform) SetTempUnschedulable(ctx context.Context, i
 func (m *mockAccountRepoForPlatform) ClearTempUnschedulable(ctx context.Context, id int64) error {
 	return nil
 }
+func (m *mockAccountRepoForPlatform) ClearAntigravityQuotaScopes(ctx context.Context, id int64) error { return nil }
+
 func (m *mockAccountRepoForPlatform) ClearRateLimit(ctx context.Context, id int64) error {
 	return nil
 }

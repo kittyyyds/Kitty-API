@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// 目标：严格验证“非 Anthropic 平台账号（此处用 grok）通过 /v1/messages 提供 Claude 服务时”，
+// 目标：严格验证“antigravity 账号通过 /v1/messages 提供 Claude 服务时”，
 // 当账号 credentials.intercept_warmup_requests=true 且请求为 Warmup 时，
 // 后端会在转发上游前直接拦截并返回 mock 响应（不依赖上游）。
 
@@ -237,7 +237,7 @@ func TestGatewayHandlerMessages_InterceptWarmup_MixedSchedulingV1(t *testing.T) 
 	account := &service.Account{
 		ID:       accountID,
 		Name:     "ag-1",
-		Platform: service.PlatformGrok,
+		Platform: service.PlatformAntigravity,
 		Type:     service.AccountTypeOAuth,
 		Credentials: map[string]any{
 			"access_token":              "tok_xxx",
@@ -289,7 +289,7 @@ func TestGatewayHandlerMessages_InterceptWarmup_MixedSchedulingV1(t *testing.T) 
 
 	require.Equal(t, 200, rec.Code)
 
-	// 断言：确实选中了混合调度的 grok 账号（不是纯函数测试，而是从 Handler 里验证调度结果）
+	// 断言：确实选中了混合调度的 antigravity 账号（不是纯函数测试，而是从 Handler 里验证调度结果）
 	selected, ok := c.Get(opsAccountIDKey)
 	require.True(t, ok)
 	require.Equal(t, accountID, selected)
@@ -316,14 +316,14 @@ func TestGatewayHandlerMessages_InterceptWarmup_ForcePlatform(t *testing.T) {
 	group := &service.Group{
 		ID:       groupID,
 		Hydrated: true,
-		Platform: service.PlatformGrok,
+		Platform: service.PlatformAntigravity,
 		Status:   service.StatusActive,
 	}
 
 	account := &service.Account{
 		ID:       accountID,
 		Name:     "ag-2",
-		Platform: service.PlatformGrok,
+		Platform: service.PlatformAntigravity,
 		Type:     service.AccountTypeOAuth,
 		Credentials: map[string]any{
 			"access_token":              "tok_xxx",
@@ -347,17 +347,17 @@ func TestGatewayHandlerMessages_InterceptWarmup_ForcePlatform(t *testing.T) {
 		"max_tokens": 256,
 		"messages": [{"role":"user","content":[{"type":"text","text":"Warmup"}]}]
 	}`)
-	req := httptest.NewRequest("POST", "/v1/messages", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/antigravity/v1/messages", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
 	// 模拟 routes/gateway.go 里的 ForcePlatform 中间件效果：
 	// - 写入 request.Context（Service读取）
 	// - 写入 gin.Context（Handler快速读取）
 	ctx := context.WithValue(req.Context(), ctxkey.Group, group)
-	ctx = context.WithValue(ctx, ctxkey.ForcePlatform, service.PlatformGrok)
+	ctx = context.WithValue(ctx, ctxkey.ForcePlatform, service.PlatformAntigravity)
 	req = req.WithContext(ctx)
 	c.Request = req
-	c.Set(string(middleware.ContextKeyForcePlatform), service.PlatformGrok)
+	c.Set(string(middleware.ContextKeyForcePlatform), service.PlatformAntigravity)
 
 	apiKey := &service.APIKey{
 		ID:      3002,

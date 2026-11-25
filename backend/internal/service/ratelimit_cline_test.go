@@ -49,7 +49,7 @@ func TestHandleUpstreamError_Cline400DoesNotCoolWallet(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			account := clineTestAccount(400)
 			repo := &commandCodeRateLimitRepo{}
-			shouldDisable := NewRateLimitService(repo, nil, &config.Config{}, nil).HandleUpstreamError(
+			shouldDisable := NewRateLimitService(repo, nil, &config.Config{}, nil, nil).HandleUpstreamError(
 				context.Background(), account, http.StatusBadRequest, http.Header{}, []byte(body), "cline-pass/INFERENCE_CAP_ERROR")
 
 			require.False(t, shouldDisable)
@@ -71,7 +71,7 @@ func TestHandleUpstreamError_Cline429EchoedKeywordsDoNotCoolWallet(t *testing.T)
 	} {
 		t.Run(name, func(t *testing.T) {
 			repo := &commandCodeRateLimitRepo{}
-			NewRateLimitService(repo, nil, &config.Config{}, nil).HandleUpstreamError(context.Background(),
+			NewRateLimitService(repo, nil, &config.Config{}, nil, nil).HandleUpstreamError(context.Background(),
 				clineTestAccount(429), http.StatusTooManyRequests, http.Header{}, []byte(body), "deepseek/deepseek-v4-flash")
 			require.Empty(t, repo.modelLimits)
 		})
@@ -132,7 +132,7 @@ func TestHandleUpstreamError_ClineStructuredErrorsPreserveCooldown(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			repo := &commandCodeRateLimitRepo{}
 			account := clineTestAccount(430)
-			shouldDisable := NewRateLimitService(repo, nil, &config.Config{}, nil).HandleUpstreamError(
+			shouldDisable := NewRateLimitService(repo, nil, &config.Config{}, nil, nil).HandleUpstreamError(
 				context.Background(), account, tc.status, http.Header{}, []byte(tc.body), tc.model)
 
 			require.False(t, shouldDisable)

@@ -38,9 +38,21 @@ func TestOpsHandlerWorkerRuntimeStatusUnavailableWithoutOpsService(t *testing.T)
 }
 
 func TestOpsHandlerWorkerRuntimeStatusMonitoringDisabled(t *testing.T) {
-	h := NewOpsHandler(service.NewOpsService(nil, nil, &config.Config{
+	h := NewOpsHandler(service.NewOpsService(
+		nil,
+		nil,
+		&config.Config{
 		Ops: config.OpsConfig{Enabled: false},
-	}, nil, nil, nil, nil, nil, nil))
+	},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	))
 	h.SetWorkerRuntime(newStartedRuntimeForHandler(t))
 	r := newOpsSystemLogTestRouter(h, true)
 
@@ -141,7 +153,7 @@ func (f workerRuntimeSnapshotFixture) Stop(context.Context) error       { return
 func (f workerRuntimeSnapshotFixture) Snapshot() workerruntime.Snapshot { return f.snapshot }
 
 func newMonitoringEnabledOpsService() *service.OpsService {
-	return service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	return service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 }
 
 func newStartedRuntimeForHandler(t *testing.T) *workerruntime.Runtime {

@@ -289,7 +289,7 @@ func TestCheckErrorPolicy(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &errorPolicyRepoStub{}
-			svc := NewRateLimitService(repo, nil, &config.Config{}, nil)
+			svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 
 			result := svc.CheckErrorPolicy(context.Background(), tt.account, tt.statusCode, tt.body)
 			require.Equal(t, tt.expected, result, "unexpected ErrorPolicyResult")
@@ -300,7 +300,7 @@ func TestCheckErrorPolicy(t *testing.T) {
 func TestHandleUpstreamError_PoolModePolicies(t *testing.T) {
 	t.Run("pool_mode_without_custom_error_codes_still_skips", func(t *testing.T) {
 		repo := &errorPolicyRepoStub{}
-		svc := NewRateLimitService(repo, nil, &config.Config{}, nil)
+		svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 		account := &Account{
 			ID:       30,
 			Type:     AccountTypeAPIKey,
@@ -319,7 +319,7 @@ func TestHandleUpstreamError_PoolModePolicies(t *testing.T) {
 
 	t.Run("pool_mode_with_custom_error_codes_uses_local_error_policy", func(t *testing.T) {
 		repo := &errorPolicyRepoStub{}
-		svc := NewRateLimitService(repo, nil, &config.Config{}, nil)
+		svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 		account := &Account{
 			ID:       31,
 			Type:     AccountTypeAPIKey,
@@ -340,7 +340,7 @@ func TestHandleUpstreamError_PoolModePolicies(t *testing.T) {
 
 	t.Run("pool_mode_explicit_temp_rule_stops_scheduling", func(t *testing.T) {
 		repo := &errorPolicyRepoStub{}
-		svc := NewRateLimitService(repo, nil, &config.Config{}, nil)
+		svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 		account := &Account{
 			ID:       32,
 			Type:     AccountTypeAPIKey,
@@ -373,7 +373,7 @@ func TestHandleUpstreamError_PoolModePolicies(t *testing.T) {
 
 	t.Run("pool_mode_temp_rule_miss_still_skips", func(t *testing.T) {
 		repo := &errorPolicyRepoStub{}
-		svc := NewRateLimitService(repo, nil, &config.Config{}, nil)
+		svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 		account := &Account{
 			ID:       33,
 			Type:     AccountTypeAPIKey,

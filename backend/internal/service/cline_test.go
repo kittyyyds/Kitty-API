@@ -240,7 +240,7 @@ func TestHandleUpstreamError_ClineCoolsDownWallet(t *testing.T) {
 		}
 		repo := &commandCodeRateLimitRepo{}
 
-		shouldDisable := NewRateLimitService(repo, nil, &config.Config{}, nil).HandleUpstreamError(ctx, tc.account,
+		shouldDisable := NewRateLimitService(repo, nil, &config.Config{}, nil, nil).HandleUpstreamError(ctx, tc.account,
 			tc.status, http.Header{}, []byte(tc.body))
 
 		require.False(t, shouldDisable, tc.name)
@@ -255,7 +255,7 @@ func TestHandleUpstreamError_ClineCoolsDownWallet(t *testing.T) {
 
 	// 普通频率限制交回默认 429 逻辑。
 	plain := &commandCodeRateLimitRepo{}
-	NewRateLimitService(plain, nil, &config.Config{}, nil).HandleUpstreamError(withTempUnschedulableModel(context.Background(), []string{paid}),
+	NewRateLimitService(plain, nil, &config.Config{}, nil, nil).HandleUpstreamError(withTempUnschedulableModel(context.Background(), []string{paid}),
 		clineTestAccount(30), http.StatusTooManyRequests, http.Header{}, []byte(clineRateLimitBody))
 	require.Empty(t, plain.modelLimits)
 	require.Equal(t, 0, plain.tempCalls)
@@ -277,7 +277,7 @@ func TestHandleUpstreamError_Cline402KeepsAccountWhenCooldownWriteFails(t *testi
 	for _, body := range []string{clineInsufficientCreditsBody, `{"error":{"message":"Payment required"}}`} {
 		repo := &clineModelLimitFailRepo{}
 
-		shouldDisable := NewRateLimitService(repo, nil, &config.Config{}, nil).HandleUpstreamError(ctx, clineTestAccount(19),
+		shouldDisable := NewRateLimitService(repo, nil, &config.Config{}, nil, nil).HandleUpstreamError(ctx, clineTestAccount(19),
 			http.StatusPaymentRequired, http.Header{}, []byte(body))
 
 		require.False(t, shouldDisable, body)
@@ -553,7 +553,7 @@ func TestClineUsageProbeClearsOnlyProvablePassCooldowns(t *testing.T) {
 		{http.StatusTooManyRequests, clineInferenceCapBody, false},
 	} {
 		account := clineTestAccount(65)
-		NewRateLimitService(&commandCodeRateLimitRepo{}, nil, &config.Config{}, nil).HandleUpstreamError(ctx, account,
+		NewRateLimitService(&commandCodeRateLimitRepo{}, nil, &config.Config{}, nil, nil).HandleUpstreamError(ctx, account,
 			tc.status, http.Header{}, []byte(tc.body))
 		require.True(t, account.isRateLimitActiveForKey(clinePassRateLimitKey), tc.body)
 		repo := &clineAccountRepo{accounts: []Account{*account}}

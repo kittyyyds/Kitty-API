@@ -45,7 +45,7 @@ func TestOpsErrorFinalStatusPreservesRequestAndAttempt(t *testing.T) {
 	failedID := insert(owner.ID, 502)
 	recoveredID := insert(owner.ID, 200)
 	insert(foreign.ID, 499)
-	ops := service.NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	settings := service.NewSettingService(opsCategoryTestSettings{}, nil)
 	usageHandler := handler.NewUsageHandler(nil, nil, ops, settings)
 	adminHandler := adminhandler.NewOpsHandler(ops)

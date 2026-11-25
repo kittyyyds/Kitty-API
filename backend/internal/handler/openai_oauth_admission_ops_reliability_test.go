@@ -152,7 +152,7 @@ func oauthReliabilityAdmissionOpsRoundTrip(t *testing.T, path string, stream boo
 	t.Helper()
 	setupOpsErrorLogTestQueue(t, 4)
 	gin.SetMode(gin.TestMode)
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	router.POST(path, func(c *gin.Context) {

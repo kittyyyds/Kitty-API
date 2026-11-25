@@ -211,7 +211,7 @@ func TestOAuthReliabilityContractWSHTTPReaderTerminationPublic(t *testing.T) {
 			t.Cleanup(svc.CloseOpenAIWSPool)
 			handler := NewOpenAIGatewayHandler(svc, service.NewConcurrencyService(&fakeConcurrencyCache{}), cache, &service.APIKeyService{}, nil, nil, nil, nil, cfg)
 			key := &service.APIKey{ID: 9933, UserID: 9934, Key: "synthetic-reader-client", GroupID: &groupID, Group: group, User: &service.User{ID: 9934, Status: service.StatusActive, Role: service.RoleUser, Balance: 100}}
-			ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			core, _ := observer.New(zap.ErrorLevel)
 			router := gin.New()
 			router.Use(OpsErrorLoggerMiddleware(ops))

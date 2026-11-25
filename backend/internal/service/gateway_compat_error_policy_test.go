@@ -85,7 +85,7 @@ func TestAnthropicCompatAccountErrorPolicy(t *testing.T) {
 					}}
 					svc := &GatewayService{
 						cfg: &config.Config{}, httpUpstream: upstream,
-						rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil),
+						rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
 					}
 					body := `{"model":"claude-sonnet-4-5","input":"hello","stream":` + strconv.FormatBool(stream) + `}`
 					path := "/v1/responses"

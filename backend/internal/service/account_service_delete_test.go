@@ -183,6 +183,8 @@ func (s *accountRepoStub) ClearTempUnschedulable(ctx context.Context, id int64) 
 	panic("unexpected ClearTempUnschedulable call")
 }
 
+func (s *accountRepoStub) ClearAntigravityQuotaScopes(ctx context.Context, id int64) error { return nil }
+
 func (s *accountRepoStub) ClearRateLimit(ctx context.Context, id int64) error {
 	panic("unexpected ClearRateLimit call")
 }

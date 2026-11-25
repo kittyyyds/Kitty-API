@@ -42,6 +42,8 @@ func (r *openai429RecoveryRepo) GetByID(_ context.Context, id int64) (*Account, 
 	return account, nil
 }
 
+func (r *openai429RecoveryRepo) ClearAntigravityQuotaScopes(ctx context.Context, id int64) error { return nil }
+
 func (r *openai429RecoveryRepo) ClearRateLimit(_ context.Context, id int64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -274,7 +276,7 @@ func TestOpenAIAccountEligibleFor429RecoveryProbe(t *testing.T) {
 func TestHandleUpstreamError_OpenAI429SoftRemainingDoesNotScheduleRecovery(t *testing.T) {
 	resetOpenAI429TestState(t)
 	repo := &openai429RecoveryRepo{}
-	svc := NewRateLimitService(repo, nil, nil, nil)
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
 	calls := installOpenAI429RecoveryAfterRecorder(t, svc)
 	account := &Account{ID: 9101, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}
 	repo.store(account)
@@ -291,7 +293,7 @@ func TestHandleUpstreamError_OpenAI429SoftRemainingDoesNotScheduleRecovery(t *te
 func TestHandleUpstreamError_OpenAI429FormalCooldownWithRemainingSchedules30s(t *testing.T) {
 	resetOpenAI429TestState(t)
 	repo := &openai429RecoveryRepo{}
-	svc := NewRateLimitService(repo, nil, nil, nil)
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
 	calls := installOpenAI429RecoveryAfterRecorder(t, svc)
 	account := &Account{ID: 9102, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}
 	repo.store(account)
@@ -322,7 +324,7 @@ func TestHandleUpstreamError_OpenAI429FormalCooldownWithRemainingSchedules30s(t 
 func TestHandleUpstreamError_OpenAI429ExhaustedHeadersDoNotScheduleRecovery(t *testing.T) {
 	resetOpenAI429TestState(t)
 	repo := &openai429RecoveryRepo{}
-	svc := NewRateLimitService(repo, nil, nil, nil)
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
 	calls := installOpenAI429RecoveryAfterRecorder(t, svc)
 	account := &Account{ID: 9103, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}
 	repo.store(account)
@@ -338,7 +340,7 @@ func TestHandleUpstreamError_OpenAI429ExhaustedHeadersDoNotScheduleRecovery(t *t
 func TestConsiderOpenAI429Recovery_DoesNotPostponePendingTimer(t *testing.T) {
 	resetOpenAI429TestState(t)
 	repo := &openai429RecoveryRepo{}
-	svc := NewRateLimitService(repo, nil, nil, nil)
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
 	calls := installOpenAI429RecoveryAfterRecorder(t, svc)
 	account := openai429RecoveryEligibleAccount(9104, time.Now())
 	repo.store(account)
@@ -361,7 +363,7 @@ func TestOpenAI429RecoveryProbe2xxClearsAccountLevelOnly(t *testing.T) {
 	resetOpenAI429TestState(t)
 	repo := &openai429RecoveryRepo{}
 	blocker := &openai429RecoveryBlocker{}
-	svc := NewRateLimitService(repo, nil, nil, nil)
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
 	svc.SetAccountRuntimeBlocker(blocker)
 	calls := installOpenAI429RecoveryAfterRecorder(t, svc)
 	now := time.Now()
@@ -404,7 +406,7 @@ func TestOpenAI429RecoveryProbe2xxClearsAccountLevelOnly(t *testing.T) {
 func TestOpenAI429RecoveryProbe429DoesNotBumpConsecutiveOrSetRateLimited(t *testing.T) {
 	resetOpenAI429TestState(t)
 	repo := &openai429RecoveryRepo{}
-	svc := NewRateLimitService(repo, nil, nil, nil)
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
 	calls := installOpenAI429RecoveryAfterRecorder(t, svc)
 	account := openai429RecoveryEligibleAccount(9106, time.Now())
 	repo.store(account)
@@ -437,7 +439,7 @@ func TestOpenAI429RecoveryProbe429DoesNotBumpConsecutiveOrSetRateLimited(t *test
 func TestOpenAI429RecoveryProbe429ExhaustedWindowsStops(t *testing.T) {
 	resetOpenAI429TestState(t)
 	repo := &openai429RecoveryRepo{}
-	svc := NewRateLimitService(repo, nil, nil, nil)
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
 	calls := installOpenAI429RecoveryAfterRecorder(t, svc)
 	account := openai429RecoveryEligibleAccount(9107, time.Now())
 	repo.store(account)
@@ -459,7 +461,7 @@ func TestOpenAI429RecoveryProbe429ExhaustedWindowsStops(t *testing.T) {
 func TestOpenAI429RecoveryProbeAuthStops(t *testing.T) {
 	resetOpenAI429TestState(t)
 	repo := &openai429RecoveryRepo{}
-	svc := NewRateLimitService(repo, nil, nil, nil)
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
 	calls := installOpenAI429RecoveryAfterRecorder(t, svc)
 	account := openai429RecoveryEligibleAccount(9108, time.Now())
 	repo.store(account)
@@ -477,7 +479,7 @@ func TestOpenAI429RecoveryProbeAuthStops(t *testing.T) {
 func TestOpenAI429RecoveryProbeStopsWhenRemainingAtOrBelowDelay(t *testing.T) {
 	resetOpenAI429TestState(t)
 	repo := &openai429RecoveryRepo{}
-	svc := NewRateLimitService(repo, nil, nil, nil)
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
 	calls := installOpenAI429RecoveryAfterRecorder(t, svc)
 	now := time.Now()
 	resetAt := now.Add(50 * time.Second)
@@ -506,7 +508,7 @@ func TestOpenAI429RecoveryProbeStopsWhenRemainingAtOrBelowDelay(t *testing.T) {
 
 func TestGetOpenAIUsage_ConsiderOpenAI429Recovery(t *testing.T) {
 	recorder := &considerCallRecorder{}
-	svc := NewAccountUsageService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	svc := NewAccountUsageService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	svc.SetOpenAI429RecoveryScheduler(recorder)
 	now := time.Now()
 	account := openai429RecoveryEligibleAccount(9111, now)

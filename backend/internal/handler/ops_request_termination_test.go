@@ -24,7 +24,7 @@ func TestOpsErrorLoggerLocalCancellationKeepsUpstreamAttempt(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			setupOpsErrorLogTestQueue(t, 2)
 			gin.SetMode(gin.TestMode)
-			ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			router := gin.New()
 			router.Use(OpsErrorLoggerMiddleware(ops))
 			router.POST("/v1/chat/completions", func(c *gin.Context) {
@@ -67,7 +67,7 @@ func TestOpsErrorLoggerLocalCancellationKeepsUpstreamAttempt(t *testing.T) {
 func TestOpsErrorLoggerUpstream499KeepsProviderMessage(t *testing.T) {
 	setupOpsErrorLogTestQueue(t, 2)
 	gin.SetMode(gin.TestMode)
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	router.POST("/v1/chat/completions", func(c *gin.Context) {

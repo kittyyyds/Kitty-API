@@ -90,7 +90,7 @@ func oauthReliabilityModelPolicyHandler(t *testing.T, upstream service.HTTPUpstr
 	usage := &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, 8)}
 	billingCache := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingCache.Stop)
-	policy := service.NewRateLimitService(repo, nil, cfg, nil)
+	policy := service.NewRateLimitService(repo, nil, cfg, nil, nil)
 	svc := service.NewOpenAIGatewayService(repo, usage, nil, nil, nil, nil, nil, cfg, nil, nil,
 		service.NewBillingService(cfg, nil), policy, billingCache, upstream, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil)
 	svc.DisableOpenAITiboRouteForTest()

@@ -75,14 +75,17 @@ func writeGatewayInvalidRequest(c *gin.Context, status int, message string) {
 	if c.Request != nil && c.Request.URL != nil {
 		path = c.Request.URL.Path
 	}
-	if strings.Contains(path, "/messages") {
+	switch {
+	case strings.HasPrefix(path, "/v1beta") || strings.HasPrefix(path, "/antigravity/v1beta"):
+		GoogleErrorWriter(c, status, message)
+	case strings.Contains(path, "/messages"):
 		c.JSON(status, gin.H{
 			"type":  "error",
 			"error": gin.H{"type": "invalid_request_error", "message": message},
 		})
-		return
+	default:
+		c.JSON(status, gin.H{
+			"error": gin.H{"type": "invalid_request_error", "message": message},
+		})
 	}
-	c.JSON(status, gin.H{
-		"error": gin.H{"type": "invalid_request_error", "message": message},
-	})
 }

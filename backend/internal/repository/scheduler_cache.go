@@ -659,14 +659,19 @@ func (c *schedulerCache) dropSnapshotEntry(bucketKey string) {
 // used to validate a cached snapshot.
 // 按平台判定失效依赖 bucket 成员只取自 bucket 平台；账号平台发生变化时，写入方另行写入全局修订号。
 func schedulerSnapshotTagKeys(bucket service.SchedulerBucket) []string {
-	return []string{
+	keys := make([]string, 0, 7)
+	keys = append(keys,
 		schedulerBucketKey(schedulerReadyPrefix, bucket),
 		schedulerBucketKey(schedulerActivePrefix, bucket),
 		schedulerBucketKey(schedulerRetiredPrefix, bucket),
 		schedulerBucketKey(schedulerEpochPrefix, bucket),
 		schedulerAccountMetaRevisionKey,
 		schedulerAccountMetaRevisionKeyForPlatform(bucket.Platform),
+	)
+	if bucket.Mode == service.SchedulerModeMixed && bucket.Platform != service.PlatformAntigravity {
+		keys = append(keys, schedulerAccountMetaRevisionKeyForPlatform(service.PlatformAntigravity))
 	}
+	return keys
 }
 
 // schedulerAccountMetaRevisionKeyForPlatform 返回平台修订号的键；平台为空时返回全局修订号的键。
@@ -1505,7 +1510,7 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 	// the full account. Dropping it silently falls back to the platform threshold.
 	// subscription_tier is required for Grok media eligibility: the projection
 	// strips access_token, so JWT cannot identify SuperGrok Heavy vs Free.
-	keys := []string{"model_mapping", "compact_model_mapping", "api_key", "project_id", "oauth_type", "plan_type", "subscription_tier", "account_scheduling_threshold", "openai_capabilities", "base_url"}
+	keys := []string{"model_mapping", "compact_model_mapping", "api_key", "project_id", "oauth_type", "plan_type", "subscription_tier", "account_scheduling_threshold", "openai_capabilities", "base_url", "auth_mode", service.GeminiExplicitCacheUpstreamCredentialKey, service.GeminiExplicitCacheUpstreamMaxTTLCredentialKey}
 	filtered := make(map[string]any)
 	for _, key := range keys {
 		if value, ok := credentials[key]; ok && value != nil {

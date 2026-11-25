@@ -23,7 +23,7 @@ func TestOpsErrorLoggerMiddleware_ImageKeepaliveFailureIsNotRecovered(t *testing
 		t.Run(mode, func(t *testing.T) {
 			setupOpsErrorLogTestQueue(t, 2)
 			gin.SetMode(gin.TestMode)
-			ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			router := gin.New()
 			router.Use(OpsErrorLoggerMiddleware(ops))
 			router.POST("/v1/images/edits", func(c *gin.Context) {
@@ -189,7 +189,7 @@ func TestEnqueueOpsErrorLog_QueueFullDrop(t *testing.T) {
 	opsErrorLogQueue = make(chan opsErrorLogJob, 1)
 	opsErrorLogMu.Unlock()
 
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	entry := &service.OpsInsertErrorLogInput{ErrorPhase: "upstream", ErrorType: "upstream_error"}
 
 	enqueueOpsErrorLog(ops, entry)
@@ -203,7 +203,7 @@ func TestEnqueueOpsErrorLog_QueueFullDrop(t *testing.T) {
 func TestEnqueueOpsErrorLog_EarlyReturnBranches(t *testing.T) {
 	resetOpsErrorLoggerStateForTest(t)
 
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	entry := &service.OpsInsertErrorLogInput{ErrorPhase: "upstream", ErrorType: "upstream_error"}
 
 	// nil 入参分支
@@ -264,7 +264,7 @@ func TestOpsCaptureWriterPool_DropsLargeBuffers(t *testing.T) {
 
 func TestEnqueueOpsErrorLog_SanitizesAndBoundsBodyBeforeQueue(t *testing.T) {
 	setupOpsErrorLogTestQueue(t, 1)
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	secret := strings.Repeat("s", service.OpsErrorLogQueueBodyMaxBytes)
 	entry := &service.OpsInsertErrorLogInput{
 		ErrorPhase: "request",
@@ -315,7 +315,7 @@ func TestOpsErrorLoggerMiddleware_HardSkipsIngressRejection(t *testing.T) {
 
 	settings := &ingressRejectSettingRepo{}
 	repo := &ingressRejectOpsRepo{}
-	ops := service.NewOpsService(repo, settings, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(repo, settings, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	// Construction may read unrelated runtime settings; only request-path reads matter here.
 	settings.getValueCalls = 0
 
@@ -340,7 +340,7 @@ func TestOpsErrorLoggerMiddleware_HardSkipsIngressRejection(t *testing.T) {
 func TestOpsErrorLoggerMiddleware_DedicatedCyberSessionBlockRecordsExactlyOnce(t *testing.T) {
 	setupOpsErrorLogTestQueue(t, 3)
 	gin.SetMode(gin.TestMode)
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	h := &OpenAIGatewayHandler{opsService: ops}
 	apiKey := &service.APIKey{ID: 41, Key: "sk-dedicated-test"}
 	router := gin.New()
@@ -365,7 +365,7 @@ func TestOpsErrorLoggerMiddleware_DedicatedCyberSessionBlockRecordsExactlyOnce(t
 func TestOpsErrorLoggerMiddleware_OrdinaryPermissionStillRecords(t *testing.T) {
 	setupOpsErrorLogTestQueue(t, 2)
 	gin.SetMode(gin.TestMode)
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	router.POST("/v1/responses", func(c *gin.Context) {
@@ -388,7 +388,7 @@ func TestOpsErrorLoggerMiddleware_RecordsRecoveredUpstreamTelemetryOutsideFailur
 	gin.SetMode(gin.TestMode)
 
 	repo := &ingressRejectOpsRepo{}
-	ops := service.NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	router.POST("/v1/responses", func(c *gin.Context) {
@@ -431,7 +431,7 @@ func TestOpsErrorLoggerMiddleware_RecoveredTelemetryFiltersSkipMonitoringAttempt
 	setupOpsErrorLogTestQueue(t, 2)
 	gin.SetMode(gin.TestMode)
 
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	router.POST("/v1/responses", func(c *gin.Context) {
@@ -459,7 +459,7 @@ func TestOpsErrorLoggerMiddleware_RecoveredTelemetrySkipsAllHiddenAttempts(t *te
 	setupOpsErrorLogTestQueue(t, 2)
 	gin.SetMode(gin.TestMode)
 
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	router.POST("/v1/responses", func(c *gin.Context) {
@@ -480,7 +480,7 @@ func TestOpsErrorLoggerMiddleware_RecoveredTelemetrySkipsAllHiddenAttempts(t *te
 func TestOpsErrorLoggerMiddleware_IntermediateSkipMonitoringDoesNotHideFinalVisibleFailure(t *testing.T) {
 	setupOpsErrorLogTestQueue(t, 2)
 	gin.SetMode(gin.TestMode)
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	router.POST("/v1/responses", func(c *gin.Context) {
@@ -503,7 +503,7 @@ func TestOpsErrorLoggerMiddleware_CapturesSplitResponsesFailedSSE(t *testing.T) 
 	setupOpsErrorLogTestQueue(t, 2)
 	gin.SetMode(gin.TestMode)
 
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	router.POST("/v1/responses", func(c *gin.Context) {
@@ -591,7 +591,7 @@ func TestOpsErrorLoggerMiddleware_StreamFailureUsesTerminalErrorOverAttemptConte
 	setupOpsErrorLogTestQueue(t, 2)
 	gin.SetMode(gin.TestMode)
 
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	router.POST("/v1/responses", func(c *gin.Context) {
@@ -621,7 +621,7 @@ func TestOpsErrorLoggerMiddleware_PrefersContextRequestID(t *testing.T) {
 	setupOpsErrorLogTestQueue(t, 2)
 	gin.SetMode(gin.TestMode)
 
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	router.POST("/v1/responses", func(c *gin.Context) {
@@ -662,7 +662,7 @@ func TestLogOpsStreamError_RecordsInBandConcurrencyLimit(t *testing.T) {
 	service.MarkOpsStreamError(c, "rate_limit_error",
 		"Concurrency limit exceeded for account, please retry later", http.StatusTooManyRequests)
 
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	logOpsStreamError(c, ops, http.StatusOK)
 
 	require.Equal(t, int64(1), OpsErrorLogEnqueuedTotal())
@@ -697,7 +697,7 @@ func TestLogOpsStreamError_UpstreamFailureCountsTowardsSLA(t *testing.T) {
 		http.StatusBadGateway,
 	)
 
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	logOpsStreamError(c, ops, http.StatusOK)
 
 	job := <-opsErrorLogQueue
@@ -719,7 +719,7 @@ func TestLogOpsStreamError_NoopWhenNotMarked(t *testing.T) {
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	logOpsStreamError(c, ops, http.StatusOK)
 
 	require.Equal(t, int64(0), OpsErrorLogEnqueuedTotal())
@@ -736,7 +736,7 @@ func TestLogOpsStreamError_SkipWhenPassthroughSkipMonitoring(t *testing.T) {
 	service.MarkOpsStreamError(c, "upstream_error", "Upstream request failed", http.StatusBadGateway)
 	c.Set(service.OpsSkipPassthroughKey, true)
 
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	logOpsStreamError(c, ops, http.StatusOK)
 
 	require.Equal(t, int64(0), OpsErrorLogEnqueuedTotal())
@@ -792,7 +792,7 @@ func TestLogOpsStreamError_RecordsOneFailurePerWebSocketTurn(t *testing.T) {
 	require.Len(t, streamErrors, 2)
 	require.Equal(t, 1, streamErrors[0].Turn)
 	require.Equal(t, 2, streamErrors[1].Turn)
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	logOpsStreamError(c, ops, http.StatusSwitchingProtocols)
 
 	require.Equal(t, int64(2), OpsErrorLogQueueLength())
@@ -959,7 +959,7 @@ func TestOpsErrorLoggerMiddleware_LocalModelConfigurationFields(t *testing.T) {
 	setupOpsErrorLogTestQueue(t, 1)
 	gin.SetMode(gin.TestMode)
 
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	router.POST("/v1/chat/completions", func(c *gin.Context) {
@@ -1808,7 +1808,7 @@ func TestOpsCaptureWriter_TerminalMetadataSurvivesBodyCaptureTruncation(t *testi
 func TestOpsErrorLoggerMiddleware_LargeTerminalFrameUsesEventFallback(t *testing.T) {
 	setupOpsErrorLogTestQueue(t, 2)
 	gin.SetMode(gin.TestMode)
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	router.POST("/v1/responses", func(c *gin.Context) {
@@ -1833,7 +1833,7 @@ func TestOpsErrorLoggerMiddleware_LargeTerminalFrameUsesEventFallback(t *testing
 func TestOpsErrorLoggerMiddleware_DetectsTerminalDataAtEOFWithoutBlankLine(t *testing.T) {
 	setupOpsErrorLogTestQueue(t, 2)
 	gin.SetMode(gin.TestMode)
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	router.POST("/v1/responses", func(c *gin.Context) {
@@ -2038,7 +2038,7 @@ func TestLogOpsStreamError_NonStreamInBandContentPolicy(t *testing.T) {
 		NonStream:      true,
 	})
 
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	logOpsStreamError(c, ops, http.StatusOK)
 
 	job := <-opsErrorLogQueue
@@ -2080,7 +2080,7 @@ func TestLogOpsStreamError_RequestScopedIgnoresResidualUpstreamContext(t *testin
 		RequestScoped:  true,
 	})
 
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	logOpsStreamError(c, ops, http.StatusOK)
 
 	require.Equal(t, int64(1), OpsErrorLogQueueLength())
@@ -2104,7 +2104,7 @@ func TestOpsErrorLoggerMiddleware_RequestScopedInBandErrorKeepsRecoveredTelemetr
 	setupOpsErrorLogTestQueue(t, 4)
 	gin.SetMode(gin.TestMode)
 
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	router.POST("/v1beta/models/gemini-3.7-flash:generateContent", func(c *gin.Context) {
@@ -2151,7 +2151,7 @@ func TestOpsErrorLoggerMiddleware_UpstreamInBandFailureStillSingleRow(t *testing
 	setupOpsErrorLogTestQueue(t, 4)
 	gin.SetMode(gin.TestMode)
 
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	router.POST("/v1beta/models/gemini-3.7-flash:streamGenerateContent", func(c *gin.Context) {
@@ -2229,7 +2229,7 @@ func serveClientClosedRequest(t *testing.T, ops *service.OpsService, prepare fun
 func TestOpsErrorLoggerMiddleware_SkipsPureClientClosed(t *testing.T) {
 	setupOpsErrorLogTestQueue(t, 2)
 	gin.SetMode(gin.TestMode)
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	require.True(t, ops.OpsAdvancedSettingsSnapshot().IgnoreContextCanceled)
 
 	serveClientClosedRequest(t, ops, nil)
@@ -2240,7 +2240,7 @@ func TestOpsErrorLoggerMiddleware_SkipsPureClientClosed(t *testing.T) {
 func TestOpsErrorLoggerMiddleware_RecordsClientClosedAfterUpstreamFailure(t *testing.T) {
 	setupOpsErrorLogTestQueue(t, 2)
 	gin.SetMode(gin.TestMode)
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	serveClientClosedRequest(t, ops, func(c *gin.Context) {
 		c.Set(service.OpsUpstreamErrorsKey, []*service.OpsUpstreamErrorEvent{{
@@ -2260,7 +2260,7 @@ func TestOpsErrorLoggerMiddleware_RecordsClientClosedWhenIgnoreContextCanceledDi
 	setupOpsErrorLogTestQueue(t, 2)
 	gin.SetMode(gin.TestMode)
 	settings := &opsAdvancedSettingsRepoStub{advanced: `{"ignore_context_canceled":false}`}
-	ops := service.NewOpsService(nil, settings, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, settings, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	require.False(t, ops.OpsAdvancedSettingsSnapshot().IgnoreContextCanceled)
 
 	serveClientClosedRequest(t, ops, nil)

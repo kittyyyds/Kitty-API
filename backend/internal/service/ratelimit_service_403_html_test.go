@@ -37,7 +37,7 @@ func newOpenAI403TestHarness(t *testing.T, accountID int64, counts ...int64) *op
 	repo := &rateLimitAccountRepoStub{}
 	counter := &countingOpenAI403CounterCache{openAI403CounterCacheStub: openAI403CounterCacheStub{counts: counts}}
 	blocker := &runtimeBlockRecorder{}
-	svc := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	svc.SetOpenAI403CounterCache(counter)
 	svc.SetAccountRuntimeBlocker(blocker)
 	return &openAI403TestHarness{
@@ -112,7 +112,7 @@ func TestHandleUpstreamError_Cloudflare1010DoesNotPenalizeAccount(t *testing.T) 
 				openAI403CounterCacheStub: openAI403CounterCacheStub{counts: []int64{openAI403DisableThreshold}},
 			}
 			blocker := &runtimeBlockRecorder{}
-			svc := NewRateLimitService(repo, nil, &config.Config{}, nil)
+			svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 			svc.SetOpenAI403CounterCache(counter)
 			svc.SetAccountRuntimeBlocker(blocker)
 			account := &Account{ID: 601, Platform: platform, Type: AccountTypeAPIKey}
@@ -140,7 +140,7 @@ func TestHandleUpstreamError_Cloudflare1010JSONDoesNotPenalizeAccount(t *testing
 			counter := &countingOpenAI403CounterCache{
 				openAI403CounterCacheStub: openAI403CounterCacheStub{counts: []int64{openAI403DisableThreshold}},
 			}
-			svc := NewRateLimitService(repo, nil, &config.Config{}, nil)
+			svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 			svc.SetOpenAI403CounterCache(counter)
 			account := &Account{ID: 602, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}
 
@@ -180,7 +180,7 @@ func TestIsCloudflareBotBlockResponseOnlyMatches1010(t *testing.T) {
 
 func TestHandleUpstreamError_AnthropicGenuine403StillPenalizes(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
-	svc := NewRateLimitService(repo, nil, &config.Config{}, nil)
+	svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 	account := &Account{ID: 603, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}
 
 	require.True(t, svc.HandleUpstreamError(
@@ -227,7 +227,7 @@ func TestHandleUpstreamError_HTML403OnOtherPlatformsUnchanged(t *testing.T) {
 	for _, platform := range []string{PlatformAnthropic, PlatformGrok} {
 		t.Run(platform, func(t *testing.T) {
 			repo := &rateLimitAccountRepoStub{}
-			svc := NewRateLimitService(repo, nil, &config.Config{}, nil)
+			svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 			account := &Account{ID: 506, Platform: platform, Type: AccountTypeAPIKey}
 
 			shouldDisable := svc.HandleUpstreamError(

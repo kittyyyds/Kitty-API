@@ -167,11 +167,6 @@
             <Icon name="cloud" size="sm" />
             Antigravity
           </button>
-          <button type="button" @click="form.platform = 'video'" data-testid="account-platform-video"
-            class="flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all"
-            :class="form.platform === 'video' ? 'bg-white text-cyan-700 shadow-sm dark:bg-dark-600 dark:text-cyan-300' : 'text-gray-600 dark:text-gray-400'">
-            <PlatformIcon platform="video" size="sm" />{{ t('videoModule.title') }}
-          </button>
           <button
             type="button"
             @click="form.platform = 'grok'"
@@ -184,6 +179,19 @@
           >
             <PlatformIcon platform="grok" size="sm" />
             Grok
+          </button>
+          <button
+            type="button"
+            @click="selectTypeSafePlatform()"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'typesafe'
+                ? 'bg-white text-sky-700 shadow-sm dark:bg-dark-600 dark:text-sky-300'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <PlatformIcon platform="typesafe" size="sm" />
+            TypeSafe / Jev
           </button>
         </div>
         <!-- 国产厂商：Kimi / Zhipu GLM / DeepSeek / MiniMax -->
@@ -4679,6 +4687,13 @@ function selectOpenCodeGoPlatform() {
   apiKeyBaseUrl.value = defaultCNBaseUrl('opencode_go', openCodeAccountMode.value, 'adaptive')
   resetAdaptiveBaseUrls('opencode_go', openCodeAccountMode.value)
   openCodeGoProtocolRules.value = cloneOpenCodeGoProtocolRules(defaultOpenCodeProtocolRules(openCodeAccountMode.value))
+}
+function selectTypeSafePlatform() {
+  form.platform = 'typesafe'
+  form.type = 'apikey'
+  accountCategory.value = 'apikey'
+  apiKeyBaseUrl.value = 'https://api.typesafe.ai'
+  allowedModels.value = ['jev-latest']
 }
 function selectGenericMultiProtocolPlatform(platform: string) {
   form.platform = platform

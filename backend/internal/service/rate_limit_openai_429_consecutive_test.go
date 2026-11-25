@@ -50,7 +50,7 @@ func openai429Headers() http.Header {
 func TestHandleUpstreamError_OpenAI429SoftThenFormalCooldown(t *testing.T) {
 	resetOpenAI429TestState(t)
 	repo := &consecutive429Repo{}
-	svc := NewRateLimitService(repo, nil, nil, nil)
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
 	account := &Account{ID: 9001, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}
 
 	for i := 1; i <= 29; i++ {
@@ -75,7 +75,7 @@ func TestHandleUpstreamError_OpenAI429SoftThenFormalCooldown(t *testing.T) {
 func TestHandleUpstreamError_OpenAI429SuccessClearsCount(t *testing.T) {
 	resetOpenAI429TestState(t)
 	repo := &consecutive429Repo{}
-	svc := NewRateLimitService(repo, nil, nil, nil)
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
 	account := &Account{ID: 9002, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 
 	for i := 0; i < 12; i++ {
@@ -93,7 +93,7 @@ func TestHandleUpstreamError_OpenAI429SuccessClearsCount(t *testing.T) {
 func TestHandleUpstreamError_OpenAI429FiveXXDoesNotChangeCount(t *testing.T) {
 	resetOpenAI429TestState(t)
 	repo := &consecutive429Repo{}
-	svc := NewRateLimitService(repo, nil, nil, nil)
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
 	account := &Account{ID: 9003, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 
 	for i := 0; i < 5; i++ {
@@ -110,7 +110,7 @@ func TestHandleUpstreamError_OpenAI429FiveXXDoesNotChangeCount(t *testing.T) {
 func TestHandleUpstreamError_OpenAI429DisableCoolingClearsAndSkips(t *testing.T) {
 	resetOpenAI429TestState(t)
 	repo := &consecutive429Repo{}
-	svc := NewRateLimitService(repo, nil, nil, nil)
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
 	account := &Account{
 		ID: 9004, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
 		Credentials: map[string]any{"disable_429_cooling": "true"},
@@ -150,7 +150,7 @@ func TestOpenAI429ReportSuccessResetsCounter(t *testing.T) {
 func TestOpenAI429OAuthRetryDoesNotZeroSoftCount(t *testing.T) {
 	resetOpenAI429TestState(t)
 	repo := &consecutive429Repo{}
-	svc := NewRateLimitService(repo, nil, nil, nil)
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
 	gw := &OpenAIGatewayService{rateLimitService: svc}
 	svc.SetAccountRuntimeBlocker(gw)
 	account := &Account{ID: 9006, Platform: PlatformOpenAI, Type: AccountTypeOAuth}

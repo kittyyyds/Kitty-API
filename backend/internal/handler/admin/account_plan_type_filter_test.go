@@ -28,7 +28,7 @@ func TestAccountHandlerListPassesPlanTypeToListAndSchedulerPool(t *testing.T) {
 
 func TestAccountHandlerBillingRatesPassesPlanType(t *testing.T) {
 	router, adminSvc := setupAccountListRouter()
-	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router.GET("/api/v1/admin/accounts/upstream-billing-rates", handler.GetUpstreamBillingRates)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/upstream-billing-rates?plan_type=promax&platform=openai&group=ungrouped", nil)

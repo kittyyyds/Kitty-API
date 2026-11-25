@@ -90,6 +90,7 @@ type Config struct {
 	RateLimit                RateLimitConfig                `mapstructure:"rate_limit"`
 	Pricing                  PricingConfig                  `mapstructure:"pricing"`
 	Gateway                  GatewayConfig                  `mapstructure:"gateway"`
+	Gemini                   GeminiConfig                   `mapstructure:"gemini"`
 	APIKeyAuth               APIKeyAuthCacheConfig          `mapstructure:"api_key_auth_cache"`
 	SubscriptionCache        SubscriptionCacheConfig        `mapstructure:"subscription_cache"`
 	SubscriptionMaintenance  SubscriptionMaintenanceConfig  `mapstructure:"subscription_maintenance"`
@@ -166,6 +167,28 @@ type LogRotationConfig struct {
 	MaxAgeDays int  `mapstructure:"max_age_days"`
 	Compress   bool `mapstructure:"compress"`
 	LocalTime  bool `mapstructure:"local_time"`
+}
+
+type GeminiConfig struct {
+	OAuth GeminiOAuthConfig `mapstructure:"oauth"`
+	Quota GeminiQuotaConfig `mapstructure:"quota"`
+}
+
+type GeminiOAuthConfig struct {
+	ClientID     string `mapstructure:"client_id"`
+	ClientSecret string `mapstructure:"client_secret"`
+	Scopes       string `mapstructure:"scopes"`
+}
+
+type GeminiQuotaConfig struct {
+	Tiers  map[string]GeminiTierQuotaConfig `mapstructure:"tiers"`
+	Policy string                           `mapstructure:"policy"`
+}
+
+type GeminiTierQuotaConfig struct {
+	ProRPD          *int64 `mapstructure:"pro_rpd" json:"pro_rpd"`
+	FlashRPD        *int64 `mapstructure:"flash_rpd" json:"flash_rpd"`
+	CooldownMinutes *int   `mapstructure:"cooldown_minutes" json:"cooldown_minutes"`
 }
 
 type LogSamplingConfig struct {
@@ -1135,6 +1158,19 @@ type GatewayConfig struct {
 	LogUpstreamErrorBody bool `mapstructure:"log_upstream_error_body"`
 	// 上游错误响应体记录最大字节数（超过会截断）
 	LogUpstreamErrorBodyMaxBytes int `mapstructure:"log_upstream_error_body_max_bytes"`
+
+	// Gemini 上游响应头调试日志开关（默认关闭，避免高频日志开销）
+	GeminiDebugResponseHeaders bool `mapstructure:"gemini_debug_response_headers"`
+	// GeminiCachedContentMaxTTLSeconds: Gemini 显式缓存单次可设置的最长有效期（秒），<=0 时按 86400 处理
+	GeminiCachedContentMaxTTLSeconds int `mapstructure:"gemini_cached_content_max_ttl_seconds"`
+	// Gemini 账户切换最大次数（Gemini 平台单独配置，因 API 限制更严格）
+	MaxAccountSwitchesGemini int `mapstructure:"max_account_switches_gemini"`
+	// Gemini 同账号重试次数（429/5xx 等可重试错误在换号前对同一账号的重发次数，不含首次请求）
+	MaxSameAccountRetriesGemini int `mapstructure:"max_same_account_retries_gemini"`
+	// Antigravity 429 fallback 限流时间（分钟），解析重置时间失败时使用
+	AntigravityFallbackCooldownMinutes int `mapstructure:"antigravity_fallback_cooldown_minutes"`
+	// Antigravity 额外重试次数
+	AntigravityExtraRetries int `mapstructure:"antigravity_extra_retries"`
 
 	// API-key 账号在客户端未提供 anthropic-beta 时，是否按需自动补齐（默认关闭以保持兼容）
 	InjectBetaForAPIKey bool `mapstructure:"inject_beta_for_apikey"`
@@ -2557,6 +2593,19 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_near_limit_ttft_backoff_seconds", 30)
 	viper.SetDefault("gateway.log_upstream_error_body", true)
 	viper.SetDefault("gateway.log_upstream_error_body_max_bytes", 2048)
+	viper.SetDefault("gateway.gemini_debug_response_headers", false)
+	viper.SetDefault("gateway.gemini_cached_content_max_ttl_seconds", 86400)
+	viper.SetDefault("gateway.max_account_switches_gemini", 3)
+	viper.SetDefault("gateway.max_same_account_retries_gemini", 4)
+	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
+	viper.SetDefault("gateway.antigravity_extra_retries", 10)
+	// Gemini OAuth - configure via environment variables or config file
+	// GEMINI_OAUTH_CLIENT_ID and GEMINI_OAUTH_CLIENT_SECRET
+	// Default: uses Gemini CLI public credentials (set via environment)
+	viper.SetDefault("gemini.oauth.client_id", "")
+	viper.SetDefault("gemini.oauth.client_secret", "")
+	viper.SetDefault("gemini.oauth.scopes", "")
+	viper.SetDefault("gemini.quota.policy", "")
 	viper.SetDefault("gateway.inject_beta_for_apikey", false)
 	viper.SetDefault("gateway.failover_on_400", false)
 	viper.SetDefault("gateway.max_account_switches", 10)
@@ -2895,6 +2944,16 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.MinOutputTokens < 16 {
 		return fmt.Errorf("gateway.min_output_tokens must be at least 16")
+	}
+	// Gemini OAuth 配置校验：client_id 与 client_secret 必须同时设置或同时留空。
+	// 留空时表示使用内置的 Gemini CLI OAuth 客户端（其 client_secret 通过环境变量注入）。
+	geminiClientID := strings.TrimSpace(c.Gemini.OAuth.ClientID)
+	geminiClientSecret := strings.TrimSpace(c.Gemini.OAuth.ClientSecret)
+	if (geminiClientID == "") != (geminiClientSecret == "") {
+		return fmt.Errorf("gemini.oauth.client_id and gemini.oauth.client_secret must be both set or both empty")
+	}
+	if c.Gateway.MaxSameAccountRetriesGemini < 0 || c.Gateway.MaxSameAccountRetriesGemini > 10 {
+		return fmt.Errorf("gateway.max_same_account_retries_gemini must be between 0-10")
 	}
 	if err := validateClaudeMimicConfig(c.Gateway.ClaudeMimic); err != nil {
 		return err

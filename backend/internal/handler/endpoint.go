@@ -31,7 +31,11 @@ const (
 	EndpointVideosExtensions     = "/v1/videos/extensions"
 	EndpointVideos               = "/v1/videos"
 	EndpointSeedanceTasks        = "/api/v3/contents/generations/tasks"
+	EndpointGeminiModels         = "/v1beta/models"
+	EndpointGeminiCachedContents = "/v1beta/cachedContents"
 )
+
+const EndpointAntigravityGenerateContent = "/v1internal:streamGenerateContent"
 
 // gin.Context keys used by the middleware and helpers below.
 const (
@@ -44,10 +48,13 @@ const (
 // ──────────────────────────────────────────────────────────
 
 // NormalizeInboundEndpoint maps a raw request path (which may carry
-// prefixes like /openai) to its canonical form.
+// prefixes like /antigravity, /openai) to its canonical form.
 //
+//	"/antigravity/v1/messages"   → "/v1/messages"
 //	"/v1/chat/completions"       → "/v1/chat/completions"
 //	"/openai/v1/responses/foo"   → "/v1/responses"
+//	"/v1beta/models/gemini:gen"  → "/v1beta/models"
+//	"/v1beta/cachedContents/abc" → "/v1beta/cachedContents"
 //
 // The OpenAI Responses API is also exposed via a few bare/alias
 // routes that do not carry a "/v1/" prefix (top-level bare route and
@@ -110,6 +117,10 @@ func NormalizeInboundEndpoint(path string) string {
 		return EndpointResponsesCompact
 	case strings.Contains(path, EndpointResponses) || isResponsesRootAliasPath(path):
 		return EndpointResponses
+	case strings.Contains(path, EndpointGeminiModels):
+		return EndpointGeminiModels
+	case strings.Contains(path, EndpointGeminiCachedContents):
+		return EndpointGeminiCachedContents
 	default:
 		return path
 	}
@@ -187,6 +198,10 @@ func isBareOrSubpathOf(path, root string) bool {
 //     retain their paths. Grok raw Chat requests override this through the
 //     forwarding result consumed by resolveOpenAIUpstreamEndpoint.
 //   - Anthropic  → /v1/messages
+//   - Gemini     → /v1beta/models（显式缓存管理接口保留 /v1beta/cachedContents）
+//   - Antigravity → /v1/messages (Claude) or gemini (Gemini)
+//   - Antigravity routes may target either Claude or Gemini, so the
+//     inbound endpoint is used to distinguish.
 func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 	inbound = strings.TrimSpace(inbound)
 
@@ -217,6 +232,19 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 
 	case service.PlatformTypeSafe:
 		return EndpointSystemOne
+
+	case service.PlatformGemini:
+		if inbound == EndpointGeminiCachedContents {
+			return EndpointGeminiCachedContents
+		}
+		return EndpointGeminiModels
+
+	case service.PlatformAntigravity:
+		// Antigravity accounts serve both Claude and Gemini.
+		if inbound == EndpointGeminiModels {
+			return EndpointGeminiModels
+		}
+		return EndpointMessages
 	}
 
 	// Unknown platform — fall back to inbound.
@@ -327,4 +355,10 @@ func setActualUpstreamEndpoint(c *gin.Context, endpoint string) {
 	if c != nil {
 		c.Set(ctxKeyActualUpstreamEndpoint, strings.TrimSpace(endpoint))
 	}
+}
+
+func shouldUseAntigravityCompat(account *service.Account) bool {
+	return account != nil &&
+		account.Platform == service.PlatformAntigravity &&
+		account.Type == service.AccountTypeOAuth
 }

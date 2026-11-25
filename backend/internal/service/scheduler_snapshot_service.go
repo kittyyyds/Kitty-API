@@ -702,8 +702,12 @@ func (s *SchedulerSnapshotService) handleBulkAccountEvent(ctx context.Context, p
 		}
 		accountGroupIDs := s.normalizeGroupIDs(account.GroupIDs)
 		switch {
-		case isConcreteRequestPlatform(account.Platform):
+		case account.Platform != PlatformAntigravity && isConcreteRequestPlatform(account.Platform):
 			addPlatformGroups(account.Platform, accountGroupIDs)
+		case account.Platform == PlatformAntigravity:
+			addPlatformGroups(PlatformAntigravity, accountGroupIDs)
+			addPlatformGroups(PlatformAnthropic, accountGroupIDs)
+			addPlatformGroups(PlatformGemini, accountGroupIDs)
 		default:
 			return s.rebuildByGroupIDs(ctx, rebuildGroupIDs, "account_bulk_change", seen)
 		}
@@ -905,6 +909,10 @@ func (s *SchedulerSnapshotService) rebuildByAccount(ctx context.Context, account
 	}
 
 	buckets := s.bucketsForPlatform(account.Platform, groupIDs, seen)
+	if account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled() {
+		buckets = append(buckets, s.bucketsForPlatform(PlatformAnthropic, groupIDs, seen)...)
+		buckets = append(buckets, s.bucketsForPlatform(PlatformGemini, groupIDs, seen)...)
+	}
 	return s.rebuildBuckets(ctx, buckets, reason)
 }
 
@@ -927,12 +935,15 @@ func schedulerCanonicalBucketCount() int {
 
 func schedulerCanonicalBuckets(groupID int64) []SchedulerBucket {
 	platforms := schedulerSnapshotPlatforms()
-	buckets := make([]SchedulerBucket, 0, 2*len(platforms))
+	buckets := make([]SchedulerBucket, 0, len(platforms)*2+2)
 	for _, platform := range platforms {
 		buckets = append(buckets,
 			SchedulerBucket{GroupID: groupID, Platform: platform, Mode: SchedulerModeSingle},
 			SchedulerBucket{GroupID: groupID, Platform: platform, Mode: SchedulerModeForced},
 		)
+		if platform == PlatformAnthropic || platform == PlatformGemini {
+			buckets = append(buckets, SchedulerBucket{GroupID: groupID, Platform: platform, Mode: SchedulerModeMixed})
+		}
 	}
 	return buckets
 }
@@ -968,6 +979,9 @@ func (s *SchedulerSnapshotService) bucketsForPlatform(platform string, groupIDs 
 		}
 		buckets = append(buckets, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeSingle})
 		buckets = append(buckets, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeForced})
+		if platform == PlatformAnthropic || platform == PlatformGemini {
+			buckets = append(buckets, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeMixed})
+		}
 	}
 	return buckets
 }
@@ -1547,7 +1561,23 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 		groupID = &bucket.GroupID
 	}
 
-	return s.accountRepo.ListModelAvailabilityCandidates(ctx, groupID, []string{bucket.Platform}, s.isRunModeSimple())
+	platforms := []string{bucket.Platform}
+	useMixed := bucket.Mode == SchedulerModeMixed
+	if useMixed {
+		platforms = append(platforms, PlatformAntigravity)
+	}
+	accounts, err := s.accountRepo.ListModelAvailabilityCandidates(ctx, groupID, platforms, s.isRunModeSimple())
+	if err != nil || !useMixed {
+		return accounts, err
+	}
+	filtered := make([]Account, 0, len(accounts))
+	for _, acc := range accounts {
+		if acc.Platform == PlatformAntigravity && !acc.IsMixedSchedulingEnabled() {
+			continue
+		}
+		filtered = append(filtered, acc)
+	}
+	return filtered, nil
 }
 
 func (s *SchedulerSnapshotService) loadAccountsForRebuild(
@@ -1620,6 +1650,9 @@ func (s *SchedulerSnapshotService) normalizeGroupIDs(groupIDs []int64) []int64 {
 func (s *SchedulerSnapshotService) resolveMode(platform string, hasForcePlatform bool) string {
 	if hasForcePlatform {
 		return SchedulerModeForced
+	}
+	if platform == PlatformAnthropic || platform == PlatformGemini {
+		return SchedulerModeMixed
 	}
 	return SchedulerModeSingle
 }

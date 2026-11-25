@@ -26,7 +26,7 @@ func TestAccountTrafficProtectionRemovedOrdinaryUpdateAPI(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, old := range []any{nil, false, true, "malformed", map[string]any{"strict_rpm_enabled": true, "rpm": -1}} {
 		svc := &removedPolicyAdminService{stubAdminService: newStubAdminService()}
-		h := NewAccountHandler(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		h := NewAccountHandler(svc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 		r := gin.New()
 		r.PUT("/accounts/:id", h.Update)
 		extra := map[string]any{"account_traffic_control": old, "anti_degradation": old, "codex_fingerprint_mode": "full", "codex_image_generation_bridge": true}

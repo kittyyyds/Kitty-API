@@ -452,7 +452,7 @@ func newCodexIntegrationGateway(t *testing.T, store *codexIntegrationStore, upst
 	deferred := service.NewDeferredService(accounts, timingWheel, time.Minute)
 	deferred.Start()
 	t.Cleanup(deferred.Stop)
-	rateLimit := service.NewRateLimitService(accounts, usage, cfg, repository.NewTempUnschedCache(store.redis))
+	rateLimit := service.NewRateLimitService(accounts, usage, cfg, nil, repository.NewTempUnschedCache(store.redis))
 	rateLimit.SetSettingService(settings)
 	httpUpstream := repository.NewHTTPUpstream(cfg)
 	f.gateway = service.NewOpenAIGatewayService(accounts, usage, usageBilling, users, subs, rates, repository.NewGatewayCache(store.redis), cfg, snapshot, f.concurrency, service.NewBillingService(cfg, nil), rateLimit, billingCache, httpUpstream, deferred, tokenProvider, nil, nil, nil, nil, settings, nil)

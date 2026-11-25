@@ -105,7 +105,7 @@ func serveAutoResetCreditToggle(t *testing.T, stub *autoResetCreditToggleAdminSt
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	handler := NewAccountHandler(stub, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	handler := NewAccountHandler(stub, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router.POST("/accounts/:id/auto-reset-credit-enabled", handler.SetOpenAIAutoResetCreditEnabled)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/accounts/"+id+"/auto-reset-credit-enabled", bytes.NewBufferString(body))

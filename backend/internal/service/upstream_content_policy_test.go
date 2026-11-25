@@ -43,7 +43,7 @@ func TestHandleUpstreamError_ContentPolicy403SkipsAccountPenalty(t *testing.T) {
 	for _, platform := range []string{PlatformAnthropic, PlatformOpenAI} {
 		t.Run(platform, func(t *testing.T) {
 			repo := &rateLimitAccountRepoStub{}
-			svc := NewRateLimitService(repo, nil, &config.Config{}, nil)
+			svc := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
 			account := &Account{ID: 701, Platform: platform, Type: AccountTypeAPIKey}
 
 			shouldDisable := svc.HandleUpstreamError(
@@ -79,7 +79,7 @@ func TestGatewayService_Forward_ContentPolicy403ReturnedAs400WithoutFailover(t *
 		cfg:                  cfg,
 		responseHeaderFilter: compileResponseHeaderFilter(cfg),
 		httpUpstream:         upstream,
-		rateLimitService:     NewRateLimitService(repo, nil, cfg, nil),
+		rateLimitService:     NewRateLimitService(repo, nil, cfg, nil, nil),
 		deferredService:      &DeferredService{},
 	}
 	account := newAnthropicAPIKeyAccountForTest()

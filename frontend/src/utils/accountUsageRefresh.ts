@@ -85,7 +85,7 @@ export const buildAccountUsageRefreshKey = (account: Pick<Account, 'id' | 'platf
   if (account.platform === 'openai') return buildOpenAIUsageRefreshKey(account)
 
   const isClaude = account.platform === 'anthropic' && (account.type === 'oauth' || account.type === 'setup-token')
-  if (!isClaude) return ''
+  if (!isClaude && account.platform !== 'gemini') return ''
 
   const extra = account.extra ?? {}
   return serializeSnapshotRefreshValue([

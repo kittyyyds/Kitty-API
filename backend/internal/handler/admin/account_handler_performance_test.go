@@ -45,7 +45,7 @@ func TestPerformanceOptimizationAccountListWindowStats(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		t.Run(map[bool]string{false: "batch", true: "partial_failure"}[fail], func(t *testing.T) {
 			repo := &performanceListWindowRepo{fail: fail}
-			usage := service.NewAccountUsageService(nil, repo, nil, nil, nil, nil, service.NewUsageCache(), nil, nil)
+			usage := service.NewAccountUsageService(nil, repo, nil, nil, nil, nil, nil, nil, service.NewUsageCache(), nil, nil)
 			adminSvc := newStubAdminService()
 			now := time.Now().UTC()
 			start1, start2, end := now.Add(-time.Hour), now.Add(-2*time.Hour), now.Add(time.Hour)
@@ -55,7 +55,7 @@ func TestPerformanceOptimizationAccountListWindowStats(t *testing.T) {
 				{ID: 3, Platform: service.PlatformAnthropic, Type: service.AccountTypeOAuth},
 				{ID: 4, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Extra: map[string]any{"window_cost_limit": 100}},
 			}
-			handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, usage, nil, nil, nil, nil, nil, nil)
+			handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, usage, nil, nil, nil, nil, nil, nil)
 			router := gin.New()
 			router.GET("/accounts", handler.List)
 			record := httptest.NewRecorder()

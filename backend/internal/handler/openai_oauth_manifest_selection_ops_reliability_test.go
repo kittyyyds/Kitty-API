@@ -136,7 +136,7 @@ func oauthManifestSelectionFixture(t *testing.T, mode string, cancel context.Can
 func oauthManifestSelectionRequest(t *testing.T, h *OpenAIGatewayHandler, group *service.Group, path string, ctx context.Context) (*httptest.ResponseRecorder, bool) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router := gin.New()
 	router.Use(OpsErrorLoggerMiddleware(ops))
 	written := false

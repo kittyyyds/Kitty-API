@@ -14,8 +14,8 @@ var (
 	ErrAccountNotFound      = infraerrors.NotFound("ACCOUNT_NOT_FOUND", "account not found")
 	ErrAccountNilInput      = infraerrors.BadRequest("ACCOUNT_NIL_INPUT", "account input cannot be nil")
 	ErrAccountNotInFallback = infraerrors.BadRequest("ACCOUNT_NOT_IN_FALLBACK", "account is not in proxy fallback state")
-	// ErrAccountUnsupportedPlatform 拒绝为没有转发器的平台建账号（含已下线的 gemini/antigravity）。
-	ErrAccountUnsupportedPlatform = infraerrors.BadRequest("ACCOUNT_UNSUPPORTED_PLATFORM", "account platform must be one of anthropic/openai/grok/kimi/zhipu/deepseek")
+	// ErrAccountUnsupportedPlatform 拒绝为未登记的平台建账号。
+	ErrAccountUnsupportedPlatform = infraerrors.BadRequest("ACCOUNT_UNSUPPORTED_PLATFORM", "account platform must be a supported concrete platform")
 )
 
 const AccountListGroupUngrouped int64 = -1
@@ -108,6 +108,7 @@ type AccountRepository interface {
 	SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error
 	ClearTempUnschedulable(ctx context.Context, id int64) error
 	ClearRateLimit(ctx context.Context, id int64) error
+	ClearAntigravityQuotaScopes(ctx context.Context, id int64) error
 	ClearModelRateLimits(ctx context.Context, id int64) error
 	// ClearModelRateLimit 只清除指定 scope 的模型级限流，用于单个模型窗口恢复后
 	// 定向解封，不影响其他模型与并发生效的限流。
@@ -266,7 +267,7 @@ func (s *AccountService) Create(ctx context.Context, req CreateAccountRequest) (
 			if err != nil {
 				return nil, err
 			}
-			if g.RequireOAuthOnly && (g.Platform == PlatformOpenAI || g.Platform == PlatformAnthropic || g.Platform == PlatformGrok) {
+			if g.RequireOAuthOnly && (g.Platform == PlatformOpenAI || g.Platform == PlatformAntigravity || g.Platform == PlatformAnthropic || g.Platform == PlatformGemini || g.Platform == PlatformGrok) {
 				return nil, fmt.Errorf("分组 [%s] 仅允许 OAuth 账号，apikey 类型账号无法加入", g.Name)
 			}
 		}
@@ -391,7 +392,7 @@ func (s *AccountService) Update(ctx context.Context, id int64, req UpdateAccount
 			if err != nil {
 				return nil, err
 			}
-			if g.RequireOAuthOnly && (g.Platform == PlatformOpenAI || g.Platform == PlatformAnthropic || g.Platform == PlatformGrok) {
+			if g.RequireOAuthOnly && (g.Platform == PlatformOpenAI || g.Platform == PlatformAntigravity || g.Platform == PlatformAnthropic || g.Platform == PlatformGemini || g.Platform == PlatformGrok) {
 				return nil, fmt.Errorf("分组 [%s] 仅允许 OAuth 账号，apikey 类型账号无法加入", g.Name)
 			}
 		}

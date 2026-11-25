@@ -469,7 +469,7 @@ func TestForwardAlphaSearchUnauthorizedDoesNotMarkAccountError(t *testing.T) {
 		cfg:              cfg,
 		httpUpstream:     upstream,
 		accountRepo:      repo,
-		rateLimitService: NewRateLimitService(repo, nil, cfg, nil),
+		rateLimitService: NewRateLimitService(repo, nil, cfg, nil, nil),
 	}
 	account := &Account{
 		ID:          44,
@@ -512,7 +512,7 @@ func TestForwardAlphaSearchPATResponsesFallbackUnauthorizedDoesNotMarkAccountErr
 		cfg:              cfg,
 		httpUpstream:     upstream,
 		accountRepo:      repo,
-		rateLimitService: NewRateLimitService(repo, nil, cfg, nil),
+		rateLimitService: NewRateLimitService(repo, nil, cfg, nil, nil),
 	}
 	account := &Account{
 		ID:          46,
@@ -562,7 +562,7 @@ func TestForwardAlphaSearchAPIKeyEndpointNotFoundFailsOver(t *testing.T) {
 		cfg:              cfg,
 		httpUpstream:     upstream,
 		accountRepo:      repo,
-		rateLimitService: NewRateLimitService(repo, nil, cfg, nil),
+		rateLimitService: NewRateLimitService(repo, nil, cfg, nil, nil),
 	}
 	account := &Account{
 		ID:       9,
@@ -674,7 +674,7 @@ func TestForwardAlphaSearchLiteratureSearchForbiddenDoesNotPenalizeAccount(t *te
 				cfg:              cfg,
 				httpUpstream:     upstream,
 				accountRepo:      repo,
-				rateLimitService: NewRateLimitService(repo, nil, cfg, nil),
+				rateLimitService: NewRateLimitService(repo, nil, cfg, nil, nil),
 			}
 			account := &Account{ID: 45, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1, Credentials: tc.credentials}
 
@@ -711,7 +711,7 @@ func TestForwardAlphaSearchAccessStateForbiddenStillMarksAccount(t *testing.T) {
 		cfg:              cfg,
 		httpUpstream:     upstream,
 		accountRepo:      repo,
-		rateLimitService: NewRateLimitService(repo, nil, cfg, nil),
+		rateLimitService: NewRateLimitService(repo, nil, cfg, nil, nil),
 	}
 	account := &Account{ID: 46, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1, Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-account"}}
 

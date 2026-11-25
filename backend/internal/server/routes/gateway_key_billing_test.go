@@ -102,9 +102,8 @@ func newKeyBillingRouteTestRouter(runMode string, groups service.GroupRepository
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	gatewayHandler := handler.NewGatewayHandler(
-		gatewayService, openAIGatewayService, nil, nil, nil, nil,
-		apiKeyService, nil, nil, nil, nil, cfg, nil,
-	)
+		gatewayService, openAIGatewayService, nil, nil, nil, nil, nil, nil,
+		apiKeyService, nil, nil, nil, nil, cfg, nil)
 
 	router := gin.New()
 	if web.HasEmbeddedFrontend() {

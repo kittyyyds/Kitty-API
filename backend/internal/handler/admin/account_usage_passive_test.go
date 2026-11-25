@@ -23,7 +23,7 @@ func (*passiveUsageHandlerAccounts) GetByIDs(context.Context, []int64) ([]*servi
 }
 
 func TestGetBatchUsagePassiveDoesNotForceAnActiveQuery(t *testing.T) {
-	usage := service.NewAccountUsageService(&passiveUsageHandlerAccounts{}, nil, nil, nil, nil, nil, service.NewUsageCache(), nil, nil)
+	usage := service.NewAccountUsageService(&passiveUsageHandlerAccounts{}, nil, nil, nil, nil, nil, nil, nil, service.NewUsageCache(), nil, nil)
 	handler := AccountHandler{accountUsageService: usage}
 	router := gin.New()
 	router.POST("/accounts/usage/batch", handler.GetBatchUsage)
