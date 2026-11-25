@@ -1554,7 +1554,6 @@ func TestGatewayModels_GPT6SolLunaDiscoveryRespectsGroupAndAccountRestrictions(t
 // Scenario: jev-latest only works through /v1/systemone, so Composite groups list
 // it in /v1/models only when they can serve it, and never in the Codex manifest.
 func TestGatewayModels_CompositeTypeSafeListingScope(t *testing.T) {
-	t.Skip("TypeSafe is not registered in this fork")
 	gin.SetMode(gin.TestMode)
 
 	groupID := int64(66)
@@ -1597,7 +1596,6 @@ func TestDefaultModelIDsForPlatform_CompositeFallbackExcludesTypeSafe(t *testing
 }
 
 func TestGatewayModels_CompositeExactRoutesRespectTypeSafeIsolation(t *testing.T) {
-	t.Skip("TypeSafe is not registered in this fork")
 	gin.SetMode(gin.TestMode)
 	const groupID int64 = 7784
 	routes := &gatewayModelsRouteRepoStub{routes: []service.CompositeModelRoute{
@@ -1648,7 +1646,6 @@ func TestGatewayModels_CompositeExactRoutesRespectTypeSafeIsolation(t *testing.T
 }
 
 func TestGatewayModels_CompositeCodexFiltersEffectiveResponsesRoutes(t *testing.T) {
-	t.Skip("TypeSafe is not registered in this fork")
 	gin.SetMode(gin.TestMode)
 	const groupID int64 = 7793
 	defaultModel := defaultModelIDsForPlatform(service.PlatformOpenAI)[0]

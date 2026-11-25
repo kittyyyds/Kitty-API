@@ -1150,6 +1150,9 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 			ImageOutputPricePerToken: p.OutputCostPerImageToken,
 		}
 	}
+	if modelLower == "jev-latest" {
+		return s.fallbackPrices["jev-latest"]
+	}
 
 	// 按模型系列匹配
 	if claude.IsFable52(modelLower) {
