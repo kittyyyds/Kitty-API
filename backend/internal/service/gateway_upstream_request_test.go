@@ -24,9 +24,7 @@ func TestAnthropicMessagesCredentialAllowed(t *testing.T) {
 		{PlatformAnthropic, AccountTypeSetupToken, true},
 		{PlatformAnthropic, AccountTypeServiceAccount, true},
 		{PlatformAnthropic, AccountTypeBedrock, true},
-		// This fork drops TypeSafe from the platform catalog (c37d4b680), so its
-		// OAuth is unregistered and fails closed like any unknown platform.
-		{PlatformTypeSafe, AccountTypeOAuth, false},
+		{PlatformTypeSafe, AccountTypeOAuth, true},
 		{PlatformOpenAI, AccountTypeAPIKey, true},
 		{PlatformDeepseek, AccountTypeAPIKey, true},
 		{PlatformOpenAI, AccountTypeOAuth, false},

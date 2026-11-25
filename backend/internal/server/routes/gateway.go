@@ -35,6 +35,7 @@ func RegisterGatewayRoutes(
 	// 分组链上的中间件（白名单、字段歧义检查、合成路由）会在 handler 之前读完
 	// 请求体，路由级的上限来不及生效；纯文本入口的上限必须在分组层按路由选择。
 	textBodyRoutes := map[string]bool{
+		"/v1/systemone":                   true,
 		"/v1/alpha/search":                true,
 		"/v1/embeddings":                  true,
 		"/backend-api/codex/alpha/search": true,
@@ -218,6 +219,8 @@ func RegisterGatewayRoutes(
 			}
 			h.Gateway.Messages(c)
 		})
+		// System One carries only JSON text; groupBodyLimit applies the text body limit.
+		gateway.POST("/systemone", h.Gateway.SystemOne)
 		// /v1/messages/count_tokens: OpenAI bridges upstream, Grok estimates
 		// locally, and Anthropic-compatible platforms retain their existing path.
 		gateway.POST("/messages/count_tokens", countTokensHandler)

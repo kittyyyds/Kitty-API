@@ -36,11 +36,11 @@ const (
 	// 另有 ClinePass 订阅）。
 	PlatformCline     = "cline"
 	PlatformComposite = "composite"
-	// Unregistered in this fork: Gemini/Antigravity were retired, TypeSafe is not shipped.
+	PlatformTypeSafe  = "typesafe" // TypeSafe AI System One (Jev)
+	// Unregistered in this fork: Gemini/Antigravity were retired.
 	// IDs remain so leftover skip branches and tests compile.
 	PlatformGemini      = "gemini"
 	PlatformAntigravity = "antigravity"
-	PlatformTypeSafe    = "typesafe"
 )
 
 // Account mode constants 区分国产供应商的「按量付费（余额）」与「Coding Plan」两种接入方式。

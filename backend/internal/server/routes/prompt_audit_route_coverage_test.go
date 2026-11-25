@@ -53,6 +53,7 @@ func TestEveryGatewayPOSTRouteIsClassifiedForContentModerationCoverage(t *testin
 		"/messages/count_tokens": "tokenization only; it does not execute a model request",
 		"/stt":                   "speech transcription is not a text-generation prompt",
 		"/custom-voices":         "voice profile management has no model prompt",
+		"/systemone":             "TypeSafe System One; Kitty retired content moderation (migration 952), so this route has no security-audit stage",
 	}
 
 	unclassified := make([]string, 0)

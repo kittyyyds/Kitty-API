@@ -1179,6 +1179,7 @@ var upstreamBillingProbeOfficialAPIDomains = []string{
 	"bigmodel.cn",
 	"deepseek.com",
 	"opencode.ai",
+	"typesafe.ai",
 	"commandcode.ai",
 	"cline.bot",
 }

@@ -758,6 +758,12 @@ func (s *BillingService) initFallbackPricing() {
 		SupportsCacheBreakdown: false,
 	}
 
+	// TypeSafe Jev bills input tokens only: $0.042 per million tokens.
+	s.fallbackPrices["jev-latest"] = &ModelPricing{
+		InputPricePerToken:  0.042 / 1_000_000,
+		OutputPricePerToken: 0,
+	}
+
 	// ---- 小米 MiMo ----
 	// Source: https://mimo.mi.com/docs/zh-CN/price/pay-as-you-go
 	// 官方同时给出 USD 价：cache miss $0.14 / output $0.28 / cache hit $0.0028 per MTok。
