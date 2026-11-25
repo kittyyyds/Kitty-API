@@ -233,7 +233,8 @@ const (
 
 // ConcurrencyService 管理账号和用户的并发限制。
 type ConcurrencyService struct {
-	cache ConcurrencyCache
+	cache             ConcurrencyCache
+	performancePauses PerformancePauseReader
 
 	accountLoadCacheTTL atomic.Int64
 	accountLoadCacheMu  sync.RWMutex
@@ -344,7 +345,36 @@ type UserLoadInfo struct {
 // AcquireAccountSlot attempts to acquire a concurrency slot for an account.
 // If the account is at max concurrency, it waits until a slot is available or timeout.
 // Returns a release function that MUST be called when the request completes.
+// SetPerformancePauseReader attaches the live performance auto-pause gate.
+func (s *ConcurrencyService) SetPerformancePauseReader(reader PerformancePauseReader) {
+	if s != nil {
+		s.performancePauses = reader
+	}
+}
+
 func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (*AcquireResult, error) {
+	var cancelTrial func()
+	if s.performancePauses != nil {
+		if admission, ok := s.performancePauses.(PerformanceAdmission); ok {
+			allowed, cancel, err := admission.AcquirePerformanceTrial(ctx, accountID)
+			if err != nil {
+				return nil, err
+			}
+			if !allowed {
+				return &AcquireResult{Acquired: false, ReleaseFunc: nil}, nil
+			}
+			cancelTrial = cancel
+		} else {
+			paused, err := s.performancePauses.PerformancePaused(ctx, []int64{accountID})
+			if err != nil {
+				return nil, err
+			}
+			if paused[accountID] {
+				return &AcquireResult{Acquired: false, ReleaseFunc: nil}, nil
+			}
+		}
+	}
+
 	// If maxConcurrency is 0 or negative, no limit
 	if maxConcurrency <= 0 {
 		return &AcquireResult{
@@ -358,6 +388,9 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 
 	acquired, err := s.cache.AcquireAccountSlot(ctx, accountID, maxConcurrency, requestID)
 	if err != nil {
+		if cancelTrial != nil {
+			cancelTrial()
+		}
 		return nil, err
 	}
 
@@ -374,6 +407,9 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 		}, nil
 	}
 
+	if cancelTrial != nil {
+		cancelTrial()
+	}
 	return &AcquireResult{
 		Acquired:    false,
 		ReleaseFunc: nil,

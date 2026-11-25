@@ -12,6 +12,7 @@ type UserGroupRateEntry struct {
 	UserStatus     string   `json:"user_status"`
 	RateMultiplier *float64 `json:"rate_multiplier,omitempty"`
 	RPMOverride    *int     `json:"rpm_override,omitempty"`
+	DeniedModels   []string `json:"denied_models,omitempty"`
 }
 
 // GroupRateMultiplierInput 批量设置分组倍率的输入条目
@@ -60,4 +61,16 @@ type UserGroupRateRepository interface {
 
 	// DeleteByUserID 删除指定用户的所有专属条目（用户删除时调用）
 	DeleteByUserID(ctx context.Context, userID int64) error
+}
+
+// GroupUserDeniedModelsInput 批量设置分组用户禁用模型的输入项
+type GroupUserDeniedModelsInput struct {
+	UserID       int64    `json:"user_id" binding:"required"`
+	DeniedModels []string `json:"denied_models"`
+}
+
+// UserGroupDeniedModelsRepository is an optional capability implemented by userGroupRateRepository.
+type UserGroupDeniedModelsRepository interface {
+	SyncGroupDeniedModels(ctx context.Context, groupID int64, entries []GroupUserDeniedModelsInput) error
+	ClearGroupDeniedModels(ctx context.Context, groupID int64) error
 }

@@ -869,3 +869,13 @@ func (s *stubAdminService) RevertAccountProxyFallback(ctx context.Context, id in
 
 // Ensure stub implements interface.
 var _ service.AdminService = (*stubAdminService)(nil)
+
+func (s *stubAdminService) ListAccountPlatformCounts(ctx context.Context) ([]service.AccountPlatformCount, error) {
+	return nil, nil
+}
+func (s *stubAdminService) BatchSetGroupUserDeniedModels(ctx context.Context, groupID int64, entries []service.GroupUserDeniedModelsInput) error {
+	return nil
+}
+func (s *stubAdminService) ClearGroupUserDeniedModels(ctx context.Context, groupID int64) error {
+	return nil
+}

@@ -552,3 +552,24 @@ func (h *SettingHandler) TestWebSearchEmulation(c *gin.Context) {
 	}
 	response.Success(c, result)
 }
+
+// GetAccountManagementCapabilities reports optional runtime capabilities shown in the accounts console.
+// GET /api/v1/admin/accounts/management-capabilities
+func (h *SettingHandler) GetAccountManagementCapabilities(c *gin.Context) {
+	ctx := c.Request.Context()
+	cfg, err := h.settingService.GetWebSearchEmulationConfig(ctx)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	settings, err := h.settingService.GetPublicSettings(ctx)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{
+		"web_search_enabled":           cfg != nil && cfg.Enabled && len(cfg.Providers) > 0,
+		"account_quota_notify_enabled": settings.AccountQuotaNotifyEnabled,
+		"concurrency_upgrade_enabled":  false,
+	})
+}

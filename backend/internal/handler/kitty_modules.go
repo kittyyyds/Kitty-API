@@ -8,6 +8,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/qqbot"
+	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/redis/go-redis/v9"
 )
@@ -29,6 +30,7 @@ type KittyModules struct {
 	ChannelMonitorV3Prober *service.ChannelMonitorV3Prober
 	ChannelMonitorV2Candy  *service.ChannelMonitorV2CandyRunner
 	IntelligenceScheduler  *service.KittyIntelligenceScheduler
+	AccountPerformance     *service.AccountPerformanceService
 	UserCleanup            *admin.UserCleanupHandler
 	QQBotService           *qqbot.Service
 	QQBot                  *QQBotHandler
@@ -67,6 +69,8 @@ func ProvideKittyModules(
 	accountTestService *service.AccountTestService,
 	adminChannelHandler *admin.ChannelHandler,
 	adminAccountHandler *admin.AccountHandler,
+	httpUpstream service.HTTPUpstream,
+	opsService *service.OpsService,
 ) *KittyModules {
 	if billingService != nil && sqlDB != nil {
 		billingService.SetGlobalContextRules(service.NewGlobalContextRuleStore(sqlDB))
@@ -75,8 +79,26 @@ func ProvideKittyModules(
 		paymentService.SetRechargeBonusRepo(rechargeBonusRepo)
 	}
 	if upstreamBillingProbe != nil {
-		upstreamBillingProbe.SetNewAPIEncryptor(secretEncryptor, cfg != nil && cfg.Totp.EncryptionKeyConfigured)
+		if sqlDB != nil {
+			upstreamBillingProbe.SetNewAPIAuthorization(
+				repository.NewNewAPIAuthorizationRepository(sqlDB),
+				secretEncryptor,
+				cfg != nil && cfg.Totp.EncryptionKeyConfigured,
+			)
+		} else {
+			upstreamBillingProbe.SetNewAPIEncryptor(secretEncryptor, cfg != nil && cfg.Totp.EncryptionKeyConfigured)
+		}
 		upstreamBillingProbe.SetProviderHub(channelService)
+	}
+	if setter, ok := httpUpstream.(interface {
+		SetOpenAIResponseHeaderTimeoutProvider(repository.OpenAIResponseHeaderTimeoutProvider)
+	}); ok && settingService != nil {
+		setter.SetOpenAIResponseHeaderTimeoutProvider(settingService)
+	}
+	if concurrencyService != nil {
+		if pauseReader, ok := accountRepo.(service.PerformancePauseReader); ok {
+			concurrencyService.SetPerformancePauseReader(pauseReader)
+		}
 	}
 	if channelService != nil {
 		channelService.SetProviderHubProbe(upstreamBillingProbe)
@@ -112,6 +134,18 @@ func ProvideKittyModules(
 	intelScheduler := service.NewKittyIntelligenceScheduler(accountTestService)
 	if runBG {
 		intelScheduler.Start()
+	}
+
+	var perfSvc *service.AccountPerformanceService
+	if sqlDB != nil {
+		perfSvc = service.NewAccountPerformanceService(repository.NewAccountPerformanceRepository(sqlDB))
+		perfSvc.SetOpsService(opsService)
+		if adminAccountHandler != nil {
+			adminAccountHandler.SetPerformanceService(perfSvc)
+		}
+		if runBG {
+			perfSvc.Start()
+		}
 	}
 
 	userCleanupSvc := service.NewUserCleanupService(sqlDB, authCacheInvalidator)
@@ -153,6 +187,7 @@ func ProvideKittyModules(
 		ChannelMonitorV3Prober: monitorV3Prober,
 		ChannelMonitorV2Candy:  candyRunner,
 		IntelligenceScheduler:  intelScheduler,
+		AccountPerformance:     perfSvc,
 		UserCleanup:            admin.NewUserCleanupHandler(userCleanupSvc),
 		QQBotService:           qqbotSvc,
 		QQBot:                  NewQQBotHandler(qqbotSvc),

@@ -1,6 +1,6 @@
 import type { SearchNavItem } from '@/utils/featureSearch'
 
-export const SETTINGS_TABS = ['general', 'gptDirect', 'openai-vm', 'guide', 'agreement', 'features', 'security', 'users', 'gateway', 'payment', 'email', 'backup'] as const
+export const SETTINGS_TABS = ['general', 'guide', 'agreement', 'features', 'security', 'users', 'gateway', 'payment', 'email', 'backup'] as const
 export type SettingsTab = typeof SETTINGS_TABS[number]
 
 interface SettingsSection {
@@ -52,7 +52,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { tab: 'features', id: 'features-model-plaza', titleKey: 'admin.settings.features.modelPlaza.title' },
   { tab: 'features', id: 'features-site-billing-mode', titleKey: 'admin.settings.features.siteBillingMode.title' },
   { tab: 'features', id: 'features-plugin-management', titleKey: 'admin.settings.features.pluginManagement.title' },
-  { tab: 'features', id: 'features-risk-control', titleKey: 'admin.settings.features.riskControl.title', keywordKeys: ['enabled', 'cyberSessionBlock', 'cyberSessionBlockTTL', 'cyberSessionIdentityStrict'].map(key => `admin.settings.features.riskControl.${key}`) },
   { tab: 'features', id: 'features-support-tickets', titleKey: 'admin.settings.features.supportTickets.title', keywordKeys: ['enabled', 'categories', 'maxOpen', 'notice'].map(key => `admin.settings.features.supportTickets.${key}`) },
   { tab: 'features', id: 'features-affiliate', titleKey: 'admin.settings.features.affiliate.title' },
   { tab: 'payment', id: 'payment', titleKey: 'admin.settings.payment.title' },

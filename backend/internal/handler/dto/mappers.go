@@ -82,12 +82,27 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 	if k == nil {
 		return nil
 	}
+	masked := service.MaskKittyAPIKey(k.Key)
+	secretAvailable := k.Key != "" && !service.IsKittyDigestStoredKey(k.Key)
+	keyValue := masked
+	if secretAvailable {
+		keyValue = k.Key
+	}
+	groupIDs := k.ConfiguredGroupIDs()
+	if groupIDs == nil {
+		groupIDs = []int64{}
+	}
 	out := &APIKey{
 		ID:                 k.ID,
 		UserID:             k.UserID,
-		Key:                k.Key,
+		Key:                keyValue,
+		KeyDisplay:         masked,
+		KeyPrefix:          service.KittyAPIKeyPrefix(k.Key),
+		SecretAvailable:    secretAvailable,
 		Name:               k.Name,
 		GroupID:            k.GroupID,
+		FallbackGroupID:    k.FallbackGroupID,
+		GroupIDs:           groupIDs,
 		Status:             k.Status,
 		IPWhitelist:        k.IPWhitelist,
 		IPBlacklist:        k.IPBlacklist,
@@ -100,6 +115,7 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		UpdatedAt:          k.UpdatedAt,
 		CurrentConcurrency: k.CurrentConcurrency,
 		Concurrency:        k.Concurrency,
+		ConcurrencyLimit:   k.Concurrency,
 		RateLimit5h:        k.RateLimit5h,
 		RateLimit1d:        k.RateLimit1d,
 		RateLimit7d:        k.RateLimit7d,
@@ -111,6 +127,7 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		Window7dStart:      k.Window7dStart,
 		User:               UserFromServiceShallow(k.User),
 		Group:              GroupFromServiceShallow(k.Group),
+		FallbackGroup:      GroupFromServiceShallow(k.FallbackGroup),
 	}
 	if k.Window5hStart != nil && !service.IsWindowExpired(k.Window5hStart, service.RateLimitWindow5h) {
 		t := k.Window5hStart.Add(service.RateLimitWindow5h)

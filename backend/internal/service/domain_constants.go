@@ -527,6 +527,7 @@ const (
 
 	// SettingKeyGrokDefaultBaseURLMode controls the default text upstream for
 	// Grok accounts without an explicit credentials.base_url.
+	SettingKeyOpenAIResponseHeaderTimeoutSettings = "openai_response_header_timeout_settings"
 	SettingKeyGrokDefaultBaseURLMode = "grok_default_base_url_mode"
 
 	// SettingKeyAvailableChannelsEnabled is a DB-backed soft switch for the "Available Channels"

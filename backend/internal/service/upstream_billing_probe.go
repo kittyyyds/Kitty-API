@@ -260,6 +260,7 @@ func normalizeUpstreamBillingProbeSettings(settings *UpstreamBillingProbeSetting
 type UpstreamBillingProbeService struct {
 	cs1ProviderRefresh func(context.Context)
 	providerHub        *ChannelService
+	newAPIRepo         NewAPIAuthorizationRepository
 	newAPIEncryptor    SecretEncryptor
 	newAPIFixedKey     bool
 	accountRepo        AccountRepository
@@ -820,6 +821,15 @@ func upstreamBillingGroupInfo(body []byte) BillingGroupInfo {
 }
 
 func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, account *Account, intervalMinutes int) (*UpstreamBillingProbeSnapshot, error) {
+	if s.newAPIRepo != nil {
+		binding, bindErr := s.newAPIRepo.GetBinding(ctx, account.ID)
+		if bindErr != nil {
+			return nil, newAPIError("storage_unavailable")
+		}
+		if binding != nil && binding.Fingerprint == NewAPIAccountFingerprint(account) {
+			return s.probeNewAPIAccount(ctx, account, binding, intervalMinutes)
+		}
+	}
 	now := s.currentTime().UTC()
 	groupSync, _ := account.Extra[UpstreamBillingGroupSyncEnabledExtraKey].(bool)
 	includeGroup := groupSync && upstreamBillingProbeEnabled(account)
@@ -1327,4 +1337,37 @@ func (s *UpstreamBillingProbeService) SetProviderHub(ch *ChannelService) {
 	if s != nil {
 		s.providerHub = ch
 	}
+}
+
+func upstreamBillingProbeFailureSnapshot(
+	account *Account,
+	intervalMinutes int,
+	now time.Time,
+	statusCode int,
+	reason string,
+	retryAfterDuration time.Duration,
+) *UpstreamBillingProbeSnapshot {
+	previous := decodeUpstreamBillingProbeSnapshot(account.Extra)
+	failureCount := 1
+	if previous != nil {
+		failureCount = previous.FailureCount + 1
+	}
+	status := UpstreamBillingProbeStatusFailed
+	delay := nextProbeDelay(intervalMinutes, retryAfterDuration)
+	if reason == "unsupported" {
+		status = UpstreamBillingProbeStatusUnsupported
+		delay = unsupportedProbeDelay(intervalMinutes, retryAfterDuration)
+	}
+	snapshot := &UpstreamBillingProbeSnapshot{
+		Status:        status,
+		LastAttemptAt: now,
+		NextProbeAt:   now.Add(delay),
+		FailureCount:  failureCount,
+		HTTPStatus:    statusCode,
+		LastError:     reason,
+	}
+	if previous != nil {
+		snapshot.Balance = previous.Balance
+	}
+	return snapshot
 }

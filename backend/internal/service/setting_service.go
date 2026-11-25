@@ -129,6 +129,13 @@ type SettingService struct {
 	onUpdate                           func() // Callback when settings are updated (for cache invalidation)
 	version                            string // Application version
 	webSearchManagerBuilder            WebSearchManagerBuilder
+	groupSmartWSMu                     sync.Mutex
+	groupSmartWSCache                  map[int64]groupSmartWSCacheEntry
+	groupSmartWSGeneration             uint64
+	openAIResponseHeaderTimeoutMu      sync.Mutex
+	openAIResponseHeaderTimeoutGen     uint64
+	openAIResponseHeaderTimeoutCache   atomic.Value // *cachedOpenAIResponseHeaderTimeoutSettings
+	openAIResponseHeaderTimeoutSF      singleflight.Group
 	antigravityUAVersionCache          atomic.Value // *cachedAntigravityUserAgentVersion
 	antigravityUAVersionSF             singleflight.Group
 	openAICodexUACache                 atomic.Value // *cachedOpenAICodexUserAgent

@@ -2,6 +2,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -40,6 +41,7 @@ type Account struct {
 	RateMultiplier     *float64
 	LoadFactor         *int // 调度负载因子；nil 表示使用 Concurrency
 	Status             string
+	PerformancePaused  bool
 	ErrorMessage       string
 	LastUsedAt         *time.Time
 	ExpiresAt          *time.Time
@@ -195,7 +197,7 @@ func (a *Account) EffectiveLoadFactor() int {
 }
 
 func (a *Account) IsSchedulable() bool {
-	if !a.IsActive() || !a.Schedulable {
+	if !a.IsActive() || !a.Schedulable || a.PerformancePaused {
 		return false
 	}
 	now := time.Now()
@@ -3526,4 +3528,15 @@ func parseExtraInt(value any) int {
 		}
 	}
 	return 0
+}
+
+// AccountPlatformCount holds global non-deleted account counts per platform.
+type AccountPlatformCount struct {
+	Platform string `json:"platform"`
+	Count    int64  `json:"count"`
+}
+
+// AccountPlatformCountRepository is an optional capability implemented by AccountRepository.
+type AccountPlatformCountRepository interface {
+	ListPlatformCounts(ctx context.Context) ([]AccountPlatformCount, error)
 }

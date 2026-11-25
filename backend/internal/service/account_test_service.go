@@ -414,14 +414,19 @@ func generateSessionString() (string, error) {
 }
 
 // createTestPayload creates a Claude Code style test request payload
-func createTestPayload(modelID string) (map[string]any, error) {
-	return createTestPayloadForAccount(modelID, nil)
+func createTestPayload(modelID string, customPrompt ...string) (map[string]any, error) {
+	return createTestPayloadForAccount(modelID, nil, customPrompt...)
 }
 
-func createTestPayloadForAccount(modelID string, account *Account) (map[string]any, error) {
+func createTestPayloadForAccount(modelID string, account *Account, customPrompt ...string) (map[string]any, error) {
 	sessionID, err := generateSessionString()
 	if err != nil {
 		return nil, err
+	}
+
+	testPrompt := "hi"
+	if len(customPrompt) > 0 && strings.TrimSpace(customPrompt[0]) != "" {
+		testPrompt = strings.TrimSpace(customPrompt[0])
 	}
 
 	payload := map[string]any{
@@ -432,7 +437,7 @@ func createTestPayloadForAccount(modelID string, account *Account) (map[string]a
 				"content": []map[string]any{
 					{
 						"type": "text",
-						"text": "hi",
+						"text": testPrompt,
 						"cache_control": map[string]string{
 							"type": "ephemeral",
 						},
@@ -546,7 +551,7 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		case APIProtocolChatCompletions:
 			return s.testCNProviderChatCompletionsConnection(c, account, modelID, prompt)
 		case APIProtocolAnthropic:
-			return s.testCNProviderAnthropicConnection(c, account, modelID)
+			return s.testCNProviderAnthropicConnection(c, account, modelID, prompt)
 		}
 	}
 
@@ -575,7 +580,7 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 		return s.testTypeSafeAccountConnection(c, account, prompt)
 	}
 
-	return s.testClaudeAccountConnection(c, account, modelID)
+	return s.testClaudeAccountConnection(c, account, modelID, prompt)
 }
 
 // testModelRoutedAccountConnection probes the native endpoint for the selected
@@ -605,15 +610,15 @@ func (s *AccountTestService) testModelRoutedAccountConnection(c *gin.Context, ac
 	}
 	switch protocol {
 	case APIProtocolAnthropic:
-		return s.testCNProviderAnthropicConnection(c, account, testModelID)
+		return s.testCNProviderAnthropicConnection(c, account, testModelID, prompt)
 	case APIProtocolResponses:
-		return s.testModelRoutedResponsesConnection(c, account, testModelID)
+		return s.testModelRoutedResponsesConnection(c, account, testModelID, prompt)
 	default:
 		return s.testCNProviderChatCompletionsConnection(c, account, testModelID, prompt)
 	}
 }
 
-func (s *AccountTestService) testModelRoutedResponsesConnection(c *gin.Context, account *Account, testModelID string) error {
+func (s *AccountTestService) testModelRoutedResponsesConnection(c *gin.Context, account *Account, testModelID string, customPrompt ...string) error {
 	authToken := strings.TrimSpace(account.GetOpenAIProtocolAPIKey())
 	if authToken == "" {
 		return s.sendErrorAndEnd(c, "No API key available")
@@ -624,7 +629,7 @@ func (s *AccountTestService) testModelRoutedResponsesConnection(c *gin.Context, 
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
-	return s.testCNProviderAdaptiveResponsesConnection(c, account, testModelID, authToken)
+	return s.testCNProviderAdaptiveResponsesConnection(c, account, testModelID, authToken, customPrompt...)
 }
 
 func (s *AccountTestService) testCNProviderChatCompletionsConnection(c *gin.Context, account *Account, modelID string, prompt string) error {
@@ -652,7 +657,11 @@ func (s *AccountTestService) testCNProviderChatCompletionsConnection(c *gin.Cont
 }
 
 // testClaudeAccountConnection tests an Anthropic Claude account's connection
-func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account *Account, modelID string) error {
+func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account *Account, modelID string, customPrompt ...string) error {
+	prompt := ""
+	if len(customPrompt) > 0 {
+		prompt = customPrompt[0]
+	}
 	ctx := c.Request.Context()
 
 	// Determine the model to use
@@ -668,10 +677,10 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 
 	// Bedrock accounts use a separate test path
 	if account.IsBedrock() {
-		return s.testBedrockAccountConnection(c, ctx, account, testModelID)
+		return s.testBedrockAccountConnection(c, ctx, account, testModelID, prompt)
 	}
 	if account.Type == AccountTypeServiceAccount {
-		return s.testClaudeVertexServiceAccountConnection(c, ctx, account, testModelID)
+		return s.testClaudeVertexServiceAccountConnection(c, ctx, account, testModelID, prompt)
 	}
 
 	// Determine authentication method and API URL
@@ -710,10 +719,11 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	payload, err := createTestPayloadForAccount(testModelID, account)
+	payload, err := createTestPayloadForAccount(testModelID, account, prompt)
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create test payload")
 	}
+	applyAccountTestOutputTokenLimit(ctx, payload, "max_tokens")
 	applyIntelligentPayloadPrompt(ctx, payload)
 	payloadBytes, _ := json.Marshal(payload)
 
@@ -772,7 +782,11 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	return s.processClaudeStream(c, resp.Body)
 }
 
-func (s *AccountTestService) testClaudeVertexServiceAccountConnection(c *gin.Context, ctx context.Context, account *Account, testModelID string) error {
+func (s *AccountTestService) testClaudeVertexServiceAccountConnection(c *gin.Context, ctx context.Context, account *Account, testModelID string, customPrompt ...string) error {
+	prompt := ""
+	if len(customPrompt) > 0 {
+		prompt = customPrompt[0]
+	}
 	if mappedModel, matched := account.ResolveMappedModel(testModelID); matched {
 		testModelID = mappedModel
 	} else {
@@ -785,10 +799,11 @@ func (s *AccountTestService) testClaudeVertexServiceAccountConnection(c *gin.Con
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	payload, err := createTestPayloadForAccount(testModelID, account)
+	payload, err := createTestPayloadForAccount(testModelID, account, prompt)
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create test payload")
 	}
+	applyAccountTestOutputTokenLimit(ctx, payload, "max_tokens")
 	applyIntelligentPayloadPrompt(ctx, payload)
 	payloadBytes, _ := json.Marshal(payload)
 	vertexBody, err := buildVertexAnthropicRequestBody(payloadBytes)
@@ -841,7 +856,11 @@ func (s *AccountTestService) testClaudeVertexServiceAccountConnection(c *gin.Con
 	return s.processClaudeStream(c, resp.Body)
 }
 
-func buildBedrockTestPayload(modelID string) map[string]any {
+func buildBedrockTestPayload(modelID string, customPrompt ...string) map[string]any {
+	testPrompt := "hi"
+	if len(customPrompt) > 0 && strings.TrimSpace(customPrompt[0]) != "" {
+		testPrompt = strings.TrimSpace(customPrompt[0])
+	}
 	payload := map[string]any{
 		"anthropic_version": "bedrock-2023-05-31",
 		"messages": []map[string]any{
@@ -850,7 +869,7 @@ func buildBedrockTestPayload(modelID string) map[string]any {
 				"content": []map[string]any{
 					{
 						"type": "text",
-						"text": "hi",
+						"text": testPrompt,
 					},
 				},
 			},
@@ -864,7 +883,11 @@ func buildBedrockTestPayload(modelID string) map[string]any {
 }
 
 // testBedrockAccountConnection tests a Bedrock (SigV4 or API Key) account using non-streaming invoke
-func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx context.Context, account *Account, testModelID string) error {
+func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx context.Context, account *Account, testModelID string, customPrompt ...string) error {
+	prompt := ""
+	if len(customPrompt) > 0 {
+		prompt = customPrompt[0]
+	}
 	region := bedrockRuntimeRegion(account)
 	resolvedModelID, ok := ResolveBedrockModelID(account, testModelID)
 	if !ok {
@@ -880,7 +903,8 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 	c.Writer.Flush()
 
 	// Create a minimal Bedrock-compatible payload (no stream, no cache_control)
-	bedrockPayload := buildBedrockTestPayload(testModelID)
+	bedrockPayload := buildBedrockTestPayload(testModelID, prompt)
+	applyAccountTestOutputTokenLimit(ctx, bedrockPayload, "max_tokens")
 	applyIntelligentPayloadPrompt(ctx, bedrockPayload)
 	bedrockBody, _ := json.Marshal(bedrockPayload)
 
@@ -1043,7 +1067,9 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	if isOAuth {
 		upstreamTestModelID = normalizeOpenAIModelForUpstream(account, testModelID)
 	}
-	payload := createOpenAITestPayload(upstreamTestModelID, isOAuth)
+	payload := createOpenAITestPayload(upstreamTestModelID, isOAuth, prompt)
+	applyAccountTestOutputTokenLimit(ctx, payload, "max_output_tokens")
+	applyAccountTestReasoningEffort(payload, accountTestReasoningEffort(ctx))
 	applyIntelligentPayloadPrompt(ctx, payload)
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -1283,7 +1309,7 @@ func (s *AccountTestService) testGrokAccountConnection(c *gin.Context, account *
 		if mapped := strings.TrimSpace(account.GetMappedModel(testModelID)); mapped != "" {
 			testModelID = mapped
 		}
-		return s.testGrokResponsesConnection(c, ctx, account, authToken, testModelID)
+		return s.testGrokResponsesConnection(c, ctx, account, authToken, testModelID, prompt)
 	}
 
 	// mode == default: infer from model family (legacy UI / API clients).
@@ -1487,7 +1513,7 @@ func (s *AccountTestService) observeGrokTestResponse(ctx context.Context, accoun
 	}
 }
 
-func (s *AccountTestService) testGrokResponsesConnection(c *gin.Context, ctx context.Context, account *Account, authToken, testModelID string) error {
+func (s *AccountTestService) testGrokResponsesConnection(c *gin.Context, ctx context.Context, account *Account, authToken, testModelID string, customPrompt ...string) error {
 	apiURL, err := buildGrokResponsesURL(account, s.cfg, s.settingService)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid Grok base URL: %s", err.Error()))
@@ -1500,7 +1526,9 @@ func (s *AccountTestService) testGrokResponsesConnection(c *gin.Context, ctx con
 		return s.sendErrorAndEnd(c, "Failed to create Grok test payload")
 	}
 	if intelligentPrompt(ctx) != "" {
-		payload := createOpenAITestPayload(testModelID, false)
+		payload := createOpenAITestPayload(testModelID, false, customPrompt...)
+		applyAccountTestOutputTokenLimit(ctx, payload, "max_output_tokens")
+		applyAccountTestReasoningEffort(payload, accountTestReasoningEffort(ctx))
 		applyIntelligentPayloadPrompt(ctx, payload)
 		payloadBytes, _ = json.Marshal(payload)
 	}
@@ -2380,6 +2408,13 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 	c.Writer.Flush()
 
 	payload := createOpenAIChatCompletionsTestPayload(testModelID, prompt)
+	limitField := "max_tokens"
+	lm := strings.ToLower(testModelID)
+	if strings.HasPrefix(lm, "o1") || strings.HasPrefix(lm, "o3") || strings.HasPrefix(lm, "o4") || strings.HasPrefix(lm, "gpt-5") || strings.HasPrefix(lm, "gpt-6") {
+		limitField = "max_completion_tokens"
+	}
+	applyAccountTestOutputTokenLimit(ctx, payload, limitField)
+	applyAccountTestReasoningEffort(payload, accountTestReasoningEffort(ctx))
 	applyIntelligentPayloadPrompt(ctx, payload)
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -2683,7 +2718,7 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 	c.Writer.Flush()
 
 	// Create test payload (Gemini format)
-	payload := createGeminiTestPayload(testModelID, prompt)
+	payload := createGeminiTestPayload(testModelID, prompt, accountTestOutputTokenLimit(ctx))
 
 	// Build request based on account type
 	var req *http.Request
@@ -2914,7 +2949,7 @@ func (s *AccountTestService) buildCodeAssistRequest(ctx context.Context, accessT
 
 // createGeminiTestPayload creates a minimal test payload for Gemini API.
 // Image models use the image-generation path so the frontend can preview the returned image.
-func createGeminiTestPayload(modelID string, prompt string) []byte {
+func createGeminiTestPayload(modelID string, prompt string, maxOutputTokens ...int) []byte {
 	if isImageGenerationModel(modelID) {
 		imagePrompt := strings.TrimSpace(prompt)
 		if imagePrompt == "" {
@@ -2960,6 +2995,9 @@ func createGeminiTestPayload(modelID string, prompt string) []byte {
 				{"text": "You are a helpful AI assistant."},
 			},
 		},
+	}
+	if len(maxOutputTokens) > 0 && maxOutputTokens[0] > 0 {
+		payload["generationConfig"] = map[string]any{"maxOutputTokens": maxOutputTokens[0]}
 	}
 	bytes, _ := json.Marshal(payload)
 	return bytes
@@ -3047,7 +3085,11 @@ func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader)
 }
 
 // createOpenAITestPayload creates a test payload for OpenAI Responses API
-func createOpenAITestPayload(modelID string, isOAuth bool) map[string]any {
+func createOpenAITestPayload(modelID string, isOAuth bool, customPrompt ...string) map[string]any {
+	testPrompt := "hi"
+	if len(customPrompt) > 0 && strings.TrimSpace(customPrompt[0]) != "" {
+		testPrompt = strings.TrimSpace(customPrompt[0])
+	}
 	payload := map[string]any{
 		"model": modelID,
 		"input": []map[string]any{
@@ -3056,7 +3098,7 @@ func createOpenAITestPayload(modelID string, isOAuth bool) map[string]any {
 				"content": []map[string]any{
 					{
 						"type": "input_text",
-						"text": "hi",
+						"text": testPrompt,
 					},
 				},
 			},

@@ -46,12 +46,9 @@ func parseOptionalUsageTimeRange(c *gin.Context) (*time.Time, *time.Time, error)
 		if raw == "" {
 			return nil, nil
 		}
-		parsed, err := timezone.ParseInUserLocation("2006-01-02", raw, userTZ)
+		parsed, err := parseUsageDateBoundary(raw, userTZ, endDate)
 		if err != nil {
-			return nil, fmt.Errorf("invalid %s format, use YYYY-MM-DD", dateKey)
-		}
-		if endDate {
-			parsed = parsed.AddDate(0, 0, 1)
+			return nil, fmt.Errorf("invalid %s format: %w", dateKey, err)
 		}
 		return &parsed, nil
 	}

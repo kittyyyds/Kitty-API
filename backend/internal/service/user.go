@@ -23,6 +23,7 @@ type User struct {
 	Concurrency    int
 	Status         string
 	AllowedGroups  []int64
+	UserGroupDeniedModels []string
 	// RestrictPublicGroups narrows the public groups this user may bind to the
 	// ones listed in AllowedGroups. False keeps the default, where every public
 	// group is bindable.

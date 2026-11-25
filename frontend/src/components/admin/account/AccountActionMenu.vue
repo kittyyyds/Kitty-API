@@ -39,10 +39,7 @@
               {{ t('admin.accounts.duplicateAccount') }}
             </button>
             <!-- 影子账号不持凭据:重授权/刷新 token 对其无效(后端拒绝),故隐藏(外审 G4)。 -->
-            <button v-if="isVMManaged" data-testid="menu-vm-managed" @click="$emit('openai-vm-managed', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-sky-600 hover:bg-gray-100 dark:text-sky-400 dark:hover:bg-dark-700">
-              <Icon name="server" size="sm" />
-              {{ t('admin.accounts.vmManaged.menuOpen') }}
-            </button>
+
             <template v-if="(account.type === 'oauth' || account.type === 'setup-token') && !isShadow && !isVMManaged">
               <button @click="$emit('reauth', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-blue-600 hover:bg-gray-100 dark:hover:bg-dark-700">
                 <Icon name="link" size="sm" />
@@ -53,18 +50,6 @@
                 {{ t('admin.accounts.refreshToken') }}
               </button>
             </template>
-            <button v-if="isOpenAIOAuthParent && !isVMManaged" @click="$emit('create-spark-shadow', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-amber-600 hover:bg-gray-100 dark:hover:bg-dark-700">
-              <Icon name="sparkles" size="sm" />
-              {{ t('admin.accounts.createSparkShadow') }}
-            </button>
-            <button v-if="isOpenAIOAuthParent && !isVMManaged" @click="$emit('openai-vm', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-sky-600 hover:bg-gray-100 dark:text-sky-400 dark:hover:bg-dark-700">
-              <Icon name="server" size="sm" />
-              {{ t('admin.accounts.openaiVm.title') }}
-            </button>
-            <button v-if="isOpenAIOAuthParent && !isVMManaged" @click="$emit('openai-ipv6', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-sky-600 hover:bg-gray-100 dark:text-sky-400 dark:hover:bg-dark-700">
-              <Icon name="server" size="sm" />
-              {{ t('admin.accounts.openaiIPv6.title') }}
-            </button>
             <button v-if="supportsPrivacy && !isVMManaged" @click="$emit('set-privacy', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm text-emerald-600 hover:bg-gray-100 dark:hover:bg-dark-700">
               <Icon name="shield" size="sm" />
               {{ t('admin.accounts.setPrivacy') }}

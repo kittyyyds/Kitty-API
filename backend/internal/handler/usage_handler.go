@@ -82,9 +82,12 @@ func parseOptionalUserUsageTimeRange(c *gin.Context) (*time.Time, *time.Time, er
 		if raw == "" {
 			return nil, nil
 		}
+		if instant, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			return &instant, nil
+		}
 		parsed, err := timezone.ParseInUserLocation("2006-01-02", raw, userTZ)
 		if err != nil {
-			return nil, fmt.Errorf("invalid %s format, use YYYY-MM-DD", dateKey)
+			return nil, fmt.Errorf("invalid %s format, use YYYY-MM-DD or RFC3339", dateKey)
 		}
 		if endDate {
 			parsed = parsed.AddDate(0, 0, 1)
@@ -109,6 +112,11 @@ func parseOptionalUserUsageTimeRange(c *gin.Context) (*time.Time, *time.Time, er
 func formatUserUsageRangeEndDate(c *gin.Context, endTime time.Time) string {
 	if strings.TrimSpace(c.Query("end_time")) != "" {
 		return endTime.Format("2006-01-02")
+	}
+	if raw := strings.TrimSpace(c.Query("end_date")); raw != "" {
+		if _, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			return endTime.Format("2006-01-02")
+		}
 	}
 	return endTime.AddDate(0, 0, -1).Format("2006-01-02")
 }

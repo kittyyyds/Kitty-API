@@ -28,7 +28,7 @@ func TestChannelMonitorV2DateBinOriginIsUTC(t *testing.T) {
 	}
 }
 
-func TestChannelMonitorV2DisplayModelIsPlatformScoped(t *testing.T) {
+func TestChannelMonitorV2DisplayModelPreservesObservedNames(t *testing.T) {
 	cfg := service.ChannelMonitorV2Config{Platforms: []service.ChannelMonitorV2PlatformConfig{
 		{Platform: "openai", Enabled: true, Models: []string{"shared", "gpt-5"}},
 		{Platform: "grok", Enabled: true, Models: []string{"grok-4"}},
@@ -36,11 +36,11 @@ func TestChannelMonitorV2DisplayModelIsPlatformScoped(t *testing.T) {
 		{Platform: "anthropic", Enabled: true, Models: []string{}},
 	}}
 	require.Equal(t, "shared", channelMonitorV2DisplayModel(cfg, "openai", "shared"))
-	require.Equal(t, service.ChannelMonitorV2OtherModel, channelMonitorV2DisplayModel(cfg, "grok", "shared"))
+	require.Equal(t, "shared", channelMonitorV2DisplayModel(cfg, "grok", "shared"))
 	require.Equal(t, "claude-sonnet-4", channelMonitorV2DisplayModel(cfg, "anthropic", "claude-sonnet-4"))
 	// Unconfigured platform still surfaces the real model name.
 	require.Equal(t, "gemini-2.5-pro", channelMonitorV2DisplayModel(cfg, "gemini", "gemini-2.5-pro"))
-	require.True(t, channelMonitorV2ModelSelected(service.ChannelMonitorV2Filter{Models: []string{service.ChannelMonitorV2OtherModel}}, cfg, "grok", "shared"))
+	require.True(t, channelMonitorV2ModelSelected(service.ChannelMonitorV2Filter{Models: []string{"shared"}}, cfg, "grok", "shared"))
 }
 
 func TestChannelMonitorV2MatrixDimensionKey(t *testing.T) {
@@ -48,9 +48,38 @@ func TestChannelMonitorV2MatrixDimensionKey(t *testing.T) {
 	key := channelMonitorV2MatrixDimensionKey(service.ChannelMonitorV2GroupByPlatformGroupModel, cfg, "openai", 7, "gpt-5")
 	require.Equal(t, channelMonitorV2MatrixKey{platform: "openai", groupID: 7, model: "gpt-5"}, key)
 	key = channelMonitorV2MatrixDimensionKey(service.ChannelMonitorV2GroupByPlatformModel, cfg, "openai", 7, "unlisted")
-	require.Equal(t, channelMonitorV2MatrixKey{platform: "openai", model: service.ChannelMonitorV2OtherModel}, key)
+	require.Equal(t, channelMonitorV2MatrixKey{platform: "openai", model: "unlisted"}, key)
 	key = channelMonitorV2MatrixDimensionKey(service.ChannelMonitorV2GroupByPlatform, cfg, "openai", 7, "gpt-5")
 	require.Equal(t, channelMonitorV2MatrixKey{platform: "openai"}, key)
+}
+
+func TestChannelMonitorV2ModelDimensionsAreObservedAndFilterable(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	start := time.Now().UTC().Truncate(time.Hour)
+	filter := service.ChannelMonitorV2Filter{Start: start, End: start.Add(time.Hour), Bucket: 5 * time.Minute}
+	cfg := service.ChannelMonitorV2Config{Platforms: []service.ChannelMonitorV2PlatformConfig{
+		{Platform: "openai", Enabled: true, Models: []string{"unused-model"}},
+		{Platform: "grok", Enabled: true},
+	}}
+	mock.ExpectQuery("SELECT usage_coverage_start").WillReturnRows(sqlmock.NewRows([]string{"usage", "error", "through", "computed", "backfill"}).AddRow(start, start, filter.End, filter.End, start))
+	mock.ExpectQuery("SELECT m.platform").WillReturnRows(sqlmock.NewRows([]string{"platform", "group_name", "group_platform", "group_id", "model", "count"}).
+		AddRow("openai", "A", "openai", 7, "called-model", 2).
+		AddRow("grok", "B", "grok", 8, "called-model", 3))
+	repo := &channelMonitorV2Repository{db: db}
+	dimensions, err := repo.GetDimensions(context.Background(), filter, cfg)
+	require.NoError(t, err)
+	require.Len(t, dimensions.Models, 2)
+	for _, model := range dimensions.Models {
+		require.Equal(t, "called-model", model.Value)
+		require.Equal(t, "called-model", model.Label)
+		require.True(t, channelMonitorV2ModelSelected(service.ChannelMonitorV2Filter{Models: []string{model.Value}}, cfg, model.Platform, "called-model"))
+	}
+	for _, grouping := range []service.ChannelMonitorV2GroupBy{service.ChannelMonitorV2GroupByPlatformModel, service.ChannelMonitorV2GroupByPlatformGroupModel} {
+		require.Empty(t, seedChannelMonitorV2MatrixAccumulators(filter, cfg, grouping, nil))
+	}
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestChannelMonitorV2HistogramPercentilesAreMergedFromCounts(t *testing.T) {
@@ -84,6 +113,21 @@ func TestChannelMonitorV2MetricIncludesSuccessRate(t *testing.T) {
 
 	adminMetric := acc.metric(1, true)
 	require.NotNil(t, adminMetric.UpstreamAffectedRequests)
+}
+
+func TestChannelMonitorV2OutputTPSUsesGenerationSumsAndMissingStaysUnknown(t *testing.T) {
+	acc := newMetricAccumulator()
+	require.Nil(t, acc.metric(1, true).OutputTPS)
+	// Legacy aggregates may contain output totals without eligible timings.
+	acc.addFact(channelMonitorV2Fact{Output: 10000, DurationSum: 500, DurationCount: 1})
+	require.Nil(t, acc.metric(1, true).OutputTPS)
+	acc.addFact(channelMonitorV2Fact{TPSOutputTokens: 100, TPSGenerationMS: 1000, TPSSamples: 1})
+	acc.addFact(channelMonitorV2Fact{TPSOutputTokens: 100, TPSGenerationMS: 10000, TPSSamples: 1})
+	for _, minutes := range []float64{1, 60, 1440} {
+		metric := acc.metric(minutes, true)
+		require.EqualValues(t, 2, metric.TPSSamples)
+		require.InDelta(t, 200.0/11, *metric.OutputTPS, .00001)
+	}
 }
 
 func TestChannelMonitorV2WhereUsesConfiguredScopeAndEmptyFilterMeansAllConfigured(t *testing.T) {
@@ -307,11 +351,88 @@ func TestChannelMonitorV2ErrorAggregationResolvesCompositePlatform(t *testing.T)
 func TestChannelMonitorV2UsageSuccessExcludesCyberBillingRows(t *testing.T) {
 	for _, query := range []string{channelMonitorV2UsageMetricsSQL, channelMonitorV2UserMetricsSQL} {
 		require.Contains(t, query, "COALESCE(ul.request_type, 0) NOT IN (4, 6)")
+		require.Contains(t, query, "COALESCE(ul.request_type, 0) NOT IN (1, 4, 6)")
 		require.Contains(t, query, "ul.actual_cost > 0")
+		require.Contains(t, query, "cache_eligible_input_tokens")
+		require.Contains(t, query, "ul.stream = TRUE OR ul.openai_ws_mode = TRUE")
 	}
 	require.Contains(t, channelMonitorV2PlatformSQL, "g.platform = 'composite'")
 	require.Contains(t, channelMonitorV2PlatformSQL, "a.platform")
 	require.Contains(t, channelMonitorV2HistogramSQL, "ul.actual_cost > 0")
+}
+
+func TestChannelMonitorV2CacheRateExcludesSynchronousRequests(t *testing.T) {
+	acc := newMetricAccumulator()
+	acc.addFact(channelMonitorV2Fact{Success: 1, Input: 100, Output: 20, CacheCreation: 30, CacheRead: 50})
+	m := acc.metric(1, true)
+	require.Equal(t, int64(1), m.RequestCount)
+	require.Equal(t, int64(100), m.InputTokens)
+	require.Zero(t, m.CacheEligibleInputTokens)
+	require.Zero(t, m.CacheRateNumerator)
+	require.Zero(t, m.CacheRateDenominator)
+	require.False(t, m.HasCacheSamples)
+	require.Zero(t, m.CacheRate)
+	require.Equal(t, int64(200), m.TokenCount)
+	require.Equal(t, int64(30), m.CacheCreationTokens)
+	require.Equal(t, int64(50), m.CacheReadTokens)
+
+	acc.addFact(channelMonitorV2Fact{Success: 1, Input: 100, CacheEligibleInput: 100, CacheCreation: 20, CacheEligibleCreation: 20, CacheRead: 80, CacheEligibleRead: 80})
+	m = acc.metric(1, true)
+	require.Equal(t, int64(200), m.InputTokens)
+	require.Equal(t, int64(100), m.CacheEligibleInputTokens)
+	require.Equal(t, int64(80), m.CacheRateNumerator)
+	require.Equal(t, int64(200), m.CacheRateDenominator)
+	require.True(t, m.HasCacheSamples)
+	require.InDelta(t, 0.4, m.CacheRate, 0.0001)
+
+	// Weight by input tokens, including streaming requests with no cache hits.
+	acc.addFact(channelMonitorV2Fact{Success: 1, Input: 900, CacheEligibleInput: 900})
+	m = acc.metric(1, true)
+	require.Equal(t, int64(3), m.RequestCount)
+	require.Equal(t, int64(1300), m.TokenCount)
+	require.Equal(t, int64(80), m.CacheRateNumerator)
+	require.Equal(t, int64(1100), m.CacheRateDenominator)
+	require.InDelta(t, 80.0/1100.0, m.CacheRate, 0.0001)
+}
+
+func TestChannelMonitorV2CacheRateDistinguishesMissingTokensAndZeroHits(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		input         int64
+		eligibleInput int64
+		hasSamples    bool
+	}{
+		{name: "empty denominator"},
+		{name: "synchronous input without cache hits", input: 100},
+		{name: "streaming input without cache hits", input: 100, eligibleInput: 100, hasSamples: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			acc := newMetricAccumulator()
+			acc.addFact(channelMonitorV2Fact{Success: 1, Input: tc.input, CacheEligibleInput: tc.eligibleInput, Output: 20})
+			m := acc.metric(1, true)
+			require.Equal(t, int64(1), m.RequestCount)
+			require.Equal(t, tc.eligibleInput, m.CacheEligibleInputTokens)
+			require.Zero(t, m.CacheRateNumerator)
+			require.Equal(t, tc.eligibleInput, m.CacheRateDenominator)
+			require.Equal(t, tc.hasSamples, m.HasCacheSamples)
+			require.Zero(t, m.CacheRate)
+		})
+	}
+}
+
+func TestChannelMonitorV2CacheRateDoesNotUseIneligibleTokenTotals(t *testing.T) {
+	// Full totals alone cannot identify streaming/WS traffic and must not be
+	// treated as eligible samples.
+	acc := newMetricAccumulator()
+	acc.addFact(channelMonitorV2Fact{Success: 4, Input: 3020, Output: 40, CacheCreation: 30, CacheRead: 230})
+	m := acc.metric(1, true)
+	require.Equal(t, int64(4), m.RequestCount)
+	require.Equal(t, int64(3320), m.TokenCount)
+	require.Zero(t, m.CacheEligibleInputTokens)
+	require.Zero(t, m.CacheRateNumerator)
+	require.Zero(t, m.CacheRateDenominator)
+	require.False(t, m.HasCacheSamples)
+	require.Zero(t, m.CacheRate)
 }
 
 func TestChannelMonitorV2RatesUseCoveredWindow(t *testing.T) {

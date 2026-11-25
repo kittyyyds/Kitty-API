@@ -24,7 +24,10 @@ func TestKittyRouteParityAndRetirementContract(t *testing.T) {
 		APIKey:  &handler.APIKeyHandler{},
 		Usage:   &handler.UsageHandler{},
 		Payment: &handler.PaymentHandler{},
+		Gateway: &handler.GatewayHandler{},
+		OpenAIGateway: &handler.OpenAIGatewayHandler{},
 		Admin: &handler.AdminHandlers{
+			Group:     &admin.GroupHandler{},
 			User:      &admin.UserHandler{},
 			Account:   &admin.AccountHandler{},
 			Channel:   &admin.ChannelHandler{},
@@ -46,7 +49,9 @@ func TestKittyRouteParityAndRetirementContract(t *testing.T) {
 		},
 	}
 
-	RegisterAdminRoutes(v1, h, middleware.AdminAuthMiddleware(noop), nil, nil, nil, nil)
+	RegisterUserRoutes(v1, h, middleware.JWTAuthMiddleware(noop), nil, nil, nil)
+	RegisterAPIKeyTestRoutes(r, h, middleware.JWTAuthMiddleware(noop), noop, nil, nil, nil, nil)
+	RegisterAdminRoutes(v1, h, middleware.AdminAuthMiddleware(noop), nil, middleware.StepUpAuthMiddleware(noop), nil, nil)
 	RegisterPaymentRoutes(v1, h.Payment, &handler.PaymentWebhookHandler{}, h.Admin.Payment, middleware.JWTAuthMiddleware(noop), middleware.AdminAuthMiddleware(noop), nil, nil, nil, nil)
 	RegisterKittyRoutes(v1, r, h, middleware.JWTAuthMiddleware(noop), middleware.OptionalJWTAuthMiddleware(noop), middleware.AdminAuthMiddleware(noop), nil, nil, nil, nil)
 
@@ -91,6 +96,32 @@ func TestKittyRouteParityAndRetirementContract(t *testing.T) {
 		"GET /api/v1/admin/qqbot/overview",
 		"GET /api/v1/admin/support-tickets",
 		"PUT /api/v1/admin/channel-monitor-mode",
+		// Kitty.3 restored A-level routes
+		"GET /api/v1/keys/concurrency",
+		"GET /api/v1/key-tests/:key_id/models",
+		"POST /api/v1/key-tests/:key_id",
+		"GET /api/v1/admin/accounts/platforms",
+		"GET /api/v1/admin/accounts/management-capabilities",
+		"POST /api/v1/admin/accounts/performance",
+		"PUT /api/v1/admin/accounts/:id/performance",
+		"POST /api/v1/admin/accounts/:id/performance/release",
+		"GET /api/v1/admin/accounts/:id/performance/events",
+		"GET /api/v1/admin/accounts/:id/upstream-billing-probe/config",
+		"POST /api/v1/admin/accounts/:id/upstream-billing-probe/config/preview",
+		"PUT /api/v1/admin/accounts/:id/upstream-billing-probe/config",
+		"DELETE /api/v1/admin/accounts/:id/upstream-billing-probe/config",
+		"POST /api/v1/admin/accounts/models/sync-upstream-batch",
+		"GET /api/v1/admin/usage/:id/timing",
+		"GET /api/v1/admin/payment/recharge-activity",
+		"GET /api/v1/admin/payment/recharge-activity/summary",
+		"GET /api/v1/admin/payment/recharge-risks",
+		"GET /api/v1/admin/groups/:id/smart-ws",
+		"PUT /api/v1/admin/groups/:id/smart-ws",
+		"GET /api/v1/admin/groups/:id/available-models",
+		"PUT /api/v1/admin/groups/:id/user-denied-models",
+		"DELETE /api/v1/admin/groups/:id/user-denied-models",
+		"GET /api/v1/admin/settings/openai-response-header-timeout",
+		"PUT /api/v1/admin/settings/openai-response-header-timeout",
 	}
 	for _, route := range requiredKittyRoutes {
 		require.True(t, registered[route], "missing required Kitty route: %s", route)

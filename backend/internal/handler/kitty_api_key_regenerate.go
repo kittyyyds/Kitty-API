@@ -27,7 +27,8 @@ func (h *APIKeyHandler) KittyRegenerate(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	out := dto.APIKeyFromService(key)
+	out := dto.APIKeyFromService(key).Localized(c.GetHeader("Accept-Language"))
 	out.Key = key.Key
+	out.SecretAvailable = true
 	response.Success(c, out)
 }

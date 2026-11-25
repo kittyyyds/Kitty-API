@@ -28,6 +28,7 @@ import (
 var (
 	ErrAPIKeyNotFound       = infraerrors.NotFound("API_KEY_NOT_FOUND", "api key not found")
 	ErrGroupNotAllowed      = infraerrors.Forbidden("GROUP_NOT_ALLOWED", "user is not allowed to bind this group")
+	ErrFallbackGroupInvalid = infraerrors.BadRequest("INVALID_FALLBACK_GROUP", "fallback group must be active, distinct from primary group, and use the same platform")
 	ErrAPIKeyExists         = infraerrors.Conflict("API_KEY_EXISTS", "api key already exists")
 	ErrAPIKeyTooShort       = infraerrors.BadRequest("API_KEY_TOO_SHORT", "api key must be at least 16 characters")
 	ErrAPIKeyInvalidChars   = infraerrors.BadRequest("API_KEY_INVALID_CHARS", "api key can only contain letters, numbers, underscores, and hyphens")
@@ -230,12 +231,14 @@ type APIKeyAuthCacheInvalidator interface {
 
 // CreateAPIKeyRequest 创建API Key请求
 type CreateAPIKeyRequest struct {
-	Name        string   `json:"name"`
-	GroupID     *int64   `json:"group_id"`
-	CustomKey   *string  `json:"custom_key"`   // 可选的自定义key
-	IPWhitelist []string `json:"ip_whitelist"` // IP 白名单
-	IPBlacklist []string `json:"ip_blacklist"` // IP 黑名单
-	Concurrency int      `json:"concurrency"`  // 0 = unlimited
+	Name            string   `json:"name"`
+	GroupID         *int64   `json:"group_id"`
+	FallbackGroupID *int64   `json:"fallback_group_id"`
+	GroupIDs        []int64  `json:"group_ids"`
+	CustomKey       *string  `json:"custom_key"`   // 可选的自定义key
+	IPWhitelist     []string `json:"ip_whitelist"` // IP 白名单
+	IPBlacklist     []string `json:"ip_blacklist"` // IP 黑名单
+	Concurrency     int      `json:"concurrency"`  // 0 = unlimited
 
 	// Quota fields
 	Quota         float64 `json:"quota"`           // Quota limit in USD (0 = unlimited)
@@ -249,12 +252,15 @@ type CreateAPIKeyRequest struct {
 
 // UpdateAPIKeyRequest 更新API Key请求
 type UpdateAPIKeyRequest struct {
-	Name        *string   `json:"name"`
-	GroupID     *int64    `json:"group_id"`
-	Status      *string   `json:"status"`
-	IPWhitelist *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
-	IPBlacklist *[]string `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
-	Concurrency *int      `json:"concurrency"`  // nil = no change, 0 = unlimited
+	Name               *string   `json:"name"`
+	GroupID            *int64    `json:"group_id"`
+	FallbackGroupID    *int64    `json:"fallback_group_id"`
+	FallbackGroupIDSet bool      `json:"-"`
+	GroupIDs           *[]int64  `json:"group_ids"`
+	Status             *string   `json:"status"`
+	IPWhitelist        *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
+	IPBlacklist        *[]string `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
+	Concurrency        *int      `json:"concurrency"`  // nil = no change, 0 = unlimited
 
 	// Quota fields
 	Quota           *float64   `json:"quota"`       // Quota limit in USD (nil = no change, 0 = unlimited)
@@ -605,16 +611,39 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		}
 	}
 
-	// 验证分组权限（如果指定了分组）
-	if req.GroupID != nil {
-		group, err := s.groupRepo.GetByID(ctx, *req.GroupID)
+	groupIDs := normalizeAPIKeyGroupIDs(req.GroupID, req.GroupIDs)
+	if len(groupIDs) > 20 {
+		return nil, infraerrors.BadRequest("TOO_MANY_GROUPS", "at most 20 groups can be bound to one API key")
+	}
+	if len(groupIDs) > 0 {
+		first := groupIDs[0]
+		req.GroupID = &first
+	}
+	var primaryGroup *Group
+	for _, gid := range groupIDs {
+		group, err := s.groupRepo.GetByID(ctx, gid)
 		if err != nil {
 			return nil, fmt.Errorf("get group: %w", err)
 		}
-
-		// 检查用户是否可以绑定该分组
 		if !s.canUserBindGroup(ctx, user, group) {
 			return nil, ErrGroupNotAllowed
+		}
+		if req.GroupID != nil && gid == *req.GroupID {
+			primaryGroup = group
+		}
+	}
+	var fallbackGroup *Group
+	if req.FallbackGroupID != nil {
+		var err error
+		fallbackGroup, err = s.groupRepo.GetByID(ctx, *req.FallbackGroupID)
+		if err != nil {
+			return nil, fmt.Errorf("get fallback group: %w", err)
+		}
+		if !s.canUserBindGroup(ctx, user, fallbackGroup) {
+			return nil, ErrGroupNotAllowed
+		}
+		if primaryGroup == nil || primaryGroup.ID == fallbackGroup.ID || primaryGroup.Platform != fallbackGroup.Platform || !fallbackGroup.IsActive() {
+			return nil, ErrFallbackGroupInvalid
 		}
 	}
 
@@ -659,11 +688,15 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 
 	// 创建API Key记录
 	apiKey := &APIKey{
-		UserID:      userID,
-		Key:         key,
-		Name:        html.EscapeString(req.Name),
-		GroupID:     req.GroupID,
-		Status:      StatusActive,
+		UserID:          userID,
+		Key:             key,
+		Name:            html.EscapeString(req.Name),
+		GroupID:         req.GroupID,
+		FallbackGroupID: req.FallbackGroupID,
+		GroupIDs:        groupIDs,
+		Group:           primaryGroup,
+		FallbackGroup:   fallbackGroup,
+		Status:          StatusActive,
 		IPWhitelist: req.IPWhitelist,
 		IPBlacklist: req.IPBlacklist,
 		Concurrency: req.Concurrency,
@@ -923,24 +956,107 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 		fields.Name = true
 	}
 
-	if req.GroupID != nil {
-		// 验证分组权限
-		user, err := s.userRepo.GetByID(ctx, userID)
+	var cachedOwner *User
+	loadOwner := func() (*User, error) {
+		if cachedOwner != nil {
+			return cachedOwner, nil
+		}
+		u, err := s.userRepo.GetByID(ctx, userID)
 		if err != nil {
 			return nil, fmt.Errorf("get user: %w", err)
 		}
-
+		cachedOwner = u
+		return u, nil
+	}
+	if req.GroupIDs != nil {
+		user, err := loadOwner()
+		if err != nil {
+			return nil, err
+		}
+		ids := normalizeAPIKeyGroupIDs(req.GroupID, *req.GroupIDs)
+		if len(ids) > 20 {
+			return nil, infraerrors.BadRequest("TOO_MANY_GROUPS", "at most 20 groups can be bound to one API key")
+		}
+		var primary *Group
+		for i, gid := range ids {
+			group, err := s.groupRepo.GetByID(ctx, gid)
+			if err != nil {
+				return nil, fmt.Errorf("get group: %w", err)
+			}
+			if !s.canUserBindGroup(ctx, user, group) {
+				return nil, ErrGroupNotAllowed
+			}
+			if i == 0 {
+				primary = group
+			}
+		}
+		if len(ids) == 0 {
+			apiKey.GroupID = nil
+			apiKey.Group = nil
+			apiKey.GroupIDs = nil
+		} else {
+			first := ids[0]
+			apiKey.GroupID = &first
+			apiKey.Group = primary
+			apiKey.GroupIDs = ids
+		}
+		fields.GroupID = true
+	} else if req.GroupID != nil {
+		user, err := loadOwner()
+		if err != nil {
+			return nil, err
+		}
 		group, err := s.groupRepo.GetByID(ctx, *req.GroupID)
 		if err != nil {
 			return nil, fmt.Errorf("get group: %w", err)
 		}
-
 		if !s.canUserBindGroup(ctx, user, group) {
 			return nil, ErrGroupNotAllowed
 		}
-
 		apiKey.GroupID = req.GroupID
+		apiKey.Group = group
+		apiKey.GroupIDs = normalizeAPIKeyGroupIDs(req.GroupID, nil)
 		fields.GroupID = true
+	}
+	if req.FallbackGroupIDSet {
+		if req.FallbackGroupID == nil {
+			apiKey.FallbackGroupID = nil
+			apiKey.FallbackGroup = nil
+		} else {
+			user, err := loadOwner()
+			if err != nil {
+				return nil, err
+			}
+			if apiKey.GroupID == nil {
+				return nil, ErrFallbackGroupInvalid
+			}
+			primary := apiKey.Group
+			if primary == nil || primary.ID != *apiKey.GroupID {
+				primary, err = s.groupRepo.GetByID(ctx, *apiKey.GroupID)
+				if err != nil {
+					return nil, fmt.Errorf("get group: %w", err)
+				}
+			}
+			fallback, err := s.groupRepo.GetByID(ctx, *req.FallbackGroupID)
+			if err != nil {
+				return nil, fmt.Errorf("get fallback group: %w", err)
+			}
+			if !s.canUserBindGroup(ctx, user, fallback) {
+				return nil, ErrGroupNotAllowed
+			}
+			if primary == nil || primary.ID == fallback.ID || primary.Platform != fallback.Platform || !fallback.IsActive() {
+				return nil, ErrFallbackGroupInvalid
+			}
+			fbID := fallback.ID
+			apiKey.FallbackGroupID = &fbID
+			apiKey.FallbackGroup = fallback
+		}
+	} else if apiKey.FallbackGroupID != nil && fields.GroupID {
+		// Clear stale fallback group if primary changed incompatibly or was removed.
+		if apiKey.GroupID == nil || *apiKey.GroupID == *apiKey.FallbackGroupID {
+			apiKey.FallbackGroupID = nil
+			apiKey.FallbackGroup = nil
+		}
 	}
 
 	if req.Status != nil {

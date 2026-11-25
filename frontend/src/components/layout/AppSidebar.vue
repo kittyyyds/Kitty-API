@@ -878,9 +878,8 @@ const customerNavSections = computed(() => {
   const entries = mergeCustomerNavGroups(items, group => t(group.labelKey))
   const definitions = [
     { id: 'overview', label: '', icon: DashboardIcon, paths: ['/dashboard'] },
-    { id: 'api', label: 'API', icon: KeyIcon, paths: ['/keys','/test-results','/gpt-direct','/monitor','/available-channels','/usage','/model-plaza?embedded=1','/custom/docs'] },
-    { id: 'media', label: t('nav.mediaSection'), icon: FolderIcon, paths: ['/creative-canvas','/video-tasks'] },
-    { id: 'billing', label: t('nav.billing'), icon: CreditCardIcon, paths: ['/billing','/subscriptions','/purchase','/orders','/coupons','/invoices','/redeem','/affiliate'] },
+    { id: 'api', label: 'API', icon: KeyIcon, paths: ['/keys','/monitor','/available-channels','/usage','/model-plaza?embedded=1','/custom/docs'] },
+    { id: 'billing', label: t('nav.billing'), icon: CreditCardIcon, paths: ['/billing','/subscriptions','/purchase','/orders','/invoices','/redeem','/affiliate'] },
     // The header already carries the community entry on every screen size.
     { id: 'other', label: t('nav.otherSection'), icon: UserIcon, paths: ['/guide','/settings/mcp','/profile','/support-tickets', ...customMenuItemsForUser.value.map(item => `/custom/${item.id}`)] },
   ]

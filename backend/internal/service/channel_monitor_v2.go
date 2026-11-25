@@ -7,11 +7,21 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 const (
 	ChannelMonitorV2OtherModel      = "__other__"
 	ChannelMonitorV2TaxonomyVersion = 1
+	// Card "recent samples" are the newest 5-minute buckets that meet the
+	// minimum sample. They are not the 18 equal windows of the selected range.
+	// Five-minute rollups are retained for 7 days, which is the lookback limit.
+	ChannelMonitorV2RecentSampleLimit  = 18
+	ChannelMonitorV2RecentSampleBucket = 5 * time.Minute
+	// Cards always show recent samples. The time-window mode was removed; the
+	// value is still stored and returned so older cached pages keep working.
+	ChannelMonitorV2CardTimelineSamples = "samples"
 )
 
 var (
@@ -30,26 +40,49 @@ const (
 	ChannelMonitorV2GroupByPlatformGroupModel ChannelMonitorV2GroupBy = "platform_group_model"
 )
 
-type ChannelMonitorV2PlatformConfig struct {
-	Platform string   `json:"platform"`
-	Enabled  bool     `json:"enabled"`
-	Models   []string `json:"models"`
+// ChannelMonitorV2FactoryPlatforms are the six platforms seeded by migration 194.
+// They stay in every saved config. Operators can disable them, but not remove them.
+// A platforms list that omits one restores it disabled. A missing platforms field
+// keeps the stored rows instead of replacing them.
+var ChannelMonitorV2FactoryPlatforms = []string{
+	"anthropic", "openai", "grok", "kiro", "gemini", "antigravity",
 }
 
+const channelMonitorV2MaxPlatforms = 64
+
+type ChannelMonitorV2PlatformConfig struct {
+	Platform string `json:"platform"`
+	Enabled  bool   `json:"enabled"`
+	// Models is retained for old configuration compatibility; observed names are always shown.
+	Models []string `json:"models"`
+}
+
+// ChannelMonitorV2Config is the saved operator document.
+// Platforms keeps submitted array order, which is the display order for filters,
+// cards, and the matrix. Factory platforms missing from a submitted list are
+// appended disabled. The model ranking table stays ordered by request volume.
 type ChannelMonitorV2Config struct {
-	Version                int                              `json:"version"`
-	Enabled                bool                             `json:"enabled"`
-	RefreshIntervalSeconds int                              `json:"refresh_interval_seconds"`
-	Platforms              []ChannelMonitorV2PlatformConfig `json:"platforms"`
-	GroupIDs               []int64                          `json:"group_ids"`
-	HealthThresholds       ChannelMonitorV2HealthThresholds `json:"health_thresholds"`
+	CandyProbes []ChannelMonitorV2CandyProbe `json:"candy_probes,omitempty"`
+	// CandyHistoryLimit is how many recent checks each model shows on a card.
+	// Zero means the default; stored values are 15–100.
+	CandyHistoryLimit      int  `json:"candy_history_limit"`
+	Version                int  `json:"version"`
+	Enabled                bool `json:"enabled"`
+	RefreshIntervalSeconds int  `json:"refresh_interval_seconds"`
+	// CardTimelineMode is always "samples". Any submitted or stored value,
+	// including the removed "windows", is replaced with it.
+	CardTimelineMode string                           `json:"card_timeline_mode"`
+	Platforms        []ChannelMonitorV2PlatformConfig `json:"platforms"`
+	GroupIDs         []int64                          `json:"group_ids"`
+	// GroupOrder is the operator display order for groups inside one platform.
+	// Nil means the client omitted it. An empty slice means name, then id.
+	GroupOrder       []int64                          `json:"group_order"`
+	HealthThresholds ChannelMonitorV2HealthThresholds `json:"health_thresholds"`
 	// IgnoredErrorCategories are excluded from error_rate / health scoring.
 	// They still appear in the error breakdown with ignored=true (greyed in UI).
 	// Unknown categories always roll into "other" via the taxonomy classifier.
-	IgnoredErrorCategories []string                     `json:"ignored_error_categories"`
-	CandyProbes            []ChannelMonitorV2CandyProbe `json:"candy_probes,omitempty"`
-	CandyHistoryLimit      int                          `json:"candy_history_limit"`
-	UpdatedAt              time.Time                    `json:"updated_at"`
+	IgnoredErrorCategories []string  `json:"ignored_error_categories"`
+	UpdatedAt              time.Time `json:"updated_at"`
 	UpdatedBy              *int64    `json:"updated_by,omitempty"`
 }
 
@@ -76,9 +109,11 @@ var ChannelMonitorV2ErrorCategories = []string{
 }
 
 type ChannelMonitorV2Filter struct {
-	Range     string
-	Platforms []string
-	GroupIDs  []int64
+	// Only the card view needs raw, capped request history. Aggregation is unchanged.
+	IncludeRecentRequests bool
+	Range                 string
+	Platforms             []string
+	GroupIDs              []int64
 	// AllowedGroupIDs is the authenticated viewer's server-derived group scope.
 	// RestrictGroups distinguishes an ordinary user with no allowed groups from
 	// the unrestricted admin/configured scope represented by an empty slice.
@@ -88,24 +123,39 @@ type ChannelMonitorV2Filter struct {
 	Start           time.Time
 	End             time.Time
 	Bucket          time.Duration
+	// IncludeRecentSamples attaches the latest sampled buckets per group.
+	// Those buckets ignore Start and use the 5-minute history, not this range.
+	IncludeRecentSamples bool
 }
 
 type ChannelMonitorV2Metric struct {
-	SuccessRequests          int64                   `json:"success_requests"`
-	ErrorRequests            int64                   `json:"error_requests"`
-	RequestCount             int64                   `json:"request_count"`
-	InputTokens              int64                   `json:"input_tokens"`
-	OutputTokens             int64                   `json:"output_tokens"`
-	CacheCreationTokens      int64                   `json:"cache_creation_tokens"`
-	CacheReadTokens          int64                   `json:"cache_read_tokens"`
-	TokenCount               int64                   `json:"token_count"`
-	RPM                      float64                 `json:"rpm"`
-	TPM                      float64                 `json:"tpm"`
-	ErrorRate                float64                 `json:"error_rate"`
-	SuccessRate              float64                 `json:"success_rate"`
-	CacheRate                float64                 `json:"cache_rate"`
-	CacheRateNumerator       int64                   `json:"cache_rate_numerator"`
-	CacheRateDenominator     int64                   `json:"cache_rate_denominator"`
+	// OutputTPS measures generated output tokens per second after the first token.
+	// It is independent of fleet throughput (TPM) and is nil without valid samples.
+	OutputTPS            *float64 `json:"output_tps"`
+	TPSSamples           int64    `json:"tps_samples"`
+	SuccessRequests      int64    `json:"success_requests"`
+	ErrorRequests        int64    `json:"error_requests"`
+	RequestCount         int64    `json:"request_count"`
+	InputTokens          int64    `json:"input_tokens"`
+	OutputTokens         int64    `json:"output_tokens"`
+	CacheCreationTokens  int64    `json:"cache_creation_tokens"`
+	CacheReadTokens      int64    `json:"cache_read_tokens"`
+	TokenCount           int64    `json:"token_count"`
+	RPM                  float64  `json:"rpm"`
+	TPM                  float64  `json:"tpm"`
+	ErrorRate            float64  `json:"error_rate"`
+	SuccessRate          float64  `json:"success_rate"`
+	CacheRate            float64  `json:"cache_rate"`
+	HasCacheSamples      bool     `json:"has_cache_samples"`
+	CacheRateNumerator   int64    `json:"cache_rate_numerator"`
+	CacheRateDenominator int64    `json:"cache_rate_denominator"`
+	// CacheEligibleInputTokens counts streaming/WS input tokens. Cache rate uses
+	// this subset together with its eligible cache creation and read tokens.
+	CacheEligibleInputTokens int64                   `json:"cache_eligible_input_tokens,omitempty"`
+	HasSamples          bool    `json:"has_samples"`
+	// OutputTPS uses only measured successful stream generation time after TTFT.
+	// Nil means no valid post-upgrade observations; TPM is aggregate throughput.
+	OutputTPSSamples         int64                   `json:"output_tps_samples"`
 	TTFT                     ChannelMonitorV2Latency `json:"ttft"`
 	Duration                 ChannelMonitorV2Latency `json:"duration"`
 	UpstreamAffectedRequests *int64                  `json:"upstream_affected_requests,omitempty"`
@@ -226,15 +276,10 @@ type ChannelMonitorV2Dimension struct {
 }
 
 type ChannelMonitorV2GroupDimension struct {
-	ID                 int64    `json:"id"`
-	Name               string   `json:"name"`
-	Platform           string   `json:"platform,omitempty"`
-	RequestCount       int64    `json:"request_count"`
-	RateMultiplier     *float64 `json:"rate_multiplier,omitempty"`
-	PeakRateEnabled    bool     `json:"peak_rate_enabled,omitempty"`
-	PeakStart          string   `json:"peak_start,omitempty"`
-	PeakEnd            string   `json:"peak_end,omitempty"`
-	PeakRateMultiplier float64  `json:"peak_rate_multiplier,omitempty"`
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	Platform     string `json:"platform,omitempty"`
+	RequestCount int64  `json:"request_count"`
 }
 
 type ChannelMonitorV2Dimensions struct {
@@ -251,20 +296,44 @@ type ChannelMonitorV2ModelRow struct {
 }
 
 type ChannelMonitorV2MatrixRow struct {
-	Platform           string                       `json:"platform"`
-	GroupID            *int64                       `json:"group_id,omitempty"`
-	GroupName          string                       `json:"group_name,omitempty"`
-	RateMultiplier     *float64                     `json:"rate_multiplier,omitempty"`
-	PeakRateEnabled    bool                         `json:"peak_rate_enabled,omitempty"`
-	PeakStart          string                       `json:"peak_start,omitempty"`
-	PeakEnd            string                       `json:"peak_end,omitempty"`
-	PeakRateMultiplier float64                      `json:"peak_rate_multiplier,omitempty"`
-	Model              string                       `json:"model,omitempty"`
-	Metrics            ChannelMonitorV2Metric       `json:"metrics"`
-	Health             ChannelMonitorV2Health         `json:"health"`
-	Buckets            []ChannelMonitorV2TrendPoint   `json:"buckets"`
-	Candy              *ChannelMonitorV2CandyHistory  `json:"candy,omitempty"`
-	CandyChecks        []ChannelMonitorV2CandyHistory `json:"candy_checks,omitempty"`
+	HasTraffic     bool                            `json:"has_traffic"`
+	RecentRequests []ChannelMonitorV2RecentRequest `json:"recent_requests,omitempty"`
+	Platform       string                          `json:"platform"`
+	GroupID        *int64                          `json:"group_id,omitempty"`
+	GroupName      string                          `json:"group_name,omitempty"`
+	Model          string                          `json:"model,omitempty"`
+	Metrics        ChannelMonitorV2Metric          `json:"metrics"`
+	Health         ChannelMonitorV2Health          `json:"health"`
+	Buckets        []ChannelMonitorV2TrendPoint    `json:"buckets"`	// Candy is the first enabled probe, kept so older clients still render one model.
+	Candy               *ChannelMonitorV2CandyHistory  `json:"candy,omitempty"`
+	CandyChecks         []ChannelMonitorV2CandyHistory `json:"candy_checks,omitempty"`
+	GroupRateMultiplier *float64                       `json:"group_rate_multiplier,omitempty"`
+	// SampleBuckets is the newest 5-minute buckets that meet the minimum sample,
+	// independent of the selected range. Nil means the request did not ask for
+	// them. A non-nil empty slice means history was searched and none qualified.
+	SampleBuckets *[]ChannelMonitorV2TrendPoint `json:"sample_buckets,omitempty"`
+
+}
+
+// ChannelMonitorV2RecentRequest exposes diagnostics only to administrators.
+type ChannelMonitorV2RecentRequest struct {
+	OutputTPS     *float64                     `json:"output_tps"`
+	OccurredAt    time.Time                    `json:"occurred_at"`
+	Model         string                       `json:"model"`
+	Status        string                       `json:"status"`
+	TTFTMs        *int64                       `json:"ttft_ms,omitempty"`
+	DurationMs    *int64                       `json:"duration_ms,omitempty"`
+	CacheRate     *float64                     `json:"cache_rate,omitempty"`
+	ErrorCategory string                       `json:"error_category,omitempty"`
+	Error         *ChannelMonitorV2RecentError `json:"error,omitempty"`
+}
+
+type ChannelMonitorV2RecentError struct {
+	LogID              int64  `json:"log_id"`
+	ErrorType          string `json:"error_type,omitempty"`
+	StatusCode         int    `json:"status_code,omitempty"`
+	UpstreamStatusCode int    `json:"upstream_status_code,omitempty"`
+	Message            string `json:"message,omitempty"`
 }
 
 type ChannelMonitorV2Matrix struct {
@@ -390,9 +459,9 @@ func ChannelMonitorV2BootstrapProgress(now, coveredFrom time.Time, hasData bool)
 }
 
 type ChannelMonitorV2Service struct {
+	candy    *ChannelMonitorV2CandyService
 	repo     ChannelMonitorV2Repository
 	settings channelMonitorRuntimeReader
-	candy    *ChannelMonitorV2CandyService
 	now      func() time.Time
 }
 
@@ -448,8 +517,33 @@ func (s *ChannelMonitorV2Service) getEnabledConfig(ctx context.Context) (*Channe
 }
 
 func (s *ChannelMonitorV2Service) UpdateConfig(ctx context.Context, cfg ChannelMonitorV2Config, expectedVersion int, actorID int64) (*ChannelMonitorV2Config, error) {
+	// Older admin bundles omit candy_history_limit, group_order, or the
+	// platforms list. Read once when any of those is absent so a partial save
+	// cannot reset the others.
+	var current *ChannelMonitorV2Config
+	if s.repo != nil && (cfg.CandyHistoryLimit == 0 || cfg.Platforms == nil || cfg.GroupOrder == nil) {
+		loaded, err := s.repo.GetConfig(ctx)
+		if err != nil {
+			return nil, err
+		}
+		current = loaded
+	}
+	if cfg.CandyHistoryLimit == 0 && current != nil {
+		cfg.CandyHistoryLimit = current.CandyHistoryLimit
+	}
+	if cfg.Platforms == nil && current != nil {
+		cfg.Platforms = append([]ChannelMonitorV2PlatformConfig(nil), current.Platforms...)
+	}
+	if cfg.GroupOrder == nil && current != nil {
+		cfg.GroupOrder = append([]int64(nil), current.GroupOrder...)
+	}
 	if err := normalizeChannelMonitorV2Config(&cfg); err != nil {
 		return nil, err
+	}
+	if s.candy != nil {
+		if err := s.candy.validateGroups(ctx, cfg.CandyProbes); err != nil {
+			return nil, err
+		}
 	}
 	cfg.UpdatedBy = &actorID
 	return s.repo.UpdateConfig(ctx, cfg, expectedVersion)
@@ -548,9 +642,23 @@ func (s *ChannelMonitorV2Service) Matrix(ctx context.Context, filter ChannelMoni
 		hideTP := s.hideThroughputForViewer(ctx, admin)
 		for i := range matrix.Items {
 			redactChannelMonitorV2Metric(&matrix.Items[i].Metrics, hideTP)
+			for j := range matrix.Items[i].RecentRequests {
+				matrix.Items[i].RecentRequests[j].ErrorCategory = ""
+				matrix.Items[i].RecentRequests[j].Error = nil
+			}
 			for j := range matrix.Items[i].Buckets {
 				redactChannelMonitorV2Metric(&matrix.Items[i].Buckets[j].Metrics, hideTP)
 			}
+			if buckets := matrix.Items[i].SampleBuckets; buckets != nil {
+				for j := range *buckets {
+					redactChannelMonitorV2Metric(&(*buckets)[j].Metrics, hideTP)
+				}
+			}
+		}
+	}
+	if s.candy != nil && matrix != nil {
+		if err := s.candy.attachHistory(ctx, matrix, cfg, admin); err != nil {
+			return nil, err
 		}
 	}
 	return matrix, nil
@@ -581,25 +689,17 @@ func (s *ChannelMonitorV2Service) Errors(ctx context.Context, filter ChannelMoni
 	return s.ErrorsForViewer(ctx, filter, false)
 }
 
-// ErrorsForViewer returns the error breakdown.
-// Non-admin callers receive category rates + ignored flags only: absolute Count
-// is zeroed and Details (upstream messages / status codes / volume) are omitted.
+// ErrorsForViewer returns the error breakdown only to administrators.
+// Public callers receive no categories, messages, status codes or log identifiers.
 func (s *ChannelMonitorV2Service) ErrorsForViewer(ctx context.Context, filter ChannelMonitorV2Filter, admin bool) (*ChannelMonitorV2List[ChannelMonitorV2ErrorRow], error) {
 	cfg, err := s.getEnabledConfig(ctx)
 	if err != nil {
 		return nil, err
 	}
-	list, err := s.repo.GetErrors(ctx, filter, *cfg, admin)
-	if err != nil {
-		return nil, err
+	if !admin {
+		return &ChannelMonitorV2List[ChannelMonitorV2ErrorRow]{Items: []ChannelMonitorV2ErrorRow{}}, nil
 	}
-	if !admin && list != nil {
-		for i := range list.Items {
-			list.Items[i].Count = 0
-			list.Items[i].Details = nil
-		}
-	}
-	return list, nil
+	return s.repo.GetErrors(ctx, filter, *cfg, true)
 }
 
 // RedactChannelMonitorV2Dimensions clears absolute request counts on filter chips.
@@ -638,8 +738,10 @@ func redactChannelMonitorV2PublicConfig(cfg *ChannelMonitorV2Config) {
 		return
 	}
 	cfg.GroupIDs = nil
+	cfg.GroupOrder = nil
 	cfg.IgnoredErrorCategories = nil
 	cfg.UpdatedBy = nil
+	cfg.CandyProbes = nil
 	for i := range cfg.Platforms {
 		cfg.Platforms[i].Models = nil
 	}
@@ -653,6 +755,7 @@ func redactChannelMonitorV2Metric(m *ChannelMonitorV2Metric, hideThroughput bool
 	if m == nil {
 		return
 	}
+	m.HasSamples = m.RequestCount > 0
 	m.SuccessRequests = 0
 	m.ErrorRequests = 0
 	m.RequestCount = 0
@@ -663,9 +766,12 @@ func redactChannelMonitorV2Metric(m *ChannelMonitorV2Metric, hideThroughput bool
 	m.TokenCount = 0
 	m.CacheRateNumerator = 0
 	m.CacheRateDenominator = 0
+	m.CacheEligibleInputTokens = 0
 	// Latency sample_count is also a volume signal.
 	m.TTFT.SampleCount = 0
 	m.Duration.SampleCount = 0
+	m.TPSSamples = 0
+	m.OutputTPSSamples = 0
 	m.UpstreamAffectedRequests = nil
 	m.UpstreamAttemptCount = nil
 	if hideThroughput {
@@ -763,14 +869,25 @@ func channelMonitorV2TopUsersWithSelf(items []ChannelMonitorV2UserRow, selfIndex
 }
 
 func normalizeChannelMonitorV2Config(cfg *ChannelMonitorV2Config) error {
+	var err error
+	if err = normalizeChannelMonitorV2CandyProbes(cfg.CandyProbes); err != nil {
+		return err
+	}
+	if cfg.CandyHistoryLimit, err = normalizeChannelMonitorV2CandyHistoryLimit(cfg.CandyHistoryLimit); err != nil {
+		return err
+	}
 	if cfg.RefreshIntervalSeconds == 0 {
 		cfg.RefreshIntervalSeconds = 300
 	}
 	if cfg.RefreshIntervalSeconds != 60 && cfg.RefreshIntervalSeconds != 300 {
 		return fmt.Errorf("%w: refresh_interval_seconds must be 60 or 300", ErrChannelMonitorV2InvalidConfig)
 	}
-	var err error
+	cfg.CardTimelineMode = ChannelMonitorV2CardTimelineSamples
 	cfg.GroupIDs, err = normalizeChannelMonitorV2GroupIDs(cfg.GroupIDs)
+	if err != nil {
+		return err
+	}
+	cfg.GroupOrder, err = normalizeChannelMonitorV2GroupOrder(cfg.GroupOrder)
 	if err != nil {
 		return err
 	}
@@ -780,8 +897,8 @@ func normalizeChannelMonitorV2Config(cfg *ChannelMonitorV2Config) error {
 	for i := range cfg.Platforms {
 		p := &cfg.Platforms[i]
 		p.Platform = strings.ToLower(strings.TrimSpace(p.Platform))
-		if p.Platform == "" {
-			return fmt.Errorf("%w: empty platform", ErrChannelMonitorV2InvalidConfig)
+		if !validChannelMonitorV2Platform(p.Platform) {
+			return fmt.Errorf("%w: invalid platform %q", ErrChannelMonitorV2InvalidConfig, p.Platform)
 		}
 		if _, ok := seen[p.Platform]; ok {
 			return fmt.Errorf("%w: duplicate platform %s", ErrChannelMonitorV2InvalidConfig, p.Platform)
@@ -789,8 +906,75 @@ func normalizeChannelMonitorV2Config(cfg *ChannelMonitorV2Config) error {
 		seen[p.Platform] = struct{}{}
 		p.Models = normalizeStringSet(p.Models)
 	}
-	sort.Slice(cfg.Platforms, func(i, j int) bool { return cfg.Platforms[i].Platform < cfg.Platforms[j].Platform })
+	// Keep the submitted order. It is the public display order.
+	ensureChannelMonitorV2FactoryPlatforms(cfg)
+	if len(cfg.Platforms) > channelMonitorV2MaxPlatforms {
+		return fmt.Errorf("%w: too many platforms", ErrChannelMonitorV2InvalidConfig)
+	}
 	return nil
+}
+
+func validChannelMonitorV2Platform(platform string) bool {
+	if platform == "" || len(platform) > 64 {
+		return false
+	}
+	for i, r := range platform {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case (r == '_' || r == '-') && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// Factory platforms missing from the submitted list are appended disabled.
+// Rows included in that list keep the submitted enabled flag and model list.
+func ensureChannelMonitorV2FactoryPlatforms(cfg *ChannelMonitorV2Config) {
+	present := make(map[string]struct{}, len(cfg.Platforms))
+	for _, item := range cfg.Platforms {
+		present[item.Platform] = struct{}{}
+	}
+	for _, id := range ChannelMonitorV2FactoryPlatforms {
+		if _, ok := present[id]; ok {
+			continue
+		}
+		cfg.Platforms = append(cfg.Platforms, ChannelMonitorV2PlatformConfig{
+			Platform: id,
+			Enabled:  false,
+			Models:   []string{},
+		})
+	}
+}
+
+// ChannelMonitorV2PlatformIndex is the configured display position.
+// Platforms missing from config sort after every configured platform.
+func ChannelMonitorV2PlatformIndex(cfg ChannelMonitorV2Config, platform string) int {
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	for i, item := range cfg.Platforms {
+		if item.Platform == platform {
+			return i
+		}
+	}
+	return len(cfg.Platforms)
+}
+
+// ChannelMonitorV2PlatformLabel is the catalog display name, with factory aliases
+// that are not registered as group platforms.
+func ChannelMonitorV2PlatformLabel(platform string) string {
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	if spec, ok := domain.LookupPlatform(platform); ok && spec.DisplayName != "" {
+		return spec.DisplayName
+	}
+	switch platform {
+	case "kiro":
+		return "Kiro"
+	case domain.PlatformComposite:
+		return "Composite"
+	default:
+		return platform
+	}
 }
 
 // DefaultChannelMonitorV2IgnoredErrorCategories are factory defaults for
@@ -949,6 +1133,24 @@ func normalizeInt64Set(values []int64) []int64 {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
+}
+
+// normalizeChannelMonitorV2GroupOrder keeps the submitted sequence. It does
+// not sort. Nil becomes an empty slice so a cleared order is stored as none.
+func normalizeChannelMonitorV2GroupOrder(values []int64) ([]int64, error) {
+	seen := make(map[int64]struct{}, len(values))
+	out := make([]int64, 0, len(values))
+	for _, value := range values {
+		if value <= 0 {
+			return nil, fmt.Errorf("%w: group_order must be positive", ErrChannelMonitorV2InvalidConfig)
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out, nil
 }
 
 func normalizeChannelMonitorV2GroupIDs(values []int64) ([]int64, error) {
@@ -1116,6 +1318,7 @@ func healthBand(value, warning, critical float64) string {
 	return "healthy"
 }
 
+// ConfigureCandy attaches the candy probe service and returns a runnable scheduler for KittyModules.
 func (s *ChannelMonitorV2Service) ConfigureCandy(groups *MonitorGroupProbeService) *ChannelMonitorV2CandyRunner {
 	if s == nil || s.repo == nil || groups == nil {
 		return nil

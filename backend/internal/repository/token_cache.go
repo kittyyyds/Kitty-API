@@ -47,3 +47,8 @@ func (c *tokenCache) ReleaseRefreshLock(ctx context.Context, cacheKey string) er
 	key := fmt.Sprintf("%s%s", oauthRefreshLockKeyPrefix, cacheKey)
 	return c.rdb.Del(ctx, key).Err()
 }
+
+// NewGeminiTokenCache aliases NewTokenCache for Gemini/Vertex token cache callers and tests.
+func NewGeminiTokenCache(rdb *redis.Client) service.GeminiTokenCache {
+	return NewTokenCache(rdb)
+}

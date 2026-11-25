@@ -32,6 +32,30 @@ func KittyAPIKeyStoredDigest(stored string) string {
 	return KittyAPIKeyDigest(stored)
 }
 
+// IsKittyDigestStoredKey reports whether a stored api_keys.key value uses Kitty's irreversible "$sha256$<64hex>$<mask>" format.
+func IsKittyDigestStoredKey(stored string) bool {
+	return isKittyDigestStoredKey(stored)
+}
+
+// KittyAPIKeyPrefix returns a short safe prefix for display metadata.
+func KittyAPIKeyPrefix(key string) string {
+	if isKittyDigestStoredKey(key) {
+		mask := key[len(kittyAPIKeyDigestPrefix)+65:]
+		if idx := strings.Index(mask, "..."); idx > 0 {
+			return mask[:idx]
+		}
+		if idx := strings.Index(mask, "*"); idx > 0 {
+			return mask[:idx]
+		}
+		return mask
+	}
+	chars := []rune(key)
+	if len(chars) > 12 {
+		return string(chars[:12])
+	}
+	return key
+}
+
 func isKittyDigestStoredKey(stored string) bool {
 	if !strings.HasPrefix(stored, kittyAPIKeyDigestPrefix) || len(stored) < len(kittyAPIKeyDigestPrefix)+65 {
 		return false

@@ -164,8 +164,13 @@ type openAIHTTP2FallbackState struct {
 // 6. HTTP/2 多路复用，连接上限不等于并发请求上限
 // 7. 代理变更时清空旧连接池，避免复用错误代理
 // 8. 账号并发数与连接池上限对应（账号隔离策略下）
+type OpenAIResponseHeaderTimeoutProvider interface {
+	GetOpenAIResponseHeaderTimeoutCached(context.Context) (int, bool)
+}
+
 type httpUpstreamService struct {
-	cfg     *config.Config                  // 全局配置
+	cfg                                 *config.Config // 全局配置
+	openAIResponseHeaderTimeoutProvider OpenAIResponseHeaderTimeoutProvider
 	mu      sync.RWMutex                    // 保护 clients map 的读写锁
 	clients map[string]*upstreamClientEntry // 客户端缓存池，key 由隔离策略决定
 	// OpenAI 直连或走 HTTP/HTTPS 代理时的 H2->H1 回退状态（key=标准化 proxyKey）
@@ -1014,7 +1019,11 @@ func (s *httpUpstreamService) applyProfilePoolSettings(settings poolSettings, pr
 	switch profile {
 	case service.HTTPUpstreamProfileOpenAI:
 		settings.responseHeaderTimeout = 0
-		if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIResponseHeaderTimeout > 0 {
+		if s != nil && s.openAIResponseHeaderTimeoutProvider != nil {
+			if seconds, enabled := s.openAIResponseHeaderTimeoutProvider.GetOpenAIResponseHeaderTimeoutCached(context.Background()); enabled && seconds > 0 {
+				settings.responseHeaderTimeout = time.Duration(seconds) * time.Second
+			}
+		} else if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIResponseHeaderTimeout > 0 {
 			settings.responseHeaderTimeout = time.Duration(s.cfg.Gateway.OpenAIResponseHeaderTimeout) * time.Second
 		}
 	case service.HTTPUpstreamProfileGrok:
@@ -1847,4 +1856,10 @@ func (s *httpUpstreamService) doCodexH2Uncontrolled(req *http.Request, proxyURL 
 		resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: closeRequest}
 	}
 	return resp, nil
+}
+
+func (s *httpUpstreamService) SetOpenAIResponseHeaderTimeoutProvider(provider OpenAIResponseHeaderTimeoutProvider) {
+	if s != nil {
+		s.openAIResponseHeaderTimeoutProvider = provider
+	}
 }

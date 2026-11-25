@@ -3,6 +3,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"strconv"
@@ -30,16 +31,38 @@ func NewAPIKeyHandler(apiKeyService *service.APIKeyService) *APIKeyHandler {
 	}
 }
 
+type optionalInt64 struct {
+	Set   bool
+	Value *int64
+}
+
+func (v *optionalInt64) UnmarshalJSON(data []byte) error {
+	v.Set = true
+	if string(data) == "null" {
+		v.Value = nil
+		return nil
+	}
+	var value int64
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	v.Value = &value
+	return nil
+}
+
 // CreateAPIKeyRequest represents the create API key request payload
 type CreateAPIKeyRequest struct {
-	Name          string   `json:"name" binding:"required"`
-	GroupID       *int64   `json:"group_id"`     // nullable
-	CustomKey     *string  `json:"custom_key"`   // 可选的自定义key
-	IPWhitelist   []string `json:"ip_whitelist"` // IP 白名单
-	IPBlacklist   []string `json:"ip_blacklist"` // IP 黑名单
-	Concurrency   int      `json:"concurrency" binding:"min=0,max=2147483647"`
-	Quota         *float64 `json:"quota"`           // 配额限制 (USD)
-	ExpiresInDays *int     `json:"expires_in_days"` // 过期天数
+	Name             string   `json:"name" binding:"required"`
+	GroupID          *int64   `json:"group_id"` // nullable
+	FallbackGroupID  *int64   `json:"fallback_group_id"`
+	GroupIDs         []int64  `json:"group_ids"`
+	CustomKey        *string  `json:"custom_key"`   // 可选的自定义key
+	IPWhitelist      []string `json:"ip_whitelist"` // IP 白名单
+	IPBlacklist      []string `json:"ip_blacklist"` // IP 黑名单
+	Concurrency      int      `json:"concurrency" binding:"min=0,max=2147483647"`
+	ConcurrencyLimit *int     `json:"concurrency_limit" binding:"omitempty,min=0,max=2147483647"`
+	Quota            *float64 `json:"quota"`           // 配额限制 (USD)
+	ExpiresInDays    *int     `json:"expires_in_days"` // 过期天数
 
 	// Rate limit fields (0 = unlimited)
 	RateLimit5h *float64 `json:"rate_limit_5h"`
@@ -49,15 +72,18 @@ type CreateAPIKeyRequest struct {
 
 // UpdateAPIKeyRequest represents the update API key request payload
 type UpdateAPIKeyRequest struct {
-	Name        string    `json:"name"`
-	GroupID     *int64    `json:"group_id"`
-	Status      string    `json:"status" binding:"omitempty,oneof=active inactive"`
-	IPWhitelist *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
-	IPBlacklist *[]string `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
-	Concurrency *int      `json:"concurrency" binding:"omitempty,min=0,max=2147483647"`
-	Quota       *float64  `json:"quota"`       // 配额限制 (USD), 0=无限制
-	ExpiresAt   *string   `json:"expires_at"`  // 过期时间 (ISO 8601)
-	ResetQuota  *bool     `json:"reset_quota"` // 重置已用配额
+	Name             string        `json:"name"`
+	GroupID          *int64        `json:"group_id"`
+	FallbackGroupID  optionalInt64 `json:"fallback_group_id"`
+	GroupIDs         *[]int64      `json:"group_ids"`
+	Status           string        `json:"status" binding:"omitempty,oneof=active inactive"`
+	IPWhitelist      *[]string     `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
+	IPBlacklist      *[]string     `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
+	Concurrency      *int          `json:"concurrency" binding:"omitempty,min=0,max=2147483647"`
+	ConcurrencyLimit *int          `json:"concurrency_limit" binding:"omitempty,min=0,max=2147483647"`
+	Quota            *float64      `json:"quota"`       // 配额限制 (USD), 0=无限制
+	ExpiresAt        *string       `json:"expires_at"`  // 过期时间 (ISO 8601)
+	ResetQuota       *bool         `json:"reset_quota"` // 重置已用配额
 
 	// Rate limit fields (nil = no change, 0 = unlimited)
 	RateLimit5h         *float64 `json:"rate_limit_5h"`
@@ -198,14 +224,21 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 		return
 	}
 
+	c.Header("Cache-Control", "no-store")
+	concurrency := req.Concurrency
+	if req.ConcurrencyLimit != nil {
+		concurrency = *req.ConcurrencyLimit
+	}
 	svcReq := service.CreateAPIKeyRequest{
-		Name:          req.Name,
-		GroupID:       req.GroupID,
-		CustomKey:     req.CustomKey,
-		IPWhitelist:   req.IPWhitelist,
-		IPBlacklist:   req.IPBlacklist,
-		Concurrency:   req.Concurrency,
-		ExpiresInDays: req.ExpiresInDays,
+		Name:            req.Name,
+		GroupID:         req.GroupID,
+		FallbackGroupID: req.FallbackGroupID,
+		GroupIDs:        req.GroupIDs,
+		CustomKey:       req.CustomKey,
+		IPWhitelist:     req.IPWhitelist,
+		IPBlacklist:     req.IPBlacklist,
+		Concurrency:     concurrency,
+		ExpiresInDays:   req.ExpiresInDays,
 	}
 	if req.Quota != nil {
 		svcReq.Quota = *req.Quota
@@ -254,10 +287,17 @@ func (h *APIKeyHandler) Update(c *gin.Context) {
 		return
 	}
 
+	concurrency := req.Concurrency
+	if req.ConcurrencyLimit != nil {
+		concurrency = req.ConcurrencyLimit
+	}
 	svcReq := service.UpdateAPIKeyRequest{
+		FallbackGroupID:     req.FallbackGroupID.Value,
+		FallbackGroupIDSet:  req.FallbackGroupID.Set,
+		GroupIDs:            req.GroupIDs,
 		IPWhitelist:         req.IPWhitelist,
 		IPBlacklist:         req.IPBlacklist,
-		Concurrency:         req.Concurrency,
+		Concurrency:         concurrency,
 		Quota:               req.Quota,
 		ResetQuota:          req.ResetQuota,
 		RateLimit5h:         req.RateLimit5h,
@@ -339,6 +379,103 @@ func (h *APIKeyHandler) GetAvailableGroups(c *gin.Context) {
 	out := make([]dto.Group, 0, len(groups))
 	for i := range groups {
 		out = append(out, *dto.GroupFromService(&groups[i]).Localized(c.GetHeader("Accept-Language")))
+	}
+	response.Success(c, out)
+}
+
+const apiKeyQueueStatsMaxIDs = 200
+
+type apiKeyQueuePolicyDTO struct {
+	MaxWaiting     int `json:"max_waiting"`
+	TimeoutSeconds int `json:"timeout_seconds"`
+}
+
+type apiKeyConcurrencyItemDTO struct {
+	ID                 int64 `json:"id"`
+	CurrentConcurrency int   `json:"current_concurrency"`
+	CurrentWaiting     int   `json:"current_waiting"`
+}
+
+type apiKeyConcurrencySnapshotDTO struct {
+	QueuePolicy apiKeyQueuePolicyDTO       `json:"queue_policy"`
+	Items       []apiKeyConcurrencyItemDTO `json:"items"`
+}
+
+func parseAPIKeyQueueStatsIDs(raw string) ([]int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return []int64{}, nil
+	}
+	parts := strings.Split(raw, ",")
+	seen := make(map[int64]struct{}, len(parts))
+	ids := make([]int64, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, errors.New("invalid id")
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		if len(ids) >= apiKeyQueueStatsMaxIDs {
+			return nil, errors.New("too many ids")
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// GetConcurrencyQueue returns the queue policy and active/waiting counts for owned API keys.
+// GET /api/v1/keys/concurrency?ids=1,2
+func (h *APIKeyHandler) GetConcurrencyQueue(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	ids, err := parseAPIKeyQueueStatsIDs(c.Query("ids"))
+	if err != nil {
+		response.BadRequest(c, "Invalid ids parameter")
+		return
+	}
+	policy := h.apiKeyService.APIKeyQueuePolicy()
+	out := apiKeyConcurrencySnapshotDTO{
+		QueuePolicy: apiKeyQueuePolicyDTO{
+			MaxWaiting:     policy.MaxWaiting,
+			TimeoutSeconds: policy.TimeoutSeconds,
+		},
+		Items: make([]apiKeyConcurrencyItemDTO, 0, len(ids)),
+	}
+	if len(ids) == 0 {
+		response.Success(c, out)
+		return
+	}
+	validIDs, err := h.apiKeyService.VerifyOwnership(c.Request.Context(), subject.UserID, ids)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if len(validIDs) == 0 {
+		response.Success(c, out)
+		return
+	}
+	stats, err := h.apiKeyService.GetAPIKeyQueueStatsBatch(c.Request.Context(), validIDs)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	for _, id := range validIDs {
+		counts := stats[id]
+		out.Items = append(out.Items, apiKeyConcurrencyItemDTO{
+			ID:                 id,
+			CurrentConcurrency: counts.Active,
+			CurrentWaiting:     counts.Waiting,
+		})
 	}
 	response.Success(c, out)
 }

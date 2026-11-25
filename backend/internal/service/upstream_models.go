@@ -1852,3 +1852,37 @@ func dedupeAndSortModelIDs(models []string) []string {
 	sort.Strings(result)
 	return result
 }
+
+// ReplaceModelMappingWithUpstream fetches an authoritative live model list, updates capability metadata,
+// and atomically replaces credentials.model_mapping with the live model IDs.
+func (s *AccountTestService) ReplaceModelMappingWithUpstream(ctx context.Context, account *Account) (*UpstreamModelCatalog, error) {
+	if account == nil || account.ID <= 0 || s.accountRepo == nil {
+		return nil, newUpstreamModelSyncInternalError("Account is invalid", ErrAccountNotFound)
+	}
+	catalog, err := s.SyncUpstreamModelCatalog(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	if catalog == nil || len(catalog.Models) == 0 {
+		return nil, newUpstreamModelSyncUpstreamError("Upstream returned no models", nil)
+	}
+	mapping := make(map[string]any, len(catalog.Models))
+	for _, modelID := range catalog.Models {
+		mapping[modelID] = modelID
+	}
+	rows, err := s.accountRepo.BulkUpdate(ctx, []int64{account.ID}, AccountBulkUpdate{
+		Credentials: map[string]any{"model_mapping": mapping},
+	})
+	if err != nil {
+		return nil, newUpstreamModelSyncInternalError("Failed to save upstream model list", err)
+	}
+	if rows != 1 {
+		return nil, newUpstreamModelSyncInternalError("Account no longer exists", ErrAccountNotFound)
+	}
+	account.Credentials = shallowCopyMap(account.Credentials)
+	if account.Credentials == nil {
+		account.Credentials = make(map[string]any)
+	}
+	account.Credentials["model_mapping"] = mapping
+	return catalog, nil
+}

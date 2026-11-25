@@ -46,7 +46,7 @@
         <section v-if="activeTab === 'guide'" id="settings-section-guide"><GuideEditor /></section>
 
       <!-- Independently saved settings stay outside this form. -->
-      <form v-show="activeTab !== 'openai-vm' && activeTab !== 'guide'" @submit.prevent="saveSettings" class="space-y-6" novalidate>
+      <form v-show="activeTab !== 'guide'" @submit.prevent="saveSettings" class="space-y-6" novalidate>
         <!-- Tab: Security — Admin API Key -->
         <div v-show="activeTab === 'security'" class="space-y-6">
           <AdminAccessKeysSettings v-if="authStore.isSuperAdmin" />
@@ -9341,9 +9341,6 @@
         </div>
         <!-- /Tab: Email -->
 
-        <div v-if="activeTab === 'gptDirect'">
-          <GPTDirectSettings />
-        </div>
 
         <!-- Tab: Backup -->
         <div v-show="activeTab === 'backup'">
@@ -9351,7 +9348,7 @@
         </div>
 
         <!-- Save dock — sticky so long tabs never require scrolling to the end -->
-        <div v-show="activeTab !== 'backup' && activeTab !== 'gptDirect' && activeTab !== 'guide' && activeTab !== 'openai-vm'" class="settings-save-dock">
+        <div v-show="activeTab !== 'backup' && activeTab !== 'guide'" class="settings-save-dock">
           <button
             type="submit"
             :disabled="saving || loadFailed"
@@ -9386,7 +9383,6 @@
         </div>
       </form>
 
-      <OpenAIVMSettings v-if="activeTab === 'openai-vm'" />
       </div>
 
       <!-- Provider dialogs placed outside the settings form to prevent form submission bubbling -->
@@ -9427,8 +9423,6 @@
 </template>
 
 <script setup lang="ts">
-import GPTDirectSettings from "@/components/admin/settings/GPTDirectSettings.vue";
-import OpenAIVMSettings from "@/components/admin/settings/OpenAIVMSettings.vue";
 import { ref, reactive, computed, onMounted, watch } from "vue";
 import { listPlatformIds } from "@/constants/platformCatalog";
 import { useI18n } from "vue-i18n";
@@ -9562,14 +9556,12 @@ const loading = ref(true);
 const loadFailed = ref(false);
 const { activeTab, selectSettingsTab } = useSettingsNavigation(loading, loadFailed);
 const settingsTabs = [
-  { key: "gptDirect" as SettingsTab, icon: "gift" as const },
   { key: "general" as SettingsTab, icon: "home" as const },
   { key: "agreement" as SettingsTab, icon: "document" as const },
   { key: "features" as SettingsTab, icon: "bolt" as const },
   { key: "security" as SettingsTab, icon: "shield" as const },
   { key: "users" as SettingsTab, icon: "user" as const },
   { key: "gateway" as SettingsTab, icon: "server" as const },
-  { key: "openai-vm" as SettingsTab, icon: "server" as const },
   { key: "payment" as SettingsTab, icon: "creditCard" as const },
   { key: "email" as SettingsTab, icon: "mail" as const },
   { key: "guide" as SettingsTab, icon: "book" as const },

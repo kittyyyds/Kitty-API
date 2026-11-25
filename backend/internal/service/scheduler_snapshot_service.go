@@ -249,7 +249,7 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 		if err != nil {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
 		} else if hit {
-			return cached, nil
+			return s.filterPerformanceAccounts(ctx, cached)
 		}
 	}
 
@@ -257,7 +257,7 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	return accounts, nil
+	return s.filterPerformanceAccounts(ctx, accounts)
 }
 
 // readSnapshotAccounts 读取 bucket 快照，只返回当前可调度的账号；缓存实现能直接返回值切片时直接使用该切片。
@@ -379,7 +379,11 @@ func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int
 		if err != nil {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] account cache read failed: id=%d err=%v", accountID, err)
 		} else if account != nil {
-			return account, nil
+			marked, markErr := s.markPerformanceAccounts(ctx, map[int64]*Account{accountID: account})
+			if markErr != nil {
+				return nil, markErr
+			}
+			return marked[accountID], nil
 		}
 	}
 
@@ -388,7 +392,15 @@ func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int
 	}
 	fallbackCtx, cancel := s.withFallbackTimeout(ctx)
 	defer cancel()
-	return s.accountRepo.GetByID(fallbackCtx, accountID)
+	account, err := s.accountRepo.GetByID(fallbackCtx, accountID)
+	if err != nil || account == nil {
+		return account, err
+	}
+	marked, markErr := s.markPerformanceAccounts(ctx, map[int64]*Account{accountID: account})
+	if markErr != nil {
+		return nil, markErr
+	}
+	return marked[accountID], nil
 }
 
 // GetGroupByID 获取分组信息（供调度器使用）

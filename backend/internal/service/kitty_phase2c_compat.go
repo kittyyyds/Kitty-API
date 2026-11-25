@@ -33,6 +33,38 @@ func accountTestOutputTokenLimit(ctx context.Context) int {
 	return tokens
 }
 
+func accountTestReasoningEffort(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	effort, _ := ctx.Value(accountTestReasoningEffortContextKey{}).(string)
+	return strings.ToLower(strings.TrimSpace(effort))
+}
+
+func applyAccountTestOutputTokenLimit(ctx context.Context, payload map[string]any, field string) {
+	if payload == nil || field == "" {
+		return
+	}
+	if tokens := accountTestOutputTokenLimit(ctx); tokens > 0 {
+		payload[field] = tokens
+	}
+}
+
+func applyAccountTestReasoningEffort(payload map[string]any, effort string) {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	if payload == nil || effort == "" || effort == "none" {
+		return
+	}
+	if _, isChatCompletions := payload["messages"]; isChatCompletions {
+		payload["reasoning_effort"] = effort
+		return
+	}
+	if effort == "ultra" {
+		effort = "max"
+	}
+	payload["reasoning"] = map[string]any{"effort": effort}
+}
+
 func (s *AccountTestService) RunTestBackgroundWithPromptAndReasoning(ctx context.Context, accountID int64, modelID, prompt, reasoningEffort string) (*ScheduledTestResult, error) {
 	startedAt := time.Now()
 	w := httptest.NewRecorder()

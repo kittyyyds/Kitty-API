@@ -32,8 +32,9 @@ type APIKey struct {
 	UserID      int64
 	Key         string
 	Name        string
-	GroupID     *int64
-	GroupIDs    []int64
+	GroupID         *int64
+	FallbackGroupID *int64
+	GroupIDs        []int64
 	Status      string
 	IPWhitelist []string
 	IPBlacklist []string
@@ -46,6 +47,7 @@ type APIKey struct {
 	UpdatedAt           time.Time
 	User                *User
 	Group               *Group
+	FallbackGroup       *Group
 	CurrentConcurrency  int
 	// Concurrency is the per-key concurrent request limit (0 = unlimited).
 	Concurrency int

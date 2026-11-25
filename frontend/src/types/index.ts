@@ -813,9 +813,10 @@ export interface ApiKey {
   user_id: number
   /** Display mask; a full credential is returned only when secret_available is true. */
   key: string
-  /** 脱敏展示（prefix + ********），列表/详情统一用它；完整 key 仅创建响应返回一次 */
+  /** 脱敏展示（prefix + ********），列表/详情展示用；明文密钥时 key 返回完整值且 secret_available 为 true */
   key_display: string
   key_prefix: string
+  secret_available?: boolean
   name: string
   group_id: number | null
   fallback_group_id: number | null

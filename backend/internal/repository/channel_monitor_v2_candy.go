@@ -78,3 +78,5 @@ func (r *channelMonitorV2Repository) PruneCandyHistory(ctx context.Context, now 
 	_, err := r.db.ExecContext(ctx, `DELETE FROM channel_monitor_v2_candy_results WHERE id IN (SELECT id FROM channel_monitor_v2_candy_results WHERE checked_at<$1 LIMIT 10000)`, now.Add(-service.ChannelMonitorV2CandyRetention))
 	return err
 }
+
+var _ service.ChannelMonitorV2CandyRepository = (*channelMonitorV2Repository)(nil)

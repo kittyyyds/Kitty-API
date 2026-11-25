@@ -67,11 +67,17 @@ type AccountHandler struct {
 	rpmCache              service.RPMCache
 	tokenCacheInvalidator service.TokenCacheInvalidator
 	grokImportProber      grokImportProber
+	performance           *service.AccountPerformanceService
 	upstreamBillingProbe  *service.UpstreamBillingProbeService
 	ollamaCloudUsage      *service.OllamaCloudUsageService
 	opencodeGoUsage       *service.OpenCodeGoUsageService
 	codexTicketSettings   *service.SettingService
 	cfg                   *config.Config
+}
+
+// SetPerformanceService attaches the account performance monitoring service.
+func (h *AccountHandler) SetPerformanceService(perf *service.AccountPerformanceService) {
+	h.performance = perf
 }
 
 // SetUpstreamBillingProbeService attaches the optional remote billing probe service.

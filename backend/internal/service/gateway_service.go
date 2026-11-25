@@ -1907,3 +1907,18 @@ func (s *GatewayService) debugLogGatewaySnapshot(tag string, headers http.Header
 	// 写入文件（调试用，并发写入可能交错但不影响可读性）
 	_, _ = f.WriteString(buf.String())
 }
+
+// GetGroup returns a group by ID via scheduler snapshot or group repository.
+func (s *GatewayService) GetGroup(ctx context.Context, id int64) (*Group, error) {
+	if s != nil && s.schedulerSnapshot != nil {
+		g, err := s.schedulerSnapshot.GetGroupByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if g == nil {
+			return nil, ErrGroupNotFound
+		}
+		return g, nil
+	}
+	return nil, ErrGroupNotFound
+}

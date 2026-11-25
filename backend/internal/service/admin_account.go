@@ -23,6 +23,13 @@ import (
 )
 
 // Account management implementations
+func (s *adminServiceImpl) ListAccountPlatformCounts(ctx context.Context) ([]AccountPlatformCount, error) {
+	repo, ok := s.accountRepo.(AccountPlatformCountRepository)
+	if !ok {
+		return nil, errors.New("account platform counts repository unavailable")
+	}
+	return repo.ListPlatformCounts(ctx)
+}
 func (s *adminServiceImpl) ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, privacyMode string, sortBy, sortOrder string, planType ...string) ([]Account, int64, error) {
 	if groupID > 0 {
 		if err := s.ValidateAccountGroupBindings(ctx, []int64{groupID}); err != nil {

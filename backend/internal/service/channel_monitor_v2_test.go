@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -10,13 +11,14 @@ import (
 )
 
 type channelMonitorV2RepoStub struct {
-	config serviceChannelMonitorV2ConfigAlias
-	users  *ChannelMonitorV2List[ChannelMonitorV2UserRow]
-	matrix *ChannelMonitorV2Matrix
-	errors *ChannelMonitorV2List[ChannelMonitorV2ErrorRow]
-	snap   *ChannelMonitorV2Snapshot
-	group  ChannelMonitorV2GroupBy
-	admin  bool
+	config     serviceChannelMonitorV2ConfigAlias
+	users      *ChannelMonitorV2List[ChannelMonitorV2UserRow]
+	matrix     *ChannelMonitorV2Matrix
+	errors     *ChannelMonitorV2List[ChannelMonitorV2ErrorRow]
+	snap       *ChannelMonitorV2Snapshot
+	group      ChannelMonitorV2GroupBy
+	admin      bool
+	errorCalls int
 }
 
 // Alias keeps composite literals readable without introducing another package.
@@ -26,8 +28,11 @@ func (s *channelMonitorV2RepoStub) GetConfig(context.Context) (*ChannelMonitorV2
 	cfg := ChannelMonitorV2Config(s.config)
 	return &cfg, nil
 }
-func (s *channelMonitorV2RepoStub) UpdateConfig(context.Context, ChannelMonitorV2Config, int) (*ChannelMonitorV2Config, error) {
-	return nil, nil
+func (s *channelMonitorV2RepoStub) UpdateConfig(_ context.Context, cfg ChannelMonitorV2Config, version int) (*ChannelMonitorV2Config, error) {
+	saved := cfg
+	saved.Version = version + 1
+	s.config = saved
+	return &saved, nil
 }
 func (s *channelMonitorV2RepoStub) GetDimensions(context.Context, ChannelMonitorV2Filter, ChannelMonitorV2Config) (*ChannelMonitorV2Dimensions, error) {
 	return nil, nil
@@ -57,6 +62,7 @@ func (s *channelMonitorV2RepoStub) GetMatrix(_ context.Context, _ ChannelMonitor
 	return s.matrix, nil
 }
 func (s *channelMonitorV2RepoStub) GetErrors(_ context.Context, _ ChannelMonitorV2Filter, _ ChannelMonitorV2Config, admin bool) (*ChannelMonitorV2List[ChannelMonitorV2ErrorRow], error) {
+	s.errorCalls++
 	s.admin = admin
 	if s.errors != nil {
 		// Return a shallow copy so service redaction does not mutate the fixture.
@@ -147,6 +153,22 @@ func TestParseChannelMonitorV2GroupBy(t *testing.T) {
 	require.ErrorIs(t, err, ErrChannelMonitorV2InvalidGroupBy)
 }
 
+func TestChannelMonitorV2OutputSpeedRemainsVisibleWithoutVolume(t *testing.T) {
+	for _, hideThroughput := range []bool{false, true} {
+		tps := 42.5
+		metric := ChannelMonitorV2Metric{OutputTPS: &tps, TPSSamples: 100, RPM: 2, TPM: 1000, RequestCount: 100, OutputTokens: 3000}
+		redactChannelMonitorV2Metric(&metric, hideThroughput)
+		require.Equal(t, &tps, metric.OutputTPS)
+		require.Zero(t, metric.TPSSamples)
+		require.Zero(t, metric.RequestCount)
+		require.Zero(t, metric.OutputTokens)
+		if hideThroughput {
+			require.Zero(t, metric.RPM)
+			require.Zero(t, metric.TPM)
+		}
+	}
+}
+
 func TestChannelMonitorV2MatrixForwardsGroupingAndAdminScope(t *testing.T) {
 	want := &ChannelMonitorV2Matrix{GroupBy: ChannelMonitorV2GroupByPlatformModel}
 	repo := &channelMonitorV2RepoStub{config: ChannelMonitorV2Config{Enabled: true}, matrix: want}
@@ -160,6 +182,34 @@ func TestChannelMonitorV2MatrixForwardsGroupingAndAdminScope(t *testing.T) {
 	require.ErrorIs(t, err, ErrChannelMonitorV2InvalidGroupBy)
 }
 
+func TestChannelMonitorV2RecentErrorDiagnosticsAreAdminOnly(t *testing.T) {
+	for _, admin := range []bool{true, false} {
+		t.Run(fmt.Sprint(admin), func(t *testing.T) {
+			repo := &channelMonitorV2RepoStub{
+				config: ChannelMonitorV2Config{Enabled: true},
+				matrix: &ChannelMonitorV2Matrix{Items: []ChannelMonitorV2MatrixRow{{RecentRequests: []ChannelMonitorV2RecentRequest{{
+					Status: "error", ErrorCategory: "internal",
+					Error: &ChannelMonitorV2RecentError{LogID: 42, StatusCode: 500, Message: "private diagnostic"},
+				}}}}},
+			}
+			result, err := NewChannelMonitorV2Service(repo).Matrix(context.Background(), ChannelMonitorV2Filter{}, ChannelMonitorV2GroupByPlatformGroup, admin)
+			require.NoError(t, err)
+			encoded, err := json.Marshal(result)
+			require.NoError(t, err)
+			require.Contains(t, string(encoded), `"status":"error"`)
+			if admin {
+				require.Contains(t, string(encoded), `"error_category":"internal"`)
+				require.Contains(t, string(encoded), `"log_id":42`)
+				require.Contains(t, string(encoded), "private diagnostic")
+			} else {
+				require.NotContains(t, string(encoded), `"error_category"`)
+				require.NotContains(t, string(encoded), `"error":`)
+				require.NotContains(t, string(encoded), "private diagnostic")
+			}
+		})
+	}
+}
+
 func TestChannelMonitorV2ConfigValidation(t *testing.T) {
 	cfg := ChannelMonitorV2Config{
 		Platforms: []ChannelMonitorV2PlatformConfig{
@@ -170,8 +220,26 @@ func TestChannelMonitorV2ConfigValidation(t *testing.T) {
 	}
 	require.NoError(t, normalizeChannelMonitorV2Config(&cfg))
 	require.Equal(t, 300, cfg.RefreshIntervalSeconds)
-	require.Equal(t, "anthropic", cfg.Platforms[0].Platform)
+	require.Equal(t, ChannelMonitorV2CandyHistoryDefault, cfg.CandyHistoryLimit)
+	require.Equal(t, "openai", cfg.Platforms[0].Platform)
+	require.True(t, cfg.Platforms[0].Enabled)
+	require.Equal(t, []string{"gpt-5"}, cfg.Platforms[0].Models)
+	require.Equal(t, "anthropic", cfg.Platforms[1].Platform)
+	require.True(t, cfg.Platforms[1].Enabled)
+	require.Equal(t, []string{"grok", "kiro", "gemini", "antigravity"}, platformIDs(cfg.Platforms[2:]))
+	for _, item := range cfg.Platforms[2:] {
+		require.False(t, item.Enabled)
+		require.Empty(t, item.Models)
+	}
 	require.Equal(t, []int64{1, 3}, cfg.GroupIDs)
+	require.Equal(t, ChannelMonitorV2CardTimelineSamples, cfg.CardTimelineMode)
+
+	// The removed windows mode and unknown values are saved as samples.
+	for _, mode := range []string{"windows", " Samples ", "bars"} {
+		cfg.CardTimelineMode = mode
+		require.NoError(t, normalizeChannelMonitorV2Config(&cfg))
+		require.Equal(t, ChannelMonitorV2CardTimelineSamples, cfg.CardTimelineMode)
+	}
 
 	cfg.RefreshIntervalSeconds = 120
 	require.ErrorIs(t, normalizeChannelMonitorV2Config(&cfg), ErrChannelMonitorV2InvalidConfig)
@@ -179,6 +247,151 @@ func TestChannelMonitorV2ConfigValidation(t *testing.T) {
 	cfg.RefreshIntervalSeconds = 60
 	cfg.GroupIDs = []int64{0}
 	require.ErrorIs(t, normalizeChannelMonitorV2Config(&cfg), ErrChannelMonitorV2InvalidConfig)
+}
+
+func platformIDs(items []ChannelMonitorV2PlatformConfig) []string {
+	out := make([]string, len(items))
+	for i, item := range items {
+		out[i] = item.Platform
+	}
+	return out
+}
+
+func TestChannelMonitorV2ConfigKeepsCustomPlatformOrder(t *testing.T) {
+	cfg := ChannelMonitorV2Config{
+		RefreshIntervalSeconds: 60,
+		Platforms: []ChannelMonitorV2PlatformConfig{
+			{Platform: "DeepSeek", Enabled: true},
+			{Platform: "openai", Enabled: false, Models: []string{"gpt-5"}},
+			{Platform: "my_router", Enabled: true},
+			{Platform: "command_code", Enabled: false},
+		},
+	}
+	require.NoError(t, normalizeChannelMonitorV2Config(&cfg))
+	require.Equal(t, []string{"deepseek", "openai", "my_router", "command_code", "anthropic", "grok", "kiro", "gemini", "antigravity"}, platformIDs(cfg.Platforms))
+	require.True(t, cfg.Platforms[0].Enabled)
+	require.Empty(t, cfg.Platforms[0].Models)
+	require.False(t, cfg.Platforms[1].Enabled)
+	require.Equal(t, []string{"gpt-5"}, cfg.Platforms[1].Models)
+	for _, item := range cfg.Platforms[4:] {
+		require.False(t, item.Enabled)
+		require.Empty(t, item.Models)
+	}
+	require.Equal(t, "DeepSeek", ChannelMonitorV2PlatformLabel("deepseek"))
+	require.Equal(t, "Kiro", ChannelMonitorV2PlatformLabel("kiro"))
+	require.Equal(t, "my_router", ChannelMonitorV2PlatformLabel("my_router"))
+	require.Equal(t, 0, ChannelMonitorV2PlatformIndex(cfg, "deepseek"))
+	require.Equal(t, 2, ChannelMonitorV2PlatformIndex(cfg, "my_router"))
+	require.Equal(t, len(cfg.Platforms), ChannelMonitorV2PlatformIndex(cfg, "missing"))
+
+	dup := cfg
+	dup.Platforms = append([]ChannelMonitorV2PlatformConfig{{Platform: "deepseek"}}, dup.Platforms...)
+	require.ErrorIs(t, normalizeChannelMonitorV2Config(&dup), ErrChannelMonitorV2InvalidConfig)
+
+	invalid := ChannelMonitorV2Config{RefreshIntervalSeconds: 60, Platforms: []ChannelMonitorV2PlatformConfig{{Platform: "not a platform"}}}
+	require.ErrorIs(t, normalizeChannelMonitorV2Config(&invalid), ErrChannelMonitorV2InvalidConfig)
+}
+
+func TestChannelMonitorV2UpdateDisablesOmittedFactoryPlatform(t *testing.T) {
+	repo := &channelMonitorV2RepoStub{config: ChannelMonitorV2Config{
+		Version:                3,
+		RefreshIntervalSeconds: 60,
+		Platforms: []ChannelMonitorV2PlatformConfig{
+			{Platform: "openai", Enabled: true, Models: []string{"gpt-5"}},
+			{Platform: "deepseek", Enabled: true, Models: []string{"deepseek-chat"}},
+		},
+	}}
+	updated, err := NewChannelMonitorV2Service(repo).UpdateConfig(context.Background(), ChannelMonitorV2Config{
+		Version:                3,
+		RefreshIntervalSeconds: 60,
+		Platforms:              []ChannelMonitorV2PlatformConfig{{Platform: "anthropic", Enabled: true, Models: []string{"claude"}}},
+	}, 3, 9)
+	require.NoError(t, err)
+	require.Equal(t, []string{"anthropic", "openai", "grok", "kiro", "gemini", "antigravity"}, platformIDs(updated.Platforms))
+	require.True(t, updated.Platforms[0].Enabled)
+	require.Equal(t, []string{"claude"}, updated.Platforms[0].Models)
+	require.False(t, updated.Platforms[1].Enabled)
+	require.Empty(t, updated.Platforms[1].Models)
+	for _, item := range updated.Platforms[2:] {
+		require.False(t, item.Enabled)
+		require.Empty(t, item.Models)
+	}
+	require.NotContains(t, platformIDs(updated.Platforms), "deepseek")
+}
+
+func TestChannelMonitorV2UpdateKeepsStoredPlatformsWhenFieldOmitted(t *testing.T) {
+	repo := &channelMonitorV2RepoStub{config: ChannelMonitorV2Config{
+		Version:                4,
+		RefreshIntervalSeconds: 60,
+		CandyHistoryLimit:      80,
+		Platforms: []ChannelMonitorV2PlatformConfig{
+			{Platform: "openai", Enabled: true, Models: []string{"gpt-5"}},
+			{Platform: "deepseek", Enabled: false, Models: []string{"deepseek-chat"}},
+		},
+	}}
+	updated, err := NewChannelMonitorV2Service(repo).UpdateConfig(context.Background(), ChannelMonitorV2Config{
+		Version:                4,
+		RefreshIntervalSeconds: 60,
+	}, 4, 9)
+	require.NoError(t, err)
+	require.Equal(t, 80, updated.CandyHistoryLimit)
+	require.Equal(t, "openai", updated.Platforms[0].Platform)
+	require.True(t, updated.Platforms[0].Enabled)
+	require.Equal(t, []string{"gpt-5"}, updated.Platforms[0].Models)
+	require.Equal(t, "deepseek", updated.Platforms[1].Platform)
+	require.False(t, updated.Platforms[1].Enabled)
+	require.Equal(t, []string{"deepseek-chat"}, updated.Platforms[1].Models)
+	require.Equal(t, []string{"anthropic", "grok", "kiro", "gemini", "antigravity"}, platformIDs(updated.Platforms[2:]))
+	for _, item := range updated.Platforms[2:] {
+		require.False(t, item.Enabled)
+		require.Empty(t, item.Models)
+	}
+}
+
+func TestChannelMonitorV2UpdateKeepsOmittedCandyHistoryLimit(t *testing.T) {
+	repo := &channelMonitorV2RepoStub{config: ChannelMonitorV2Config{Version: 2, RefreshIntervalSeconds: 60, CandyHistoryLimit: 80}}
+	updated, err := NewChannelMonitorV2Service(repo).UpdateConfig(context.Background(), ChannelMonitorV2Config{Version: 2, RefreshIntervalSeconds: 60}, 2, 9)
+	require.NoError(t, err)
+	require.Equal(t, 80, updated.CandyHistoryLimit)
+	updated, err = NewChannelMonitorV2Service(repo).UpdateConfig(context.Background(), ChannelMonitorV2Config{Version: 2, RefreshIntervalSeconds: 60, CandyHistoryLimit: 15}, 2, 9)
+	require.NoError(t, err)
+	require.Equal(t, 15, updated.CandyHistoryLimit)
+	_, err = NewChannelMonitorV2Service(repo).UpdateConfig(context.Background(), ChannelMonitorV2Config{Version: 2, RefreshIntervalSeconds: 60, CandyHistoryLimit: 14}, 2, 9)
+	require.ErrorIs(t, err, ErrChannelMonitorV2InvalidConfig)
+}
+
+func TestChannelMonitorV2GroupOrderKeepsSequence(t *testing.T) {
+	order, err := normalizeChannelMonitorV2GroupOrder([]int64{9, 3, 9, 1})
+	require.NoError(t, err)
+	require.Equal(t, []int64{9, 3, 1}, order)
+	order, err = normalizeChannelMonitorV2GroupOrder(nil)
+	require.NoError(t, err)
+	require.Empty(t, order)
+	_, err = normalizeChannelMonitorV2GroupOrder([]int64{2, 0})
+	require.ErrorIs(t, err, ErrChannelMonitorV2InvalidConfig)
+}
+
+func TestChannelMonitorV2UpdateKeepsOmittedGroupOrder(t *testing.T) {
+	repo := &channelMonitorV2RepoStub{config: ChannelMonitorV2Config{Version: 2, RefreshIntervalSeconds: 60, CandyHistoryLimit: 15, GroupOrder: []int64{9, 3}}}
+	updated, err := NewChannelMonitorV2Service(repo).UpdateConfig(context.Background(), ChannelMonitorV2Config{Version: 2, RefreshIntervalSeconds: 60, CandyHistoryLimit: 15}, 2, 9)
+	require.NoError(t, err)
+	require.Equal(t, []int64{9, 3}, updated.GroupOrder)
+
+	updated, err = NewChannelMonitorV2Service(repo).UpdateConfig(context.Background(), ChannelMonitorV2Config{Version: 3, RefreshIntervalSeconds: 60, CandyHistoryLimit: 15, GroupOrder: []int64{}}, 3, 9)
+	require.NoError(t, err)
+	require.Empty(t, updated.GroupOrder)
+}
+
+func TestChannelMonitorV2UpdateAlwaysSavesSampleCardTimeline(t *testing.T) {
+	// A stored "windows" row and a cached admin page that still submits it both end as samples.
+	repo := &channelMonitorV2RepoStub{config: ChannelMonitorV2Config{Version: 2, RefreshIntervalSeconds: 60, CardTimelineMode: "windows"}}
+	updated, err := NewChannelMonitorV2Service(repo).UpdateConfig(context.Background(), ChannelMonitorV2Config{Version: 2, RefreshIntervalSeconds: 60, CandyHistoryLimit: 15}, 2, 9)
+	require.NoError(t, err)
+	require.Equal(t, ChannelMonitorV2CardTimelineSamples, updated.CardTimelineMode)
+
+	updated, err = NewChannelMonitorV2Service(repo).UpdateConfig(context.Background(), ChannelMonitorV2Config{Version: 3, RefreshIntervalSeconds: 60, CandyHistoryLimit: 15, CardTimelineMode: "windows"}, 3, 9)
+	require.NoError(t, err)
+	require.Equal(t, ChannelMonitorV2CardTimelineSamples, updated.CardTimelineMode)
 }
 
 func TestChannelMonitorV2ErrorTaxonomyPriority(t *testing.T) {
@@ -472,7 +685,7 @@ func TestApplyIgnoredErrorsAdjustsRateOnly(t *testing.T) {
 	require.Equal(t, int64(100), m.RequestCount)
 }
 
-func TestErrorsForViewerStripsDetailsAndCountsForNonAdmin(t *testing.T) {
+func TestErrorsForViewerHidesAllErrorInformationForNonAdmin(t *testing.T) {
 	fixture := &ChannelMonitorV2List[ChannelMonitorV2ErrorRow]{
 		Items: []ChannelMonitorV2ErrorRow{{
 			Category: "timeout",
@@ -495,10 +708,9 @@ func TestErrorsForViewerStripsDetailsAndCountsForNonAdmin(t *testing.T) {
 	userList, err := svc.ErrorsForViewer(context.Background(), ChannelMonitorV2Filter{}, false)
 	require.NoError(t, err)
 	require.False(t, repo.admin)
-	require.Len(t, userList.Items, 1)
-	require.Zero(t, userList.Items[0].Count)
-	require.Empty(t, userList.Items[0].Details)
-	require.InDelta(t, 0.4, userList.Items[0].Rate, 0.0001)
+	require.NotNil(t, userList.Items)
+	require.Empty(t, userList.Items)
+	require.Zero(t, repo.errorCalls)
 
 	adminList, err := svc.ErrorsForViewer(context.Background(), ChannelMonitorV2Filter{}, true)
 	require.NoError(t, err)
@@ -506,6 +718,11 @@ func TestErrorsForViewerStripsDetailsAndCountsForNonAdmin(t *testing.T) {
 	require.Equal(t, int64(42), adminList.Items[0].Count)
 	require.Len(t, adminList.Items[0].Details, 1)
 	require.Contains(t, adminList.Items[0].Details[0].Message, "gateway timeout")
+	require.Equal(t, 1, repo.errorCalls)
+	publicList, err := svc.Errors(context.Background(), ChannelMonitorV2Filter{})
+	require.NoError(t, err)
+	require.Empty(t, publicList.Items)
+	require.Equal(t, 1, repo.errorCalls)
 }
 
 func TestSnapshotRedactsPublicConfigPolicyFields(t *testing.T) {
@@ -550,7 +767,7 @@ func TestRedactChannelMonitorV2MetricKeepsRates(t *testing.T) {
 		SuccessRequests: 90, ErrorRequests: 10, RequestCount: 100,
 		InputTokens: 1, OutputTokens: 2, CacheCreationTokens: 3, CacheReadTokens: 4,
 		TokenCount: 10, RPM: 12, TPM: 34, ErrorRate: 0.1, SuccessRate: 0.9,
-		CacheRate: 0.5, CacheRateNumerator: 4, CacheRateDenominator: 8,
+		CacheRate: 0.5, HasCacheSamples: true, CacheRateNumerator: 4, CacheRateDenominator: 8,
 		TTFT: ChannelMonitorV2Latency{SampleCount: 50, P50Ms: &p50},
 	}
 	upstream := int64(3)
@@ -560,6 +777,7 @@ func TestRedactChannelMonitorV2MetricKeepsRates(t *testing.T) {
 	require.Zero(t, m.ErrorRequests)
 	require.Zero(t, m.TokenCount)
 	require.Zero(t, m.CacheRateNumerator)
+	require.True(t, m.HasCacheSamples)
 	require.Zero(t, m.TTFT.SampleCount)
 	require.Nil(t, m.UpstreamAffectedRequests)
 	require.InDelta(t, 0.1, m.ErrorRate, 0.0001)

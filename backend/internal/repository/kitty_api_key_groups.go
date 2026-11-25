@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -23,6 +24,16 @@ func apiKeyInGroup(id int64) predicate.APIKey {
 	}
 }
 
+func isMissingRelationOrColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such table") ||
+		strings.Contains(msg, "no such column") ||
+		strings.Contains(msg, "does not exist")
+}
+
 func (r *apiKeyRepository) attachGroupIDs(ctx context.Context, keys []service.APIKey) error {
 	if len(keys) == 0 {
 		return nil
@@ -38,26 +49,54 @@ func (r *apiKeyRepository) attachGroupIDs(ctx context.Context, keys []service.AP
 			keys[i].GroupIDs = []int64{*keys[i].GroupID}
 		}
 	}
-	rows, err := clientFromContext(ctx, r.client).QueryContext(ctx,
+	client := clientFromContext(ctx, r.client)
+	rows, err := client.QueryContext(ctx,
 		`SELECT api_key_id, group_id FROM api_key_groups WHERE api_key_id IN (`+strings.Join(placeholders, ",")+`) ORDER BY group_id`, ids...)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "no such table") || strings.Contains(strings.ToLower(err.Error()), "does not exist") {
-			return nil
-		}
-		return err
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var keyID, groupID int64
-		if err := rows.Scan(&keyID, &groupID); err != nil {
+		if !isMissingRelationOrColumnErr(err) {
 			return err
 		}
-		i, ok := index[keyID]
-		if ok && (keys[i].GroupID == nil || *keys[i].GroupID != groupID) {
-			keys[i].GroupIDs = append(keys[i].GroupIDs, groupID)
+	} else {
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var keyID, groupID int64
+			if err := rows.Scan(&keyID, &groupID); err != nil {
+				return err
+			}
+			i, ok := index[keyID]
+			if ok && (keys[i].GroupID == nil || *keys[i].GroupID != groupID) {
+				keys[i].GroupIDs = append(keys[i].GroupIDs, groupID)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return err
 		}
 	}
-	return rows.Err()
+
+	// Also hydrate optional fallback_group_id (added in migration 954).
+	fbRows, fbErr := client.QueryContext(ctx,
+		`SELECT id, fallback_group_id FROM api_keys WHERE id IN (`+strings.Join(placeholders, ",")+`) AND fallback_group_id IS NOT NULL`, ids...)
+	if fbErr != nil {
+		if !isMissingRelationOrColumnErr(fbErr) {
+			return fbErr
+		}
+		return nil
+	}
+	defer func() { _ = fbRows.Close() }()
+	for fbRows.Next() {
+		var keyID int64
+		var fbID sql.NullInt64
+		if err := fbRows.Scan(&keyID, &fbID); err != nil {
+			return err
+		}
+		if fbID.Valid {
+			if i, ok := index[keyID]; ok {
+				v := fbID.Int64
+				keys[i].FallbackGroupID = &v
+			}
+		}
+	}
+	return fbRows.Err()
 }
 
 func (r *apiKeyRepository) entityWithGroupIDs(ctx context.Context, entity *dbent.APIKey) (*service.APIKey, error) {
@@ -69,21 +108,24 @@ func (r *apiKeyRepository) entityWithGroupIDs(ctx context.Context, entity *dbent
 }
 
 func (r *apiKeyRepository) mutateWithGroups(ctx context.Context, key *service.APIKey, mutate func(context.Context) error) error {
-	if len(key.GroupIDs) == 0 {
-		return mutate(ctx)
-	}
 	if dbent.TxFromContext(ctx) != nil {
 		if err := mutate(ctx); err != nil {
 			return err
 		}
-		return r.replaceExtraGroups(ctx, key)
+		if err := r.replaceExtraGroups(ctx, key); err != nil {
+			return err
+		}
+		return r.saveFallbackGroupID(ctx, key)
 	}
 	tx, err := r.client.Tx(ctx)
 	if errors.Is(err, dbent.ErrTxStarted) {
 		if err := mutate(ctx); err != nil {
 			return err
 		}
-		return r.replaceExtraGroups(ctx, key)
+		if err := r.replaceExtraGroups(ctx, key); err != nil {
+			return err
+		}
+		return r.saveFallbackGroupID(ctx, key)
 	}
 	if err != nil {
 		return err
@@ -96,13 +138,19 @@ func (r *apiKeyRepository) mutateWithGroups(ctx context.Context, key *service.AP
 	if err := r.replaceExtraGroups(txCtx, key); err != nil {
 		return err
 	}
+	if err := r.saveFallbackGroupID(txCtx, key); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
 func (r *apiKeyRepository) replaceExtraGroups(ctx context.Context, key *service.APIKey) error {
+	if key == nil || key.ID <= 0 {
+		return nil
+	}
 	client := clientFromContext(ctx, r.client)
 	if _, err := client.ExecContext(ctx, `DELETE FROM api_key_groups WHERE api_key_id = $1`, key.ID); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "no such table") || strings.Contains(strings.ToLower(err.Error()), "does not exist") {
+		if isMissingRelationOrColumnErr(err) {
 			return nil
 		}
 		return err
@@ -119,4 +167,21 @@ func (r *apiKeyRepository) replaceExtraGroups(ctx context.Context, key *service.
 		}
 	}
 	return nil
+}
+
+func (r *apiKeyRepository) saveFallbackGroupID(ctx context.Context, key *service.APIKey) error {
+	if key == nil || key.ID <= 0 {
+		return nil
+	}
+	client := clientFromContext(ctx, r.client)
+	var err error
+	if key.FallbackGroupID == nil {
+		_, err = client.ExecContext(ctx, `UPDATE api_keys SET fallback_group_id = NULL WHERE id = $1`, key.ID)
+	} else {
+		_, err = client.ExecContext(ctx, `UPDATE api_keys SET fallback_group_id = $1 WHERE id = $2`, *key.FallbackGroupID, key.ID)
+	}
+	if isMissingRelationOrColumnErr(err) {
+		return nil
+	}
+	return err
 }

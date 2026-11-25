@@ -64,6 +64,8 @@ type AdminService interface {
 	ClearGroupRateMultipliers(ctx context.Context, groupID int64) error
 	BatchSetGroupRateMultipliers(ctx context.Context, groupID int64, entries []GroupRateMultiplierInput) error
 	ClearGroupRPMOverrides(ctx context.Context, groupID int64) error
+	BatchSetGroupUserDeniedModels(ctx context.Context, groupID int64, entries []GroupUserDeniedModelsInput) error
+	ClearGroupUserDeniedModels(ctx context.Context, groupID int64) error
 	BatchSetGroupRPMOverrides(ctx context.Context, groupID int64, entries []GroupRPMOverrideInput) error
 	UpdateGroupSortOrders(ctx context.Context, updates []GroupSortOrderUpdate) error
 
@@ -76,6 +78,7 @@ type AdminService interface {
 	ReplaceUserGroup(ctx context.Context, userID, oldGroupID, newGroupID int64) (*ReplaceUserGroupResult, error)
 
 	// Account management
+	ListAccountPlatformCounts(ctx context.Context) ([]AccountPlatformCount, error)
 	ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, privacyMode string, sortBy, sortOrder string, planType ...string) ([]Account, int64, error)
 	// ListAccountsForSchedulerScoreFilter 返回符合过滤条件的全部账号（不分页），
 	// 作为账号列表页计算 OpenAI 调度分数的过滤范围池。

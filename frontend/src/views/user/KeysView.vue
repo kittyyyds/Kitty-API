@@ -2,7 +2,6 @@
   <AppLayout>
     <TablePageLayout>
       <template #filters>
-        <UserKeyRiskNotices />
         <div class="flex w-full flex-col gap-3" data-test="keys-filter-layout">
           <div class="keys-toolbar flex flex-wrap items-center justify-between gap-3" data-test="keys-toolbar">
             <div class="flex min-w-0 flex-wrap items-center gap-3" data-test="keys-filter-row">
@@ -122,7 +121,29 @@
           </template>
 
           <template #cell-key="{ row }">
-            <code class="code text-xs">{{ row.key_display || maskApiKey(row.key) }}</code>
+            <div class="flex items-center gap-1.5">
+              <code class="code text-xs">{{ row.key_display || maskApiKey(row.key) }}</code>
+              <button
+                type="button"
+                @click="copyRowApiKey(row)"
+                class="rounded p-1 transition-colors"
+                :class="
+                  row.secret_available
+                    ? 'text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-dark-700 dark:hover:text-gray-200'
+                    : 'text-gray-300 hover:bg-gray-100 hover:text-amber-600 dark:text-dark-500 dark:hover:bg-dark-700 dark:hover:text-amber-400'
+                "
+                :title="
+                  row.secret_available
+                    ? (copiedKeyId === row.id ? t('keys.copied') : t('keys.copyToClipboard'))
+                    : '历史加密密钥无法直接复制，点击「重新生成」获取可复制的新密钥'
+                "
+                :aria-label="t('keys.copyToClipboard')"
+                data-testid="copy-api-key"
+              >
+                <Icon v-if="copiedKeyId === row.id" name="check" size="xs" class="text-emerald-500" />
+                <Icon v-else name="copy" size="xs" />
+              </button>
+            </div>
           </template>
 
           <template #cell-name="{ value, row }">
@@ -1179,7 +1200,7 @@
 
     <UseKeyModal
       :show="showUseKeyModal"
-      :api-key="selectedKey?.id === oneTimeKey?.id ? oneTimeKey?.key || '' : ''"
+      :api-key="selectedKey?.id === oneTimeKey?.id ? (oneTimeKey?.key || '') : (selectedKey?.secret_available ? (selectedKey?.key || '') : '')"
       :base-url="publicSettings?.api_base_url || ''"
       :platform="selectedKey?.group?.platform || null"
       :claude-code-only="selectedKey?.group?.claude_code_only || false"
@@ -1189,7 +1210,7 @@
 
     <CodexQuickConfigModal
       :show="showCodexQuickConfigModal"
-      :api-key="selectedKey?.key || ''"
+      :api-key="selectedKey?.secret_available ? (selectedKey?.key || '') : ''"
       :base-url="publicSettings?.api_base_url || ''"
       :platform="selectedCodexQuickConfigPlatform"
       @close="closeCodexQuickConfigModal"
@@ -1330,7 +1351,6 @@ import { useStepUp, isStepUpCancelled } from '@/composables/useStepUp'
 import { keysAPI, authAPI, usageAPI, userGroupsAPI } from '@/api'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
-import UserKeyRiskNotices from '@/features/ip-audit/UserKeyRiskNotices.vue'
 import BulkEditKeysModal from '@/components/keys/BulkEditKeysModal.vue'
 	import DataTable from '@/components/common/DataTable.vue'
 	import Pagination from '@/components/common/Pagination.vue'
@@ -1841,6 +1861,14 @@ const copyToClipboard = async (text: string, keyId: number) => {
   }
 }
 
+const copyRowApiKey = async (row: ApiKey) => {
+  if (!row.secret_available || !row.key) {
+    appStore.showWarning('历史加密密钥暂不支持直接复制，请点击「重新生成」获取可复制的新密钥')
+    return
+  }
+  await copyToClipboard(row.key, row.id)
+}
+
 const isAbortError = (error: unknown) => {
   if (!error || typeof error !== 'object') return false
   const { name, code } = error as { name?: string; code?: string }
@@ -2329,6 +2357,10 @@ const resetRateLimitUsage = async () => {
 }
 
 const importToCcswitch = async (row: ApiKey) => {
+  if (!row.secret_available || !row.key) {
+    appStore.showWarning('历史加密密钥暂不支持一键导入，请点击「重新生成」获取新密钥后再试')
+    return
+  }
   if (ccSwitchCatalogLoading.value) return
   const platform = row.group?.platform || 'anthropic'
   if (platform === 'antigravity') {

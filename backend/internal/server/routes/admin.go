@@ -43,7 +43,7 @@ func RegisterAdminRoutes(
 		registerUserManagementRoutes(admin, h)
 
 		// 分组管理
-		registerGroupRoutes(admin, h)
+		registerGroupRoutes(admin, h, stepUpAuth)
 
 		// 账号管理
 		registerAccountRoutes(admin, h, stepUpAuth)
@@ -355,7 +355,7 @@ func registerUserManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	}
 }
 
-func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAuth middleware.StepUpAuthMiddleware) {
 	groups := admin.Group("/groups")
 	groups.Use(h.Admin.Group.ScopedAdminKeyGroupModels)
 	{
@@ -366,6 +366,11 @@ func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		groups.GET("/live-capability", h.Admin.Group.GetLiveCapability)
 		groups.PUT("/sort-order", h.Admin.Group.UpdateSortOrder)
 		groups.GET("/:id/model-allowlist-candidates", h.Admin.Group.GetGroupModelAllowlistCandidates)
+		groups.GET("/:id/smart-ws", h.Admin.Setting.GetGroupSmartWS)
+		groups.PUT("/:id/smart-ws", gin.HandlerFunc(stepUpAuth), h.Admin.Setting.UpdateGroupSmartWS)
+		if h.Gateway != nil {
+			groups.GET("/:id/available-models", h.Gateway.AdminGroupAvailableModels)
+		}
 		groups.GET("/:id/composite-routes", h.Admin.Group.ListCompositeRoutes)
 		groups.POST("/:id/composite-routes", h.Admin.Group.CreateCompositeRoute)
 		groups.POST("/:id/composite-routes/preview", h.Admin.Group.PreviewCompositeRoute)
@@ -382,6 +387,8 @@ func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		groups.DELETE("/:id/rate-multipliers", h.Admin.Group.ClearGroupRateMultipliers)
 		groups.PUT("/:id/rpm-overrides", h.Admin.Group.BatchSetGroupRPMOverrides)
 		groups.DELETE("/:id/rpm-overrides", h.Admin.Group.ClearGroupRPMOverrides)
+		groups.PUT("/:id/user-denied-models", h.Admin.Group.BatchSetGroupUserDeniedModels)
+		groups.DELETE("/:id/user-denied-models", h.Admin.Group.ClearGroupUserDeniedModels)
 		groups.GET("/:id/api-keys", h.Admin.Group.GetGroupAPIKeys)
 	}
 }
@@ -390,6 +397,12 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 	accounts := admin.Group("/accounts")
 	{
 		accounts.GET("", h.Admin.Account.List)
+		accounts.GET("/platforms", h.Admin.Account.ListPlatforms)
+		accounts.GET("/management-capabilities", h.Admin.Setting.GetAccountManagementCapabilities)
+		accounts.POST("/performance", h.Admin.Account.AccountPerformanceBatch)
+		accounts.PUT("/:id/performance", h.Admin.Account.SaveAccountPerformance)
+		accounts.POST("/:id/performance/release", h.Admin.Account.ReleaseAccountPerformance)
+		accounts.GET("/:id/performance/events", h.Admin.Account.AccountPerformanceEvents)
 		accounts.GET("/upstream-billing-rates", h.Admin.Account.GetUpstreamBillingRates)
 		accounts.GET("/upstream-billing-probe/settings", h.Admin.Account.GetUpstreamBillingProbeSettings)
 		accounts.PUT("/upstream-billing-probe/settings", h.Admin.Account.UpdateUpstreamBillingProbeSettings)
@@ -412,6 +425,10 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.PUT("/:id", h.Admin.Account.Update)
 		accounts.GET("/:id/grok-media-eligibility", h.Admin.Account.GetGrokMediaEligibility)
 		accounts.PUT("/:id/grok-media-eligibility", h.Admin.Account.UpdateGrokMediaEligibility)
+		accounts.GET("/:id/upstream-billing-probe/config", h.Admin.Account.GetNewAPIConfig)
+		accounts.POST("/:id/upstream-billing-probe/config/preview", h.Admin.Account.PreviewNewAPIConfig)
+		accounts.PUT("/:id/upstream-billing-probe/config", h.Admin.Account.SaveNewAPIConfig)
+		accounts.DELETE("/:id/upstream-billing-probe/config", h.Admin.Account.DeleteNewAPIConfig)
 		accounts.PUT("/:id/upstream-billing-probe", h.Admin.Account.SetUpstreamBillingProbeEnabled)
 		accounts.POST("/:id/upstream-billing-probe", h.Admin.Account.ProbeUpstreamBilling)
 		accounts.POST("/:id/upstream-billing-probe/group-sync", h.Admin.Account.SyncUpstreamGroup)
@@ -444,6 +461,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.POST("/:id/openai-credits", h.Admin.Account.SetOpenAICreditsEnabled)
 		accounts.POST("/:id/auto-reset-credit-enabled", h.Admin.Account.SetOpenAIAutoResetCreditEnabled)
 		accounts.POST("/models/sync-upstream-preview", h.Admin.Account.SyncUpstreamModelsPreview)
+		accounts.POST("/models/sync-upstream-batch", h.Admin.Account.BatchSyncUpstreamModels)
 		accounts.GET("/:id/models", h.Admin.Account.GetAvailableModels)
 		accounts.POST("/:id/models/sync-upstream", h.Admin.Account.SyncUpstreamModels)
 		accounts.POST("/batch", h.Admin.Account.BatchCreate)
@@ -609,6 +627,9 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpA
 		adminSettings.GET("/admin-api-key", h.Admin.Setting.GetAdminAPIKey)
 		adminSettings.POST("/admin-api-key/regenerate", gin.HandlerFunc(stepUpAuth), h.Admin.Setting.RegenerateAdminAPIKey)
 		adminSettings.DELETE("/admin-api-key", gin.HandlerFunc(stepUpAuth), h.Admin.Setting.DeleteAdminAPIKey)
+		// OpenAI 响应头超时配置
+		adminSettings.GET("/openai-response-header-timeout", h.Admin.Setting.GetOpenAIResponseHeaderTimeoutSettings)
+		adminSettings.PUT("/openai-response-header-timeout", h.Admin.Setting.UpdateOpenAIResponseHeaderTimeoutSettings)
 		// 529过载冷却配置
 		adminSettings.GET("/overload-cooldown", h.Admin.Setting.GetOverloadCooldownSettings)
 		adminSettings.PUT("/overload-cooldown", h.Admin.Setting.UpdateOverloadCooldownSettings)
@@ -734,6 +755,7 @@ func registerUsageRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	usage := admin.Group("/usage")
 	{
 		usage.GET("", h.Admin.Usage.List)
+		usage.GET("/:id/timing", h.Admin.Usage.Timing)
 		usage.GET("/stats", h.Admin.Usage.Stats)
 		usage.GET("/search-users", h.Admin.Usage.SearchUsers)
 		usage.GET("/search-api-keys", h.Admin.Usage.SearchAPIKeys)

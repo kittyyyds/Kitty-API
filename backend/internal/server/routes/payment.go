@@ -106,8 +106,11 @@ func RegisterPaymentRoutes(
 	adminGroup.Use(gin.HandlerFunc(auditLog))
 	adminGroup.Use(middleware.AdminComplianceGuard(settingService))
 	{
-		// Dashboard
+		// Dashboard & recharge activity / risk views
 		adminGroup.GET("/dashboard", adminPaymentHandler.GetDashboard)
+		adminGroup.GET("/recharge-activity", adminPaymentHandler.RechargeActivity)
+		adminGroup.GET("/recharge-activity/summary", adminPaymentHandler.RechargeActivitySummary)
+		adminGroup.GET("/recharge-risks", adminPaymentHandler.RechargeRisks)
 
 		// Config
 		adminGroup.GET("/config", adminPaymentHandler.GetConfig)

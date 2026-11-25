@@ -4448,3 +4448,26 @@ func (r *accountRepository) RevertProxyFallback(ctx context.Context, accountID i
 	}
 	return nil
 }
+
+func (r *accountRepository) ListPlatformCounts(ctx context.Context) ([]service.AccountPlatformCount, error) {
+	rows, err := r.sql.QueryContext(ctx, `
+		SELECT platform, COUNT(*)
+		FROM accounts
+		WHERE deleted_at IS NULL
+		GROUP BY platform
+		ORDER BY platform
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	counts := make([]service.AccountPlatformCount, 0)
+	for rows.Next() {
+		var item service.AccountPlatformCount
+		if err := rows.Scan(&item.Platform, &item.Count); err != nil {
+			return nil, err
+		}
+		counts = append(counts, item)
+	}
+	return counts, rows.Err()
+}
