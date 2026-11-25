@@ -101,7 +101,7 @@
                   />
                   <p v-if="amountError" class="checkout-message checkout-message--warning" role="alert">{{ amountError }}</p>
                 </section>
-                <RechargeCouponPicker :amount="validAmount" :method="selectedMethod" :currency="selectedCurrency" :disabled="submitting" :initial-id="initialCouponId" @change="onCouponChange" />
+                <RechargeCouponPicker v-if="checkout.coupons_enabled" :amount="validAmount" :method="selectedMethod" :currency="selectedCurrency" :disabled="submitting" :initial-id="initialCouponId" @change="onCouponChange" />
               </div>
 
               <aside class="checkout-sidebar">
@@ -190,10 +190,10 @@
                       <dd data-testid="projected-balance">{{ balancePreviewReady && canSubmit ? '$' + projectedBalance.toFixed(2) : '-' }}</dd>
                     </div>
                   </dl>
-                  <p v-if="checkout.recharge_bonus_summary.available_amount > 0" class="checkout-account__note">
-                    {{ t('payment.includedBonusBalance', { amount: checkout.recharge_bonus_summary.available_amount.toFixed(2) }) }}
+                  <p v-if="(checkout.recharge_bonus_summary?.available_amount ?? 0) > 0" class="checkout-account__note">
+                    {{ t('payment.includedBonusBalance', { amount: (checkout.recharge_bonus_summary?.available_amount ?? 0).toFixed(2) }) }}
                   </p>
-                  <p v-if="checkout.recharge_bonus_summary.next_expires_at" class="checkout-account__note">
+                  <p v-if="checkout.recharge_bonus_summary?.next_expires_at" class="checkout-account__note">
                     {{ t('payment.nextBonusExpiry', { time: formatBonusExpiry(checkout.recharge_bonus_summary.next_expires_at) }) }}
                   </p>
                   <p class="checkout-account__note checkout-account__note--muted">{{ t(balancePreviewReady ? 'payment.balanceEstimateNotice' : 'payment.balanceUnavailable') }}</p>
@@ -870,7 +870,7 @@ const balanceRechargeMultiplier = computed(() => {
   const multiplier = checkout.value.balance_recharge_multiplier
   return Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1
 })
-const matchingBonusRule = computed(() => checkout.value.recharge_bonus_rules.find(rule => Math.abs(rule.recharge_amount - validAmount.value) < 0.00000001) || null)
+const matchingBonusRule = computed(() => (checkout.value.recharge_bonus_rules ?? []).find(rule => Math.abs(rule.recharge_amount - validAmount.value) < 0.00000001) || null)
 const activeBonusRule = computed(() => selectedCouponId.value && !couponQuote.value?.stackable ? null : matchingBonusRule.value)
 const rechargeAmounts = [5, 10, 30, 50, 100, 500, 1000, 5000]
 
@@ -1022,7 +1022,7 @@ const amountError = computed(() => {
 })
 
 const canSubmit = computed(() =>
-  (!selectedCouponId.value || (!couponQuotePending.value && !!couponQuote.value))
+  (!checkout.value.coupons_enabled || !selectedCouponId.value || (!couponQuotePending.value && !!couponQuote.value))
     && validAmount.value > 0
     && amountFitsMethod(payBaseAmount.value, selectedMethod.value)
     && selectedLimit.value?.available !== false
@@ -1531,7 +1531,16 @@ async function resumeWechatPaymentFromQuery() {
 onMounted(async () => {
   try {
     const res = await paymentAPI.getCheckoutInfo()
-    checkout.value = res.data
+    const data = (res.data ?? {}) as Partial<CheckoutInfoResponse>
+    checkout.value = {
+      ...checkout.value,
+      ...data,
+      methods: data.methods ?? {},
+      plans: Array.isArray(data.plans) ? data.plans : [],
+      recharge_bonus_rules: Array.isArray(data.recharge_bonus_rules) ? data.recharge_bonus_rules : [],
+      recharge_bonus_summary: data.recharge_bonus_summary ?? { available_amount: 0, active_grants: 0 },
+      recharge_bonus_tiers: Array.isArray(data.recharge_bonus_tiers) ? data.recharge_bonus_tiers : [],
+    }
     // Checkout expires old grants; refresh balance afterwards to avoid counting expired credit.
     try {
       await authStore.refreshUser()
@@ -1548,7 +1557,7 @@ onMounted(async () => {
       })
       selectedMethod.value = sorted[0]
       amount.value = rechargeAmounts.find(value => sorted.some(method =>
-        visibleMethods.value[method].available && amountFitsMethod(value, method)
+        visibleMethods.value[method]?.available !== false && amountFitsMethod(value, method)
       )) ?? null
     }
     if (typeof window !== 'undefined') {

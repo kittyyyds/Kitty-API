@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"strings"
-	"time"
 
 	entsql "entgo.io/ent/dialect/sql"
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -11,7 +10,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
 	"github.com/Wei-Shaw/sub2api/ent/user"
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -41,38 +39,6 @@ func kittyAPIKeyExistsPredicate(raw string) predicate.APIKey {
 
 func isRejectedRawAPIKeyCredential(raw string) bool {
 	return raw == "" || strings.HasPrefix(raw, "$sha256$")
-}
-
-func (r *apiKeyRepository) KittyRotateCredential(ctx context.Context, id, userID int64, previous, raw string) error {
-	now := time.Now()
-	if r.sql != nil {
-		res, err := r.sql.ExecContext(ctx,
-			`UPDATE api_keys SET key = $1, key_hash = NULL, key_prefix = NULL, updated_at = $2 WHERE id = $3 AND user_id = $4 AND key = $5 AND deleted_at IS NULL`,
-			raw, now, id, userID, previous)
-		if err != nil {
-			return translatePersistenceError(err, nil, service.ErrAPIKeyExists)
-		}
-		affected, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if affected != 1 {
-			return infraerrors.Conflict("API_KEY_CHANGED", "API key changed; refresh before regenerating")
-		}
-		return nil
-	}
-	n, err := r.client.APIKey.Update().
-		Where(apikey.IDEQ(id), apikey.UserIDEQ(userID), apikey.KeyEQ(previous), apikey.DeletedAtIsNil()).
-		SetKey(raw).
-		SetUpdatedAt(now).
-		Save(ctx)
-	if err != nil {
-		return translatePersistenceError(err, nil, service.ErrAPIKeyExists)
-	}
-	if n != 1 {
-		return infraerrors.Conflict("API_KEY_CHANGED", "API key changed; refresh before regenerating")
-	}
-	return nil
 }
 
 func (r *apiKeyRepository) KittyGetByIDForAuth(ctx context.Context, id int64) (*service.APIKey, error) {

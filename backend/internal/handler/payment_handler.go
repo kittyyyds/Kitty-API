@@ -141,6 +141,21 @@ func (h *PaymentHandler) GetCheckoutInfo(c *gin.Context) {
 		})
 	}
 
+	bonusRules := []service.RechargeBonusRule{}
+	if h.paymentService != nil {
+		if rules, rulesErr := h.paymentService.ListRechargeBonusRules(ctx); rulesErr == nil && rules != nil {
+			bonusRules = rules
+		}
+	}
+	bonusSummary := service.RechargeBonusSummary{}
+	if h.paymentService != nil {
+		if subject, ok := middleware2.GetAuthSubjectFromContext(c); ok && subject.UserID > 0 {
+			if summary, summaryErr := h.paymentService.GetRechargeBonusSummary(ctx, subject.UserID); summaryErr == nil && summary != nil {
+				bonusSummary = *summary
+			}
+		}
+	}
+
 	response.Success(c, checkoutInfoResponse{
 		Methods:                       limitsResp.Methods,
 		GlobalMin:                     limitsResp.GlobalMin,
@@ -153,6 +168,8 @@ func (h *PaymentHandler) GetCheckoutInfo(c *gin.Context) {
 		RechargeBonusTiers:            cfg.RechargeBonusTiers,
 		RechargeBonusMode:             cfg.RechargeBonusMode,
 		RechargeBonusNotice:           cfg.RechargeBonusNotice,
+		RechargeBonusRules:            bonusRules,
+		RechargeBonusSummary:          bonusSummary,
 		HelpText:                      cfg.HelpText,
 		HelpImageURL:                  cfg.HelpImageURL,
 		StripePublishableKey:          cfg.StripePublishableKey,
@@ -173,6 +190,8 @@ type checkoutInfoResponse struct {
 	RechargeBonusTiers            []service.RechargeBonusTier     `json:"recharge_bonus_tiers"`
 	RechargeBonusMode             string                          `json:"recharge_bonus_mode"`
 	RechargeBonusNotice           string                          `json:"recharge_bonus_notice"`
+	RechargeBonusRules            []service.RechargeBonusRule     `json:"recharge_bonus_rules"`
+	RechargeBonusSummary          service.RechargeBonusSummary    `json:"recharge_bonus_summary"`
 	HelpText                      string                          `json:"help_text"`
 	HelpImageURL                  string                          `json:"help_image_url"`
 	StripePublishableKey          string                          `json:"stripe_publishable_key"`

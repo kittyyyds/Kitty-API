@@ -36,11 +36,6 @@ func RegisterKittyRoutes(
 		admin.Use(gin.HandlerFunc(auditLog))
 	}
 
-	// API Key regeneration (POST /api/v1/keys/:id/regenerate)
-	if h.APIKey != nil {
-		authenticated.POST("/keys/:id/regenerate", h.APIKey.KittyRegenerate)
-	}
-
 	// Billing statement, CSV export & Billing Preview
 	if k.BillingExport != nil || k.BillingPreview != nil {
 		billing := authenticated.Group("/billing")

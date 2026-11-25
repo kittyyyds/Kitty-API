@@ -571,6 +571,12 @@ describe('PaymentView checkout credit breakdown', () => {
   })
 
   it.each([true, false])('preserves the exact package grant only for stackable coupons: %s', async (stackable) => {
+    getCheckoutInfo.mockResolvedValue(checkoutInfoFixture({
+      coupons_enabled: true,
+      balance_recharge_multiplier: 0.5,
+      recharge_bonus_rules: [{ id: 1, recharge_amount: 30, bonus_amount: 1, validity_days: 7 }],
+      recharge_bonus_summary: { available_amount: 2, active_grants: 1 },
+    }))
     const wrapper = await mountRecharge()
     const picker = wrapper.getComponent(RechargeCouponPicker)
     picker.vm.$emit('change', 9, null, true)
@@ -623,6 +629,38 @@ describe('PaymentView checkout credit breakdown', () => {
     getCheckoutInfo.mockResolvedValue(checkoutInfoFixture())
     const wrapper = await mountRecharge()
     expect(wrapper.getComponent(RechargePackages).props('amounts')).toEqual([5, 10, 30, 50, 100, 500, 1000, 5000])
+    wrapper.unmount()
+  })
+
+  it('renders cleanly when backend checkout-info omits bonus fields, coupons_enabled, and method.available', async () => {
+    getCheckoutInfo.mockResolvedValue({
+      data: {
+        methods: {
+          alipay: { payment_type: 'alipay', currency: 'CNY', fee_rate: 0, daily_limit: 0, single_min: 0, single_max: 0 },
+          wxpay: { payment_type: 'wxpay', currency: 'CNY', fee_rate: 0, daily_limit: 0, single_min: 0, single_max: 0 },
+        },
+        global_min: 1,
+        global_max: 0,
+        plans: [],
+        balance_disabled: false,
+        balance_recharge_multiplier: 1,
+        subscription_usd_to_cny_rate: 0,
+        recharge_fee_rate: 0,
+        recharge_bonus_tiers: [],
+        recharge_bonus_mode: 'bonus',
+        recharge_bonus_notice: '',
+        help_text: '',
+        help_image_url: '',
+        stripe_publishable_key: '',
+        alipay_force_qrcode: false,
+        alipay_mobile_precreate_deep_link: false,
+      },
+    } as ReturnType<typeof checkoutInfoFixture>)
+    const wrapper = await mountRecharge()
+    expect(wrapper.findComponent(RechargePackages).exists()).toBe(true)
+    expect(wrapper.findComponent(RechargeCouponPicker).exists()).toBe(false)
+    expect(wrapper.get('[data-testid="total-credit"]').text()).toBe('$30.00')
+    expect(wrapper.get('.checkout-submit').attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })
 })

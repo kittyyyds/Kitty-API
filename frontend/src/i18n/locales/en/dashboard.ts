@@ -70,7 +70,7 @@ export default {
     "secretHint": "The full key is shown only this time. Copy it to a safe place before closing. If lost, you must regenerate it.",
     "secretSaved": "Saved, close",
     "secretUnavailable": "This request already completed. The secret cannot be returned again. Regenerate if you did not save it.",
-    "guideSecretHint": "Replace YOUR_API_KEY in the configuration with the full key you saved. Full keys are shown only on creation or regeneration.",
+    "guideSecretHint": "This legacy key only stores an encrypted digest. Replace YOUR_API_KEY with your saved full key, or create a new API key.",
     "groupChannelStatus": {
       "recent": "Recent channel health; newest interval on the right",
       "composite": "Each interval shows the worst known health across platforms",

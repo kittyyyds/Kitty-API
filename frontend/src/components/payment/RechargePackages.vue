@@ -5,10 +5,10 @@ import type { RechargeBonusRule, RechargeBonusTier } from '@/types/payment'
 import Icon from '@/components/icons/Icon.vue'
 import { currencySymbol, formatPaymentAmount } from './currency'
 import { quoteRechargeBonus, type RechargeBonusMode } from '@/utils/rechargeBonus'
-const props = defineProps<{ amounts: number[]; bonusRules: RechargeBonusRule[]; bonusTiers?: RechargeBonusTier[]; bonusMode?: RechargeBonusMode; rechargeMultiplier: number; min: number; max: number; currency: string; balance: number | null }>()
+const props = defineProps<{ amounts: number[]; bonusRules?: RechargeBonusRule[]; bonusTiers?: RechargeBonusTier[]; bonusMode?: RechargeBonusMode; rechargeMultiplier: number; min: number; max: number; currency: string; balance: number | null }>()
 const emit = defineEmits<{ select: [amount: number] }>()
 const { t } = useI18n()
-const rules = computed(() => new Map(props.bonusRules.map(rule => [rule.recharge_amount, rule])))
+const rules = computed(() => new Map((props.bonusRules ?? []).map(rule => [rule.recharge_amount, rule])))
 const highestBonus = computed(() => Math.max(0, ...props.amounts.filter(allowed).map(amount => rules.value.get(amount)?.bonus_amount ?? 0)))
 function allowed(amount: number) { return (props.min <= 0 || amount >= props.min) && (props.max <= 0 || amount <= props.max) }
 function credit(amount: number) { return Math.round(amount * props.rechargeMultiplier * 100) / 100 }

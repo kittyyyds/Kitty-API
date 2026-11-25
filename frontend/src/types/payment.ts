@@ -93,6 +93,8 @@ export interface CheckoutInfoResponse {
   alipay_mobile_precreate_deep_link?: boolean
   recharge_bonus_rules: RechargeBonusRule[]
   recharge_bonus_summary: RechargeBonusSummary
+  /** When true, render RechargeCouponPicker in the recharge cashier */
+  coupons_enabled?: boolean
 }
 
 export interface RechargeBonusRule {

@@ -5,8 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
-
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
 const kittyAPIKeyDigestPrefix = "$sha256$"
@@ -92,35 +90,7 @@ func (s *APIKeyService) kittyAuthInvalidationCacheKey(stored string) string {
 }
 
 type kittyAPIKeySecretRepo interface {
-	KittyRotateCredential(ctx context.Context, id, userID int64, previous, raw string) error
 	KittyGetByIDForAuth(ctx context.Context, id int64) (*APIKey, error)
-}
-
-// KittyRegenerate atomically rotates an API key secret and invalidates old/new auth cache entries.
-func (s *APIKeyService) KittyRegenerate(ctx context.Context, id, userID int64) (*APIKey, error) {
-	key, err := s.apiKeyRepo.GetByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if key == nil || key.UserID != userID {
-		return nil, ErrAPIKeyNotFound
-	}
-	repo, ok := s.apiKeyRepo.(kittyAPIKeySecretRepo)
-	if !ok {
-		return nil, infraerrors.ServiceUnavailable("API_KEY_ROTATION_UNAVAILABLE", "API key regeneration is unavailable")
-	}
-	secret, err := s.GenerateKey()
-	if err != nil {
-		return nil, err
-	}
-	oldKey := key.Key
-	if err := repo.KittyRotateCredential(ctx, id, userID, oldKey, secret); err != nil {
-		return nil, err
-	}
-	s.InvalidateAuthCacheByKey(ctx, oldKey)
-	s.InvalidateAuthCacheByKey(ctx, secret)
-	key.Key = secret
-	return key, nil
 }
 
 // KittyGetForOwnerAuth loads an API key by ID for JWT-authenticated panel operations.

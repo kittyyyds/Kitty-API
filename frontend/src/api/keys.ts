@@ -113,12 +113,6 @@ export async function create(
   return data
 }
 
-/** Generate a replacement secret; the old credential stops authenticating. */
-export async function regenerate(id: number): Promise<APIKeySecret> {
-  const { data } = await apiClient.post<APIKeySecret>(`/keys/${id}/regenerate`, {}, { headers: { 'Idempotency-Key': crypto.randomUUID() } })
-  return data
-}
-
 /** Update configuration without changing the credential. */
 export async function update(id: number, updates: UpdateApiKeyRequest): Promise<ApiKey> {
   const { data } = await apiClient.put<ApiKey>(`/keys/${id}`, updates)
@@ -185,7 +179,6 @@ export const keysAPI = {
   list,
   getById,
   create,
-  regenerate,
   update,
   bulkUpdate,
   delete: deleteKey,

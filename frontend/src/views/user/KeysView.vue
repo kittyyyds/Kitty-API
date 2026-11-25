@@ -128,14 +128,14 @@
                 @click="copyRowApiKey(row)"
                 class="rounded p-1 transition-colors"
                 :class="
-                  row.secret_available
+                  hasCopyableKey(row)
                     ? 'text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-dark-700 dark:hover:text-gray-200'
                     : 'text-gray-300 hover:bg-gray-100 hover:text-amber-600 dark:text-dark-500 dark:hover:bg-dark-700 dark:hover:text-amber-400'
                 "
                 :title="
-                  row.secret_available
+                  hasCopyableKey(row)
                     ? (copiedKeyId === row.id ? t('keys.copied') : t('keys.copyToClipboard'))
-                    : '历史加密密钥无法直接复制，点击「重新生成」获取可复制的新密钥'
+                    : '该历史密钥仅存加密摘要，原明文不可查看（仍可正常使用）'
                 "
                 :aria-label="t('keys.copyToClipboard')"
                 data-testid="copy-api-key"
@@ -467,10 +467,26 @@
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 hover:text-primary-600">
                 <Icon name="book" size="sm" /><span class="text-xs">{{ t('keys.useKey') }}</span>
               </button>
-              <button type="button" @click="selectedKey = row; showRegenerateDialog = true"
-          class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 hover:text-primary-600" :title="t('keys.regenerate')">
-          <Icon name="refresh" size="sm" /><span class="text-xs">{{ t('keys.regenerate') }}</span></button>
               <!-- Import to CC Switch Button -->
+              <button
+                v-if="!publicSettings?.hide_ccs_import_button"
+                type="button"
+                :disabled="ccSwitchCatalogLoading"
+                @click="importToCcswitch(row)"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20 dark:hover:text-blue-400"
+              >
+                <Icon name="upload" size="sm" />
+                <span class="text-xs">{{ t('keys.importToCcSwitch') }}</span>
+              </button>
+              <button
+                v-if="isCodexQuickConfigPlatform(row.group?.platform)"
+                type="button"
+                @click="openCodexQuickConfigModal(row)"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-primary-50 hover:text-primary-600 dark:hover:bg-primary-900/20 dark:hover:text-primary-400"
+              >
+                <Icon name="terminal" size="sm" />
+                <span class="text-xs">{{ t('keys.quickConfigure') }}</span>
+              </button>
               
               <!-- Toggle Status Button -->
               <button
@@ -1154,29 +1170,6 @@
 
     <!-- Use Key Modal -->
     <TestKeyModal :show="keyForTest !== null" :api-key="keyForTest" @close="keyForTest = null" @tested="loadApiKeys" />
-    <ConfirmDialog
-      :show="showRegenerateDialog"
-      :title="t('keys.regenerate')"
-      :message="t('keys.regenerateConfirm', { name: selectedKey?.name })"
-      :confirm-text="t('keys.regenerate')"
-      :danger="true"
-      @confirm="regenerateKey"
-      @cancel="!regenerating && (showRegenerateDialog = false)"
-    />
-    <BaseDialog :show="!!oneTimeKey" :title="t('keys.secretTitle')" @close="closeOneTimeKey">
-      <div v-if="oneTimeKey" class="space-y-4">
-        <p class="text-sm text-amber-700 dark:text-amber-300">{{ t('keys.secretHint') }}</p>
-        <code class="block break-all rounded-lg bg-gray-100 p-3 dark:bg-dark-700" data-testid="one-time-key">{{ oneTimeKey.key }}</code>
-        <div class="flex flex-wrap gap-2">
-          <button class="btn btn-primary" @click="copyToClipboard(oneTimeKey.key, oneTimeKey.id)">{{ copiedKeyId === oneTimeKey.id ? t('keys.copied') : t('keys.copyToClipboard') }}</button>
-          <button class="btn btn-secondary" @click="openUseKeyModal(oneTimeKey)">{{ t('keys.useKey') }}</button>
-          <button v-if="!publicSettings?.hide_ccs_import_button" class="btn btn-secondary" @click="importToCcswitch(oneTimeKey)">{{ t('keys.importToCcSwitch') }}</button>
-          <button v-if="isCodexQuickConfigPlatform(oneTimeKey.group?.platform)" class="btn btn-secondary" @click="openCodexQuickConfigModal(oneTimeKey)">{{ t('keys.quickConfigure') }}</button>
-          <button class="btn btn-secondary" @click="closeOneTimeKey">{{ t('keys.secretSaved') }}</button>
-        </div>
-      </div>
-    </BaseDialog>
-
     <TotpStepUpDialog :controller="stepUp" />
 
     <BaseDialog
@@ -1200,7 +1193,7 @@
 
     <UseKeyModal
       :show="showUseKeyModal"
-      :api-key="selectedKey?.id === oneTimeKey?.id ? (oneTimeKey?.key || '') : (selectedKey?.secret_available ? (selectedKey?.key || '') : '')"
+      :api-key="selectedKey && hasCopyableKey(selectedKey) ? selectedKey.key : ''"
       :base-url="publicSettings?.api_base_url || ''"
       :platform="selectedKey?.group?.platform || null"
       :claude-code-only="selectedKey?.group?.claude_code_only || false"
@@ -1210,7 +1203,7 @@
 
     <CodexQuickConfigModal
       :show="showCodexQuickConfigModal"
-      :api-key="selectedKey?.secret_available ? (selectedKey?.key || '') : ''"
+      :api-key="selectedKey && hasCopyableKey(selectedKey) ? selectedKey.key : ''"
       :base-url="publicSettings?.api_base_url || ''"
       :platform="selectedCodexQuickConfigPlatform"
       @close="closeCodexQuickConfigModal"
@@ -1620,32 +1613,6 @@ const filterStatus = ref('')
 const filterGroupId = ref<string | number>('')
 
 const stepUp = useStepUp();
-const oneTimeKey = ref<ApiKey | null>(null);
-const showRegenerateDialog = ref(false);
-const regenerating = ref(false);
-const closeOneTimeKey = () => {
-  oneTimeKey.value = null;
-  selectedKey.value = null;
-  pendingCcsRow.value = null;
-  showUseKeyModal.value = false;
-  showCodexQuickConfigModal.value = false;
-  showCcsClientSelect.value = false;
-  copiedKeyId.value = null;
-};
-const regenerateKey = async () => {
-  if (!selectedKey.value || regenerating.value) return;
-  regenerating.value = true;
-  try {
-    const keyID = selectedKey.value.id;
-    const key = await stepUp.run(() => keysAPI.regenerate(keyID));
-    showRegenerateDialog.value = false;
-    oneTimeKey.value = key?.secret_available ? key : null;
-    if (!oneTimeKey.value) appStore.showError(t('keys.secretUnavailable'));
-    await loadApiKeys();
-  } catch (error: any) {
-    if (!isStepUpCancelled(error)) appStore.showError(error?.message || t('keys.failedToSave'));
-  } finally { regenerating.value = false; }
-};
 
 const showCreateModal = ref(false)
 const showEditModal = ref(false)
@@ -1861,9 +1828,12 @@ const copyToClipboard = async (text: string, keyId: number) => {
   }
 }
 
+const hasCopyableKey = (row: ApiKey): boolean =>
+  row.secret_available !== false && Boolean(row.key) && !row.key.startsWith('$sha256$')
+
 const copyRowApiKey = async (row: ApiKey) => {
-  if (!row.secret_available || !row.key) {
-    appStore.showWarning('历史加密密钥暂不支持直接复制，请点击「重新生成」获取可复制的新密钥')
+  if (!hasCopyableKey(row)) {
+    appStore.showWarning('该历史密钥仅存加密摘要，原明文不可查看（仍可正常使用；如需复制请新建密钥）')
     return
   }
   await copyToClipboard(row.key, row.id)
@@ -1978,6 +1948,10 @@ const openUseKeyModal = (key: ApiKey) => {
 }
 
 const openCodexQuickConfigModal = (key: ApiKey) => {
+  if (!hasCopyableKey(key)) {
+    appStore.showWarning('该历史密钥仅存加密摘要，原明文不可查看（仍可正常使用；如需快速配置请新建密钥）')
+    return
+  }
   selectedKey.value = key
   showCodexQuickConfigModal.value = true
 }
@@ -2211,7 +2185,7 @@ const handleSubmit = async () => {
       appStore.showSuccess(t('keys.keyUpdatedSuccess'))
     } else {
       const customKey = formData.value.use_custom_key ? formData.value.custom_key : undefined
-      const createdKey = await stepUp.run(() => keysAPI.create(
+      await stepUp.run(() => keysAPI.create(
         formData.value.name,
         formData.value.group_id,
         formData.value.fallback_group_id,
@@ -2224,8 +2198,6 @@ const handleSubmit = async () => {
         concurrencyLimit,
         selectedFormGroupIDs()
       ))
-      oneTimeKey.value = createdKey?.secret_available ? { ...createdKey, group: groups.value.find(group => group.id === createdKey.group_id) } : null
-      if (!oneTimeKey.value) appStore.showError(t('keys.secretUnavailable'))
       appStore.showSuccess(t('keys.keyCreatedSuccess'))
       // Only advance tour if active, on submit step, and creation succeeded
       if (onboardingStore.isCurrentStep('[data-tour="key-form-submit"]')) {
@@ -2357,8 +2329,8 @@ const resetRateLimitUsage = async () => {
 }
 
 const importToCcswitch = async (row: ApiKey) => {
-  if (!row.secret_available || !row.key) {
-    appStore.showWarning('历史加密密钥暂不支持一键导入，请点击「重新生成」获取新密钥后再试')
+  if (!hasCopyableKey(row)) {
+    appStore.showWarning('该历史密钥仅存加密摘要，原明文不可查看（仍可正常使用；如需一键导入请新建密钥）')
     return
   }
   if (ccSwitchCatalogLoading.value) return

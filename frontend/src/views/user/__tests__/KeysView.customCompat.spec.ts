@@ -15,6 +15,7 @@ const {
   getUserGroupRates,
   showError,
   showSuccess,
+  showWarning,
   copyToClipboard,
   isCurrentStep,
   nextStep,
@@ -28,6 +29,7 @@ const {
   getUserGroupRates: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn(),
+  showWarning: vi.fn(),
   copyToClipboard: vi.fn(),
   isCurrentStep: vi.fn(),
   nextStep: vi.fn(),
@@ -70,7 +72,6 @@ vi.mock('@/api', () => ({
   keysAPI: {
     list: listKeys,
     create: vi.fn(),
-    regenerate: vi.fn(),
     update: updateKey,
     delete: vi.fn(),
     toggleStatus: vi.fn(),
@@ -91,6 +92,7 @@ vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
     showError,
     showSuccess,
+    showWarning,
   }),
 }))
 
@@ -327,13 +329,13 @@ describe('user KeysView', () => {
     listKeys.mockReset()
     updateKey.mockReset()
     vi.mocked(keysAPI.create).mockReset()
-    vi.mocked(keysAPI.regenerate).mockReset()
     getPublicSettings.mockReset()
     getDashboardApiKeysUsage.mockReset()
     getAvailableGroups.mockReset()
     getUserGroupRates.mockReset()
     showError.mockReset()
     showSuccess.mockReset()
+    showWarning.mockReset()
     copyToClipboard.mockReset()
     isCurrentStep.mockReset()
     nextStep.mockReset()
@@ -393,41 +395,46 @@ describe('user KeysView', () => {
   })
 
 
-  it('shows a regenerated secret once and removes it when closed', async () => {
-    const secret = 'sk-new-once-123456789abcdef'
-    vi.mocked(keysAPI.regenerate).mockResolvedValue({ ...createApiKey(), key: secret, secret_available: true })
+  it('copies plaintext API keys directly without regenerate button or one-time dialog', async () => {
+    const secret = 'sk-plain-1234567890abcdef'
+    listKeys.mockResolvedValue({
+      items: [{ ...createApiKey(), key: secret, key_display: 'sk-pla...cdef', secret_available: true }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
     copyToClipboard.mockResolvedValue(true)
     const wrapper = await mountView()
-    expect(wrapper.get('[data-test="key-mask"]').text()).toBe('sk-tes...1234')
-    expect(wrapper.get('[data-test="key-mask"]').find('button').exists()).toBe(false)
-    await getButtonByText(wrapper, 'keys.regenerate').trigger('click')
-    expect(keysAPI.regenerate).not.toHaveBeenCalled()
-    const confirm = wrapper.findAllComponents({ name: 'ConfirmDialog' }).find(dialog => dialog.props('title') === 'keys.regenerate')!
-    expect(confirm.props('show')).toBe(true)
-    confirm.vm.$emit('confirm')
-    await flushPromises()
-    expect(keysAPI.regenerate).toHaveBeenCalledWith(1)
-    expect(wrapper.get('[data-testid="one-time-key"]').text()).toBe(secret)
-    await getButtonByText(wrapper, 'keys.copyToClipboard').trigger('click')
-    expect(copyToClipboard).toHaveBeenCalledWith(secret, 'keys.copied')
-    await getButtonByText(wrapper, 'keys.secretSaved').trigger('click')
+
+    expect(wrapper.findAll('button').some(btn => btn.text().includes('keys.regenerate'))).toBe(false)
     expect(wrapper.find('[data-testid="one-time-key"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="key-mask"]').text()).toContain('sk-pla...cdef')
+
+    await wrapper.get('[data-testid="copy-api-key"]').trigger('click')
+    expect(copyToClipboard).toHaveBeenCalledWith(secret, 'keys.copied')
+
     await getButtonByText(wrapper, 'keys.useKey').trigger('click')
-    expect(wrapper.findComponent({ name: 'UseKeyModal' }).props('apiKey')).toBe('')
-    expect(wrapper.html()).not.toContain(secret)
-    expect(JSON.stringify(localStorage)).not.toContain(secret)
+    expect(wrapper.findComponent({ name: 'UseKeyModal' }).props('apiKey')).toBe(secret)
     wrapper.unmount()
   })
 
-  it('does not treat an idempotent replay as a revealed secret', async () => {
-    vi.mocked(keysAPI.regenerate).mockResolvedValue(createApiKey())
+  it('shows non-regenerate notice for unrecoverable legacy hash-only keys', async () => {
+    listKeys.mockResolvedValue({
+      items: [{ ...createApiKey(), key: '', key_display: 'sk-old...9999', secret_available: false }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
     const wrapper = await mountView()
-    await getButtonByText(wrapper, 'keys.regenerate').trigger('click')
-    const confirm = wrapper.findAllComponents({ name: 'ConfirmDialog' }).find(dialog => dialog.props('title') === 'keys.regenerate')!
-    confirm.vm.$emit('confirm')
-    await flushPromises()
-    expect(wrapper.find('[data-testid="one-time-key"]').exists()).toBe(false)
-    expect(showError).toHaveBeenCalledWith('keys.secretUnavailable')
+
+    await wrapper.get('[data-testid="copy-api-key"]').trigger('click')
+    expect(copyToClipboard).not.toHaveBeenCalled()
+    expect(showWarning).toHaveBeenCalledWith(expect.not.stringContaining('重新生成'))
+
+    await getButtonByText(wrapper, 'keys.useKey').trigger('click')
+    expect(wrapper.findComponent({ name: 'UseKeyModal' }).props('apiKey')).toBe('')
     wrapper.unmount()
   })
 

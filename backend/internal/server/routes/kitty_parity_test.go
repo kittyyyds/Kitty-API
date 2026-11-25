@@ -60,8 +60,9 @@ func TestKittyRouteParityAndRetirementContract(t *testing.T) {
 		registered[rt.Method+" "+rt.Path] = true
 	}
 
+	require.False(t, registered["POST /api/v1/keys/:id/regenerate"], "API key regenerate route must remain removed")
+
 	requiredKittyRoutes := []string{
-		"POST /api/v1/keys/:id/regenerate",
 		"GET /api/v1/billing/statement",
 		"GET /api/v1/billing/export",
 		"GET /api/v1/billing/catalog",

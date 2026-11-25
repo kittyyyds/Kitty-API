@@ -70,7 +70,7 @@ export default {
     "secretHint": "完整 Key 仅在本次显示。关闭后无法再次查看，请立即复制到安全位置；丢失后只能重新生成。",
     "secretSaved": "已保存，关闭",
     "secretUnavailable": "此请求已完成，明文不会再次返回。如未保存，请重新生成。",
-    "guideSecretHint": "配置中的 YOUR_API_KEY 请替换成您已保存的完整 Key。完整 Key 仅在创建或重新生成时显示。",
+    "guideSecretHint": "该历史密钥仅存加密摘要，请将配置中的 YOUR_API_KEY 替换为您本地保存的完整 Key，或新建一个 API 密钥。",
     "groupChannelStatus": {
       "recent": "最近渠道健康状态，右侧为最新区间",
       "composite": "多个平台按每个区间中最差的已知健康状态显示",
