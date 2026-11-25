@@ -6092,6 +6092,40 @@
                 <Toggle v-model="form.claude_code_version_auto_sync_enabled" />
               </div>
 
+              <!-- OpenAI Codex 打票与打票代理 -->
+              <div class="flex items-center justify-between">
+                <div>
+                  <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.gatewayForwarding.codexTicketEnabled") }}
+                  </label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.gatewayForwarding.codexTicketEnabledDesc") }}
+                  </p>
+                </div>
+                <Toggle v-model="form.openai_codex_ticket_enabled" />
+              </div>
+
+              <div v-if="form.openai_codex_ticket_enabled">
+                <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t("admin.settings.gatewayForwarding.codexTicketHarvestProxy") }}
+                </label>
+                <input
+                  v-model="form.openai_codex_ticket_harvest_proxy_url"
+                  type="text"
+                  class="input w-full font-mono text-sm"
+                  :placeholder="t('admin.settings.gatewayForwarding.codexTicketHarvestProxyPlaceholder')"
+                />
+                <p
+                  v-if="form.openai_codex_ticket_harvest_proxy_configured && !form.openai_codex_ticket_harvest_proxy_url"
+                  class="mt-1.5 text-xs text-emerald-600 dark:text-emerald-400"
+                >
+                  {{ t("admin.settings.gatewayForwarding.codexTicketHarvestProxyConfigured") }}
+                </p>
+                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.settings.gatewayForwarding.codexTicketHarvestProxyDesc") }}
+                </p>
+              </div>
+
             </div>
           </div>
 
@@ -10515,6 +10549,9 @@ const form = reactive<SettingsForm>({
   // 只读展示：自动同步任务写入的官方最新稳定版，不参与提交（提交载荷按字段显式构造）
   claude_code_client_version_synced: "",
   claude_code_version_auto_sync_enabled: true,
+  openai_codex_ticket_enabled: false,
+  openai_codex_ticket_harvest_proxy_url: "",
+  openai_codex_ticket_harvest_proxy_configured: false,
   // codex_cli_only 加固
   min_codex_version: "",
   max_codex_version: "",
@@ -12217,6 +12254,9 @@ async function saveSettings() {
       claude_code_client_version: form.claude_code_client_version?.trim() || "",
       claude_code_version_auto_sync_enabled:
         form.claude_code_version_auto_sync_enabled,
+      openai_codex_ticket_enabled: form.openai_codex_ticket_enabled,
+      openai_codex_ticket_harvest_proxy_url:
+        form.openai_codex_ticket_harvest_proxy_url?.trim() || "",
       min_codex_version: form.min_codex_version?.trim() || "",
       max_codex_version: form.max_codex_version?.trim() || "",
       codex_cli_only_allow_app_server_clients:

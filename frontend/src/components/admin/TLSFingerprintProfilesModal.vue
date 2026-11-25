@@ -379,13 +379,6 @@ const form = reactive({
   enable_grease: false
 })
 
-// Load profiles when dialog opens
-watch(() => props.show, (newVal) => {
-  if (newVal) {
-    loadProfiles()
-  }
-})
-
 const loadProfiles = async () => {
   loading.value = true
   try {
@@ -622,4 +615,11 @@ const confirmDelete = async () => {
     console.error('Error deleting TLS fingerprint profile:', error)
   }
 }
+
+// Register after the helpers above: the first lazy mount already has show=true.
+watch(() => props.show, (newVal) => {
+  if (newVal) {
+    loadProfiles()
+  }
+}, { immediate: true })
 </script>

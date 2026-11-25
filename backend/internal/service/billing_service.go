@@ -538,43 +538,102 @@ func (s *BillingService) initFallbackPricing() {
 	// Antigravity's -high/-low/-medium aliases are matched below so unavailable
 	// remote pricing never records token-bearing requests at $0.
 	s.fallbackPrices["gemini-4-argon"] = &ModelPricing{
-		InputPricePerToken:     2e-6,
-		OutputPricePerToken:    10e-6,
-		CacheReadPricePerToken: 0.1e-6,
-		SupportsCacheBreakdown: false,
+		InputPricePerToken:         4e-6,
+		OutputPricePerToken:        20e-6,
+		CacheReadPricePerToken:     0.2e-6,
+		CacheCreationPricePerToken: 4e-6,
+		SupportsCacheBreakdown:     false,
 	}
 
-	// Gemini 4 Carbon: introductory Google AI rates through 2026-11-30.
-	// From 2026-12-01 the published $2/$10/$0.10 per MTok rates double
-	// to $4/$20/$0.20. Only implicit caching is supported (no storage fee).
+	// Gemini 4 Carbon ($4/$20/$0.20/$4 per MTok; Priority 1.8x).
 	s.fallbackPrices["gemini-4-carbon"] = &ModelPricing{
-		InputPricePerToken:             2e-6,
-		OutputPricePerToken:            10e-6,
-		CacheReadPricePerToken:         0.1e-6,
-		InputPricePerTokenPriority:     3.6e-6,
-		OutputPricePerTokenPriority:    18e-6,
-		CacheReadPricePerTokenPriority: 0.18e-6,
-		SupportsCacheBreakdown:         false,
+		InputPricePerToken:                 4e-6,
+		OutputPricePerToken:                20e-6,
+		CacheReadPricePerToken:             0.2e-6,
+		CacheCreationPricePerToken:         4e-6,
+		InputPricePerTokenPriority:         7.2e-6,
+		OutputPricePerTokenPriority:        36e-6,
+		CacheReadPricePerTokenPriority:     0.36e-6,
+		CacheCreationPricePerTokenPriority: 7.2e-6,
+		SupportsCacheBreakdown:             false,
 	}
 
-	// Gemini 4 Argon Cyber Permissive (Vertex AI pricing: $4 input / $20 output /
-	// $0.20 cached input per MTok). The Gemini 4 Argon promotion does not apply.
+	// Gemini 4 Argon Cyber Permissive ($4 input / $20 output / $0.20 cached input per MTok).
 	s.fallbackPrices["gemini-4-argon-cyber-permissive"] = &ModelPricing{
-		InputPricePerToken:     4e-6,
-		OutputPricePerToken:    20e-6,
-		CacheReadPricePerToken: 0.2e-6,
-		SupportsCacheBreakdown: false,
+		InputPricePerToken:         4e-6,
+		OutputPricePerToken:        20e-6,
+		CacheReadPricePerToken:     0.2e-6,
+		CacheCreationPricePerToken: 4e-6,
+		SupportsCacheBreakdown:     false,
 	}
 
-	// Gemini 4 Hydrogen (Google AI pricing: $1.50 input / $7.50 output /
-	// $0.075 cached input per MTok; Priority is 1.8x). One rate covers every
-	// prompt length.
+	// Gemini 4 Hydrogen ($1.50 input / $7.50 output / $0.07 cached input / $1.50 cache write per MTok).
 	s.fallbackPrices["gemini-4-hydrogen"] = pricingWithPriorityMultiplier(&ModelPricing{
-		InputPricePerToken:     1.5e-6,
-		OutputPricePerToken:    7.5e-6,
-		CacheReadPricePerToken: 0.075e-6,
-		SupportsCacheBreakdown: false,
+		InputPricePerToken:         1.5e-6,
+		OutputPricePerToken:        7.5e-6,
+		CacheReadPricePerToken:     0.07e-6,
+		CacheCreationPricePerToken: 1.5e-6,
+		SupportsCacheBreakdown:     false,
 	}, 1.8)
+
+	// Gemini 4 Neon ($3.00 input / $15.00 output / $0.15 cached input / $3.00 cache write per MTok).
+	s.fallbackPrices["gemini-4-neon"] = pricingWithPriorityMultiplier(&ModelPricing{
+		InputPricePerToken:         3e-6,
+		OutputPricePerToken:        15e-6,
+		CacheReadPricePerToken:     0.15e-6,
+		CacheCreationPricePerToken: 3e-6,
+		SupportsCacheBreakdown:     false,
+	}, 1.8)
+
+	// Antigravity / AGY & Gemini 2.5/3.x standard 1x base pricing cards
+	s.fallbackPrices["ag-claude-opus-4-6-thinking"] = &ModelPricing{
+		InputPricePerToken:         5e-6,
+		OutputPricePerToken:        25e-6,
+		CacheReadPricePerToken:     0.5e-6,
+		CacheCreationPricePerToken: 6.25e-6,
+	}
+	s.fallbackPrices["ag-claude-opus-5-5"] = &ModelPricing{
+		InputPricePerToken:         4e-6,
+		OutputPricePerToken:        20e-6,
+		CacheReadPricePerToken:     0.2e-6,
+		CacheCreationPricePerToken: 5e-6,
+	}
+	s.fallbackPrices["ag-claude-sonnet-4-6"] = &ModelPricing{
+		InputPricePerToken:         3e-6,
+		OutputPricePerToken:        15e-6,
+		CacheReadPricePerToken:     0.3e-6,
+		CacheCreationPricePerToken: 3.75e-6,
+	}
+	s.fallbackPrices["ag-claude-sonnet-5-5"] = &ModelPricing{
+		InputPricePerToken:         2e-6,
+		OutputPricePerToken:        10e-6,
+		CacheReadPricePerToken:     0.1e-6,
+		CacheCreationPricePerToken: 2.5e-6,
+	}
+	s.fallbackPrices["ag-gpt-oss-120b"] = &ModelPricing{
+		InputPricePerToken:         0.5e-6,
+		OutputPricePerToken:        2e-6,
+		CacheReadPricePerToken:     0.05e-6,
+		CacheCreationPricePerToken: 0.5e-6,
+	}
+	s.fallbackPrices["gemini-2.5-flash"] = &ModelPricing{
+		InputPricePerToken:         0.3e-6,
+		OutputPricePerToken:        2.5e-6,
+		CacheReadPricePerToken:     0.03e-6,
+		CacheCreationPricePerToken: 0.3e-6,
+	}
+	s.fallbackPrices["gemini-3-flash"] = &ModelPricing{
+		InputPricePerToken:         0.5e-6,
+		OutputPricePerToken:        3e-6,
+		CacheReadPricePerToken:     0.05e-6,
+		CacheCreationPricePerToken: 0.5e-6,
+	}
+	s.fallbackPrices["gemini-3.8-flash"] = &ModelPricing{
+		InputPricePerToken:         0.5e-6,
+		OutputPricePerToken:        3e-6,
+		CacheReadPricePerToken:     0.05e-6,
+		CacheCreationPricePerToken: 0.5e-6,
+	}
 
 	// OpenAI GPT-5.4（业务指定价格）
 	s.fallbackPrices["gpt-5.4"] = &ModelPricing{
@@ -1176,6 +1235,18 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	if modelLower == "jev-latest" {
 		return s.fallbackPrices["jev-latest"]
 	}
+	baseSeg := normalizeAntigravityClaudeTierAlias(normalizeGeminiThinkingTierAlias(lastSegment(strings.TrimSpace(modelLower))))
+	if strings.HasPrefix(baseSeg, "ag-") {
+		if fp, ok := s.fallbackPrices[baseSeg]; ok {
+			return fp
+		}
+	}
+	switch baseSeg {
+	case "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash-thinking":
+		return s.fallbackPrices["gemini-2.5-flash"]
+	case "gemini-3-flash", "gemini-3.1-flash-image", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.8-flash-tiered":
+		return s.fallbackPrices["gemini-3-flash"]
+	}
 
 	// 按模型系列匹配
 	if claude.IsFable52(modelLower) {
@@ -1258,6 +1329,9 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	}
 	if strings.Contains(modelLower, "gemini-4-hydrogen") {
 		return s.fallbackPrices["gemini-4-hydrogen"]
+	}
+	if strings.Contains(modelLower, "gemini-4-neon") {
+		return s.fallbackPrices["gemini-4-neon"]
 	}
 
 	// DeepSeek 系列：官方模型 V4 Pro/Flash（含 vision-exp）按各自价卡；

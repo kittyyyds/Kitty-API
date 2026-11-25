@@ -1162,6 +1162,7 @@ export interface Proxy {
   country_code?: string
   region?: string
   city?: string
+  timezone?: string
   quality_status?: 'healthy' | 'warn' | 'challenge' | 'failed'
   quality_score?: number
   quality_grade?: string
@@ -1590,7 +1591,10 @@ export interface Account {
   // api_key / session_key / cookie / aws_secret_access_key / aws_session_token /
   // service_account_json / service_account / private_key 不会出现，
   // 改为通过 credentials_status.has_<key> 暴露存在性。
-  credentials?: Record<string, unknown>
+  credentials?: Record<string, unknown> & {
+    subscription_expires_at?: string
+    subscription_is_delinquent?: boolean | null
+  }
   credentials_status?: Record<string, boolean>
   ollama_cloud_usage?: OllamaCloudUsageState
   opencode_go_usage?: OpenCodeGoUsageState

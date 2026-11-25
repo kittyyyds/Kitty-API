@@ -606,6 +606,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 			}
 			upstreamReq.Header.Set("Content-Type", "application/json")
 			upstreamReq.Header.Set("x-goog-api-key", apiKey)
+			applyGeminiAPIKeyPoolSessionHeaders(ctx, c, upstreamReq, normalizedBaseURL, originalClaudeBody)
 			return upstreamReq, "x-request-id", nil
 		}
 		requestIDHeader = "x-request-id"
@@ -1175,6 +1176,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			}
 			upstreamReq.Header.Set("Content-Type", "application/json")
 			upstreamReq.Header.Set("x-goog-api-key", apiKey)
+			applyGeminiAPIKeyPoolSessionHeaders(ctx, c, upstreamReq, normalizedBaseURL, body)
 			return upstreamReq, "x-request-id", nil
 		}
 		requestIDHeader = "x-request-id"
@@ -2438,9 +2440,7 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 			}
 		}
 
-		if u := extractGeminiUsage(unwrappedBytes); u != nil {
-			usage = *u
-		}
+		usage = mergeGeminiStreamUsage(usage, unwrappedBytes)
 
 		// Process the final unterminated line at EOF as well.
 		if errors.Is(err, io.EOF) {
@@ -2467,10 +2467,14 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 	}
 
 	usageObj := map[string]any{
-		"output_tokens": usage.OutputTokens,
+		"output_tokens":           usage.OutputTokens,
+		"cache_read_input_tokens": usage.CacheReadInputTokens,
 	}
-	if usage.InputTokens > 0 {
+	if usage.InputTokens > 0 || usage.CacheReadInputTokens > 0 {
 		usageObj["input_tokens"] = usage.InputTokens
+	}
+	if usage.CacheCreationInputTokens > 0 {
+		usageObj["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
 	}
 	writeSSE(c.Writer, "message_delta", map[string]any{
 		"type": "message_delta",
@@ -2606,9 +2610,8 @@ func collectGeminiSSEObserved(cfg *config.Config, body io.Reader, isOAuth bool, 
 					}
 					if parsed != nil {
 						last = parsed
-						if u := extractGeminiUsage(rawBytes); u != nil {
-							usage = u
-						}
+						merged := mergeGeminiStreamUsage(*usage, rawBytes)
+						usage = &merged
 						if parts := extractGeminiParts(parsed); len(parts) > 0 {
 							lastWithParts = parsed
 							// Collect text from each part for aggregation
@@ -2935,9 +2938,8 @@ func (s *GeminiMessagesCompatService) handleNativeStreamingResponse(c *gin.Conte
 					if sig, ok := detectGeminiResponseSignal(rawBytes); ok && sig.Kind > best.Kind {
 						best = sig
 					}
-					if u := extractGeminiUsage(rawBytes); u != nil {
-						usage = u
-					}
+					merged := mergeGeminiStreamUsage(*usage, rawBytes)
+					usage = &merged
 					observer.ObserveGemini(rawBytes)
 					observeGeminiImageOutputs(c, rawBytes)
 
@@ -3063,10 +3065,17 @@ func convertGeminiToClaudeMessage(geminiResp map[string]any, originalModel strin
 		"content":       contentBlocks,
 		"stop_reason":   stopReason,
 		"stop_sequence": nil,
-		"usage": map[string]any{
-			"input_tokens":  usage.InputTokens,
-			"output_tokens": usage.OutputTokens,
-		},
+		"usage": func() map[string]any {
+			u := map[string]any{
+				"input_tokens":            usage.InputTokens,
+				"output_tokens":           usage.OutputTokens,
+				"cache_read_input_tokens": usage.CacheReadInputTokens,
+			}
+			if usage.CacheCreationInputTokens > 0 {
+				u["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
+			}
+			return u
+		}(),
 	}
 
 	return resp, usage

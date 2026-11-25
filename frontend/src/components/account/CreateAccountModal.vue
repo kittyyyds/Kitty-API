@@ -1543,6 +1543,11 @@
         </div>
         <ProviderAccountImport v-if="usingProvider" :platform="form.platform" :disabled="submitting" @select="selectProviderAccount" />
         <template v-else>
+        <OpenAICompatibleProviderPresetSelector
+          v-if="!isVMManaged && form.platform === 'openai'"
+          :model-value="openAICompatibleProviderSelection"
+          @update:model-value="selectOpenAICompatibleProvider"
+        />
         <GrokMediaProviderSelect
           v-if="form.platform === 'grok' || form.platform === 'video'"
           :video-platform="form.platform === 'video'"
@@ -1555,6 +1560,8 @@
             v-model="apiKeyBaseUrl"
             type="text"
             class="input"
+            data-testid="api-key-base-url"
+            :disabled="isOpenAICompatibleProviderManaged"
             :placeholder="apiKeyBaseUrlPlaceholder"
           />
           <p v-if="baseUrlHint" class="input-hint">{{ baseUrlHint }}</p>
@@ -1657,8 +1664,9 @@
               <button
                 type="button"
                 @click="modelRestrictionMode = 'whitelist'"
+                :disabled="isOpenAICompatibleProviderManaged"
                 :class="[
-                  'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
+                  'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all disabled:cursor-not-allowed disabled:opacity-60',
                   modelRestrictionMode === 'whitelist'
                     ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400'
                     : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
@@ -1682,8 +1690,9 @@
               <button
                 type="button"
                 @click="modelRestrictionMode = 'mapping'"
+                :disabled="isOpenAICompatibleProviderManaged"
                 :class="[
-                  'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all',
+                  'flex-1 rounded-lg px-4 py-2 text-sm font-medium transition-all disabled:cursor-not-allowed disabled:opacity-60',
                   modelRestrictionMode === 'mapping'
                     ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
                     : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-dark-600 dark:text-gray-400 dark:hover:bg-dark-500'
@@ -1755,6 +1764,7 @@
                   v-model="mapping.from"
                   type="text"
                   class="input flex-1"
+                  :disabled="isOpenAICompatibleProviderManaged"
                   :placeholder="t('admin.accounts.requestModel')"
                 />
                 <svg
@@ -1774,9 +1784,11 @@
                   v-model="mapping.to"
                   type="text"
                   class="input flex-1"
+                  :disabled="isOpenAICompatibleProviderManaged"
                   :placeholder="t('admin.accounts.actualModel')"
                 />
                 <button
+                  v-if="!isOpenAICompatibleProviderManaged"
                   type="button"
                   @click="removeModelMapping(index)"
                   class="rounded-lg p-2 text-red-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20"
@@ -1794,6 +1806,7 @@
             </div>
 
             <button
+              v-if="!isOpenAICompatibleProviderManaged"
               type="button"
               @click="addModelMapping"
               class="mb-3 w-full rounded-lg border-2 border-dashed border-gray-300 px-4 py-2 text-gray-600 transition-colors hover:border-gray-400 hover:text-gray-700 dark:border-dark-500 dark:text-gray-400 dark:hover:border-dark-400 dark:hover:text-gray-300"
@@ -3442,6 +3455,23 @@
         </div>
       </div>
 
+      <div v-if="!isVMManaged && isOpenAIOAuth" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <label for="create-codex-image-tool-mode" class="input-label">
+          {{ t('admin.accounts.openai.codexImageTool') }}
+        </label>
+        <select
+          id="create-codex-image-tool-mode"
+          v-model="codexImageToolMode"
+          data-testid="create-codex-image-tool-mode"
+          class="input"
+        >
+          <option v-for="option in codexImageToolOptions" :key="option.value" :value="option.value">
+            {{ option.label }}
+          </option>
+        </select>
+        <p class="input-hint">{{ codexImageToolOptions.find(option => option.value === codexImageToolMode)?.description }}</p>
+      </div>
+
       <!-- OpenAI WS Mode 三态（off/ctx_pool/passthrough） -->
       <div
         v-if="form.platform === 'openai' && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
@@ -3635,6 +3665,32 @@
           <div class="w-52 flex-shrink-0">
             <Select v-model="codexFingerprintMode" data-testid="create-codex-fingerprint-mode-select" :options="codexFingerprintModeOptions" />
           </div>
+        </div>
+        <div class="mt-4 flex items-center justify-between gap-4">
+          <div class="min-w-0">
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.codexFingerprintConvergence') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.codexFingerprintConvergenceDesc') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            data-testid="create-codex-fingerprint-convergence-toggle"
+            role="switch"
+            :aria-checked="codexFingerprintConvergence"
+            @click="codexFingerprintConvergence = !codexFingerprintConvergence"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              codexFingerprintConvergence ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                codexFingerprintConvergence ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
         </div>
       </div>
 
@@ -4300,6 +4356,13 @@ import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
 import { applyExplicitCacheUpstreamCredentials, isOfficialGeminiBaseUrl } from '@/utils/geminiExplicitCache'
 import OpenCodeGoProtocolRulesEditor from '@/components/account/OpenCodeGoProtocolRulesEditor.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
+import OpenAICompatibleProviderPresetSelector from '@/components/account/OpenAICompatibleProviderPresetSelector.vue'
+import {
+  applyOpenAICompatibleProviderSelection,
+  buildOpenAICompatibleProviderModelMappings,
+  getOpenAICompatibleProviderPreset,
+  type OpenAICompatibleProviderSelection
+} from '@/components/account/openAICompatibleProviderPresets'
 import { allSelectedGroupsEnableLongContextPricing } from '@/components/account/longContextBilling'
 import {
   applyAntigravityProjectID,
@@ -4906,12 +4969,40 @@ const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
 const openAIImagesUrlToB64JsonEnabled = ref(false)
 const openAIImageSizeTiers = ref<OpenAIImageSizeTier[]>([...OPENAI_IMAGE_SIZE_TIERS])
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
-const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
+const openAICompatibleProviderSelection = ref<OpenAICompatibleProviderSelection>('custom')
+const isOpenAICompatibleProviderManaged = computed(
+  () =>
+    form.platform === 'openai' &&
+    accountCategory.value === 'apikey' &&
+    openAICompatibleProviderSelection.value !== 'custom'
+)
+const selectOpenAICompatibleProvider = (selection: OpenAICompatibleProviderSelection) => {
+  openAICompatibleProviderSelection.value = selection
+  const preset = getOpenAICompatibleProviderPreset(selection)
+  if (!preset) return
+  apiKeyBaseUrl.value = preset.baseUrl
+  modelRestrictionMode.value = 'mapping'
+  allowedModels.value = []
+  modelMappings.value = buildOpenAICompatibleProviderModelMappings(preset)
+  openAIResponsesMode.value = preset.responsesMode
+  openAIEndpointCapabilities.value = [...preset.endpointCapabilities]
+  openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
+}
+const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_CTX_POOL)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAppServerEnabled = ref(false)
 type CodexFingerprintMode = 'off' | 'device' | 'session' | 'full'
-const codexFingerprintMode = ref<CodexFingerprintMode>('off')
+const codexFingerprintMode = ref<CodexFingerprintMode>('full')
+const codexFingerprintConvergence = ref(true)
+type CodexImageToolMode = 'inherit' | 'enabled' | 'disabled' | 'block'
+const codexImageToolMode = ref<CodexImageToolMode>('enabled')
+const codexImageToolOptions = computed(() => [
+  { value: 'inherit', label: t('admin.accounts.openai.codexImageToolInherit'), description: t('admin.accounts.openai.codexImageToolInheritDesc') },
+  { value: 'enabled', label: t('admin.accounts.openai.codexImageToolEnabled'), description: t('admin.accounts.openai.codexImageToolEnabledDesc') },
+  { value: 'disabled', label: t('admin.accounts.openai.codexImageToolDisabled'), description: t('admin.accounts.openai.codexImageToolDisabledDesc') },
+  { value: 'block', label: t('admin.accounts.openai.codexImageToolBlock'), description: t('admin.accounts.openai.codexImageToolBlockDesc') },
+])
 const codexFingerprintModeOptions = computed(() => [
   { value: 'off' as CodexFingerprintMode, label: t('admin.accounts.openai.codexFingerprintOff') },
   { value: 'device' as CodexFingerprintMode, label: t('admin.accounts.openai.codexFingerprintDevice') },
@@ -5237,6 +5328,17 @@ const form = reactive({
 // 账号保存后实际请求仍按整个代理池调度。
 const authProxyID = computed(() =>
   form.proxy_ids[0] ?? null
+)
+
+const isOpenAIOAuth = computed(() => form.platform === 'openai' && form.type === 'oauth')
+
+watch(
+  () => [form.platform, accountCategory.value],
+  ([platform, category]) => {
+    if (platform !== 'openai' || category !== 'apikey') {
+      openAICompatibleProviderSelection.value = 'custom'
+    }
+  }
 )
 
 
@@ -5926,10 +6028,14 @@ const resetForm = () => {
   openAIResponsesMode.value = 'auto'
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
+  openAICompatibleProviderSelection.value = 'custom'
+  openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_CTX_POOL
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   codexCLIOnlyEnabled.value = false
   codexCLIOnlyAppServerEnabled.value = false
-  codexFingerprintMode.value = 'off'
+  codexFingerprintMode.value = 'full'
+  codexFingerprintConvergence.value = true
+  codexImageToolMode.value = 'enabled'
   anthropicPassthroughEnabled.value = false
   anthropicAPIKeyAuthScheme.value = 'x_api_key'
   webSearchEmulationMode.value = 'default'
@@ -5992,6 +6098,18 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   }
 
   const extra: Record<string, unknown> = { ...(base || {}) }
+  if (isOpenAIOAuth.value) {
+    delete extra.codex_image_generation_bridge_enabled
+    delete extra.codex_image_generation_explicit_tool_policy
+    if (codexImageToolMode.value === 'block') {
+      extra.codex_image_generation_explicit_tool_policy = 'strip'
+      delete extra.codex_image_generation_bridge
+    } else {
+      extra.codex_image_generation_bridge = codexImageToolMode.value === 'inherit'
+        ? null
+        : codexImageToolMode.value === 'enabled'
+    }
+  }
   if (form.type === 'apikey') {
     extra.extra_image_models = parseExtraImageModels(extraImageModels.value)
     extra.extra_image_model_prefixes = parseExtraImageModels(extraImageModelPrefixes.value)
@@ -6040,11 +6158,13 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   } else {
     delete extra.codex_cli_only_allow_app_server
   }
-  // 使用官方默认关闭；仅显式启用时保存指纹模式。
-  if (codexFingerprintMode.value !== 'off') {
+  // 缺省 full + 实验投影开启。off / false 必须显式落键，删键会被后端当成默认全收敛。
+  if (accountCategory.value === 'oauth-based') {
     extra.codex_fingerprint_mode = codexFingerprintMode.value
+    extra.codex_experimental_fingerprint_convergence = codexFingerprintConvergence.value
   } else {
     delete extra.codex_fingerprint_mode
+    delete extra.codex_experimental_fingerprint_convergence
   }
   if (openAICompactMode.value !== 'auto') {
     extra.openai_compact_mode = openAICompactMode.value
@@ -6066,6 +6186,10 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   } else {
     delete extra.images_url_to_b64_json
   }
+  applyOpenAICompatibleProviderSelection(
+    extra,
+    accountCategory.value === 'apikey' ? openAICompatibleProviderSelection.value : 'custom'
+  )
   applyOpenAIImageSizeTiersToExtra(extra, openAIImageSizeTiers.value)
 
   return Object.keys(extra).length > 0 ? extra : undefined

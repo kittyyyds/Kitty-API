@@ -58,8 +58,21 @@
       </span>
     </div>
     <!-- Row 3: Subscription expiration (non-free paid accounts only) -->
-    <div v-if="expiresLabel" class="text-[10px] leading-tight text-gray-400 dark:text-gray-500 pl-0.5" :title="subscriptionExpiresAt">
+    <div
+      v-if="expiresLabel"
+      data-testid="subscription-expiry"
+      class="text-[10px] leading-tight text-gray-400 dark:text-gray-500 pl-0.5"
+      :title="formatDateTime(subscriptionExpiry, undefined, locale)"
+    >
       {{ expiresLabel }}
+    </div>
+    <div
+      v-if="subscriptionGrace"
+      data-testid="subscription-grace"
+      class="pl-0.5 text-[10px] leading-tight text-gray-400 dark:text-gray-500"
+      :title="formatDateTime(subscriptionGrace, undefined, locale)"
+    >
+      {{ t('admin.accounts.subscriptionGraceUntil', { date: formatDateLocalInput(subscriptionGrace) }) }}
     </div>
   </div>
 </template>
@@ -68,13 +81,14 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { AccountPlatform, AccountType } from '@/types'
+import { formatDateLocalInput, formatDateTime } from '@/utils/format'
 import { platformLabel as sharedPlatformLabel } from '@/utils/platformColors'
 import { normalizePlanType, openAIPlanTypeLabel } from '@/utils/planType'
 import GrokFreeIcon from './GrokFreeIcon.vue'
 import PlatformIcon from './PlatformIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 interface Props {
   platform: AccountPlatform
@@ -83,6 +97,7 @@ interface Props {
   planType?: string
   privacyMode?: string
   subscriptionExpiresAt?: string
+  subscriptionIsDelinquent?: boolean | null
 }
 
 const props = defineProps<Props>()
@@ -279,25 +294,51 @@ const planBadgeClass = computed(() => {
   return typeClass.value
 })
 
-// Subscription expiration label (non-free only)
-const expiresLabel = computed(() => {
-  if (isOpenAIAPIKey.value) return ''
-  if (!props.subscriptionExpiresAt || !props.planType) return ''
+const subscriptionExpiry = computed(() => {
+  if (isOpenAIAPIKey.value) return null
+  if (!props.subscriptionExpiresAt || !normalizedPlanType.value) return null
   if (
     normalizedPlanType.value === 'free' ||
     normalizedPlanType.value === 'basic' ||
     normalizedPlanType.value === 'xbasic'
-  ) return ''
-  try {
-    const d = new Date(props.subscriptionExpiresAt)
-    if (isNaN(d.getTime())) return ''
-    const yyyy = d.getFullYear()
-    const mm = String(d.getMonth() + 1).padStart(2, '0')
-    const dd = String(d.getDate()).padStart(2, '0')
-    return `${t('admin.accounts.subscriptionExpires')} ${yyyy}-${mm}-${dd}`
-  } catch {
-    return ''
+  ) return null
+  const date = new Date(props.subscriptionExpiresAt)
+  if (!Number.isFinite(date.getTime())) return null
+  const isoDate = /^(\d{4}-\d{2}-\d{2})(?:T|$)/.exec(props.subscriptionExpiresAt)
+  if (isoDate && new Date(`${isoDate[1]}T00:00:00Z`).getUTCDate() !== Number(isoDate[1].slice(8))) {
+    return null
   }
+  if (props.platform === 'openai' && props.subscriptionIsDelinquent === true) {
+    const previousMonthEnd = new Date(date.getTime())
+    previousMonthEnd.setDate(0)
+    date.setMonth(date.getMonth() - 1, Math.min(date.getDate(), previousMonthEnd.getDate()))
+  }
+  return Number.isFinite(date.getTime()) ? date : null
+})
+
+// Subscription expiration label (non-free only)
+const expiresLabel = computed(() => subscriptionExpiry.value
+  ? `${t('admin.accounts.subscriptionExpires')} ${formatDateLocalInput(subscriptionExpiry.value)}`
+  : '')
+
+const subscriptionGrace = computed(() => {
+  if (props.platform !== 'openai' || !subscriptionExpiry.value) return null
+  let days: number
+  switch (normalizedPlanType.value) {
+    case 'pro':
+    case 'chatgptpro':
+    case 'prolite':
+    case 'promax':
+      days = 14
+      break
+    case 'plus':
+      days = 30
+      break
+    default:
+      return null
+  }
+  const until = new Date(subscriptionExpiry.value.getTime() + days * 24 * 60 * 60 * 1000)
+  return Number.isFinite(until.getTime()) ? until : null
 })
 
 // Privacy badge — shows different states for OpenAI/Antigravity OAuth privacy setting

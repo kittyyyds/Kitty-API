@@ -1076,7 +1076,14 @@ func (s *PricingService) loadPricingOverrideEntries() map[string]json.RawMessage
 	}
 	path := strings.TrimSpace(s.cfg.Pricing.OverrideFile)
 	if path == "" {
-		return nil
+		if strings.TrimSpace(s.cfg.Pricing.DataDir) == "" {
+			return nil
+		}
+		candidate := filepath.Join(s.cfg.Pricing.DataDir, "model_pricing_override.json")
+		if _, statErr := os.Stat(candidate); statErr != nil {
+			return nil
+		}
+		path = candidate
 	}
 	body, err := os.ReadFile(path)
 	if err != nil {
@@ -1501,7 +1508,7 @@ func normalizeModelNameForPricing(model string) string {
 // separate token rate; without this the IDs fall into substring family matching
 // and are billed as claude-opus-5 / claude-sonnet-4-5.
 func normalizeAntigravityClaudeTierAlias(model string) string {
-	for _, baseModel := range []string{"claude-opus-5-5", "claude-sonnet-5-5"} {
+	for _, baseModel := range []string{"claude-opus-5-5", "claude-sonnet-5-5", "ag-claude-opus-5-5", "ag-claude-sonnet-5-5"} {
 		for _, tier := range []string{"-high", "-low", "-medium"} {
 			if model == baseModel+tier {
 				return baseModel
@@ -1522,8 +1529,8 @@ func isAntigravityThinkingTierAlias(model string) bool {
 // the published token rate, so this keeps -high/-low/-medium and -tiered
 // requests on the corresponding base model's price card.
 func normalizeGeminiThinkingTierAlias(model string) string {
-	for _, baseModel := range []string{"gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon", "gemini-4-carbon"} {
-		for _, tier := range []string{"-high", "-low", "-medium", "-tiered"} {
+	for _, baseModel := range []string{"gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon", "gemini-4-carbon", "gemini-4-hydrogen", "gemini-4-neon"} {
+		for _, tier := range []string{"-xhigh", "-high", "-low", "-medium", "-minimal", "-tiered"} {
 			if model == baseModel+tier {
 				return baseModel
 			}

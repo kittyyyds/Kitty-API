@@ -514,7 +514,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					service.WithForwardGeminiSession(derefGroupID(apiKey.GroupID), sessionKey),
 				)
 			} else {
-				result, err = h.geminiCompatService.Forward(requestCtx, c, account, body)
+				result, err = h.geminiCompatService.Forward(service.WithGeminiUpstreamSession(requestCtx, sessionHash), c, account, body)
 			}
 			if accountReleaseFunc != nil {
 				accountReleaseFunc()

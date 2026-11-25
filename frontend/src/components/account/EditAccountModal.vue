@@ -52,6 +52,11 @@
 
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
+        <OpenAICompatibleProviderPresetSelector
+          v-if="account.platform === 'openai'"
+          :model-value="openAICompatibleProviderSelection"
+          @update:model-value="selectOpenAICompatibleProvider"
+        />
         <GrokMediaProviderSelect
           v-if="account.platform === 'grok' || account.platform === 'video'"
           :video-platform="account.platform === 'video'"
@@ -64,6 +69,8 @@
             v-model="editBaseUrl"
             type="text"
             class="input"
+            data-testid="api-key-base-url"
+            :disabled="isOpenAICompatibleProviderManaged"
             :placeholder="
               account.platform === 'video'
                 ? 'https://video.example.com'
@@ -312,6 +319,7 @@
               <button
                 type="button"
                 @click="modelRestrictionMode = 'whitelist'"
+                :disabled="isOpenAICompatibleProviderManaged"
                 :aria-pressed="account.platform === 'grok' ? modelRestrictionMode === 'whitelist' : undefined"
                 :class="account.platform === 'grok'
                   ? [
@@ -346,6 +354,7 @@
               <button
                 type="button"
                 @click="modelRestrictionMode = 'mapping'"
+                :disabled="isOpenAICompatibleProviderManaged"
                 :aria-pressed="account.platform === 'grok' ? modelRestrictionMode === 'mapping' : undefined"
                 :class="account.platform === 'grok'
                   ? [
@@ -458,6 +467,7 @@
                 <input
                   v-model="mapping.from"
                   type="text"
+                  :disabled="isOpenAICompatibleProviderManaged"
                   :aria-label="account.platform === 'grok' ? t('admin.accounts.grokModelDiagnostics.mappingFromAria', { index: index + 1 }) : undefined"
                   :class="account.platform === 'grok' ? 'input min-w-0 w-full font-mono text-xs' : 'input flex-1'"
                   :placeholder="t('admin.accounts.requestModel')"
@@ -486,11 +496,13 @@
                 <input
                   v-model="mapping.to"
                   type="text"
+                  :disabled="isOpenAICompatibleProviderManaged"
                   :aria-label="account.platform === 'grok' ? t('admin.accounts.grokModelDiagnostics.mappingTargetAria', { index: index + 1 }) : undefined"
                   :class="account.platform === 'grok' ? 'input min-w-0 w-full font-mono text-xs' : 'input flex-1'"
                   :placeholder="t('admin.accounts.actualModel')"
                 />
                 <button
+                  v-if="!isOpenAICompatibleProviderManaged"
                   type="button"
                   @click="removeModelMapping(index)"
                   :aria-label="account.platform === 'grok' ? t('admin.accounts.grokModelDiagnostics.removeMappingAria', { index: index + 1 }) : undefined"
@@ -512,6 +524,7 @@
             </div>
 
             <button
+              v-if="!isOpenAICompatibleProviderManaged"
               type="button"
               @click="addModelMapping"
               :data-testid="account.platform === 'grok' ? 'grok-model-mapping-add' : undefined"
@@ -2253,6 +2266,18 @@
         </div>
       </div>
 
+      <!-- OpenAI 请求时区：手动覆盖优先，留空按账号出口 IP 自动确定 -->
+      <div
+        v-if="account?.platform === 'openai' && !isSparkShadow"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <OpenAIRequestTimezoneField
+          v-model="openaiRequestTimezone"
+          :proxy-timezone="selectedProxyTimezone"
+          :disabled="isOpenAICompatibleProviderManaged"
+        />
+      </div>
+
       <!-- OpenAI APIKey Responses API support mode -->
       <div
         v-if="account?.platform === 'openai' && account?.type === 'apikey'"
@@ -2763,6 +2788,32 @@
           <div class="w-52 flex-shrink-0">
             <Select v-model="codexFingerprintMode" data-testid="edit-codex-fingerprint-mode-select" :options="codexFingerprintModeOptions" />
           </div>
+        </div>
+        <div class="mt-4 flex items-center justify-between gap-4">
+          <div class="min-w-0">
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.codexFingerprintConvergence') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.codexFingerprintConvergenceDesc') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            data-testid="edit-codex-fingerprint-convergence-toggle"
+            role="switch"
+            :aria-checked="codexFingerprintConvergence"
+            @click="codexFingerprintConvergence = !codexFingerprintConvergence"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              codexFingerprintConvergence ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                codexFingerprintConvergence ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
         </div>
       </div>
 
@@ -3593,8 +3644,13 @@ import OpenCodeGoProtocolRulesEditor from '@/components/account/OpenCodeGoProtoc
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import OllamaCloudUsageSettings from '@/components/account/OllamaCloudUsageSettings.vue'
 import UpstreamGroupSyncButton from '@/components/account/UpstreamGroupSyncButton.vue'
+import OpenAICompatibleProviderPresetSelector from '@/components/account/OpenAICompatibleProviderPresetSelector.vue'
+import OpenAIRequestTimezoneField from '@/components/account/OpenAIRequestTimezoneField.vue'
 import {
   applyOpenAICompatibleProviderSelection,
+  buildOpenAICompatibleProviderModelMappings,
+  getOpenAICompatibleProviderPreset,
+  readOpenAICompatibleProviderSelection,
   type OpenAICompatibleProviderSelection
 } from '@/components/account/openAICompatibleProviderPresets'
 import {
@@ -4382,10 +4438,36 @@ const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_comple
 const openAICompatibleProviderSelection = ref<OpenAICompatibleProviderSelection>('custom')
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_CTX_POOL)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
+const isOpenAICompatibleProviderManaged = computed(
+  () =>
+    props.account?.platform === 'openai' &&
+    props.account.type === 'apikey' &&
+    openAICompatibleProviderSelection.value !== 'custom'
+)
+const selectOpenAICompatibleProvider = (selection: OpenAICompatibleProviderSelection) => {
+  openAICompatibleProviderSelection.value = selection
+  const preset = getOpenAICompatibleProviderPreset(selection)
+  if (!preset) return
+  editBaseUrl.value = preset.baseUrl
+  modelRestrictionMode.value = 'mapping'
+  allowedModels.value = []
+  modelMappings.value = buildOpenAICompatibleProviderModelMappings(preset)
+  openAIResponsesMode.value = preset.responsesMode
+  openAIEndpointCapabilities.value = [...preset.endpointCapabilities]
+  openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
+}
+const openaiRequestTimezone = ref('')
+const openaiRequestTimezoneInitial = ref('')
+const selectedProxyTimezone = computed(() => {
+  const pid = form.proxy_ids?.[0] ?? form.proxy_id
+  if (!pid) return undefined
+  return props.proxies.find((p) => p.id === pid)?.timezone || undefined
+})
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAppServerEnabled = ref(false)
 type CodexFingerprintMode = 'off' | 'device' | 'session' | 'full'
-const codexFingerprintMode = ref<CodexFingerprintMode>('off')
+const codexFingerprintMode = ref<CodexFingerprintMode>('full')
+const codexFingerprintConvergence = ref(true)
 type CodexImageToolMode = 'inherit' | 'enabled' | 'disabled' | 'block'
 const codexImageToolMode = ref<CodexImageToolMode>('inherit')
 type AnthropicAPIKeyAuthScheme = 'x_api_key' | 'authorization_bearer'
@@ -4928,14 +5010,19 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
   openAICompactModelMappings.value = []
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_CTX_POOL
+  openAICompatibleProviderSelection.value = readOpenAICompatibleProviderSelection(extra)
+  openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_CTX_POOL
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   codexCLIOnlyEnabled.value = false
   codexCLIOnlyAppServerEnabled.value = false
-  codexFingerprintMode.value = 'off'
+  codexFingerprintMode.value = 'full'
+  codexFingerprintConvergence.value = true
   codexImageToolMode.value = 'inherit'
   anthropicPassthroughEnabled.value = false
   anthropicAPIKeyAuthScheme.value = 'x_api_key'
   webSearchEmulationMode.value = 'default'
+  openaiRequestTimezone.value = ''
+  openaiRequestTimezoneInitial.value = ''
   if (newAccount.platform === 'openai' && (newAccount.type === 'oauth' || newAccount.type === 'setup-token' || newAccount.type === 'apikey')) {
     openaiPassthroughEnabled.value = extra?.openai_passthrough === true || extra?.openai_oauth_passthrough === true
     openaiPassthroughModelFilterEnabled.value = extra?.openai_passthrough_model_filter === true
@@ -4984,13 +5071,16 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       codexCLIOnlyAppServerEnabled.value =
         extra?.codex_cli_only_allow_app_server === true
     }
+    openaiRequestTimezone.value = (extra?.openai_request_timezone as string) || ''
+    openaiRequestTimezoneInitial.value = openaiRequestTimezone.value
     if (newAccount.type === 'oauth') {
       const storedFPMode = extra?.codex_fingerprint_mode as string | undefined
       const fpMode = storedFPMode === 'account_device' ? 'device' : storedFPMode
-      // 缺省/非法值按 off 呈现，与后端 GetCodexFingerprintMode 的 opt-in 语义一致（#5610）
       codexFingerprintMode.value = (['off', 'device', 'session', 'full'].includes(fpMode || '')
         ? fpMode as CodexFingerprintMode
-        : 'off')
+        : 'full')
+      const conv = extra?.codex_experimental_fingerprint_convergence
+      codexFingerprintConvergence.value = conv !== false && conv !== 'false' && conv !== '0' && conv !== 0
     }
     const credentials = newAccount.credentials as Record<string, unknown> | undefined
     const compactMappings = credentials?.compact_model_mapping as Record<string, string> | undefined
@@ -5209,6 +5299,9 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 
     // Load model mappings and detect mode
     loadModelRestrictionFromMapping(credentials.model_mapping as Record<string, unknown> | undefined)
+    if (newAccount.platform === 'openai' && isOpenAICompatibleProviderManaged.value) {
+      selectOpenAICompatibleProvider(openAICompatibleProviderSelection.value)
+    }
 
     // Load pool mode
     poolModeEnabled.value = credentials.pool_mode === true
@@ -6567,6 +6660,10 @@ const handleSubmit = async () => {
       } else {
         delete newExtra.openai_passthrough_model_filter
       }
+      applyOpenAICompatibleProviderSelection(
+        newExtra,
+        props.account.type === 'apikey' ? openAICompatibleProviderSelection.value : 'custom'
+      )
       applyOpenAIImageSizeTiersToExtra(newExtra, openAIImageSizeTiers.value)
       if (autoPause5hThreshold.value != null && autoPause5hThreshold.value > 0) {
         newExtra.auto_pause_5h_threshold = autoPause5hThreshold.value / 100
@@ -6640,11 +6737,8 @@ const handleSubmit = async () => {
       }
 
       if (props.account.type === 'oauth') {
-        if (codexFingerprintMode.value !== 'off') {
-          newExtra.codex_fingerprint_mode = codexFingerprintMode.value
-        } else {
-          newExtra.codex_fingerprint_mode = 'off'
-        }
+        newExtra.codex_fingerprint_mode = codexFingerprintMode.value
+        newExtra.codex_experimental_fingerprint_convergence = codexFingerprintConvergence.value
       }
 
       updatePayload.extra = newExtra
@@ -6708,6 +6802,18 @@ const handleSubmit = async () => {
       }
       // Quota notify config
       writeQuotaNotifyToExtra(newExtra, 'update')
+      updatePayload.extra = newExtra
+    }
+
+    const nextOpenAIRequestTimezone = openaiRequestTimezone.value.trim()
+    if (nextOpenAIRequestTimezone !== openaiRequestTimezoneInitial.value) {
+      const currentExtra = (updatePayload.extra as Record<string, unknown>) || (props.account.extra as Record<string, unknown>) || {}
+      const newExtra: Record<string, unknown> = { ...currentExtra }
+      if (nextOpenAIRequestTimezone) {
+        newExtra.openai_request_timezone = nextOpenAIRequestTimezone
+      } else {
+        delete newExtra.openai_request_timezone
+      }
       updatePayload.extra = newExtra
     }
 

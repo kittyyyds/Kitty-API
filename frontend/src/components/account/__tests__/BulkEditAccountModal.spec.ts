@@ -928,7 +928,7 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
-  it('开启 OpenAI 自动透传时不再同时提交模型限制', async () => {
+  it('OpenAI OAuth 自动透传仍由红绿点管理，不提交手工模型限制', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],
       selectedTypes: ['oauth']
@@ -936,7 +936,8 @@ describe('BulkEditAccountModal', () => {
 
     await wrapper.get('#bulk-edit-openai-passthrough-enabled').setValue(true)
     await wrapper.get('#bulk-edit-openai-passthrough-toggle').trigger('click')
-    await wrapper.get('#bulk-edit-model-restriction-enabled').setValue(true)
+    expect(wrapper.find('#bulk-edit-model-restriction-enabled').exists()).toBe(false)
+    expect(wrapper.find('#bulk-edit-openai-compact-model-mapping-enabled').exists()).toBe(false)
     await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
@@ -947,7 +948,7 @@ describe('BulkEditAccountModal', () => {
         openai_passthrough_model_filter: false
       }
     })
-    expect(wrapper.text()).toContain('admin.accounts.openai.modelRestrictionDisabledByPassthrough')
+    expect(wrapper.get('[data-testid="astra-policy-bulk"]').text()).toContain('admin.accounts.openai.astraPolicyBulk')
   })
 
   it('filtered-results 模式下应提交 filters 而不是 account_ids', async () => {
@@ -999,8 +1000,8 @@ describe('BulkEditAccountModal', () => {
       selectedTypes: ['oauth']
     })
 
-    // 下拉框默认就是 off，用户只勾选「编辑该项」即提交——正是 issue 描述的操作路径。
     await wrapper.get('#bulk-edit-openai-codex-fingerprint-mode-enabled').setValue(true)
+    await wrapper.get('[data-testid="bulk-codex-fingerprint-mode-select"]').setValue('off')
     await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
     await flushPromises()
 
@@ -1016,6 +1017,25 @@ describe('BulkEditAccountModal', () => {
       extra: Record<string, unknown>
     }
     expect(Object.keys(payload.extra).length).toBeGreaterThan(0)
+  })
+
+  it('OpenAI OAuth 批量编辑只勾选该项时提交默认完全收敛与实验收敛开关', async () => {
+    const wrapper = mountModal({
+      selectedPlatforms: ['openai'],
+      selectedTypes: ['oauth']
+    })
+
+    await wrapper.get('#bulk-edit-openai-codex-fingerprint-mode-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-openai-codex-fingerprint-convergence-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: {
+        codex_fingerprint_mode: 'full',
+        codex_experimental_fingerprint_convergence: true
+      }
+    })
   })
 
   // 与兄弟字段 codex_cli_only 的写法对齐：关闭态同样落显式值，不靠省略表达。
@@ -1059,10 +1079,11 @@ describe('BulkEditAccountModal', () => {
   })
 
   it('only writes passthrough filtering when its batch field is selected', async () => {
-    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['oauth'] })
+    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['apikey'] })
     await wrapper.get('#bulk-edit-openai-passthrough-enabled').setValue(true)
     await wrapper.get('#bulk-edit-openai-passthrough-toggle').trigger('click')
-    await wrapper.get('[data-testid="openai-passthrough-model-filter"]').setValue(true)
+    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(true)
+    await wrapper.get('[data-testid="bulk-openai-passthrough-model-filter"]').setValue(true)
     await wrapper.get('#bulk-edit-model-restriction-enabled').setValue(true)
     await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
     await flushPromises()
@@ -1072,6 +1093,7 @@ describe('BulkEditAccountModal', () => {
     })
     vi.mocked(adminAPI.accounts.bulkUpdate).mockClear()
     await wrapper.get('#bulk-edit-openai-passthrough-enabled').setValue(false)
+    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(false)
     await wrapper.get('#bulk-edit-concurrency-enabled').setValue(true)
     await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
     await flushPromises()

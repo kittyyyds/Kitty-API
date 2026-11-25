@@ -338,7 +338,8 @@
                   :auth-mode="getOpenAIAuthMode(row)"
                   :plan-type="getAccountPlanType(row)"
                   :privacy-mode="row.extra?.privacy_mode || row.parent_privacy_mode"
-                  :subscription-expires-at="row.credentials?.subscription_expires_at || row.parent_subscription_expires_at" />
+                  :subscription-expires-at="row.credentials?.subscription_expires_at || row.parent_subscription_expires_at"
+                  :subscription-is-delinquent="row.credentials?.subscription_is_delinquent" />
                 <span
                   v-if="getAntigravityTierLabel(row)"
                   :class="['inline-block rounded px-1.5 py-0.5 text-[10px] font-medium', getAntigravityTierClass(row)]"
@@ -595,7 +596,7 @@
 </template>
 
 <script setup lang="ts">
-import { openAIPlanTypeKey } from '@/utils/planType'
+import { openAIPlanTypeKey, openAIPlanFilterTypes } from '@/utils/planType'
 import { ref, reactive, computed, onMounted, onUnmounted, toRaw, watch } from 'vue'
 import { useIntervalFn } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
@@ -655,7 +656,7 @@ import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
 import TLSFingerprintProfilesModal from '@/components/admin/TLSFingerprintProfilesModal.vue'
 import { fetchAllAccountIds } from '@/utils/accountSelection'
-import { buildAccountUsageRefreshKey, buildGrokUsageRefreshKey, buildOpenAIAstraPolicyRefreshKey, buildOpenAIQuotaCreditsRefreshKey } from '@/utils/accountUsageRefresh'
+import { buildAccountUsageRefreshKey, buildGrokUsageRefreshKey, buildOpenAIAstraPolicyRefreshKey, buildOpenAIQuotaCreditsRefreshKey, openAIUsageWindowFields } from '@/utils/accountUsageRefresh'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 import { proxyExpiryBadgeClass, proxyExpiryLabelKey } from '@/utils/proxyExpiry'
 import { extractApiErrorMessage } from '@/utils/apiError'
@@ -835,20 +836,25 @@ const ACCOUNT_FILTER_STORAGE_KEY = 'account-filter-values'
 type AccountFilterValues = {
   platform: string
   status: string
+  plan_type: string
 }
 const loadInitialAccountFilterValues = (): AccountFilterValues => {
-  const fallback: AccountFilterValues = { platform: '', status: '' }
+  const fallback: AccountFilterValues = { platform: '', status: '', plan_type: '' }
   try {
     const raw = localStorage.getItem(ACCOUNT_FILTER_STORAGE_KEY)
     if (!raw) return fallback
     const parsed: unknown = JSON.parse(raw)
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return fallback
     const values = parsed as Record<string, unknown>
+    const platform = typeof values.platform === 'string' && CONCRETE_PLATFORM_OPTIONS.some(option => option.value === values.platform)
+      ? values.platform : ''
+    const planType = typeof values.plan_type === 'string' ? openAIPlanTypeKey(values.plan_type) : ''
     return {
-      platform: typeof values.platform === 'string' && CONCRETE_PLATFORM_OPTIONS.some(option => option.value === values.platform)
-        ? values.platform : '',
+      platform,
       status: typeof values.status === 'string' && ['active', 'inactive', 'error', 'rate_limited', 'temp_unschedulable', 'unschedulable'].includes(values.status)
-        ? values.status : ''
+        ? values.status : '',
+      plan_type: (!platform || platform === 'openai') && openAIPlanFilterTypes.some(plan => plan === planType)
+        ? planType : ''
     }
   } catch {
     return fallback
@@ -1308,7 +1314,6 @@ const {
     ...loadInitialAccountFilterValues(),
     type: '',
     privacy_mode: '',
-    plan_type: '',
     group: '',
     search: '',
     lite: '1',
@@ -1655,7 +1660,8 @@ const saveAccountFilterValues = () => {
   try {
     localStorage.setItem(ACCOUNT_FILTER_STORAGE_KEY, JSON.stringify({
       platform: params.platform,
-      status: params.status
+      status: params.status,
+      plan_type: params.plan_type
     }))
   } catch {
     // Filtering must remain available when browser storage is unavailable.
@@ -1843,6 +1849,31 @@ const syncAccountRefs = (nextAccount: Account) => {
   if (menu.acc?.id === nextAccount.id) menu.acc = nextAccount
 }
 
+const isOpenAIOAuthRow = (row: Account) => row.platform === 'openai' && row.type === 'oauth'
+
+const openAIUsageObservedAt = (row: Account) => {
+  const observedAt = row.extra?.codex_usage_observed_at_us
+  if (typeof observedAt === 'number' && Number.isSafeInteger(observedAt) && observedAt > 0) return observedAt
+  return (Date.parse(String(row.extra?.codex_usage_updated_at ?? '')) || 0) * 1000
+}
+
+const openAIWindowSnapshot = (row: Account) =>
+  Object.fromEntries(openAIUsageWindowFields.map(key => [key, row.extra?.[key]]))
+
+const keepLatestOpenAIWindows = (current: Account, next: Account): Account => {
+  if (!isOpenAIOAuthRow(current) || !isOpenAIOAuthRow(next)) return next
+  const currentOwner = Number(current.extra?.codex_reset_credit_owner_changed_at_us ?? 0)
+  const nextOwner = Number(next.extra?.codex_reset_credit_owner_changed_at_us ?? 0)
+  if (nextOwner < currentOwner) return current
+  if (nextOwner > currentOwner || openAIUsageObservedAt(next) >= openAIUsageObservedAt(current)) return next
+  return {
+    ...next,
+    rate_limited_at: current.rate_limited_at,
+    rate_limit_reset_at: current.rate_limit_reset_at,
+    extra: { ...next.extra, ...openAIWindowSnapshot(current) }
+  }
+}
+
 const mergeAccountsIncrementally = (nextRows: Account[]) => {
   const currentRows = accounts.value
   const currentByID = new Map(currentRows.map(row => [row.id, row]))
@@ -1853,10 +1884,11 @@ const mergeAccountsIncrementally = (nextRows: Account[]) => {
       changed = true
       return nextRow
     }
-    if (shouldReplaceAutoRefreshRow(currentRow, nextRow)) {
+    const updated = keepLatestOpenAIWindows(currentRow, nextRow)
+    if (shouldReplaceAutoRefreshRow(currentRow, updated)) {
       changed = true
-      syncAccountRefs(nextRow)
-      return nextRow
+      syncAccountRefs(updated)
+      return updated
     }
     return currentRow
   })

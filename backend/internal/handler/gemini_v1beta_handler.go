@@ -759,7 +759,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				service.WithForwardGeminiSession(sessionGroupID, sessionKey),
 			)
 		} else {
-			result, err = h.geminiCompatService.ForwardNative(requestCtx, c, account, modelName, action, stream, body)
+			result, err = h.geminiCompatService.ForwardNative(service.WithGeminiUpstreamSession(requestCtx, sessionKey), c, account, modelName, action, stream, body)
 		}
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()

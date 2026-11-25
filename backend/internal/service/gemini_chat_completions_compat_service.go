@@ -119,6 +119,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 	}
 
 	buildReq, requestIDHeader := s.buildGeminiChatCompletionsUpstreamRequestFunc(
+		c,
 		account,
 		mappedModel,
 		geminiReq,
@@ -323,6 +324,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 }
 
 func (s *GeminiMessagesCompatService) buildGeminiChatCompletionsUpstreamRequestFunc(
+	c *gin.Context,
 	account *Account,
 	mappedModel string,
 	geminiReq []byte,
@@ -359,6 +361,7 @@ func (s *GeminiMessagesCompatService) buildGeminiChatCompletionsUpstreamRequestF
 			}
 			upstreamReq.Header.Set("Content-Type", "application/json")
 			upstreamReq.Header.Set("x-goog-api-key", apiKey)
+			applyGeminiAPIKeyPoolSessionHeaders(ctx, c, upstreamReq, normalizedBaseURL, geminiReq)
 			return upstreamReq, "x-request-id", nil
 		}, "x-request-id"
 
@@ -660,9 +663,7 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 						if fr := extractGeminiFinishReason(geminiResp); fr != "" {
 							finishReason = fr
 						}
-						if u := extractGeminiUsage(rawBytes); u != nil {
-							usage = *u
-						}
+						usage = mergeGeminiStreamUsage(usage, rawBytes)
 
 						for _, part := range extractGeminiParts(geminiResp) {
 							if text, ok := part["text"].(string); ok && isGeminiThoughtPart(part) {
