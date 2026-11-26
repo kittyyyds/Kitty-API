@@ -67,6 +67,7 @@ func (s *GeminiMessagesCompatService) ForwardAsChatCompletions(
 		return nil, fmt.Errorf("marshal chat completions compat request: %w", err)
 	}
 
+	ctx = WithGeminiPoolRawClientBody(ctx, body)
 	return s.forwardClaudeBodyAsChatCompletions(ctx, c, account, claudeBody, ccReq.ResponseFormat, originalModel, clientStream, includeUsage, startTime)
 }
 
@@ -97,7 +98,8 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		mappedModel = account.GetMappedModel(req.Model)
 	}
 
-	geminiReq, err := convertClaudeMessagesToGeminiGenerateContent(claudeBody, mappedModel)
+	preserveFunctionIDs := accountShouldPreserveGeminiFunctionIDs(account)
+	geminiReq, err := convertClaudeMessagesToGeminiGenerateContentWithOptions(claudeBody, mappedModel, preserveFunctionIDs)
 	if err != nil {
 		return nil, s.writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
@@ -130,9 +132,20 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 	var resp *http.Response
 	// checkedPolicy 是循环内对当前 resp 的错误策略检查结果，未检查时为 nil。
 	var checkedPolicy *ErrorPolicyResult
+	extraRetries := 0
+	deadAccountRebinds := 0
+	strippedFuncIDs := false
+	var poolSticky *geminiPoolStickyAttemptState
+	if account.Type == AccountTypeAPIKey {
+		poolSticky = newGeminiPoolStickyAttemptState(ctx, c, account.GetGeminiBaseURL(geminicli.AIStudioBaseURL), geminiReq)
+	}
 	maxAttempts := s.geminiMaxAttemptsPerAccount()
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		upstreamReq, idHeader, err := buildReq(ctx)
+	for attempt := 1; attempt <= maxAttempts+extraRetries; attempt++ {
+		attemptCtx := ctx
+		if poolSticky != nil {
+			attemptCtx = poolSticky.withAttemptContext(ctx)
+		}
+		upstreamReq, idHeader, err := buildReq(attemptCtx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, err
@@ -147,6 +160,42 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 		if err != nil {
 			return nil, s.handleUpstreamTransportError(ctx, c, account, err)
+		}
+
+		if poolSticky != nil && resp.StatusCode == http.StatusOK {
+			isDead, rebuilt := inspectGeminiPoolFake200Response(resp, useUpstreamStream)
+			resp = rebuilt
+			if isDead && deadAccountRebinds < maxGeminiPoolDeadAccountRetries && ctx.Err() == nil {
+				_ = resp.Body.Close()
+				deadAccountRebinds++
+				extraRetries++
+				nextSID := poolSticky.advanceOnDeadAccount()
+				logger.LegacyPrintf("service.gemini_chat_completions", "Gemini pool account %d: detected disabled upstream sub-account on fake 200, rebinding sticky session (%d/%d -> %s)", account.ID, deadAccountRebinds, maxGeminiPoolDeadAccountRetries, safeSessionPrefix(nextSID))
+				continue
+			}
+			if !isDead {
+				poolSticky.markHealthy()
+			}
+		}
+
+		if preserveFunctionIDs && !strippedFuncIDs && resp.StatusCode == http.StatusBadRequest {
+			respBody := s.readUpstreamErrorBody(resp)
+			_ = resp.Body.Close()
+			if isGeminiUnknownFunctionIDFieldError(respBody) {
+				if strippedReq, changed := stripGeminiFunctionIDsBytes(geminiReq); changed {
+					geminiReq = strippedReq
+					buildReq, requestIDHeader = s.buildGeminiChatCompletionsUpstreamRequestFunc(c, account, mappedModel, geminiReq, clientStream, useUpstreamStream)
+					strippedFuncIDs = true
+					preserveFunctionIDs = false
+					extraRetries++
+					continue
+				}
+			}
+			resp = &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Header:     resp.Header.Clone(),
+				Body:       io.NopCloser(bytes.NewReader(respBody)),
+			}
 		}
 
 		checked, rebuilt := s.checkErrorPolicyInLoop(ctx, account, resp, mappedModel)
@@ -170,7 +219,8 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 			if resp.StatusCode == http.StatusTooManyRequests {
 				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 			}
-			if attempt < maxAttempts {
+			retryAttempt := attempt - extraRetries
+			if retryAttempt < maxAttempts {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
 				if upstreamReqID == "" {
 					upstreamReqID = resp.Header.Get("x-goog-request-id")
@@ -188,8 +238,8 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 					Kind:               "retry",
 					Message:            upstreamMsg,
 				})
-				logger.LegacyPrintf("service.gemini_chat_completions", "Gemini account %d: upstream status %d, retry %d/%d", account.ID, resp.StatusCode, attempt, maxAttempts)
-				sleepGeminiBackoff(attempt)
+				logger.LegacyPrintf("service.gemini_chat_completions", "Gemini account %d: upstream status %d, retry %d/%d", account.ID, resp.StatusCode, retryAttempt, maxAttempts)
+				sleepGeminiBackoff(retryAttempt)
 				continue
 			}
 			resp = &http.Response{
@@ -766,7 +816,7 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 										Index: &idx,
 										ContentBlock: &apicompat.AnthropicContentBlock{
 											Type:  "tool_use",
-											ID:    "toolu_" + randomHex(8),
+											ID:    resolveGeminiFunctionCallID(fc),
 											Name:  name,
 											Input: json.RawMessage(`{}`),
 										},

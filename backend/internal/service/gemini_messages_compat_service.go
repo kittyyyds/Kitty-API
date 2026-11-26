@@ -551,7 +551,8 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		mappedModel = account.GetMappedModel(req.Model)
 	}
 
-	geminiReq, err := convertClaudeMessagesToGeminiGenerateContent(body, mappedModel)
+	preserveFunctionIDs := accountShouldPreserveGeminiFunctionIDs(account)
+	geminiReq, err := convertClaudeMessagesToGeminiGenerateContentWithOptions(body, mappedModel, preserveFunctionIDs)
 	if err != nil {
 		return nil, s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 	}
@@ -718,11 +719,22 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	// checkedPolicy 是循环内对当前 resp 的错误策略检查结果，未检查时为 nil。
 	var checkedPolicy *ErrorPolicyResult
 	signatureRetryStage := 0
+	extraRetries := 0
+	deadAccountRebinds := 0
+	strippedFuncIDs := false
+	var poolSticky *geminiPoolStickyAttemptState
+	if account.Type == AccountTypeAPIKey {
+		poolSticky = newGeminiPoolStickyAttemptState(ctx, c, account.GetGeminiBaseURL(geminicli.AIStudioBaseURL), originalClaudeBody)
+	}
 	maxAttempts := s.geminiMaxAttemptsPerAccount()
-	// 签名降级重发不占用同号重试次数：每进入一个降级阶段，循环上限随之顺延一次。
-	for attempt := 1; attempt <= maxAttempts+signatureRetryStage; attempt++ {
+	// 签名降级重发与池化死号重绑不占用同号重试次数：每触发一次，循环上限顺延一次。
+	for attempt := 1; attempt <= maxAttempts+signatureRetryStage+extraRetries; attempt++ {
 		checkedPolicy = nil
-		upstreamReq, idHeader, err := buildReq(ctx)
+		attemptCtx := ctx
+		if poolSticky != nil {
+			attemptCtx = poolSticky.withAttemptContext(ctx)
+		}
+		upstreamReq, idHeader, err := buildReq(attemptCtx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, err
@@ -741,6 +753,42 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 		if err != nil {
 			return nil, s.handleUpstreamTransportError(ctx, c, account, err)
+		}
+
+		if poolSticky != nil && resp.StatusCode == http.StatusOK {
+			isDead, rebuilt := inspectGeminiPoolFake200Response(resp, useUpstreamStream)
+			resp = rebuilt
+			if isDead && deadAccountRebinds < maxGeminiPoolDeadAccountRetries && ctx.Err() == nil {
+				_ = resp.Body.Close()
+				deadAccountRebinds++
+				extraRetries++
+				nextSID := poolSticky.advanceOnDeadAccount()
+				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini pool account %d: detected disabled upstream sub-account on fake 200, rebinding sticky session (%d/%d -> %s)", account.ID, deadAccountRebinds, maxGeminiPoolDeadAccountRetries, safeSessionPrefix(nextSID))
+				continue
+			}
+			if !isDead {
+				poolSticky.markHealthy()
+			}
+		}
+
+		if preserveFunctionIDs && !strippedFuncIDs && resp.StatusCode == http.StatusBadRequest {
+			respBody := s.readUpstreamErrorBody(resp)
+			_ = resp.Body.Close()
+			if isGeminiUnknownFunctionIDFieldError(respBody) {
+				if strippedReq, changed := stripGeminiFunctionIDsBytes(geminiReq); changed {
+					logger.LegacyPrintf("service.gemini_messages_compat", "Gemini account %d: upstream rejected functionCall/Response id field, stripping and retrying", account.ID)
+					geminiReq = strippedReq
+					strippedFuncIDs = true
+					preserveFunctionIDs = false
+					extraRetries++
+					continue
+				}
+			}
+			resp = &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Header:     resp.Header.Clone(),
+				Body:       io.NopCloser(bytes.NewReader(respBody)),
+			}
 		}
 
 		// Special-case: signature/thought_signature validation errors are not transient, but may be fixed by
@@ -796,7 +844,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 					stageName = "thinking+tools"
 					signatureRetryStage = 2
 				}
-				retryGeminiReq, txErr := convertClaudeMessagesToGeminiGenerateContent(strippedClaudeBody, mappedModel)
+				retryGeminiReq, txErr := convertClaudeMessagesToGeminiGenerateContentWithOptions(strippedClaudeBody, mappedModel, preserveFunctionIDs)
 				if txErr == nil {
 					logger.LegacyPrintf("service.gemini_messages_compat", "Gemini account %d: detected signature-related 400, retrying with downgraded Claude blocks (%s)", account.ID, stageName)
 					// 降级只改写历史块，思考参数沿用客户端原始请求。
@@ -839,7 +887,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				// Apply account-scoped 429 handling early so concurrent requests avoid a rate-limited account.
 				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 			}
-			retryAttempt := attempt - signatureRetryStage
+			retryAttempt := attempt - signatureRetryStage - extraRetries
 			if retryAttempt < maxAttempts {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
 				if upstreamReqID == "" {
@@ -1170,7 +1218,11 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				return nil, "", err
 			}
 
-			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(body))
+			forwardBody := body
+			if !isOfficialGoogleGeminiBaseURL(normalizedBaseURL) {
+				forwardBody = normalizeGeminiPoolToolSchemasInBody(forwardBody)
+			}
+			upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(forwardBody))
 			if err != nil {
 				return nil, "", err
 			}
@@ -1277,10 +1329,20 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 	var resp *http.Response
 	// checkedPolicy 是循环内对当前 resp 的错误策略检查结果，未检查时为 nil。
 	var checkedPolicy *ErrorPolicyResult
+	extraRetries := 0
+	deadAccountRebinds := 0
+	var poolSticky *geminiPoolStickyAttemptState
+	if account.Type == AccountTypeAPIKey && action != "countTokens" {
+		poolSticky = newGeminiPoolStickyAttemptState(ctx, c, account.GetGeminiBaseURL(geminicli.AIStudioBaseURL), body)
+	}
 	maxAttempts := s.geminiMaxAttemptsPerAccount()
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+	for attempt := 1; attempt <= maxAttempts+extraRetries; attempt++ {
 		checkedPolicy = nil
-		upstreamReq, idHeader, err := buildReq(ctx)
+		attemptCtx := ctx
+		if poolSticky != nil {
+			attemptCtx = poolSticky.withAttemptContext(ctx)
+		}
+		upstreamReq, idHeader, err := buildReq(attemptCtx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, err
@@ -1317,6 +1379,22 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			return nil, transportErr
 		}
 
+		if poolSticky != nil && resp.StatusCode == http.StatusOK {
+			isDead, rebuilt := inspectGeminiPoolFake200Response(resp, useUpstreamStream)
+			resp = rebuilt
+			if isDead && deadAccountRebinds < maxGeminiPoolDeadAccountRetries && ctx.Err() == nil {
+				_ = resp.Body.Close()
+				deadAccountRebinds++
+				extraRetries++
+				nextSID := poolSticky.advanceOnDeadAccount()
+				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini native pool account %d: detected disabled upstream sub-account on fake 200, rebinding sticky session (%d/%d -> %s)", account.ID, deadAccountRebinds, maxGeminiPoolDeadAccountRetries, safeSessionPrefix(nextSID))
+				continue
+			}
+			if !isDead {
+				poolSticky.markHealthy()
+			}
+		}
+
 		// 引用缓存不存在、上游网关持有缓存的账号不可用先于错误策略识别：错误策略会写临时不可调度，
 		// 重试与换号也无法恢复。
 		if passthrough, rebuilt := s.cachedContentPassthroughInLoop(ctx, account, resp); passthrough {
@@ -1349,7 +1427,8 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			if resp.StatusCode == 429 {
 				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 			}
-			if attempt < maxAttempts {
+			retryAttempt := attempt - extraRetries
+			if retryAttempt < maxAttempts {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
 				if upstreamReqID == "" {
 					upstreamReqID = resp.Header.Get("x-goog-request-id")
@@ -1377,8 +1456,8 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 					Detail:             upstreamDetail,
 				})
 
-				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini account %d: upstream status %d, retry %d/%d", account.ID, resp.StatusCode, attempt, maxAttempts)
-				sleepGeminiBackoff(attempt)
+				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini account %d: upstream status %d, retry %d/%d", account.ID, resp.StatusCode, retryAttempt, maxAttempts)
+				sleepGeminiBackoff(retryAttempt)
 				continue
 			}
 			if action == "countTokens" {
@@ -2406,7 +2485,7 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 				}
 
 				if openToolIndex < 0 {
-					openToolID = "toolu_" + randomHex(8)
+					openToolID = resolveGeminiFunctionCallID(fc)
 					openToolIndex = nextBlockIndex
 					openToolName = name
 					nextBlockIndex++
@@ -3041,7 +3120,7 @@ func convertGeminiToClaudeMessage(geminiResp map[string]any, originalModel strin
 							sawToolUse = true
 							contentBlocks = append(contentBlocks, map[string]any{
 								"type":  "tool_use",
-								"id":    "toolu_" + randomHex(8),
+								"id":    resolveGeminiFunctionCallID(fc),
 								"name":  name,
 								"input": args,
 							})
@@ -3466,6 +3545,10 @@ func mapGeminiFinishReasonToClaudeStopReason(finishReason string) string {
 }
 
 func convertClaudeMessagesToGeminiGenerateContent(body []byte, model string) ([]byte, error) {
+	return convertClaudeMessagesToGeminiGenerateContentWithOptions(body, model, false)
+}
+
+func convertClaudeMessagesToGeminiGenerateContentWithOptions(body []byte, model string, preserveFunctionIDs bool) ([]byte, error) {
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
@@ -3487,7 +3570,7 @@ func convertClaudeMessagesToGeminiGenerateContent(body []byte, model string) ([]
 	}
 	out["contents"] = contents
 
-	if tools := convertClaudeToolsToGeminiTools(req["tools"]); tools != nil {
+	if tools := convertClaudeToolsToGeminiToolsWithOptions(req["tools"], preserveFunctionIDs); tools != nil {
 		out["tools"] = tools
 	}
 
@@ -3496,7 +3579,9 @@ func convertClaudeMessagesToGeminiGenerateContent(body []byte, model string) ([]
 		out["generationConfig"] = generationConfig
 	}
 
-	stripGeminiFunctionIDs(out)
+	if !preserveFunctionIDs {
+		stripGeminiFunctionIDs(out)
+	}
 	return json.Marshal(out)
 }
 
@@ -3607,24 +3692,34 @@ func convertClaudeMessagesToGeminiContents(messages any, toolUseIDToName map[str
 				case "tool_use":
 					id, _ := bm["id"].(string)
 					name, _ := bm["name"].(string)
-					if strings.TrimSpace(id) != "" && strings.TrimSpace(name) != "" {
+					trimmedID := strings.TrimSpace(id)
+					if trimmedID != "" && strings.TrimSpace(name) != "" {
 						toolUseIDToName[id] = name
+						toolUseIDToName[trimmedID] = name
 					}
 					signature, _ := bm["signature"].(string)
 					signature = strings.TrimSpace(signature)
 					if signature == "" {
 						signature = geminiDummyThoughtSignature
 					}
+					fcPayload := map[string]any{
+						"name": name,
+						"args": bm["input"],
+					}
+					if trimmedID != "" {
+						fcPayload["id"] = trimmedID
+					}
 					parts = append(parts, map[string]any{
 						"thoughtSignature": signature,
-						"functionCall": map[string]any{
-							"name": name,
-							"args": bm["input"],
-						},
+						"functionCall":     fcPayload,
 					})
 				case "tool_result":
 					toolUseID, _ := bm["tool_use_id"].(string)
+					trimmedToolUseID := strings.TrimSpace(toolUseID)
 					name := toolUseIDToName[toolUseID]
+					if name == "" && trimmedToolUseID != "" {
+						name = toolUseIDToName[trimmedToolUseID]
+					}
 					if name == "" {
 						name = "tool"
 					}
@@ -3636,6 +3731,9 @@ func convertClaudeMessagesToGeminiContents(messages any, toolUseIDToName map[str
 					response := map[string]any{
 						"name":     name,
 						"response": map[string]any{"content": text},
+					}
+					if trimmedToolUseID != "" {
+						response["id"] = trimmedToolUseID
 					}
 					if multimodalToolResults && len(images) > 0 {
 						response["parts"] = images
@@ -3769,6 +3867,10 @@ func extractClaudeToolResultImageParts(v any) []any {
 }
 
 func convertClaudeToolsToGeminiTools(tools any) []any {
+	return convertClaudeToolsToGeminiToolsWithOptions(tools, false)
+}
+
+func convertClaudeToolsToGeminiToolsWithOptions(tools any, lowercaseSchemaTypes bool) []any {
 	arr, ok := tools.([]any)
 	if !ok || len(arr) == 0 {
 		return nil
@@ -3819,7 +3921,7 @@ func convertClaudeToolsToGeminiTools(tools any) []any {
 			}
 		}
 		// 清理 JSON Schema
-		cleanedParams := cleanToolSchema(params)
+		cleanedParams := cleanToolSchemaWithOptions(params, lowercaseSchemaTypes)
 
 		funcDecls = append(funcDecls, map[string]any{
 			"name":        name,
@@ -3843,6 +3945,46 @@ func convertClaudeToolsToGeminiTools(tools any) []any {
 		return nil
 	}
 	return out
+}
+
+func normalizeGeminiPoolToolSchemasInBody(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		return body
+	}
+	modified := false
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		decls, ok := tool["functionDeclarations"].([]any)
+		if !ok {
+			continue
+		}
+		for _, rawDecl := range decls {
+			decl, ok := rawDecl.(map[string]any)
+			if !ok {
+				continue
+			}
+			if params, exists := decl["parameters"]; exists && params != nil {
+				decl["parameters"] = cleanToolSchemaWithOptions(params, true)
+				modified = true
+			}
+		}
+	}
+	if !modified {
+		return body
+	}
+	normalized, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return normalized
 }
 
 func normalizeGeminiRequestForAIStudio(body []byte) []byte {
@@ -3897,10 +4039,18 @@ func isClaudeWebSearchToolMap(tool map[string]any) bool {
 
 // cleanToolSchema 清理工具的 JSON Schema，移除 Gemini 不支持的字段
 func cleanToolSchema(schema any) any {
-	return cleanToolSchemaNode(schema, true)
+	return cleanToolSchemaWithOptions(schema, false)
+}
+
+func cleanToolSchemaWithOptions(schema any, lowercaseTypes bool) any {
+	return cleanToolSchemaNodeWithOptions(schema, true, lowercaseTypes)
 }
 
 func cleanToolSchemaNode(schema any, schemaNode bool) any {
+	return cleanToolSchemaNodeWithOptions(schema, schemaNode, false)
+}
+
+func cleanToolSchemaNodeWithOptions(schema any, schemaNode bool, lowercaseTypes bool) any {
 	if schema == nil {
 		return nil
 	}
@@ -3910,7 +4060,7 @@ func cleanToolSchemaNode(schema any, schemaNode bool) any {
 		if !schemaNode {
 			cleaned := make(map[string]any, len(v))
 			for key, value := range v {
-				cleaned[key] = cleanToolSchemaNode(value, false)
+				cleaned[key] = cleanToolSchemaNodeWithOptions(value, false, lowercaseTypes)
 			}
 			return cleaned
 		}
@@ -3931,41 +4081,41 @@ func cleanToolSchemaNode(schema any, schemaNode bool) any {
 				if propertySchemas, ok := value.(map[string]any); ok {
 					cleanedProperties := make(map[string]any, len(propertySchemas))
 					for propertyName, propertySchema := range propertySchemas {
-						cleanedProperties[propertyName] = cleanToolSchemaNode(propertySchema, true)
+						cleanedProperties[propertyName] = cleanToolSchemaNodeWithOptions(propertySchema, true, lowercaseTypes)
 					}
 					cleaned[key] = cleanedProperties
 				} else {
-					cleaned[key] = cleanToolSchemaNode(value, false)
+					cleaned[key] = cleanToolSchemaNodeWithOptions(value, false, lowercaseTypes)
 				}
 			case "items", "contains", "propertyNames", "if", "then", "else", "not", "contentSchema",
 				"additionalItems", "unevaluatedItems", "unevaluatedProperties":
-				cleaned[key] = cleanToolSchemaNode(value, true)
+				cleaned[key] = cleanToolSchemaNodeWithOptions(value, true, lowercaseTypes)
 			case "dependencies":
 				if dependencies, ok := value.(map[string]any); ok {
 					cleanedDependencies := make(map[string]any, len(dependencies))
 					for propertyName, dependency := range dependencies {
 						if dependencySchema, ok := dependency.(map[string]any); ok {
-							cleanedDependencies[propertyName] = cleanToolSchemaNode(dependencySchema, true)
+							cleanedDependencies[propertyName] = cleanToolSchemaNodeWithOptions(dependencySchema, true, lowercaseTypes)
 						} else {
-							cleanedDependencies[propertyName] = cleanToolSchemaNode(dependency, false)
+							cleanedDependencies[propertyName] = cleanToolSchemaNodeWithOptions(dependency, false, lowercaseTypes)
 						}
 					}
 					cleaned[key] = cleanedDependencies
 				} else {
-					cleaned[key] = cleanToolSchemaNode(value, false)
+					cleaned[key] = cleanToolSchemaNodeWithOptions(value, false, lowercaseTypes)
 				}
 			case "anyOf", "allOf", "oneOf", "prefixItems":
 				if schemas, ok := value.([]any); ok {
 					cleanedSchemas := make([]any, len(schemas))
 					for i, childSchema := range schemas {
-						cleanedSchemas[i] = cleanToolSchemaNode(childSchema, true)
+						cleanedSchemas[i] = cleanToolSchemaNodeWithOptions(childSchema, true, lowercaseTypes)
 					}
 					cleaned[key] = cleanedSchemas
 				} else {
-					cleaned[key] = cleanToolSchemaNode(value, false)
+					cleaned[key] = cleanToolSchemaNodeWithOptions(value, false, lowercaseTypes)
 				}
 			default:
-				cleaned[key] = cleanToolSchemaNode(value, false)
+				cleaned[key] = cleanToolSchemaNodeWithOptions(value, false, lowercaseTypes)
 			}
 		}
 		if constValue, exists := v["const"]; exists {
@@ -3983,7 +4133,11 @@ func cleanToolSchemaNode(schema any, schemaNode bool) any {
 					cleaned["enum"] = []any{stringValue}
 				}
 				if _, hasType := cleaned["type"]; !hasType {
-					cleaned["type"] = "STRING"
+					if lowercaseTypes {
+						cleaned["type"] = "string"
+					} else {
+						cleaned["type"] = "STRING"
+					}
 				}
 			}
 			// Non-string constants are unsupported: omit the constant, retain the
@@ -3997,14 +4151,22 @@ func cleanToolSchemaNode(schema any, schemaNode bool) any {
 				delete(cleaned, "enum")
 			}
 		}
-		// 规范化 type 字段为大写
+		// 规范化 type 字段：官方 Google 接口使用大写 OpenAPI 类型，SubLink/AGY MCP 反代号池要求标准小写 JSON Schema 类型
 		if typeVal, ok := cleaned["type"].(string); ok {
-			cleaned["type"] = strings.ToUpper(typeVal)
+			if lowercaseTypes {
+				cleaned["type"] = strings.ToLower(typeVal)
+			} else {
+				cleaned["type"] = strings.ToUpper(typeVal)
+			}
 		} else if typeValues, ok := cleaned["type"].([]any); ok {
 			for _, typeValue := range typeValues {
 				typeName, ok := typeValue.(string)
 				if ok && !strings.EqualFold(typeName, "null") {
-					cleaned["type"] = strings.ToUpper(typeName)
+					if lowercaseTypes {
+						cleaned["type"] = strings.ToLower(typeName)
+					} else {
+						cleaned["type"] = strings.ToUpper(typeName)
+					}
 					break
 				}
 			}
@@ -4012,7 +4174,7 @@ func cleanToolSchemaNode(schema any, schemaNode bool) any {
 				delete(cleaned, "type")
 			}
 		}
-		if cleaned["type"] == "INTEGER" {
+		if typeStr, ok := cleaned["type"].(string); ok && strings.EqualFold(typeStr, "INTEGER") {
 			if minimum, ok := incrementIntegralSchemaBound(v["exclusiveMinimum"]); ok {
 				if existing, exists := cleaned["minimum"]; !exists || schemaNumberLess(existing, minimum) {
 					cleaned["minimum"] = minimum
@@ -4023,7 +4185,7 @@ func cleanToolSchemaNode(schema any, schemaNode bool) any {
 	case []any:
 		cleaned := make([]any, len(v))
 		for i, item := range v {
-			cleaned[i] = cleanToolSchemaNode(item, schemaNode)
+			cleaned[i] = cleanToolSchemaNodeWithOptions(item, schemaNode, lowercaseTypes)
 		}
 		return cleaned
 	default:
