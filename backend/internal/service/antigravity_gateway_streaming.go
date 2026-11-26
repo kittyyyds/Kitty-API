@@ -275,8 +275,9 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 				}
 
 				// 解析 usage
-				if u := extractGeminiUsage(inner); u != nil {
-					usage = u
+				if len(inner) > 0 {
+					merged := mergeGeminiStreamUsage(*usage, inner)
+					usage = &merged
 				}
 				var parsed map[string]any
 				if json.Unmarshal(inner, &parsed) == nil {
@@ -474,8 +475,9 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 			last = parsed
 
 			// 提取 usage
-			if u := extractGeminiUsage(inner); u != nil {
-				usage = u
+			if len(inner) > 0 {
+				merged := mergeGeminiStreamUsage(*usage, inner)
+				usage = &merged
 			}
 
 			// Check for MALFORMED_FUNCTION_CALL

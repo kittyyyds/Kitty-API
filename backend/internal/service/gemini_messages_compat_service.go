@@ -1089,12 +1089,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 			collectedBytes, _ := json.Marshal(collected)
 			upstreamResponseModelObserverFromContext(c).ObserveGemini(collectedBytes)
 			observeGeminiImageOutputs(c, collectedBytes)
-			claudeResp, usageObj2 := convertGeminiToClaudeMessage(collected, originalModel, collectedBytes, false)
+			claudeResp, collectedUsage := convertGeminiToClaudeMessageWithUsage(collected, originalModel, collectedBytes, false, usageObj)
 			c.JSON(http.StatusOK, claudeResp)
-			usage = usageObj2
-			if usageObj != nil && (usageObj.InputTokens > 0 || usageObj.OutputTokens > 0) {
-				usage = usageObj
-			}
+			usage = collectedUsage
 		} else {
 			usage, err = s.handleNonStreamingResponse(c, resp, originalModel)
 			if err != nil {
@@ -1648,21 +1645,11 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		streamFinished = streamRes.finished
 	} else {
 		if useUpstreamStream {
-			var best geminiResponseSignal
-			collected, usageObj, stats, err := collectGeminiSSEObserved(s.cfg, resp.Body, isOAuth, func(rawBytes []byte) {
-				if sig, ok := detectGeminiResponseSignal(rawBytes); ok && sig.Kind > best.Kind {
-					best = sig
-				}
-			})
+			usageResp, err := s.handleNativeStreamAsNonStreamingResponse(c, resp, isOAuth, account, requestID)
 			if err != nil {
-				return nil, s.writeGoogleError(c, http.StatusBadGateway, "Failed to read upstream stream")
+				return nil, err
 			}
-			s.finalizeGeminiSSESignal(c, account, false, requestID, best, stats.dataEvents > 0, stats.fallback)
-			b, _ := json.Marshal(collected)
-			upstreamResponseModelObserverFromContext(c).ObserveGemini(b)
-			observeGeminiImageOutputs(c, b)
-			c.Data(http.StatusOK, "application/json", b)
-			usage = usageObj
+			usage = usageResp
 		} else {
 			usageResp, err := s.handleNativeNonStreamingResponse(c, resp, isOAuth, account, requestID)
 			if err != nil {
@@ -1967,7 +1954,6 @@ func sleepGeminiBackoff(attempt int) {
 	}
 	time.Sleep(sleepFor)
 }
-
 
 var retryInRegex = regexp.MustCompile(`Please retry in ([0-9.]+)s`)
 
@@ -2279,7 +2265,7 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 	flusher.Flush()
 
 	var firstTokenMs *int
-	var usage ClaudeUsage
+	usage := ClaudeUsage{geminiUsageEvidence: &GeminiUsageEvidence{}}
 	finishReason := ""
 	sawToolUse := false
 
@@ -2650,7 +2636,7 @@ func collectGeminiSSEObserved(cfg *config.Config, body io.Reader, isOAuth bool, 
 	var last map[string]any
 	var lastWithParts map[string]any
 	var collectedTextParts []string // Collect all text parts for aggregation
-	usage := &ClaudeUsage{}
+	usage := &ClaudeUsage{geminiUsageEvidence: &GeminiUsageEvidence{}}
 	stats := geminiSSECollectStats{fallback: &geminiSSEFallbackBody{}}
 
 	for {
@@ -2671,16 +2657,11 @@ func collectGeminiSSEObserved(cfg *config.Config, body io.Reader, isOAuth bool, 
 				default:
 					var parsed map[string]any
 					var rawBytes []byte
-					if isOAuth {
-						innerBytes, err := unwrapGeminiResponse([]byte(payload))
-						if err == nil {
-							rawBytes = innerBytes
-							_ = json.Unmarshal(innerBytes, &parsed)
-						}
-					} else {
-						rawBytes = []byte(payload)
-						_ = json.Unmarshal(rawBytes, &parsed)
+					rawBytes = []byte(payload)
+					if innerBytes, err := unwrapGeminiResponse(rawBytes); err == nil {
+						rawBytes = innerBytes
 					}
+					_ = json.Unmarshal(rawBytes, &parsed)
 					if len(rawBytes) > 0 {
 						stats.dataEvents++
 						if observe != nil {
@@ -2937,10 +2918,8 @@ func (s *GeminiMessagesCompatService) handleNativeNonStreamingResponse(c *gin.Co
 	}
 	c.Data(resp.StatusCode, contentType, respBody)
 
-	if u := extractGeminiUsage(respBody); u != nil {
-		return u, nil
-	}
-	return &ClaudeUsage{}, nil
+	usage := mergeGeminiStreamUsage(ClaudeUsage{}, respBody)
+	return &usage, nil
 }
 
 func (s *GeminiMessagesCompatService) handleNativeStreamingResponse(c *gin.Context, resp *http.Response, startTime time.Time, isOAuth bool, account *Account, upstreamRequestID string) (*geminiNativeStreamResult, error) {
@@ -2975,7 +2954,7 @@ func (s *GeminiMessagesCompatService) handleNativeStreamingResponse(c *gin.Conte
 	}
 
 	reader := newBoundedSSELineReader(resp.Body, s.cfg)
-	usage := &ClaudeUsage{}
+	usage := &ClaudeUsage{geminiUsageEvidence: &GeminiUsageEvidence{}}
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
@@ -3031,6 +3010,17 @@ func (s *GeminiMessagesCompatService) handleNativeStreamingResponse(c *gin.Conte
 						firstTokenMs = &ms
 					}
 
+					// Keep native client counters aligned with the accepted upstream
+					// evidence, without appending frames or rewriting content.
+					projected := projectGeminiNativeUsage(rawBytes, usage, false)
+					if !bytes.Equal(projected, rawBytes) {
+						if isOAuth {
+							rawToWrite = string(projected)
+						} else {
+							line = strings.Replace(line, payload, string(projected), 1)
+						}
+					}
+
 					if isOAuth {
 						// SSE format requires double newline (\n\n) to separate events
 						_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", rawToWrite)
@@ -3077,11 +3067,25 @@ func unwrapGeminiResponse(raw []byte) ([]byte, error) {
 	return raw, nil
 }
 
-func convertGeminiToClaudeMessage(geminiResp map[string]any, originalModel string, rawData []byte, includeInlineData bool) (map[string]any, *ClaudeUsage) {
-	usage := extractGeminiUsage(rawData)
-	if usage == nil {
-		usage = &ClaudeUsage{}
+// convertGeminiToClaudeMessageWithUsage uses the merged SSE counters for both
+// the client response and billing. The last content frame may omit usage or may
+// precede a usage-only tail; billing and returned usage must not disagree.
+func convertGeminiToClaudeMessageWithUsage(geminiResp map[string]any, originalModel string, rawData []byte, includeInlineData bool, override *ClaudeUsage) (map[string]any, *ClaudeUsage) {
+	response, usage := convertGeminiToClaudeMessage(geminiResp, originalModel, rawData, includeInlineData)
+	if override != nil && (override.geminiUsageEvidence != nil || override.InputTokens > 0 || override.OutputTokens > 0 || override.CacheReadInputTokens > 0) {
+		usage = override
+		if values, ok := response["usage"].(map[string]any); ok {
+			values["input_tokens"] = usage.InputTokens
+			values["output_tokens"] = usage.OutputTokens
+			values["cache_read_input_tokens"] = usage.CacheReadInputTokens
+		}
 	}
+	return response, usage
+}
+
+func convertGeminiToClaudeMessage(geminiResp map[string]any, originalModel string, rawData []byte, includeInlineData bool) (map[string]any, *ClaudeUsage) {
+	parsedUsage := mergeGeminiStreamUsage(ClaudeUsage{}, rawData)
+	usage := &parsedUsage
 
 	contentBlocks := make([]any, 0)
 	sawToolUse := false
@@ -3178,37 +3182,11 @@ func isValidBase64(data string) bool {
 }
 
 func extractGeminiUsage(data []byte) *ClaudeUsage {
-	usage := gjson.GetBytes(data, "usageMetadata")
-	if !usage.Exists() {
+	if !gjson.GetBytes(data, "usageMetadata").Exists() {
 		return nil
 	}
-	prompt := int(usage.Get("promptTokenCount").Int())
-	cand := int(usage.Get("candidatesTokenCount").Int())
-	cached := int(usage.Get("cachedContentTokenCount").Int())
-	thoughts := int(usage.Get("thoughtsTokenCount").Int())
-
-	// 从 candidatesTokensDetails 提取 IMAGE 模态 token 数
-	imageTokens := 0
-	candidateDetails := usage.Get("candidatesTokensDetails")
-	if candidateDetails.Exists() {
-		candidateDetails.ForEach(func(_, detail gjson.Result) bool {
-			if detail.Get("modality").String() == "IMAGE" {
-				imageTokens = int(detail.Get("tokenCount").Int())
-				return false
-			}
-			return true
-		})
-	}
-
-	// 注意：Gemini 的 promptTokenCount 包含 cachedContentTokenCount，
-	// 但 Claude 的 input_tokens 不包含 cache_read_input_tokens，需要减去。
-	// prompt 被拦截时上游可能只报 cachedContentTokenCount，差值下限为 0。
-	return &ClaudeUsage{
-		InputTokens:          max(prompt-cached, 0),
-		OutputTokens:         cand + thoughts,
-		CacheReadInputTokens: cached,
-		ImageOutputTokens:    imageTokens,
-	}
+	usage := mergeGeminiStreamUsage(ClaudeUsage{}, data)
+	return &usage
 }
 
 func asInt(v any) (int, bool) {

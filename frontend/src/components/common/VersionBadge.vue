@@ -392,8 +392,8 @@
               <!-- Priority 5: Up to date - GitHub link + version rollback -->
               <div v-else class="space-y-2">
                 <a
-                  v-if="releaseInfo?.html_url && releaseInfo.html_url !== '#'"
-                  :href="releaseInfo.html_url"
+                  v-if="viewReleaseURL"
+                  :href="viewReleaseURL"
                   target="_blank"
                   rel="noopener noreferrer"
                   class="flex items-center justify-center gap-2 py-2 text-sm text-gray-500 transition-colors hover:text-gray-700 dark:text-dark-400 dark:hover:text-dark-200"
@@ -723,6 +723,12 @@ const versionStatus = computed(() => {
 const sourceUpdateEnabled = computed(() => appStore.sourceUpdateEnabled)
 const hostUpdateManaged = computed(() => appStore.hostUpdateManaged)
 const releaseInfo = computed(() => appStore.releaseInfo)
+const viewReleaseURL = computed(() => {
+  const currentURL = appStore.currentReleaseURL?.trim()
+  if (currentURL && currentURL !== '#') return currentURL
+  const upstreamURL = releaseInfo.value?.html_url?.trim()
+  return upstreamURL && upstreamURL !== '#' ? upstreamURL : ''
+})
 const buildType = computed(() => appStore.buildType)
 
 // Update process states (local to this component)

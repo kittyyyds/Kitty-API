@@ -2591,6 +2591,7 @@ export default {
       "noData": "该账号暂无使用数据",
       "todayGroup": "今日",
       "totalGroup": "总计",
+      "lifetimeStatsHelp": "总计为永久台账已记录的请求与费用；首次永久捕获前已丢失的日志无法补齐。Token 仅在所有已记录请求的用量证据完整有效时显示；“—”表示证据不完整或统计暂不可用，不代表零。",
       "summaryRequests": "请求",
       "summaryTokens": "Token",
       "accountBilled": "账号计费",

@@ -1,6 +1,6 @@
 import { apiClient } from '../client'
 export interface AccountIntelligenceTest {
- id: string; request_id: string; account_id: number; source?: 'manual' | 'scheduled'; kind: 'candy' | 'custom'; model: string; reasoning_effort: string;
+ id: string; request_id: string; account_id: number; source?: 'manual' | 'scheduled'; kind: 'candy' | 'custom'; model: string; reasoning_effort: string; requested_reasoning_effort?: string;
  prompt: string; expected_answer?: string; scoring_version: string;
  status: 'running' | 'correct' | 'incorrect' | 'completed' | 'error'; response: string; error?: string;
  upstream_model?: string; latency_ms: number; created_at: string; finished_at?: string;

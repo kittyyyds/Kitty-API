@@ -528,10 +528,8 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsNonStreamingResponseF
 	if err != nil {
 		return nil, err
 	}
-	if isOAuth {
-		if unwrappedBody, uwErr := unwrapGeminiResponse(respBody); uwErr == nil {
-			respBody = unwrappedBody
-		}
+	if unwrappedBody, uwErr := unwrapGeminiResponse(respBody); uwErr == nil {
+		respBody = unwrappedBody
 	}
 
 	var geminiResp map[string]any
@@ -555,15 +553,7 @@ func geminiResponseToChatCompletions(
 	rawData []byte,
 	usageOverride *ClaudeUsage,
 ) (*apicompat.ChatCompletionsResponse, *ClaudeUsage, error) {
-	claudeRespMap, usage := convertGeminiToClaudeMessage(geminiResp, originalModel, rawData, true)
-	if usageOverride != nil && (usageOverride.InputTokens > 0 || usageOverride.OutputTokens > 0 || usageOverride.CacheReadInputTokens > 0) {
-		usage = usageOverride
-		if usageMap, ok := claudeRespMap["usage"].(map[string]any); ok {
-			usageMap["input_tokens"] = usage.InputTokens
-			usageMap["output_tokens"] = usage.OutputTokens
-			usageMap["cache_read_input_tokens"] = usage.CacheReadInputTokens
-		}
-	}
+	claudeRespMap, usage := convertGeminiToClaudeMessageWithUsage(geminiResp, originalModel, rawData, true, usageOverride)
 
 	claudeBytes, err := json.Marshal(claudeRespMap)
 	if err != nil {
@@ -605,7 +595,7 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 	ccState.Model = originalModel
 	ccState.IncludeUsage = includeUsage
 
-	var usage ClaudeUsage
+	usage := ClaudeUsage{geminiUsageEvidence: &GeminiUsageEvidence{}}
 	var firstTokenMs *int
 	firstChunk := true
 	finishReason := ""
@@ -697,10 +687,8 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 				if payload != "" && payload != "[DONE]" {
 					rawBytes := []byte(payload)
-					if isOAuth {
-						if innerBytes, uwErr := unwrapGeminiResponse(rawBytes); uwErr == nil {
-							rawBytes = innerBytes
-						}
+					if innerBytes, uwErr := unwrapGeminiResponse(rawBytes); uwErr == nil {
+						rawBytes = innerBytes
 					}
 
 					var geminiResp map[string]any

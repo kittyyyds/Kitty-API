@@ -1772,6 +1772,12 @@ export interface WindowStats {
   lifetime_user_cost?: number
 }
 
+// Account-list statistics may be unavailable independently per metric/source.
+// null/missing is unknown; a successful query may explicitly return zero.
+export type AccountUsageSummaryStats = {
+  [K in keyof WindowStats]?: WindowStats[K] | null
+}
+
 export interface UsageProgress {
   utilization: number // Percentage (0-100+, 100 = 100%)
   utilization_unknown?: boolean

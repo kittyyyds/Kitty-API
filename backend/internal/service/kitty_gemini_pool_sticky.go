@@ -615,32 +615,9 @@ func inspectGeminiPoolFake200Response(resp *http.Response, isStream bool) (bool,
 	return isDead, rebuilt
 }
 
-// mergeGeminiStreamUsage updates streaming usage from a Gemini SSE chunk while
-// preserving previously observed cachedContentTokenCount / promptTokenCount if
-// a trailing finish chunk omits those fields.
+// mergeGeminiStreamUsage merges cumulative Gemini counters by field presence.
+// The token-only evidence distinguishes absent usage from an explicit zero and
+// prevents a partial/tool-only tail from erasing counters already observed.
 func mergeGeminiStreamUsage(prev ClaudeUsage, rawData []byte) ClaudeUsage {
-	u := extractGeminiUsage(rawData)
-	if u == nil {
-		return prev
-	}
-	usageMeta := gjson.GetBytes(rawData, "usageMetadata")
-	hasPrompt := usageMeta.Get("promptTokenCount").Exists()
-	hasCached := usageMeta.Get("cachedContentTokenCount").Exists()
-
-	if !hasCached && prev.CacheReadInputTokens > 0 {
-		u.CacheReadInputTokens = prev.CacheReadInputTokens
-		if hasPrompt {
-			prompt := int(usageMeta.Get("promptTokenCount").Int())
-			u.InputTokens = max(prompt-u.CacheReadInputTokens, 0)
-		} else {
-			u.InputTokens = prev.InputTokens
-		}
-	} else if !hasPrompt && !hasCached && u.InputTokens == 0 && prev.InputTokens > 0 {
-		u.InputTokens = prev.InputTokens
-	}
-
-	if u.OutputTokens == 0 && prev.OutputTokens > 0 && !usageMeta.Get("candidatesTokenCount").Exists() {
-		u.OutputTokens = prev.OutputTokens
-	}
-	return *u
+	return mergeGeminiUsageEvidence(prev, rawData)
 }

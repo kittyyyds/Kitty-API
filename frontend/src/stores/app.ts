@@ -45,6 +45,7 @@ export const useAppStore = defineStore('app', () => {
   let versionCheckedAt = 0
   const versionCacheTTL = 60_000
   const currentVersion = ref<string>('')
+  const currentReleaseURL = ref<string>('')
   const latestVersion = ref<string>('')
   const hasUpdate = ref<boolean>(false)
   const sourceUpdateEnabled = ref<boolean>(false)
@@ -258,6 +259,7 @@ export const useAppStore = defineStore('app', () => {
     if (versionLoaded.value && !force && Date.now() - versionCheckedAt < versionCacheTTL) {
       return {
         current_version: currentVersion.value,
+        current_release_url: currentReleaseURL.value || undefined,
         latest_version: latestVersion.value,
         has_update: hasUpdate.value,
         source_update_enabled: sourceUpdateEnabled.value,
@@ -278,6 +280,7 @@ export const useAppStore = defineStore('app', () => {
     try {
       const data = await checkUpdatesAPI(force)
       currentVersion.value = data.current_version
+      currentReleaseURL.value = data.current_release_url?.trim() || ''
       latestVersion.value = data.latest_version
       hasUpdate.value = data.has_update
       sourceUpdateEnabled.value = data.source_update_enabled === true
@@ -308,6 +311,7 @@ export const useAppStore = defineStore('app', () => {
    */
   function clearVersionCache(): void {
     versionLoaded.value = false
+    currentReleaseURL.value = ''
     versionWarning.value = ''
     versionCheckedAt = 0
     hasUpdate.value = false
@@ -500,6 +504,7 @@ export const useAppStore = defineStore('app', () => {
     versionWarning,
     versionCheckStatus,
     currentVersion,
+    currentReleaseURL,
     latestVersion,
     hasUpdate,
     sourceUpdateEnabled,

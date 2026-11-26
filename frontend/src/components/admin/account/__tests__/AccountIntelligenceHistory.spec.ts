@@ -29,7 +29,7 @@ describe('account intelligence status summary', () => {
     expect(bars[0].attributes('title')).toContain('21')
     expect(bars[0].attributes('title')).not.toContain('29')
     expect(w.get('[data-testid=intelligence-time]').attributes('datetime')).toBe(records[20].finished_at)
-    expect(w.get('[data-testid=intelligence-model]').text()).toBe('gpt-6-astra')
+    expect(w.get('[data-testid=intelligence-model]').text()).toContain('gpt-6-astra')
     expect(records.map(v => v.id)).toEqual(original)
     await bars[0].trigger('click')
     await w.get('[data-testid=intelligence-result]').trigger('click')
@@ -90,6 +90,44 @@ describe('account intelligence status summary', () => {
     expect(w.find('b').exists()).toBe(false)
     await w.setProps({ items: [item(2, { status: 'incorrect', response: '29' })] })
     expect(w.get('[data-testid=intelligence-result]').text()).toBe('答案测试：未匹配 21')
+    w.unmount()
+  })
+
+  it('distinguishes 100% answer match from 19 real request failures without hiding any red bars', () => {
+    const w = render([
+      ...Array.from({ length: 19 }, (_, i) => item(i, { status: 'error', response: '', error: 'API returned 429: limit reached' })),
+      item(19, { source: 'manual' }),
+    ])
+    expect(w.get('[data-testid=intelligence-match-rate]').text()).toContain('匹配率 100.0% · 1 次')
+    expect(w.get('[data-testid=intelligence-request-summary]').text()).toBe('请求完成 1/20 · 异常 19')
+    expect(w.get('[data-testid=intelligence-request-summary]').attributes('title')).toContain('请求异常不计入答案匹配率')
+    const bars = w.findAll('[data-testid=intelligence-history-bar]')
+    expect(bars.filter(v => v.classes().includes('bg-red-500'))).toHaveLength(19)
+    expect(bars[0].attributes('title')).toContain('自动')
+    expect(bars[19].attributes('title')).toContain('手动')
+    w.unmount()
+  })
+
+  it('keeps partial output and its error visible, and excludes running tests from the request denominator', () => {
+    const w = render([
+      item(1, { status: 'error', response: '21', error: 'stream interrupted' }),
+      item(2, { status: 'incorrect', response: '29' }),
+      item(3, { status: 'running', response: '', finished_at: undefined }),
+    ])
+    expect(w.get('[data-testid=intelligence-request-summary]').text()).toBe('请求完成 1/2 · 异常 1 · 检测中 1')
+    const title = w.findAll('[data-testid=intelligence-history-bar]')[0].attributes('title')
+    expect(title).toContain('回答 / 错误：21')
+    expect(title).toContain('回答 / 错误：stream interrupted')
+    expect(w.get('[data-testid=intelligence-match-rate]').text()).toContain('匹配率 0.0% · 1 次')
+    w.unmount()
+  })
+
+  it('shows the actual reasoning effort and its compatibility adjustment without renaming the model', () => {
+    const record = { ...item(1, { model: 'gpt-6.1-sol', reasoning_effort: 'low' }), requested_reasoning_effort: 'minimal' }
+    const w = render([record])
+    expect(w.get('[data-testid=intelligence-model]').text()).toBe('gpt-6.1-sol · 思考强度 minimal → low（模型兼容）')
+    expect(w.get('[data-testid=intelligence-history-bar]').attributes('title')).toContain('思考强度 minimal → low（模型兼容）')
+    expect(w.get('[data-testid=intelligence-result]').text()).toBe('答案测试：匹配 21')
     w.unmount()
   })
 

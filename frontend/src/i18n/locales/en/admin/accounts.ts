@@ -2460,6 +2460,7 @@ export default {
       "noData": "No usage data available for this account",
       "todayGroup": "Today",
       "totalGroup": "Total",
+      "lifetimeStatsHelp": "Totals cover requests and amounts recorded in the permanent ledger. Logs lost before permanent capture cannot be recovered. Tokens are shown only when every recorded request has complete, valid usage evidence; “—” means incomplete evidence or unavailable statistics, not zero.",
       "summaryRequests": "Req",
       "summaryTokens": "Tokens",
       "accountBilled": "Acct cost",

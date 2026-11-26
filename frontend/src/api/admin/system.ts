@@ -13,6 +13,7 @@ export interface ReleaseInfo {
 
 export interface VersionInfo {
   current_version: string
+  current_release_url?: string
   latest_version: string
   has_update: boolean
   source_update_enabled?: boolean

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { reactive } from 'vue'
 import VersionBadge from '../VersionBadge.vue'
-import { getSourceUpdateStatus, performUpdate } from '@/api/admin/system'
+import { getSourceUpdateStatus, performUpdate, type ReleaseInfo } from '@/api/admin/system'
 
 vi.mock('@/api/admin/system', () => ({
   performUpdate: vi.fn(),
@@ -22,6 +22,7 @@ vi.mock('@/composables/useClipboard', () => ({
 
 const store = reactive({
   currentVersion: '0.2.17-custom.12',
+  currentReleaseURL: '',
   latestVersion: '0.2.17-custom.13',
   hasUpdate: true,
   sourceUpdateEnabled: true,
@@ -30,7 +31,7 @@ const store = reactive({
   versionLoading: false,
   versionLoaded: true,
   versionWarning: '',
-  releaseInfo: null,
+  releaseInfo: null as ReleaseInfo | null,
   fetchVersion: vi.fn(),
   clearVersionCache: vi.fn()
 })
@@ -47,7 +48,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   vi.resetAllMocks()
   localStorage.clear()
-  Object.assign(store, { hasUpdate: true, sourceUpdateEnabled: true, hostUpdateManaged: true, buildType: 'release', versionLoaded: true, versionLoading: false, versionWarning: '' })
+  Object.assign(store, { hasUpdate: true, sourceUpdateEnabled: true, hostUpdateManaged: true, buildType: 'release', versionLoaded: true, versionLoading: false, versionWarning: '', currentReleaseURL: '', releaseInfo: null })
   vi.mocked(getSourceUpdateStatus).mockResolvedValue({ job_id: 'job-1', status: 'running', stage: 'pulling' })
   vi.mocked(performUpdate).mockResolvedValue({ message: 'queued', source_update: true, need_restart: false, job: { job_id: 'job-1', status: 'queued' } })
 })
@@ -57,6 +58,48 @@ afterEach(async () => {
   await flushPromises()
   vi.useRealTimers()
   localStorage.clear()
+})
+
+describe('release links', () => {
+  const kittyReleaseURL = 'https://github.com/kittyyyds/Kitty-API/releases/tag/cs-v0.2.24.3-kitty.7'
+  const upstreamRelease = { name: 'Upstream release', body: '', published_at: '', html_url: 'https://github.com/Wei-Shaw/sub2api/releases/tag/v0.3.0' }
+
+  it('prefers the installed release URL over the upstream release', async () => {
+    Object.assign(store, { hasUpdate: false, currentReleaseURL: kittyReleaseURL, releaseInfo: upstreamRelease })
+    await openMenu()
+    const link = wrapper.get('a')
+    expect(link.text()).toContain('version.viewRelease')
+    expect(link.attributes('href')).toBe(kittyReleaseURL)
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.attributes('rel')).toBe('noopener noreferrer')
+  })
+
+  it('shows the installed release even when the upstream check fails without release info', async () => {
+    Object.assign(store, { hasUpdate: false, currentReleaseURL: kittyReleaseURL, versionWarning: 'Network unavailable' })
+    await openMenu()
+    expect(wrapper.get('a').attributes('href')).toBe(kittyReleaseURL)
+    expect(wrapper.text()).toContain('version.checkFailed')
+  })
+
+  it.each(['', '   ', '#'])('keeps the upstream fallback when the current release URL is unavailable (%s)', async (url) => {
+    Object.assign(store, { hasUpdate: false, currentReleaseURL: url, releaseInfo: upstreamRelease })
+    await openMenu()
+    expect(wrapper.get('a').attributes('href')).toBe(upstreamRelease.html_url)
+  })
+
+  it('hides the release link when neither URL is available', async () => {
+    Object.assign(store, { hasUpdate: false, releaseInfo: { ...upstreamRelease, html_url: '#' } })
+    await openMenu()
+    expect(wrapper.find('a').exists()).toBe(false)
+  })
+
+  it.each([true, false])('keeps upstream upgrade links when host update management is %s', async (hostManaged) => {
+    Object.assign(store, { currentReleaseURL: kittyReleaseURL, releaseInfo: upstreamRelease, hostUpdateManaged: hostManaged })
+    await openMenu()
+    expect(wrapper.get('a').attributes('href')).toBe(upstreamRelease.html_url)
+    expect(wrapper.text()).toContain('version.updateAvailable')
+    expect(wrapper.text()).toContain(store.latestVersion)
+  })
 })
 
 describe('host image update', () => {

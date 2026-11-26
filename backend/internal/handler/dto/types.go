@@ -681,6 +681,9 @@ type UsageLog struct {
 type AdminUsageLog struct {
 	UsageLog
 
+	// UsageAudit is administrator-only token evidence, never request/response bodies.
+	UsageAudit *service.UsageAudit `json:"usage_audit,omitempty"`
+
 	// UpstreamModel is the actual model sent to the upstream provider after mapping.
 	// Omitted when no mapping was applied (requested model was used as-is).
 	UpstreamModel *string `json:"upstream_model,omitempty"`

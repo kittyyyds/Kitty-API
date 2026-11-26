@@ -160,6 +160,9 @@ func runMainServer() {
 		log.Fatalf("Failed to initialize application: %v", err)
 	}
 	defer app.Cleanup()
+	if os.Getenv("KITTY_ACCOUNT_LIFETIME_USAGE_WORKER") == "true" && app.AccountUsage != nil {
+		app.AccountUsage.StartAccountLifetimeUsageWorker()
+	}
 	if app.PluginManager != nil {
 		if err := app.PluginManager.Start(context.Background()); err != nil {
 			log.Printf("Plugin manager started in degraded state: %v", err)

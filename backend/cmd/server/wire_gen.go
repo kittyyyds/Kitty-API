@@ -370,10 +370,11 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	if err != nil {
 		return nil, err
 	}
-	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsService, opsIngressRejectAggregator, apiKeyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, cnProviderBalanceCheckService, openAICodexVersionSyncService, claudeCodeVersionSyncService, proxyExpiryService, openAIRequestTimezoneRefreshWorker, usageCleanupService, pricingService, billingCacheService, subscriptionService, oAuthService, openAIOAuthService, grokOAuthService, geminiOAuthService, antigravityOAuthService, geminiCachedContentService, openAIGatewayService, backupService, channelMonitorRunner, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, openCodeGoUsageService, auditLogService, openAIQuotaAutoResetService, openAIQuotaRefreshWorker, openAIAccountImportChecks, contentModerationService, pluginManager, usagePolicyService, billingOutboxWorker, balanceNotifyService, digestSessionStore, runtime)
+	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsService, opsIngressRejectAggregator, apiKeyService, authCacheInvalidationWorker, schedulerSnapshotService, tokenRefreshService, cnProviderBalanceCheckService, openAICodexVersionSyncService, claudeCodeVersionSyncService, proxyExpiryService, openAIRequestTimezoneRefreshWorker, usageCleanupService, pricingService, billingCacheService, subscriptionService, oAuthService, openAIOAuthService, grokOAuthService, geminiOAuthService, antigravityOAuthService, geminiCachedContentService, openAIGatewayService, backupService, channelMonitorRunner, userPlatformQuotaUsageFlusher, upstreamBillingProbeService, ollamaCloudUsageService, openCodeGoUsageService, auditLogService, openAIQuotaAutoResetService, openAIQuotaRefreshWorker, openAIAccountImportChecks, contentModerationService, pluginManager, usagePolicyService, billingOutboxWorker, balanceNotifyService, digestSessionStore, accountUsageService, runtime)
 	application := &Application{
 		Server:        httpServer,
 		PluginManager: pluginManager,
+		AccountUsage:  accountUsageService,
 		Cleanup:       v,
 	}
 	return application, nil
@@ -384,6 +385,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 type Application struct {
 	Server        *http.Server
 	PluginManager *service.PluginManager
+	AccountUsage  *service.AccountUsageService
 	Cleanup       func()
 }
 
@@ -453,6 +455,7 @@ func provideCleanup(
 	billingOutboxWorker *service.BillingOutboxWorker,
 	balanceNotify *service.BalanceNotifyService,
 	digestSessions *service.DigestSessionStore,
+	accountUsage *service.AccountUsageService,
 	runtime *workerruntime.Runtime,
 ) func() {
 	return func() {
@@ -460,6 +463,10 @@ func provideCleanup(
 		defer cancel()
 
 		parallelSteps := []cleanupStep{
+			{"AccountLifetimeUsageWorker", func() error {
+				accountUsage.StopAccountLifetimeUsageWorker()
+				return nil
+			}},
 			{"OpenAIQuotaAutoResetService", func() error {
 				if openAIAutoReset != nil {
 					openAIAutoReset.Stop()

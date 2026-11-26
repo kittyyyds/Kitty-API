@@ -340,6 +340,10 @@ type AccountUsageService struct {
 	openAI429Recovery  openAI429RecoveryScheduler
 	openaiCreditsGuard *OpenAIGatewayService
 	codexProbeSender   openAICodexProbeSender
+
+	lifetimeUsageWorkerMu      sync.Mutex
+	lifetimeUsageWorker        *accountLifetimeUsageWorker
+	lifetimeUsageWorkerStopped bool
 }
 
 type openAI429RecoveryScheduler interface {

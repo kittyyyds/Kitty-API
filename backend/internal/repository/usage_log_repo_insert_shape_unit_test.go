@@ -50,11 +50,19 @@ func requireStaticInsertMatchesArgTypes(t *testing.T, query string) {
 		}
 	}
 	require.Equal(t, want, columns, "INSERT column list must match usageLogInsertArgTypes")
+	// Counts alone miss reordered columns: every static INSERT must match the
+	// SELECT/scan contract in exactly the same order (except its leading id).
+	gotColumns := strings.Split(m[1], ",")
+	for i := range gotColumns {
+		gotColumns[i] = strings.TrimSpace(gotColumns[i])
+	}
+	require.Equal(t, strings.Split(usageLogSelectColumns, ", ")[1:], gotColumns)
 
 	seen := make(map[int]struct{}, want)
-	for _, ph := range usageLogPlaceholderRe.FindAllStringSubmatch(m[2], -1) {
+	for i, ph := range usageLogPlaceholderRe.FindAllStringSubmatch(m[2], -1) {
 		n, err := strconv.Atoi(ph[1])
 		require.NoError(t, err)
+		require.Equal(t, i+1, n, "VALUES must retain the prepared argument order")
 		_, dup := seen[n]
 		require.False(t, dup, "duplicate placeholder $%d", n)
 		seen[n] = struct{}{}

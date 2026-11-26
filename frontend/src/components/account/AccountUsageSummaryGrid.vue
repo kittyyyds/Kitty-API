@@ -36,9 +36,20 @@
       </div>
     </section>
 
-    <section class="min-w-0 border-l border-gray-200 pl-2 dark:border-gray-700" data-testid="lifetime-stats">
+    <section
+      class="min-w-0 border-l border-gray-200 pl-2 dark:border-gray-700"
+      :title="t('admin.accounts.stats.lifetimeStatsHelp')"
+      data-testid="lifetime-stats"
+    >
       <div class="mb-0.5 font-semibold text-gray-600 dark:text-gray-300">
-        {{ t('admin.accounts.stats.totalGroup') }}
+        <span>{{ t('admin.accounts.stats.totalGroup') }}</span>
+        <span
+          class="ml-1 cursor-help font-normal text-gray-400"
+          :title="t('admin.accounts.stats.lifetimeStatsHelp')"
+          :aria-label="t('admin.accounts.stats.lifetimeStatsHelp')"
+          tabindex="0"
+          data-testid="lifetime-stats-help"
+        >ⓘ</span>
       </div>
       <div class="flex items-center justify-between gap-1 whitespace-nowrap">
         <span class="text-gray-500 dark:text-gray-400">{{ t('admin.accounts.stats.summaryRequests') }}</span>
@@ -58,29 +69,30 @@
       </div>
     </section>
   </div>
+  <span v-else class="text-xs text-gray-400" data-testid="account-usage-summary-unavailable">—</span>
 </template>
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import type { WindowStats } from '@/types'
+import type { AccountUsageSummaryStats } from '@/types'
 import { formatCompactNumber } from '@/utils/format'
 
-const props = withDefaults(defineProps<{ stats?: WindowStats | null; loading?: boolean }>(), {
+const props = withDefaults(defineProps<{ stats?: AccountUsageSummaryStats | null; loading?: boolean }>(), {
   stats: null,
   loading: false
 })
 const { t } = useI18n()
 
 function formatRequests(value?: number | null): string {
-  if (value == null) return '—'
+  if (value == null || !Number.isFinite(value)) return '—'
   return `${formatCompactNumber(value, { allowBillions: false })} req`
 }
 
 function formatTokens(value?: number | null): string {
-  return value == null ? '—' : formatCompactNumber(value)
+  return value == null || !Number.isFinite(value) ? '—' : formatCompactNumber(value)
 }
 
 function formatCost(prefix: 'A' | 'U', value?: number | null): string {
-  return value == null ? '—' : `${prefix} $${value.toFixed(2)}`
+  return value == null || !Number.isFinite(value) ? '—' : `${prefix} $${value.toFixed(2)}`
 }
 </script>

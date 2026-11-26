@@ -391,10 +391,9 @@
             </button>
           </template>
           <template #cell-today_stats="{ row }">
-            <AccountTodayStatsCell
+            <AccountUsageSummaryGrid
               :stats="todayStatsByAccountId[String(row.id)] ?? null"
               :loading="todayStatsLoading"
-              :error="todayStatsError"
             />
           </template>
           <template #cell-groups="{ row }">
@@ -409,7 +408,7 @@
           <template #cell-usage="{ row }">
             <AccountUsageCell
               :account="row"
-              :today-stats="todayStatsByAccountId[String(row.id)] ?? null"
+              :today-stats="toTodayWindowStats(todayStatsByAccountId[String(row.id)])"
               :today-stats-loading="todayStatsLoading"
               :manual-refresh-token="usageManualRefreshToken"
               :batched-usage="usageBatchByAccountId[String(row.id)] ?? null"
@@ -642,7 +641,7 @@ import AccountStatusIndicator from '@/components/account/AccountStatusIndicator.
 import OpenAIVMManagedBadge from '@/components/admin/account/OpenAIVMManagedBadge.vue'
 import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 import AccountMobileCard from '@/components/account/AccountMobileCard.vue'
-import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vue'
+import AccountUsageSummaryGrid from '@/components/account/AccountUsageSummaryGrid.vue'
 import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import NewAPIUpstreamConfigDialog from '@/components/account/NewAPIUpstreamConfigDialog.vue'
 import AccountPerformanceDialog from '@/components/account/AccountPerformanceDialog.vue'
@@ -664,7 +663,7 @@ import { sanitizeUrl } from '@/utils/url'
 import { getFloatingPanelPosition } from '@/utils/floatingPanel'
 import { formatMultiplier } from '@/utils/formatters'
 import type { OpsAccountRequestStats, OpsRequestDetail } from '@/api/admin/ops'
-import type { Account, AccountListItem, AccountPlatform, AccountSchedulerGroupScore, AccountType, AccountUsageInfo, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel, UpstreamBillingProbeSnapshot } from '@/types'
+import type { Account, AccountListItem, AccountPlatform, AccountSchedulerGroupScore, AccountType, AccountUsageInfo, Proxy as AccountProxy, AdminGroup, WindowStats, AccountUsageSummaryStats, ClaudeModel, UpstreamBillingProbeSnapshot } from '@/types'
 
 const { t, te } = useI18n()
 const appStore = useAppStore()
@@ -911,7 +910,7 @@ const autoRefreshFetching = ref(false)
 const AUTO_REFRESH_SILENT_WINDOW_MS = 15000
 const autoRefreshSilentUntil = ref(0)
 const hasPendingListSync = ref(false)
-const todayStatsByAccountId = ref<Record<string, WindowStats>>({})
+const todayStatsByAccountId = ref<Record<string, AccountUsageSummaryStats>>({})
 const todayStatsLoading = ref(false)
 const todayStatsError = ref<string | null>(null)
 const todayStatsReqSeq = ref(0)
@@ -945,13 +944,22 @@ let usageBatchFlushTimer: ReturnType<typeof setTimeout> | null = null
 let queuedUsageBatchForce = false
 let usageBatchRequestToken = 0
 
-const buildDefaultTodayStats = (): WindowStats => ({
-  requests: 0,
-  tokens: 0,
-  cost: 0,
-  standard_cost: 0,
-  user_cost: 0
-})
+// Quota widgets retain their complete WindowStats contract. The independent
+// summary grid can also display partial/unknown metrics without fabricating zero.
+const toTodayWindowStats = (stats?: AccountUsageSummaryStats): WindowStats | null => {
+  if (!stats || stats.requests == null || stats.tokens == null || stats.cost == null) return null
+  return {
+    requests: stats.requests,
+    tokens: stats.tokens,
+    cost: stats.cost,
+    standard_cost: stats.standard_cost ?? undefined,
+    user_cost: stats.user_cost ?? undefined,
+    lifetime_requests: stats.lifetime_requests ?? undefined,
+    lifetime_tokens: stats.lifetime_tokens ?? undefined,
+    lifetime_cost: stats.lifetime_cost ?? undefined,
+    lifetime_user_cost: stats.lifetime_user_cost ?? undefined
+  }
+}
 
 const accountSupportsBatchUsage = (account: Account) => {
   if (account.platform === 'anthropic') {
@@ -1103,8 +1111,10 @@ const refreshTodayStatsBatch = async () => {
 
   const accountIDs = accounts.value.map(account => account.id)
   const reqSeq = ++todayStatsReqSeq.value
+  // Clear the previous page/refresh, including on failure; stale totals must not
+  // be attached to the current account rows while a request is in flight.
+  todayStatsByAccountId.value = {}
   if (accountIDs.length === 0) {
-    todayStatsByAccountId.value = {}
     todayStatsError.value = null
     todayStatsLoading.value = false
     return
@@ -1117,10 +1127,10 @@ const refreshTodayStatsBatch = async () => {
     const result = await adminAPI.accounts.getBatchTodayStats(accountIDs)
     if (reqSeq !== todayStatsReqSeq.value) return
     const serverStats = result.stats ?? {}
-    const nextStats: Record<string, WindowStats> = {}
+    const nextStats: Record<string, AccountUsageSummaryStats> = {}
     for (const accountID of accountIDs) {
       const key = String(accountID)
-      nextStats[key] = serverStats[key] ?? buildDefaultTodayStats()
+      nextStats[key] = serverStats[key] ?? {}
     }
     todayStatsByAccountId.value = nextStats
   } catch (error) {

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
@@ -89,4 +90,36 @@ func TestScopedAdminUsageListEmptyRemainsArray(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/usage", nil))
 	require.Equal(t, 200, w.Code)
 	require.Contains(t, w.Body.String(), `"items":[]`)
+}
+
+func TestScopedAdminUsageAuditProjectionPreservesEvidenceWithoutRawExtensions(t *testing.T) {
+	zero := 0
+	raw := json.RawMessage(`{"unexpected_extension":"private-response-body"}`)
+	audit := &service.UsageAudit{
+		Version: service.UsageAuditVersion, Status: service.UsageAuditStatusUnverifiable,
+		Reasons:          []string{"upstream_usage_missing", "tool_call_without_usage"},
+		GeminiUsage:      &service.GeminiUsageEvidence{Frames: 2, ToolCallEvents: 1, CacheReadTokens: &zero},
+		UpstreamRawUsage: raw,
+	}
+	record := &service.UsageLog{ID: 42, Model: "gemini-test", UsageAudit: audit}
+	response := scopedAdminUsageLogResponse(record)
+	payload, err := json.Marshal(response)
+	require.NoError(t, err)
+	var object map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(payload, &object))
+	var projected service.UsageAudit
+	require.NoError(t, json.Unmarshal(object["usage_audit"], &projected))
+	expected := *audit
+	expected.UpstreamRawUsage = nil
+	require.Equal(t, expected, projected)
+	require.NotContains(t, string(payload), "upstream_raw_usage")
+	require.NotContains(t, string(payload), "private-response-body")
+	require.Equal(t, raw, record.UsageAudit.UpstreamRawUsage, "scoped projection must not mutate the service record")
+
+	fullPayload, err := json.Marshal(dto.UsageLogFromServiceAdmin(record))
+	require.NoError(t, err)
+	require.Contains(t, string(fullPayload), "upstream_raw_usage", "complete administrator keeps the existing audit structure")
+	record.UsageAudit = nil
+	require.NotContains(t, scopedAdminUsageLogResponse(record), "usage_audit")
+	require.Nil(t, scopedAdminUsageLogResponse(nil))
 }

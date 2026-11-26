@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -132,6 +133,9 @@ func (s *AccountTestService) SaveIntelligenceSchedule(ctx context.Context, id in
 	if err = validateIntelligenceModel(a, plan.Model); err != nil {
 		return nil, err
 	}
+	input := AccountIntelligenceInput{Model: plan.Model, ReasoningEffort: plan.ReasoningEffort}
+	normalizeAccountIntelligenceReasoning(a, &input)
+	plan.ReasoningEffort = input.ReasoningEffort
 	r, err := s.intelligenceScheduleRepo()
 	if err != nil {
 		return nil, err
@@ -244,6 +248,7 @@ func (s *AccountTestService) runScheduledAccountIntelligence(ctx context.Context
 	if err = validateIntelligenceModel(a, in.Model); err != nil {
 		return nil, err
 	}
+	normalizeAccountIntelligenceReasoning(a, &in)
 	repo, err := s.intelligenceRepo()
 	if err != nil {
 		return nil, err
@@ -268,5 +273,8 @@ func (s *AccountTestService) runScheduledAccountIntelligence(ctx context.Context
 		finishAccountIntelligenceResult(item, result, e)
 	}()
 	s.finishAccountIntelligence(repo, item)
+	if item.Status == "error" {
+		return item, errors.New(item.Error)
+	}
 	return item, nil
 }

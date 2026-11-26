@@ -117,6 +117,13 @@ backend/.installed
 # 其他
 # ===================
 tests
+# Test feature components are production source; keep only Vue and spec sources.
+!/frontend/src/components/tests/
+/frontend/src/components/tests/*
+!/frontend/src/components/tests/*.vue
+!/frontend/src/components/tests/__tests__/
+/frontend/src/components/tests/__tests__/*
+!/frontend/src/components/tests/__tests__/*.spec.ts
 !deploy/tests/
 !deploy/tests/**
 CLAUDE.md

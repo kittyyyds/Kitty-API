@@ -26,6 +26,7 @@ import (
 type Application struct {
 	Server        *http.Server
 	PluginManager *service.PluginManager
+	AccountUsage  *service.AccountUsageService
 	Cleanup       func()
 }
 
@@ -56,7 +57,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		provideCleanup,
 
 		// Application struct
-		wire.Struct(new(Application), "Server", "PluginManager", "Cleanup"),
+		wire.Struct(new(Application), "Server", "PluginManager", "AccountUsage", "Cleanup"),
 	)
 	return nil, nil
 }
@@ -127,6 +128,7 @@ func provideCleanup(
 	billingOutboxWorker *service.BillingOutboxWorker,
 	balanceNotify *service.BalanceNotifyService,
 	digestSessions *service.DigestSessionStore,
+	accountUsage *service.AccountUsageService,
 	runtime *workerruntime.Runtime,
 ) func() {
 	return func() {
@@ -136,6 +138,10 @@ func provideCleanup(
 		// 应用层清理步骤可并行执行，基础设施资源（Redis/Ent）最后按顺序关闭。
 		// Runtime-owned workers are stopped first by runCleanup.
 		parallelSteps := []cleanupStep{
+			{"AccountLifetimeUsageWorker", func() error {
+				accountUsage.StopAccountLifetimeUsageWorker()
+				return nil
+			}},
 			{"OpenAIQuotaAutoResetService", func() error {
 				if openAIAutoReset != nil {
 					openAIAutoReset.Stop()

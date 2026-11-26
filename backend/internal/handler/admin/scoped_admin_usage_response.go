@@ -17,7 +17,7 @@ func scopedAdminUsageLogResponse(record *service.UsageLog) gin.H {
 	flat := *record
 	flat.User, flat.APIKey, flat.Group, flat.Subscription, flat.Account = nil, nil, nil, nil, nil
 	usage := dto.UsageLogFromServiceAdmin(&flat)
-	return gin.H{
+	response := gin.H{
 		"id":                           usage.ID,
 		"user_id":                      usage.UserID,
 		"api_key_id":                   usage.APIKeyID,
@@ -79,6 +79,14 @@ func scopedAdminUsageLogResponse(record *service.UsageLog) gin.H {
 		"account_rate_multiplier":      usage.AccountRateMultiplier,
 		"account_stats_cost":           usage.AccountStatsCost,
 	}
+	if usage.UsageAudit != nil {
+		// usage.read grants counters/status evidence, not arbitrary raw-usage
+		// extensions. Copy before projecting so the service record is unchanged.
+		audit := *usage.UsageAudit
+		audit.UpstreamRawUsage = nil
+		response["usage_audit"] = &audit
+	}
+	return response
 }
 
 func adminUsageLogResponses(c *gin.Context, records []service.UsageLog) any {

@@ -1,9 +1,9 @@
 package service
 
 import (
-	"fmt"
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 
@@ -67,6 +67,7 @@ type UsageAuditDeviation struct {
 // UsageAudit contains only token evidence and derived metadata. Request and
 // response content are intentionally excluded from the persisted structure.
 type UsageAudit struct {
+	GeminiUsage         *GeminiUsageEvidence     `json:"gemini_usage,omitempty"`
 	ImageOutputEvidence *ImageOutputEvidence     `json:"image_output_evidence,omitempty"`
 	Version             int                      `json:"version"`
 	Status              UsageAuditStatus         `json:"status"`

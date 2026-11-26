@@ -724,6 +724,9 @@ type ClaudeUsage struct {
 	cacheCreationInputTokensFromDetails bool
 	promptTotalTokens                   int
 	promptTotalPresent                  bool
+
+	// Token-only Gemini evidence; nil for other forwarding protocols.
+	geminiUsageEvidence *GeminiUsageEvidence
 }
 
 // ForwardResult 转发结果

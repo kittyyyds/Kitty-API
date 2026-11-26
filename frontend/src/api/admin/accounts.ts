@@ -14,6 +14,7 @@ import type {
   PaginatedResponse,
   AccountUsageInfo,
   WindowStats,
+  AccountUsageSummaryStats,
   ClaudeModel,
   AccountUsageStatsResponse,
   TempUnschedulableStatus,
@@ -588,11 +589,11 @@ export async function getTodayStats(id: number): Promise<WindowStats> {
 }
 
 export interface BatchTodayStatsResponse {
-  stats: Record<string, WindowStats>
+  stats: Record<string, AccountUsageSummaryStats | null>
 }
 
 /**
- * 批量获取多个账号的今日统计
+ * 批量获取当前页账号的今日统计与永久累计；未知指标为 null，不由客户端补零
  * @param accountIds - 账号 ID 列表
  * @returns 以账号 ID（字符串）为键的统计映射
  */

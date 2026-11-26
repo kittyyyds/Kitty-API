@@ -20,6 +20,11 @@
     >
       <span v-if="answerPreview">{{ answerPreview }} | </span>{{ rateLabel }}
     </p>
+    <p
+      class="max-w-full truncate tabular-nums text-gray-500 dark:text-gray-400"
+      :title="requestHint"
+      data-testid="intelligence-request-summary"
+    >{{ requestSummary }}</p>
     <div class="flex max-w-full gap-0.5 py-0.5" :aria-label="t(key + 'recent', { count: recent.length })">
       <button
         v-for="item in chronological"
@@ -33,7 +38,7 @@
         @click="$emit('open')"
       />
     </div>
-    <p class="max-w-full truncate text-gray-500 dark:text-gray-400" :title="modelHint" data-testid="intelligence-model">{{ latest.model }}</p>
+    <p class="max-w-full truncate text-gray-500 dark:text-gray-400" :title="modelHint" data-testid="intelligence-model">{{ latest.model }} · {{ reasoningHint(latest) }}</p>
     <time
       class="tabular-nums text-gray-500 dark:text-gray-400"
       :datetime="latest.finished_at || latest.created_at"
@@ -74,7 +79,23 @@ const rateLabel = computed(() => {
   const rate = (graded.value.filter(item => item.status === 'correct').length / graded.value.length * 100).toFixed(1)
   return t(key + 'matchRate', { rate, count: graded.value.length })
 })
-const rateHint = computed(() => t(key + 'rateHint', { count: recent.value.length }))
+// Match rate measures answers, not request reliability. Keep all real history
+// bars, and make the excluded request failures visible without a hover.
+const requestCounts = computed(() => ({
+  completed: recent.value.filter(item => ['correct', 'incorrect', 'completed'].includes(item.status)).length,
+  errors: recent.value.filter(item => item.status === 'error').length,
+  running: recent.value.filter(item => item.status === 'running').length,
+}))
+const requestSummary = computed(() => {
+  const { completed, errors, running } = requestCounts.value
+  return locale.value.startsWith('zh')
+    ? `请求完成 ${completed}/${completed + errors} · 异常 ${errors}${running ? ` · 检测中 ${running}` : ''}`
+    : `Completed ${completed}/${completed + errors} · Errors ${errors}${running ? ` · Running ${running}` : ''}`
+})
+const requestHint = computed(() => locale.value.startsWith('zh')
+  ? `最近 ${recent.value.length} 条全部检测记录（含手动、自动及不同题目）；请求异常不计入答案匹配率，红条不表示答案错误。`
+  : `All ${recent.value.length} recent tests, including manual, scheduled and different questions. Request errors are excluded from answer match rate; red bars do not mean incorrect answers.`)
+const rateHint = computed(() => `${t(key + 'rateHint', { count: recent.value.length })} ${requestSummary.value}`)
 const resultLabel = computed(() => {
   const item = latest.value
   if (!item) return ''
@@ -96,9 +117,16 @@ const answerPreview = computed(() => {
   const text = item.response.trim().replace(/\s+/g, ' ')
   return text.length <= 12 ? text : ''
 })
+const reasoningHint = (item: AccountIntelligenceTest) => {
+  const effective = item.reasoning_effort || (locale.value.startsWith('zh') ? '默认' : 'default')
+  const requested = item.requested_reasoning_effort
+  return requested && requested !== item.reasoning_effort
+    ? (locale.value.startsWith('zh') ? `思考强度 ${requested} → ${effective}（模型兼容）` : `Reasoning ${requested} → ${effective} (model compatibility)`)
+    : (locale.value.startsWith('zh') ? `思考强度 ${effective}` : `Reasoning ${effective}`)
+}
 const modelHint = computed(() => {
   const item = latest.value
-  return item ? [item.model, item.reasoning_effort, item.upstream_model && item.upstream_model !== item.model ? item.upstream_model : ''].filter(Boolean).join(' · ') : ''
+  return item ? [item.model, reasoningHint(item), item.upstream_model && item.upstream_model !== item.model ? item.upstream_model : ''].filter(Boolean).join(' · ') : ''
 })
 const date = (value: string) => {
   const at = new Date(value)
@@ -106,8 +134,11 @@ const date = (value: string) => {
 }
 const tooltip = (item: AccountIntelligenceTest) => [
   `${date(item.finished_at || item.created_at)} · ${item.model} · ${t('admin.accounts.intelligenceSchedule.' + (item.source === 'scheduled' ? 'automatic' : 'manual'))} · ${t(manual + item.status)}`,
+  reasoningHint(item),
   item.expected_answer ? `${t(manual + 'expected')}：${item.expected_answer}` : '',
   `${t(manual + 'question')}：${item.prompt}`,
-  `${t(manual + 'answer')}：${item.error || item.response || '…'}`,
+  item.response ? `${t(manual + 'answer')}：${item.response}` : '',
+  item.error ? `${t(manual + 'answer')}：${item.error}` : '',
+  !item.response && !item.error ? `${t(manual + 'answer')}：…` : '',
 ].filter(Boolean).join('\n')
 </script>

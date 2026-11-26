@@ -24,30 +24,32 @@ var accountIntelligenceSlots = make(chan struct{}, 2)
 const accountIntelligenceTimeout = 5 * time.Minute
 
 type AccountIntelligenceInput struct {
-	RequestID       string `json:"request_id"`
-	Kind            string `json:"kind"`
-	Model           string `json:"model"`
-	ReasoningEffort string `json:"reasoning_effort"`
-	Prompt          string `json:"prompt"`
+	RequestID                string `json:"request_id"`
+	Kind                     string `json:"kind"`
+	Model                    string `json:"model"`
+	ReasoningEffort          string `json:"reasoning_effort"`
+	Prompt                   string `json:"prompt"`
+	RequestedReasoningEffort string `json:"-"`
 }
 type AccountIntelligenceTest struct {
-	ID              string     `json:"id"`
-	RequestID       string     `json:"request_id"`
-	AccountID       int64      `json:"account_id"`
-	Source          string     `json:"source,omitempty"`
-	Kind            string     `json:"kind"`
-	Model           string     `json:"model"`
-	ReasoningEffort string     `json:"reasoning_effort"`
-	Prompt          string     `json:"prompt"`
-	ExpectedAnswer  string     `json:"expected_answer,omitempty"`
-	ScoringVersion  string     `json:"scoring_version"`
-	Status          string     `json:"status"`
-	Response        string     `json:"response"`
-	Error           string     `json:"error,omitempty"`
-	UpstreamModel   string     `json:"upstream_model,omitempty"`
-	LatencyMs       int64      `json:"latency_ms"`
-	CreatedAt       time.Time  `json:"created_at"`
-	FinishedAt      *time.Time `json:"finished_at,omitempty"`
+	ID                       string     `json:"id"`
+	RequestID                string     `json:"request_id"`
+	AccountID                int64      `json:"account_id"`
+	Source                   string     `json:"source,omitempty"`
+	Kind                     string     `json:"kind"`
+	Model                    string     `json:"model"`
+	ReasoningEffort          string     `json:"reasoning_effort"`
+	RequestedReasoningEffort string     `json:"requested_reasoning_effort,omitempty"`
+	Prompt                   string     `json:"prompt"`
+	ExpectedAnswer           string     `json:"expected_answer,omitempty"`
+	ScoringVersion           string     `json:"scoring_version"`
+	Status                   string     `json:"status"`
+	Response                 string     `json:"response"`
+	Error                    string     `json:"error,omitempty"`
+	UpstreamModel            string     `json:"upstream_model,omitempty"`
+	LatencyMs                int64      `json:"latency_ms"`
+	CreatedAt                time.Time  `json:"created_at"`
+	FinishedAt               *time.Time `json:"finished_at,omitempty"`
 }
 type AccountIntelligenceRepository interface {
 	IntelligenceFind(context.Context, int64, string) (*AccountIntelligenceTest, error)
@@ -108,6 +110,7 @@ func (s *AccountTestService) StartAccountIntelligence(ctx context.Context, id in
 	if err = validateIntelligenceModel(a, in.Model); err != nil {
 		return nil, err
 	}
+	normalizeAccountIntelligenceReasoning(a, &in)
 	repo, err := s.intelligenceRepo()
 	if err != nil {
 		return nil, err
@@ -163,7 +166,7 @@ func validateIntelligenceModel(a *Account, model string) error {
 	return nil
 }
 func newAccountIntelligenceTest(id int64, in AccountIntelligenceInput) *AccountIntelligenceTest {
-	item := &AccountIntelligenceTest{ID: uuid.NewString(), RequestID: in.RequestID, AccountID: id, Source: "manual", Kind: in.Kind, Model: in.Model, ReasoningEffort: in.ReasoningEffort, Prompt: in.Prompt, ScoringVersion: "candy-21-v1", Status: "running", CreatedAt: time.Now()}
+	item := &AccountIntelligenceTest{ID: uuid.NewString(), RequestID: in.RequestID, AccountID: id, Source: "manual", Kind: in.Kind, Model: in.Model, ReasoningEffort: in.ReasoningEffort, RequestedReasoningEffort: in.RequestedReasoningEffort, Prompt: in.Prompt, ScoringVersion: "candy-21-v1", Status: "running", CreatedAt: time.Now()}
 	if in.Kind == "candy" {
 		item.ExpectedAnswer = "21"
 	} else {
@@ -173,6 +176,13 @@ func newAccountIntelligenceTest(id int64, in AccountIntelligenceInput) *AccountI
 }
 func finishAccountIntelligenceResult(item *AccountIntelligenceTest, result *ScheduledTestResult, err error) {
 	item.Status = "error"
+	// Keep partial output and adapter diagnostics even when execution failed.
+	// They are evidence, never an answer that may be scored as correct.
+	if result != nil {
+		item.Response = truncateIntelligenceText(result.ResponseText, 65536)
+		item.LatencyMs = result.LatencyMs
+		item.UpstreamModel = result.UpstreamModel
+	}
 	if err != nil {
 		item.Error = truncateIntelligenceText("检测未完成："+err.Error(), 4096)
 		return
@@ -181,9 +191,6 @@ func finishAccountIntelligenceResult(item *AccountIntelligenceTest, result *Sche
 		item.Error = "检测没有返回结果。"
 		return
 	}
-	item.Response = truncateIntelligenceText(result.ResponseText, 65536)
-	item.LatencyMs = result.LatencyMs
-	item.UpstreamModel = result.UpstreamModel
 	if result.Status != "success" || result.ErrorMessage != "" {
 		item.Error = truncateIntelligenceText(result.ErrorMessage, 4096)
 		if item.Error == "" {

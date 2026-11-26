@@ -17,8 +17,10 @@ func TestProvideWorkerRuntimeRegistersAndStartsPilots(t *testing.T) {
 	cfg := &config.Config{}
 	oauthSvc := service.NewOAuthService(nil, nil)
 	openAIOAuthSvc := service.NewOpenAIOAuthService(nil, nil)
+	geminiOAuthSvc := service.NewGeminiOAuthService(nil, nil, nil, nil, cfg)
+	antigravityOAuthSvc := service.NewAntigravityOAuthService(nil)
 	grokOAuthSvc := service.NewGrokOAuthService(nil, nil, nil)
-	tokenRefresh := service.NewTokenRefreshService(nil, oauthSvc, openAIOAuthSvc, nil, nil, cfg, nil)
+	tokenRefresh := service.NewTokenRefreshService(nil, oauthSvc, openAIOAuthSvc, geminiOAuthSvc, antigravityOAuthSvc, nil, nil, cfg, nil)
 	usagePool := service.NewUsageRecordWorkerPoolWithOptions(service.UsageRecordWorkerPoolOptions{WorkerCount: 1, QueueSize: 1})
 	emailQueue := service.NewEmailQueueService(nil, 1)
 	opsSink := service.NewOpsSystemLogSink(nil)
@@ -81,6 +83,8 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 	cfg := &config.Config{}
 	oauthSvc := service.NewOAuthService(nil, nil)
 	openAIOAuthSvc := service.NewOpenAIOAuthService(nil, nil)
+	geminiOAuthSvc := service.NewGeminiOAuthService(nil, nil, nil, nil, cfg)
+	antigravityOAuthSvc := service.NewAntigravityOAuthService(nil)
 	usagePool := service.NewUsageRecordWorkerPoolWithOptions(service.UsageRecordWorkerPoolOptions{WorkerCount: 1, QueueSize: 1})
 
 	newRuntime := func(refresh *service.TokenRefreshService) *workerruntime.Runtime {
@@ -112,13 +116,13 @@ func TestProvideWorkerRuntimeRegistersTokenRefreshOnlyWhenEnabled(t *testing.T) 
 		return runtime
 	}
 
-	disabled := newRuntime(service.NewTokenRefreshService(nil, oauthSvc, openAIOAuthSvc, nil, nil, cfg, nil))
+	disabled := newRuntime(service.NewTokenRefreshService(nil, oauthSvc, openAIOAuthSvc, geminiOAuthSvc, antigravityOAuthSvc, nil, nil, cfg, nil))
 	for _, snapshot := range disabled.Snapshot() {
 		require.NotEqual(t, "token-refresh", snapshot.Descriptor.Name)
 	}
 
 	enabledCfg := &config.Config{TokenRefresh: config.TokenRefreshConfig{Enabled: true, CheckIntervalMinutes: 5}}
-	enabled := newRuntime(service.NewTokenRefreshService(nil, oauthSvc, openAIOAuthSvc, nil, nil, enabledCfg, nil))
+	enabled := newRuntime(service.NewTokenRefreshService(nil, oauthSvc, openAIOAuthSvc, geminiOAuthSvc, antigravityOAuthSvc, nil, nil, enabledCfg, nil))
 	found := false
 	for _, snapshot := range enabled.Snapshot() {
 		if snapshot.Descriptor.Name == "token-refresh" {
